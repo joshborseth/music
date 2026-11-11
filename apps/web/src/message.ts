@@ -6,6 +6,7 @@ import { UrlRequest } from 'foldkit/navigation'
 import { Session, Song } from '@music/shared'
 
 import { MediaKey } from './playback/domain'
+import { SwipeTarget } from './playback/swipe'
 import {
   albumQuery,
   albumSearchQuery,
@@ -96,5 +97,21 @@ export const Message = defineMessageUnion({
   ClickedClosePlayer: {},
   ClickedStartBlockedAudio: {},
   ClickedDismissNotice: {},
+
+  PressedSwipeable: {
+    target: SwipeTarget,
+    pointerId: Schema.Number,
+    clientX: Schema.Number,
+    clientY: Schema.Number,
+    timeStamp: Schema.Number,
+  },
+  MovedSwipePointer: {
+    pointerId: Schema.Number,
+    clientX: Schema.Number,
+    clientY: Schema.Number,
+    timeStamp: Schema.Number,
+  },
+  ReleasedSwipePointer: { pointerId: Schema.Number, timeStamp: Schema.Number },
+  CancelledSwipePointer: { pointerId: Schema.Number },
 })
 export type Message = typeof Message.Type

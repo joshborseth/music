@@ -109,6 +109,7 @@ export const albumView = (
                           song,
                           maybeTrackNumber: Option.some(trackNumber),
                           isAlbumHidden: true,
+                          swipe: model.swipe,
                           maybeOnPlay: Option.some(
                             Message.ClickedPlaySongs({
                               songs: details.tracks,

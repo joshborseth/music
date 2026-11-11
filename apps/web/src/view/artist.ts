@@ -95,6 +95,7 @@ export const artistView = (
                       song,
                       maybeTrackNumber: Option.none(),
                       isAlbumHidden: false,
+                      swipe: model.swipe,
                       maybeOnPlay: Option.some(
                         playFrom(details.topSongs, song.videoId),
                       ),

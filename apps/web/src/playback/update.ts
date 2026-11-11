@@ -35,6 +35,15 @@ import {
 import { displayedPosition } from './position'
 import { toQueueTrack } from './queueTrack'
 import type { PlaybackServices } from './resource'
+import {
+  Swipe,
+  SwipeAction,
+  type SwipeTarget,
+  type TrackingSwipe,
+  moveSwipe,
+  releasedSwipeAction,
+  startSwipe,
+} from './swipe'
 
 type PlaybackReturn = Update.Return<Model, Message, PlaybackServices>
 
@@ -505,3 +514,81 @@ export const startBlockedAudio = (model: Model): PlaybackReturn => ({
   model,
   commands: [SetPhoneAudioPlaying({ isPlaying: true })],
 })
+
+// SWIPE
+
+const trackingPointer = (
+  model: Model,
+  pointerId: number,
+): Option.Option<TrackingSwipe> =>
+  model.swipe._tag === 'Tracking' && model.swipe.pointerId === pointerId
+    ? Option.some(model.swipe)
+    : Option.none()
+
+const runSwipeAction = (model: Model, action: SwipeAction): PlaybackReturn =>
+  SwipeAction.match(action, {
+    Next: () => sendCommand(model, { _tag: 'Next' }),
+    Previous: () => sendCommand(model, { _tag: 'Previous' }),
+    ClosePlayer: () => closePlayer(model),
+    PlayNext: ({ song }) => clickEnqueueSongs(model, [song], 'Next'),
+    AddToQueue: ({ song }) => clickEnqueueSongs(model, [song], 'Last'),
+    RemoveEntry: ({ entryId }) =>
+      sendCommand(model, { _tag: 'RemoveEntry', entryId }),
+  })
+
+export const pressSwipeable = (
+  model: Model,
+  target: SwipeTarget,
+  pointerId: number,
+  clientX: number,
+  clientY: number,
+  timeStamp: number,
+): PlaybackReturn =>
+  model.swipe._tag === 'Tracking'
+    ? { model }
+    : {
+        model: modifyFields(model, {
+          swipe: () =>
+            startSwipe(target, pointerId, clientX, clientY, timeStamp),
+        }),
+      }
+
+export const moveSwipePointer = (
+  model: Model,
+  pointerId: number,
+  clientX: number,
+  clientY: number,
+  timeStamp: number,
+): PlaybackReturn =>
+  Option.match(trackingPointer(model, pointerId), {
+    onNone: () => ({ model }),
+    onSome: swipe => ({
+      model: modifyFields(model, {
+        swipe: () => moveSwipe(swipe, clientX, clientY, timeStamp),
+      }),
+    }),
+  })
+
+export const releaseSwipePointer = (
+  model: Model,
+  pointerId: number,
+  timeStamp: number,
+): PlaybackReturn =>
+  Option.match(trackingPointer(model, pointerId), {
+    onNone: () => ({ model }),
+    onSome: swipe => {
+      const idleModel = modifyFields(model, { swipe: () => Swipe.Idle() })
+      return Option.match(releasedSwipeAction(swipe, timeStamp), {
+        onNone: () => ({ model: idleModel }),
+        onSome: action => runSwipeAction(idleModel, action),
+      })
+    },
+  })
+
+export const cancelSwipePointer = (
+  model: Model,
+  pointerId: number,
+): PlaybackReturn =>
+  Option.isSome(trackingPointer(model, pointerId))
+    ? { model: modifyFields(model, { swipe: () => Swipe.Idle() }) }
+    : { model }

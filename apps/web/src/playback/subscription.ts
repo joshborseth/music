@@ -196,6 +196,34 @@ const streamMediaKeys = Stream.callback<MediaKey>(queue =>
   ).pipe(Effect.flatMap(() => Effect.never)),
 ).pipe(Stream.map(key => Message.PressedMediaKey({ key })))
 
+const streamSwipePointer = Stream.merge(
+  Stream.fromEventListener<PointerEvent>(document, 'pointermove').pipe(
+    Stream.map(event =>
+      Message.MovedSwipePointer({
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        timeStamp: event.timeStamp,
+      }),
+    ),
+  ),
+  Stream.merge(
+    Stream.fromEventListener<PointerEvent>(document, 'pointerup').pipe(
+      Stream.map(event =>
+        Message.ReleasedSwipePointer({
+          pointerId: event.pointerId,
+          timeStamp: event.timeStamp,
+        }),
+      ),
+    ),
+    Stream.fromEventListener<PointerEvent>(document, 'pointercancel').pipe(
+      Stream.map(event =>
+        Message.CancelledSwipePointer({ pointerId: event.pointerId }),
+      ),
+    ),
+  ),
+)
+
 export const subscriptions = Subscription.make<
   Model,
   Message,
@@ -248,6 +276,20 @@ export const subscriptions = Subscription.make<
     {
       modelToDependencies: () => ({}),
       dependenciesToStream: () => streamMediaKeys,
+    },
+  ),
+
+  swipePointer: entry(
+    { isTracking: Schema.Boolean },
+    {
+      modelToDependencies: model => ({
+        isTracking: model.swipe._tag === 'Tracking',
+      }),
+      dependenciesToStream: ({ isTracking }) =>
+        Stream.when(
+          streamSwipePointer,
+          Effect.sync(() => isTracking),
+        ),
     },
   ),
 
