@@ -1,0 +1,23 @@
+{
+  "name": "@music/server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "smoke": "bun scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@music/shared": "workspace:*",
+    "effect": "catalog:",
+    "youtubei.js": "18.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

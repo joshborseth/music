@@ -1,0 +1,25 @@
+import { Runtime } from 'foldkit'
+
+import { Message } from './message'
+import { Model } from './model'
+import { MusicClientLive } from './rpc'
+import { init, update } from './update'
+import { view } from './view'
+
+const application = Runtime.makeApplication({
+  Model,
+  init,
+  update,
+  view,
+  resources: MusicClientLive,
+  container: document.getElementById('root'),
+  devTools: {
+    Message,
+  },
+  routing: {
+    onUrlRequest: request => Message.ClickedLink({ request }),
+    onUrlChange: url => Message.ChangedUrl({ url }),
+  },
+})
+
+Runtime.run(application)
