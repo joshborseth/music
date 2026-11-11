@@ -7,6 +7,7 @@ import { MusicRpcs } from '@music/shared'
 
 import { ArtworkRoutes } from './artwork.ts'
 import { AudioRoutes, AudioSourceLive } from './audio.ts'
+import { AudioStoreLive } from './audioStore.ts'
 import { MusicRpcsLive } from './rpcHandlers.ts'
 import { SessionHubLive, SessionRoutes } from './session/hub.ts'
 import { TvWakerLive } from './session/wake.ts'
@@ -18,6 +19,12 @@ const DEFAULT_HOSTNAME = '127.0.0.1'
 
 const STATIC_MIME_TYPES = { webmanifest: 'application/manifest+json' }
 
+/** Songs on disk, downloaded through yt-dlp: shared by the RPCs and playback. */
+const AudioLive = AudioStoreLive.pipe(
+  Layer.provide(AudioSourceLive),
+  Layer.provide(BunServices.layer),
+)
+
 const RpcRoutes = RpcServer.layerHttp({
   group: MusicRpcs,
   path: '/rpc',
@@ -25,6 +32,7 @@ const RpcRoutes = RpcServer.layerHttp({
 }).pipe(
   Layer.provide(MusicRpcsLive),
   Layer.provide(YouTubeMusicLive),
+  Layer.provide(AudioLive),
   Layer.provide(RpcSerialization.layerNdjson),
 )
 
@@ -48,14 +56,10 @@ const WebAppRoutes = Layer.unwrap(
   }),
 )
 
-const AudioSourceWithProcesses = AudioSourceLive.pipe(
-  Layer.provide(BunServices.layer),
-)
-
 const PlaybackRoutes = Layer.mergeAll(AudioRoutes, SessionRoutes).pipe(
   Layer.provide(SessionHubLive),
   Layer.provide(TvWakerLive),
-  Layer.provideMerge(AudioSourceWithProcesses),
+  Layer.provideMerge(AudioLive),
 )
 
 const ServerLive = HttpRouter.serve(

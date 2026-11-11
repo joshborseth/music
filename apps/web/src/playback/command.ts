@@ -9,6 +9,7 @@ import { Session } from '@music/shared'
 import { Message } from '../message'
 import { DEVICE_ID_KEY, deviceNameFromUserAgent } from './domain'
 import { PhoneAudioElement, SessionSocket } from './resource'
+import { cacheSong, cachedSong } from './songCache'
 
 const RECONNECT_DELAY = Duration.seconds(2)
 const NOTICE_DURATION = Duration.seconds(6)
@@ -134,18 +135,66 @@ export const UnlockPhoneAudio = Command.define('UnlockPhoneAudio', {
   ),
 })
 
+/** The Blob URL each audio element plays, so it can be released later. */
+const blobUrls = new WeakMap<HTMLAudioElement, string>()
+
+const releaseBlobUrl = (audio: HTMLAudioElement) => {
+  const url = blobUrls.get(audio)
+  if (url !== undefined) {
+    URL.revokeObjectURL(url)
+    blobUrls.delete(audio)
+  }
+}
+
+/** Jump to `seconds` now, or as soon as the song's length is known. */
+const seekWhenReady = (audio: HTMLAudioElement, seconds: number) => {
+  if (seconds <= 0) {
+    return
+  }
+  if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    audio.currentTime = seconds
+  } else {
+    audio.addEventListener(
+      'loadedmetadata',
+      () => {
+        audio.currentTime = seconds
+      },
+      { once: true },
+    )
+  }
+}
+
+/**
+ * Play a song from the phone's cache when it is there, so it starts and
+ * seeks instantly. Otherwise stream it, and cache it for next time.
+ */
 export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
   args: {
-    src: Schema.String,
+    videoId: Schema.String,
     startSeconds: Schema.Number,
     isPlaying: Schema.Boolean,
   },
   messages: [Message.CompletedLoadPhoneAudio],
-  execute: ({ src, startSeconds, isPlaying }) =>
+  execute: ({ videoId, startSeconds, isPlaying }) =>
     PhoneAudioElement.get.pipe(
       Effect.flatMap(audio =>
         Effect.gen(function* () {
-          audio.src = `${src}#t=${startSeconds.toFixed(2)}`
+          const maybeBlob = yield* cachedSong(videoId)
+          releaseBlobUrl(audio)
+          Option.match(maybeBlob, {
+            onNone: () => {
+              audio.src = Session.audioPath(videoId)
+            },
+            onSome: blob => {
+              const url = URL.createObjectURL(blob)
+              blobUrls.set(audio, url)
+              audio.src = url
+            },
+          })
+          seekWhenReady(audio, startSeconds)
+          if (Option.isNone(maybeBlob)) {
+            yield* Effect.forkDetach(cacheSong(videoId))
+          }
           if (!isPlaying) {
             audio.pause()
             return false
@@ -157,6 +206,30 @@ export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
       Effect.catch(() =>
         Effect.succeed(Message.CompletedLoadPhoneAudio({ isBlocked: false })),
       ),
+    ),
+})
+
+/** Jump within the song already loaded, without loading it again. */
+export const SeekPhoneAudio = Command.define('SeekPhoneAudio', {
+  args: { seconds: Schema.Number },
+  messages: [Message.CompletedSeekPhoneAudio],
+  execute: ({ seconds }) =>
+    PhoneAudioElement.get.pipe(
+      Effect.flatMap(audio =>
+        Effect.sync(() => seekWhenReady(audio, Math.max(0, seconds))),
+      ),
+      Effect.ignore,
+      Effect.as(Message.CompletedSeekPhoneAudio()),
+    ),
+})
+
+/** Download the songs that play next, so they start without waiting. */
+export const PrefetchSongs = Command.define('PrefetchSongs', {
+  args: { videoIds: Schema.Array(Schema.String) },
+  messages: [Message.CompletedPrefetchSongs],
+  execute: ({ videoIds }) =>
+    Effect.forEach(videoIds, cacheSong, { discard: true }).pipe(
+      Effect.as(Message.CompletedPrefetchSongs()),
     ),
 })
 
@@ -191,6 +264,7 @@ export const StopPhoneAudio = Command.define('StopPhoneAudio', {
         audio.pause()
         audio.removeAttribute('src')
         audio.load()
+        releaseBlobUrl(audio)
       }),
     ),
     Effect.ignore,

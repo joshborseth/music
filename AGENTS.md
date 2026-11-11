@@ -6,8 +6,8 @@ YouTube Music on the phone (Foldkit PWA) and the TV (Rust Android TV app), shari
 
 - `packages/shared`: the Effect RPC group (`MusicRpcs`) and the domain Schemas. Change the contract here first; both apps compile against it directly from source (no build step).
 - `apps/server`: Bun + `@effect/platform-bun`. `src/youtubeMusic/mapping.ts` turns `youtubei.js` nodes into shared Schemas and holds all of the YouTube-specific parsing. `service.ts` is the `YouTubeMusic` Effect service. `rpcHandlers.ts` wires it to `MusicRpcs`.
-- `apps/server`: also `audio.ts` (yt-dlp resolution and the `/audio/:videoId` relay) and `session/` (`model.ts` holds the pure session state transitions, `hub.ts` the WebSocket, `wake.ts` the Home Assistant wake call).
-- `apps/web`: a Foldkit app. Read `apps/web/FOLDKIT.md` before changing it; it is Foldkit's own convention guide. Playback lives in `src/playback/` (ManagedResources for the session socket and the audio element, their Subscriptions, Commands, and update helpers) and `src/view/player.ts`.
+- `apps/server`: also `audio.ts` (yt-dlp resolution and the `/audio/:videoId` route), `audioStore.ts` (the disk cache of whole songs, which every audio request goes through) and `session/` (`model.ts` holds the pure session state transitions, `hub.ts` the WebSocket, `wake.ts` the Home Assistant wake call).
+- `apps/web`: a Foldkit app. Read `apps/web/FOLDKIT.md` before changing it; it is Foldkit's own convention guide. Playback lives in `src/playback/` (ManagedResources for the session socket and the audio element, their Subscriptions, Commands, update helpers, and `songCache.ts`, the phone's Cache Storage of songs) and `src/view/player.ts`.
 - `apps/tv`: the Rust Android TV app, the only member of the root Cargo workspace. `audio/` is the playback engine, `controller.rs` reconciles session state with it, `ui/app.slint` is the screen.
 
 ## Conventions

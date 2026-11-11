@@ -13,15 +13,15 @@ import {
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 
+import { AudioStore } from './audioStore.ts'
+
 /*
  * Audio for every player comes through here. yt-dlp finds the song's AAC
- * stream (itag 140) using the proof-of-origin token service on this machine,
- * and `/audio/:videoId` relays it. YouTube only accepts a fresh link a few
- * seconds after issuing it (`available_at`), so resolving waits for that and
- * the hub resolves upcoming songs ahead of time. Relaying keeps YouTube's IP-bound URLs on
- * this machine, gives every player one stable URL with byte ranges, and
- * always asks YouTube for a byte range: a plain request is throttled to
- * playback speed, a ranged one arrives in a fraction of a second.
+ * stream (itag 140) using the proof-of-origin token service on this machine.
+ * YouTube only accepts a fresh link a few seconds after issuing it
+ * (`available_at`), so resolving waits for that. `AudioStore` then downloads
+ * the whole song once (always as a byte range: a plain request is throttled
+ * to playback speed) and `/audio/:videoId` serves it from disk.
  */
 
 /** yt-dlp could not produce a playable audio stream for a song. */
@@ -74,8 +74,6 @@ export class AudioSource extends Context.Service<
       videoId: string,
     ) => Effect.Effect<ResolvedAudio, AudioUnavailableError>
     readonly invalidate: (videoId: string) => Effect.Effect<void>
-    /** Resolve songs in the background so they start without waiting. */
-    readonly warm: (videoIds: ReadonlyArray<string>) => Effect.Effect<void>
   }
 >()('music/AudioSource') {}
 
@@ -145,13 +143,6 @@ export const AudioSourceLive = Layer.effect(AudioSource)(
     return AudioSource.of({
       resolve: videoId => Cache.get(cache, videoId),
       invalidate: videoId => Cache.invalidate(cache, videoId),
-      warm: videoIds =>
-        Effect.forEach(
-          videoIds,
-          videoId =>
-            Effect.forkDetach(Effect.ignore(Cache.get(cache, videoId))),
-          { discard: true },
-        ),
     })
   }),
 )
@@ -159,51 +150,45 @@ export const AudioSourceLive = Layer.effect(AudioSource)(
 // HTTP
 
 const RANGE = /^bytes=(\d*)-(\d*)$/
+/** A song's audio never changes, so browsers may keep it for good. */
+const CACHE_CONTROL = 'public, max-age=31536000, immutable'
 
-/** The upstream Range to ask for: always a range, never the whole file. */
-const upstreamRange = (
-  maybeRequested: string | undefined,
-  maybeSize: Option.Option<number>,
-): string => {
-  const match = maybeRequested === undefined ? null : RANGE.exec(maybeRequested)
-  if (match !== null && (match[1] !== '' || match[2] !== '')) {
-    return `bytes=${match[1]}-${match[2]}`
+type ByteRange = Readonly<{ start: number; end: number }>
+
+/**
+ * The bytes a Range header asks for, clamped to the file. `None` means no
+ * usable range (send the whole file); `Some(None)` means it cannot be met.
+ */
+const requestedBytes = (
+  header: string | undefined,
+  size: number,
+): Option.Option<Option.Option<ByteRange>> => {
+  const match = header === undefined ? null : RANGE.exec(header)
+  if (match === null) {
+    return Option.none()
   }
-  return Option.match(maybeSize, {
-    onNone: () => 'bytes=0-',
-    onSome: size => `bytes=0-${size - 1}`,
-  })
+  const first = match[1] ?? ''
+  const last = match[2] ?? ''
+  if (first === '' && last === '') {
+    return Option.none()
+  }
+  const start = first === '' ? Math.max(0, size - Number(last)) : Number(first)
+  const end =
+    first === '' || last === '' ? size - 1 : Math.min(Number(last), size - 1)
+  return Option.some(
+    start <= end && start < size ? Option.some({ start, end }) : Option.none(),
+  )
 }
 
-const PASSED_HEADERS = ['content-length', 'content-range', 'last-modified']
-
-const fetchUpstream = (videoId: string, audio: ResolvedAudio, range: string) =>
-  Effect.tryPromise({
-    try: signal =>
-      fetch(audio.url, {
-        headers: { ...audio.headers, range, 'accept-encoding': 'identity' },
-        signal,
-      }),
-    catch: cause =>
-      new AudioUnavailableError({
-        videoId,
-        message:
-          cause instanceof Error ? cause.message : 'YouTube did not answer',
-      }),
-  })
-
-const isExpired = (response: Response) =>
-  response.status === 403 || response.status === 410
-
-/** `GET /audio/:videoId`: the song's AAC audio, with byte-range support. */
+/** `GET /audio/:videoId`: the song's AAC audio from the disk cache, with byte ranges. */
 export const AudioRoutes = HttpRouter.use(router =>
   Effect.gen(function* () {
-    const audioSource = yield* AudioSource
-    yield* router.add('GET', '/audio/:videoId', relay(audioSource))
+    const store = yield* AudioStore
+    yield* router.add('GET', '/audio/:videoId', serveSong(store))
   }),
 )
 
-const relay = (audioSource: AudioSource['Service']) =>
+const serveSong = (store: AudioStore['Service']) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
     const params = yield* HttpRouter.params
@@ -211,51 +196,48 @@ const relay = (audioSource: AudioSource['Service']) =>
     if (!VIDEO_ID.test(videoId)) {
       return HttpServerResponse.text('Not a video id', { status: 400 })
     }
-    const requestedRange = request.headers['range']
-
-    const attempt = Effect.gen(function* () {
-      const audio = yield* audioSource.resolve(videoId)
-      const range = upstreamRange(requestedRange, audio.maybeSize)
-      return yield* fetchUpstream(videoId, audio, range)
-    })
-
-    const upstream = yield* attempt.pipe(
-      Effect.flatMap(response =>
-        isExpired(response)
-          ? Effect.andThen(audioSource.invalidate(videoId), attempt)
-          : Effect.succeed(response),
-      ),
+    const maybeSong = yield* store.ensure(videoId).pipe(
       Effect.tapError(error =>
-        Effect.logWarning('Audio relay failed', videoId, error),
+        Effect.logWarning('Audio unavailable', videoId, error.message),
       ),
       Effect.option,
     )
-
-    return Option.match(upstream, {
+    if (Option.isNone(maybeSong)) {
+      return HttpServerResponse.text('Audio unavailable', { status: 502 })
+    }
+    const { path, size } = maybeSong.value
+    const headers = {
+      'accept-ranges': 'bytes',
+      'cache-control': CACHE_CONTROL,
+    }
+    const unavailable = Effect.orElseSucceed(() =>
+      HttpServerResponse.text('Audio unavailable', { status: 502 }),
+    )
+    return yield* Option.match(requestedBytes(request.headers['range'], size), {
       onNone: () =>
-        HttpServerResponse.text('Audio unavailable', { status: 502 }),
-      onSome: response => {
-        if (!response.ok) {
-          return HttpServerResponse.text('Audio unavailable', {
-            status: response.status === 416 ? 416 : 502,
-          })
-        }
-        const headers = new Headers({
-          'content-type': 'audio/mp4',
-          'accept-ranges': 'bytes',
-          'cache-control': 'private, max-age=3600',
-        })
-        for (const name of PASSED_HEADERS) {
-          const value = response.headers.get(name)
-          if (value !== null) headers.set(name, value)
-        }
-        // Answer a plain request with 200, even though YouTube was asked for
-        // a range of the whole file.
-        const status = requestedRange === undefined ? 200 : response.status
-        if (status === 200) headers.delete('content-range')
-        return HttpServerResponse.fromWeb(
-          new Response(response.body, { status, headers }),
-        )
-      },
+        HttpServerResponse.file(path, {
+          contentType: 'audio/mp4',
+          headers,
+        }).pipe(unavailable),
+      onSome: Option.match({
+        onNone: () =>
+          Effect.succeed(
+            HttpServerResponse.empty({
+              status: 416,
+              headers: { 'content-range': `bytes */${size}` },
+            }),
+          ),
+        onSome: ({ start, end }) =>
+          HttpServerResponse.file(path, {
+            status: 206,
+            contentType: 'audio/mp4',
+            headers: {
+              ...headers,
+              'content-range': `bytes ${start}-${end}/${size}`,
+            },
+            offset: start,
+            bytesToRead: end - start + 1,
+          }).pipe(unavailable),
+      }),
     })
   })

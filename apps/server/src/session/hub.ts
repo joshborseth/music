@@ -14,7 +14,7 @@ import type { Socket } from 'effect/socket'
 
 import { Session } from '@music/shared'
 
-import { AudioSource } from '../audio.ts'
+import { AudioStore } from '../audioStore.ts'
 import {
   type Model,
   type Outcome,
@@ -68,7 +68,7 @@ const textDecoder = new TextDecoder()
 export const SessionHubLive = Layer.effect(SessionHub)(
   Effect.gen(function* () {
     const waker = yield* TvWaker
-    const audioSource = yield* AudioSource
+    const audioStore = yield* AudioStore
     const lock = yield* Semaphore.make(1)
     const timers = yield* FiberMap.make<string>()
     const hubScope = yield* Scope.Scope
@@ -131,7 +131,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     )
 
     const warmUpcoming = Effect.suspend(() =>
-      audioSource.warm(upcomingVideoIds(model)),
+      audioStore.warm(upcomingVideoIds(model)),
     )
 
     /** Run one transition under the lock and carry out what it asks for. */

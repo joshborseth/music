@@ -19,7 +19,10 @@ import { AppRoute } from '../route'
 import { update } from '../update'
 import {
   LoadPhoneAudio,
+  PrefetchSongs,
+  SeekPhoneAudio,
   SendToSession,
+  SetPhoneAudioPlaying,
   StopPhoneAudio,
   UpdateMediaSession,
 } from './command'
@@ -98,11 +101,12 @@ describe('playing on this phone', () => {
       }),
       Command.expectExact(
         LoadPhoneAudio({
-          src: '/audio/dQw4w9WgXcQ',
+          videoId: 'dQw4w9WgXcQ',
           startSeconds: 32,
           isPlaying: true,
         }),
         mediaSession,
+        PrefetchSongs({ videoIds: [] }),
       ),
       Command.resolve(
         LoadPhoneAudio,
@@ -112,6 +116,7 @@ describe('playing on this phone', () => {
         UpdateMediaSession,
         Message.CompletedUpdateMediaSession(),
       ),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
     )
   })
 
@@ -122,7 +127,12 @@ describe('playing on this phone', () => {
         modifyFields(connectedModel, {
           phoneAudio: () =>
             PhoneAudio.Loaded({
-              entry: { entryId: 'e0', seekSeq: 1, isPlaying: true },
+              entry: {
+                entryId: 'e0',
+                seekSeq: 1,
+                isPlaying: true,
+                isBuffering: false,
+              },
             }),
         }),
       ),
@@ -148,13 +158,80 @@ describe('playing on this phone', () => {
         modifyFields(connectedModel, {
           phoneAudio: () =>
             PhoneAudio.Loaded({
-              entry: { entryId: 'e0', seekSeq: 1, isPlaying: true },
+              entry: {
+                entryId: 'e0',
+                seekSeq: 1,
+                isPlaying: true,
+                isBuffering: false,
+              },
             }),
         }),
       ),
       message(Message.EndedPhoneAudio()),
       Command.expectExact(
         SendToSession({ message: { _tag: 'TrackEnded', entryId: 'e0' } }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+})
+
+const playingHere = (seekSeq: number): Model =>
+  modifyFields(connectedModel, {
+    maybeSession: () =>
+      Option.some({ state: sessionState(PHONE_ID, seekSeq), clockOffsetMs: 0 }),
+    phoneAudio: () =>
+      PhoneAudio.Loaded({
+        entry: { entryId: 'e0', seekSeq, isPlaying: true, isBuffering: false },
+      }),
+    phoneAudioSeconds: () => 40,
+    now: () => SERVER_NOW,
+  })
+
+describe('controlling playback on this phone', () => {
+  test('a seek jumps within the loaded song instead of reloading it', () => {
+    story(
+      update,
+      given(playingHere(1)),
+      message(Message.ChangedSeekPosition({ seconds: 90 })),
+      model(model => {
+        expect(model.phoneAudioSeconds).toBe(90)
+      }),
+      Command.expectExact(
+        SeekPhoneAudio({ seconds: 90 }),
+        SendToSession({ message: { _tag: 'Seek', positionSeconds: 90 } }),
+      ),
+      Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      message(
+        Message.ReceivedSessionState({
+          state: { ...sessionState(PHONE_ID, 2), positionSeconds: 90 },
+          serverNow: SERVER_NOW,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      Command.expectExact(PrefetchSongs({ videoIds: [] })),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+    )
+  })
+
+  test('pausing stops the audio before the server answers', () => {
+    story(
+      update,
+      given(playingHere(1)),
+      message(Message.ClickedTogglePlayback()),
+      model(model => {
+        expect(
+          Option.exists(model.maybeSession, ({ state }) => !state.playing),
+        ).toBe(true)
+      }),
+      Command.expectExact(
+        SetPhoneAudioPlaying({ isPlaying: false }),
+        SendToSession({ message: { _tag: 'Pause' } }),
+      ),
+      Command.resolve(
+        SetPhoneAudioPlaying,
+        Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
       ),
       Command.resolve(SendToSession, Message.CompletedSendToSession()),
     )

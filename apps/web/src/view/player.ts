@@ -2,10 +2,13 @@ import { Array, Option, pipe } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
   ChevronDown,
+  LoaderCircle,
   Monitor,
   Music,
   Pause,
   Play,
+  RotateCcw,
+  RotateCw,
   SkipBack,
   SkipForward,
   Smartphone,
@@ -21,27 +24,24 @@ import { Session } from '@music/shared'
 import { Message } from '../message'
 import { Model } from '../model'
 import {
+  SKIP_SECONDS,
   type SessionSnapshot,
   activeDevice,
   currentEntry,
   loadedEntry,
-  sessionPosition,
   upcomingEntries,
 } from '../playback/domain'
+import { displayedPosition } from '../playback/position'
 import { formatDuration } from './shared'
 
 // POSITION
 
-/** The phone's own clock when it plays, otherwise the session's. */
-const displayPosition = (model: Model, snapshot: SessionSnapshot): number => {
-  const isPlayingHere = Option.exists(
+/** The phone has asked for audio and is still waiting for it. */
+const isBuffering = (model: Model): boolean =>
+  Option.exists(
     loadedEntry(model.phoneAudio),
-    ({ entryId }) => entryId === snapshot.state.currentEntryId,
+    entry => entry.isPlaying && entry.isBuffering,
   )
-  return isPlayingHere
-    ? model.phoneAudioSeconds
-    : sessionPosition(snapshot, model.now)
-}
 
 const deviceIcon = (device: Session.Device, isThisDevice: boolean) => {
   if (device.kind === 'Tv') {
@@ -97,8 +97,19 @@ const artwork = (
     }),
   )
 
+const playPauseIcon = (isPlaying: boolean, isLoading: boolean) => {
+  if (isLoading) {
+    return LoaderCircle
+  } else if (isPlaying) {
+    return Pause
+  } else {
+    return Play
+  }
+}
+
 const playPauseButton = (
   isPlaying: boolean,
+  isLoading: boolean,
   size: 'icon-lg' | 'icon',
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -110,7 +121,11 @@ const playPauseButton = (
       className: size === 'icon' ? 'rounded-full' : 'size-16 rounded-full',
     },
     [
-      icon(h, isPlaying ? Pause : Play, size === 'icon' ? 'size-5' : 'size-7'),
+      icon(
+        h,
+        playPauseIcon(isPlaying, isLoading),
+        cn(size === 'icon' ? 'size-5' : 'size-7', isLoading && 'animate-spin'),
+      ),
       h.span([h.Class('sr-only')], [isPlaying ? 'Pause' : 'Play']),
     ],
     h,
@@ -127,7 +142,9 @@ const miniPlayer = (
   const where = whereText(model, snapshot)
   const duration = entry.track.durationSeconds ?? 0
   const progress =
-    duration > 0 ? Math.min(1, displayPosition(model, snapshot) / duration) : 0
+    duration > 0
+      ? Math.min(1, displayedPosition(model, snapshot) / duration)
+      : 0
   return h.div(
     [
       h.Class(
@@ -171,7 +188,12 @@ const miniPlayer = (
               ),
             ],
           ),
-          playPauseButton(snapshot.state.playing, 'icon', h),
+          playPauseButton(
+            snapshot.state.playing,
+            isBuffering(model),
+            'icon',
+            h,
+          ),
           button(
             {
               onClick: Message.ClickedNextTrack(),
@@ -200,9 +222,9 @@ const seekBar = (
   h: HtmlBuilder<Message>,
 ): Html => {
   const duration = entry.track.durationSeconds ?? 0
-  const position = Math.min(displayPosition(model, snapshot), duration)
+  const position = Math.min(displayedPosition(model, snapshot), duration)
   return h.div(
-    [h.Class('flex flex-col gap-1')],
+    [h.Class('flex flex-col gap-1.5')],
     [
       h.input([
         h.Type('range'),
@@ -211,10 +233,13 @@ const seekBar = (
         h.Max(duration.toString()),
         h.Step('1'),
         h.Value(Math.floor(position).toString()),
+        h.OnInput(value =>
+          Message.UpdatedScrubPosition({ seconds: Number(value) }),
+        ),
         h.OnChange(value =>
           Message.ChangedSeekPosition({ seconds: Number(value) }),
         ),
-        h.Class('accent-primary w-full'),
+        h.Class('accent-primary h-6 w-full cursor-pointer touch-none'),
       ]),
       h.div(
         [
@@ -224,47 +249,56 @@ const seekBar = (
         ],
         [
           h.span([], [formatDuration(Math.floor(position))]),
-          h.span([], [formatDuration(duration)]),
+          h.span(
+            [],
+            [`-${formatDuration(Math.max(0, Math.ceil(duration - position)))}`],
+          ),
         ],
       ),
     ],
   )
 }
 
+const transportButton = (
+  onClick: Message,
+  iconNode: typeof SkipBack,
+  label: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  button(
+    {
+      onClick,
+      variant: 'ghost',
+      size: 'icon-lg',
+      className: 'size-12 rounded-full',
+    },
+    [icon(h, iconNode, 'size-6'), h.span([h.Class('sr-only')], [label])],
+    h,
+  )
+
 const transportControls = (
+  model: Model,
   snapshot: SessionSnapshot,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
-    [h.Class('flex items-center justify-center gap-6')],
+    [h.Class('flex items-center justify-between px-2')],
     [
-      button(
-        {
-          onClick: Message.ClickedPreviousTrack(),
-          variant: 'ghost',
-          size: 'icon-lg',
-          className: 'size-12 rounded-full',
-        },
-        [
-          icon(h, SkipBack, 'size-6'),
-          h.span([h.Class('sr-only')], ['Previous']),
-        ],
+      transportButton(Message.ClickedPreviousTrack(), SkipBack, 'Previous', h),
+      transportButton(
+        Message.ClickedSkipBy({ seconds: -SKIP_SECONDS }),
+        RotateCcw,
+        `Back ${SKIP_SECONDS} seconds`,
         h,
       ),
-      playPauseButton(snapshot.state.playing, 'icon-lg', h),
-      button(
-        {
-          onClick: Message.ClickedNextTrack(),
-          variant: 'ghost',
-          size: 'icon-lg',
-          className: 'size-12 rounded-full',
-        },
-        [
-          icon(h, SkipForward, 'size-6'),
-          h.span([h.Class('sr-only')], ['Next']),
-        ],
+      playPauseButton(snapshot.state.playing, isBuffering(model), 'icon-lg', h),
+      transportButton(
+        Message.ClickedSkipBy({ seconds: SKIP_SECONDS }),
+        RotateCw,
+        `Forward ${SKIP_SECONDS} seconds`,
         h,
       ),
+      transportButton(Message.ClickedNextTrack(), SkipForward, 'Next', h),
     ],
   )
 
@@ -458,7 +492,14 @@ const playerSheet = (
               h.div([h.Class('size-9')]),
             ],
           ),
-          artwork(entry.track, 'aspect-square w-full shadow-lg', h),
+          artwork(
+            entry.track,
+            cn(
+              'aspect-square w-full shadow-xl transition-transform duration-300',
+              snapshot.state.playing ? 'scale-100' : 'scale-90',
+            ),
+            h,
+          ),
           h.div(
             [h.Class('flex flex-col gap-1')],
             [
@@ -473,7 +514,7 @@ const playerSheet = (
             ],
           ),
           seekBar(model, snapshot, entry, h),
-          transportControls(snapshot, h),
+          transportControls(model, snapshot, h),
           blockedAudioPrompt(model, h),
           devicePicker(model, snapshot, h),
           queueList(snapshot, h),

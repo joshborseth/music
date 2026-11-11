@@ -402,8 +402,13 @@ export const update = (model: Model, message: Message) =>
     ClickedNextTrack: () => Playback.sendCommand(model, { _tag: 'Next' }),
     ClickedPreviousTrack: () =>
       Playback.sendCommand(model, { _tag: 'Previous' }),
-    ChangedSeekPosition: ({ seconds }) =>
-      Playback.sendCommand(model, { _tag: 'Seek', positionSeconds: seconds }),
+    ChangedSeekPosition: ({ seconds }) => Playback.seekTo(model, seconds),
+    UpdatedScrubPosition: ({ seconds }) => Playback.scrub(model, seconds),
+    ClickedSkipBy: ({ seconds }) => Playback.skipBy(model, seconds),
+    ChangedPhoneAudioBuffering: ({ isBuffering }) =>
+      Playback.changePhoneAudioBuffering(model, isBuffering),
+    CompletedSeekPhoneAudio: () => ({ model }),
+    CompletedPrefetchSongs: () => ({ model }),
     ClickedDevice: ({ deviceId }) => Playback.clickDevice(model, deviceId),
     ClickedQueueEntry: ({ entryId }) =>
       Playback.sendCommand(model, { _tag: 'SkipTo', entryId }),

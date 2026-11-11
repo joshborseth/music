@@ -33,6 +33,8 @@ export const LoadedEntry = Schema.Struct({
   entryId: Schema.String,
   seekSeq: Schema.Number,
   isPlaying: Schema.Boolean,
+  /** Waiting for audio data: show that it is loading. */
+  isBuffering: Schema.Boolean,
 })
 export type LoadedEntry = typeof LoadedEntry.Type
 
@@ -64,6 +66,15 @@ export type MediaKey = typeof MediaKey.Type
 
 /** Where this device's session identity is kept between visits. */
 export const DEVICE_ID_KEY = 'music:device-id'
+
+/** Songs the phone downloads ahead of the current one. */
+export const PREFETCH_COUNT = 2
+
+/** A server seek this close to where the phone already is needs no jump. */
+export const SEEK_TOLERANCE_SECONDS = 1.5
+
+/** How far the skip buttons jump. */
+export const SKIP_SECONDS = 15
 
 /** How often the playing device reports its position to the server. */
 export const PROGRESS_INTERVAL_MS = 1000
@@ -144,4 +155,5 @@ export const initialPlaybackModel = {
   now: 0,
   playerSheet: PlayerSheet.Closed(),
   maybeNotice: Option.none<string>(),
+  maybeScrubSeconds: Option.none<number>(),
 }

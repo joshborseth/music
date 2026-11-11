@@ -36,5 +36,7 @@ export const Model = Schema.Struct({
   now: Schema.Number,
   playerSheet: PlayerSheet,
   maybeNotice: Schema.Option(Schema.String),
+  /** Where the seek bar is being dragged to, before it is let go. */
+  maybeScrubSeconds: Schema.Option(Schema.Number),
 })
 export type Model = typeof Model.Type

@@ -83,45 +83,69 @@ type PhoneAudioMessage =
   | typeof Message.UpdatedPhoneAudioTime.Type
   | typeof Message.EndedPhoneAudio.Type
   | typeof Message.FailedPhoneAudio.Type
+  | typeof Message.ChangedPhoneAudioBuffering.Type
 
-const streamPhoneAudioEvents = (audio: HTMLAudioElement) =>
-  Stream.callback<'TimeUpdate' | 'Ended' | 'Error'>(queue =>
-    Effect.acquireRelease(
-      Effect.sync(() => {
-        const handleTimeUpdate = () => Queue.offerUnsafe(queue, 'TimeUpdate')
-        const handleEnded = () => Queue.offerUnsafe(queue, 'Ended')
-        const handleError = () => Queue.offerUnsafe(queue, 'Error')
-        audio.addEventListener('timeupdate', handleTimeUpdate)
-        audio.addEventListener('ended', handleEnded)
-        audio.addEventListener('error', handleError)
-        return { handleTimeUpdate, handleEnded, handleError }
-      }),
-      ({ handleTimeUpdate, handleEnded, handleError }) =>
-        Effect.sync(() => {
-          audio.removeEventListener('timeupdate', handleTimeUpdate)
-          audio.removeEventListener('ended', handleEnded)
-          audio.removeEventListener('error', handleError)
-        }),
-    ).pipe(Effect.flatMap(() => Effect.never)),
-  ).pipe(
-    Stream.mapEffect((event): Effect.Effect<PhoneAudioMessage> => {
-      if (event === 'Ended') {
-        return Effect.succeed(Message.EndedPhoneAudio())
-      } else if (event === 'Error') {
-        return Effect.succeed(
+/** The audio element events the player listens to. */
+const PhoneAudioEvent = Schema.Literals([
+  'timeupdate',
+  'ended',
+  'error',
+  'waiting',
+  'playing',
+])
+type PhoneAudioEvent = typeof PhoneAudioEvent.Type
+
+const toPhoneAudioMessage =
+  (audio: HTMLAudioElement) =>
+  (event: PhoneAudioEvent): Effect.Effect<PhoneAudioMessage> =>
+    Match.value(event).pipe(
+      Match.withReturnType<Effect.Effect<PhoneAudioMessage>>(),
+      Match.when('ended', () => Effect.succeed(Message.EndedPhoneAudio())),
+      Match.when('error', () =>
+        Effect.succeed(
           Message.FailedPhoneAudio({
             error: audio.error?.message ?? 'The song could not be played',
           }),
-        )
-      } else {
-        return Clock.currentTimeMillis.pipe(
+        ),
+      ),
+      Match.when('waiting', () =>
+        Effect.succeed(
+          Message.ChangedPhoneAudioBuffering({ isBuffering: true }),
+        ),
+      ),
+      Match.when('playing', () =>
+        Effect.succeed(
+          Message.ChangedPhoneAudioBuffering({ isBuffering: false }),
+        ),
+      ),
+      Match.when('timeupdate', () =>
+        Clock.currentTimeMillis.pipe(
           Effect.map(at =>
             Message.UpdatedPhoneAudioTime({ seconds: audio.currentTime, at }),
           ),
-        )
-      }
-    }),
-  )
+        ),
+      ),
+      Match.exhaustive,
+    )
+
+const streamPhoneAudioEvents = (audio: HTMLAudioElement) =>
+  Stream.callback<PhoneAudioEvent>(queue =>
+    Effect.acquireRelease(
+      Effect.sync(() =>
+        Array.map(PhoneAudioEvent.literals, name => {
+          const handle = () => Queue.offerUnsafe(queue, name)
+          audio.addEventListener(name, handle)
+          return { name, handle }
+        }),
+      ),
+      listeners =>
+        Effect.sync(() =>
+          Array.forEach(listeners, ({ name, handle }) =>
+            audio.removeEventListener(name, handle),
+          ),
+        ),
+    ).pipe(Effect.flatMap(() => Effect.never)),
+  ).pipe(Stream.mapEffect(toPhoneAudioMessage(audio)))
 
 const MEDIA_SESSION_ACTIONS: ReadonlyArray<
   readonly [MediaKey, MediaSessionAction]

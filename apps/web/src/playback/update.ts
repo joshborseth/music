@@ -8,6 +8,8 @@ import type { Message } from '../message'
 import type { Model } from '../model'
 import {
   LoadPhoneAudio,
+  PrefetchSongs,
+  SeekPhoneAudio,
   SendToSession,
   SetPhoneAudioPlaying,
   StopPhoneAudio,
@@ -18,15 +20,19 @@ import {
 } from './command'
 import {
   Connection,
-  type LoadedEntry,
   type MediaKey,
+  PREFETCH_COUNT,
   PROGRESS_INTERVAL_MS,
   PhoneAudio,
   PlayerSheet,
+  SEEK_TOLERANCE_SECONDS,
+  type SessionSnapshot,
   currentEntry,
   loadedEntry,
   sessionPosition,
+  upcomingEntries,
 } from './domain'
+import { displayedPosition } from './position'
 import { toQueueTrack } from './queueTrack'
 import type { PlaybackServices } from './resource'
 
@@ -91,51 +97,76 @@ const reconcilePhoneAudio = (model: Model): PlaybackReturn => {
         : { model },
     onSome: ({ snapshot, entry }) => {
       const { state } = snapshot
-      const isSameLoad = Option.exists(
+      const target = sessionPosition(snapshot, model.now)
+      const prefetch = PrefetchSongs({
+        videoIds: Array.map(
+          Array.take(upcomingEntries(state), PREFETCH_COUNT),
+          upcoming => upcoming.track.videoId,
+        ),
+      })
+      const maybeSameEntry = Option.filter(
         maybeLoaded,
-        loaded =>
-          loaded.entryId === entry.entryId && loaded.seekSeq === state.seekSeq,
+        loaded => loaded.entryId === entry.entryId,
       )
-      const nextLoaded: LoadedEntry = {
-        entryId: entry.entryId,
-        seekSeq: state.seekSeq,
-        isPlaying: state.playing,
-      }
 
-      if (isSameLoad) {
-        const isAlreadyInStep = Option.exists(
-          maybeLoaded,
-          loaded => loaded.isPlaying === state.playing,
-        )
-        return isAlreadyInStep
-          ? { model }
-          : {
-              model: withPhoneAudio(
-                model,
-                PhoneAudio.Loaded({ entry: nextLoaded }),
-              ),
-              commands: [
-                SetPhoneAudioPlaying({ isPlaying: state.playing }),
-                updateMediaSession(entry, state.playing),
-              ],
-            }
-      }
-
-      const startSeconds = sessionPosition(snapshot, model.now)
-      return {
-        model: modifyFields(model, {
-          phoneAudio: () => PhoneAudio.Loaded({ entry: nextLoaded }),
-          phoneAudioSeconds: () => startSeconds,
-        }),
-        commands: [
-          LoadPhoneAudio({
-            src: Session.audioPath(entry.track.videoId),
-            startSeconds,
-            isPlaying: state.playing,
+      return Option.match(maybeSameEntry, {
+        onNone: () => ({
+          model: modifyFields(model, {
+            phoneAudio: () =>
+              PhoneAudio.Loaded({
+                entry: {
+                  entryId: entry.entryId,
+                  seekSeq: state.seekSeq,
+                  isPlaying: state.playing,
+                  isBuffering: state.playing,
+                },
+              }),
+            phoneAudioSeconds: () => target,
           }),
-          updateMediaSession(entry, state.playing),
-        ],
-      }
+          commands: [
+            LoadPhoneAudio({
+              videoId: entry.track.videoId,
+              startSeconds: target,
+              isPlaying: state.playing,
+            }),
+            updateMediaSession(entry, state.playing),
+            prefetch,
+          ],
+        }),
+        onSome: loaded => {
+          const isNewSeek = loaded.seekSeq !== state.seekSeq
+          const isPlayingChanged = loaded.isPlaying !== state.playing
+          if (!isNewSeek && !isPlayingChanged) {
+            return { model }
+          }
+          const needsJump =
+            isNewSeek &&
+            Math.abs(model.phoneAudioSeconds - target) > SEEK_TOLERANCE_SECONDS
+          return {
+            model: modifyFields(model, {
+              phoneAudio: () =>
+                PhoneAudio.Loaded({
+                  entry: {
+                    ...loaded,
+                    seekSeq: state.seekSeq,
+                    isPlaying: state.playing,
+                  },
+                }),
+              phoneAudioSeconds: seconds => (needsJump ? target : seconds),
+            }),
+            commands: [
+              ...(needsJump ? [SeekPhoneAudio({ seconds: target })] : []),
+              ...(isPlayingChanged
+                ? [
+                    SetPhoneAudioPlaying({ isPlaying: state.playing }),
+                    updateMediaSession(entry, state.playing),
+                  ]
+                : []),
+              prefetch,
+            ],
+          }
+        },
+      })
     },
   })
 }
@@ -222,7 +253,7 @@ export const completeStartPhoneAudio = (
       model: withPhoneAudio(
         model,
         isBlocked
-          ? PhoneAudio.Blocked({ entry })
+          ? PhoneAudio.Blocked({ entry: { ...entry, isBuffering: false } })
           : PhoneAudio.Loaded({ entry }),
       ),
     }),
@@ -281,10 +312,112 @@ export const failPhoneAudio = (model: Model, error: string): PlaybackReturn =>
 const unlockIfIdle = (model: Model) =>
   Option.isSome(loadedEntry(model.phoneAudio)) ? [] : [UnlockPhoneAudio()]
 
-const togglePlayback = (model: Model): PlaybackReturn =>
-  isPlaying(model)
-    ? { model, commands: [send({ _tag: 'Pause' })] }
-    : { model, commands: [...unlockIfIdle(model), send({ _tag: 'Resume' })] }
+/** Change the session locally before the server confirms, so taps feel instant. */
+const withOptimisticSession = (
+  model: Model,
+  change: (
+    state: Session.SessionState,
+    snapshot: SessionSnapshot,
+  ) => Session.SessionState,
+): Model =>
+  modifyFields(model, {
+    maybeSession: Option.map(snapshot =>
+      modifyFields(snapshot, { state: state => change(state, snapshot) }),
+    ),
+  })
+
+const togglePlayback = (model: Model): PlaybackReturn => {
+  const nextIsPlaying = !isPlaying(model)
+  const optimistic = withOptimisticSession(model, (state, snapshot) =>
+    modifyFields(state, {
+      playing: () => nextIsPlaying,
+      positionSeconds: () => sessionPosition(snapshot, model.now),
+      positionAt: () => model.now + snapshot.clockOffsetMs,
+    }),
+  )
+  const message: Session.ClientMessage = nextIsPlaying
+    ? { _tag: 'Resume' }
+    : { _tag: 'Pause' }
+  return Option.match(loadedEntry(model.phoneAudio), {
+    onNone: () => ({
+      model: optimistic,
+      commands: [...unlockIfIdle(model), send(message)],
+    }),
+    onSome: entry => ({
+      model: withPhoneAudio(
+        optimistic,
+        PhoneAudio.Loaded({
+          entry: { ...entry, isPlaying: nextIsPlaying },
+        }),
+      ),
+      commands: [
+        SetPhoneAudioPlaying({ isPlaying: nextIsPlaying }),
+        send(message),
+      ],
+    }),
+  })
+}
+
+/** Jump to a position: locally right away, and on the server. */
+export const seekTo = (model: Model, seconds: number): PlaybackReturn =>
+  Option.match(
+    Option.flatMap(model.maybeSession, ({ state }) => currentEntry(state)),
+    {
+      onNone: () => ({ model }),
+      onSome: entry => {
+        const duration = entry.track.durationSeconds ?? Number.POSITIVE_INFINITY
+        const target = Math.min(Math.max(0, seconds), Math.max(0, duration - 1))
+        const optimistic = modifyFields(
+          withOptimisticSession(model, (state, snapshot) =>
+            modifyFields(state, {
+              positionSeconds: () => target,
+              positionAt: () => model.now + snapshot.clockOffsetMs,
+            }),
+          ),
+          {
+            phoneAudioSeconds: () => target,
+            maybeScrubSeconds: () => Option.none(),
+          },
+        )
+        return {
+          model: optimistic,
+          commands: [
+            ...(Option.isSome(loadedEntry(model.phoneAudio))
+              ? [SeekPhoneAudio({ seconds: target })]
+              : []),
+            send({ _tag: 'Seek', positionSeconds: target }),
+          ],
+        }
+      },
+    },
+  )
+
+export const skipBy = (model: Model, seconds: number): PlaybackReturn =>
+  Option.match(model.maybeSession, {
+    onNone: () => ({ model }),
+    onSome: snapshot =>
+      seekTo(model, displayedPosition(model, snapshot) + seconds),
+  })
+
+export const scrub = (model: Model, seconds: number): PlaybackReturn => ({
+  model: modifyFields(model, { maybeScrubSeconds: () => Option.some(seconds) }),
+})
+
+export const changePhoneAudioBuffering = (
+  model: Model,
+  isBuffering: boolean,
+): PlaybackReturn =>
+  PhoneAudio.match(model.phoneAudio, {
+    Unavailable: () => ({ model }),
+    Idle: () => ({ model }),
+    Loaded: ({ entry }) => ({
+      model: withPhoneAudio(
+        model,
+        PhoneAudio.Loaded({ entry: { ...entry, isBuffering } }),
+      ),
+    }),
+    Blocked: () => ({ model }),
+  })
 
 export const clickTogglePlayback = togglePlayback
 
