@@ -2,15 +2,20 @@
 
 # Music
 
-Search YouTube Music on your phone and play it on the phone or on the TV. The phone app is a PWA; the TV app is a native Android TV app written in Rust. Every device shares one queue, and the phone works as the TV's remote.
+Browse YouTube Music on your phone and play it on the phone or on the TV. The phone app is a PWA built to feel like a native music app; the TV app is a native Android TV app written in Rust. Every device shares one queue, and the phone works as the TV's remote.
 
 ## What it does
 
+- **Three tabs:** Home, Search, and Library, like a native app. Each tab remembers the page it was on. Tapping the open tab again goes back to its top.
+- **Home:** what you played lately, then YouTube Music's home feed: quick picks, new releases, and playlists. The server keeps the feed for 15 minutes.
 - **Search** songs, artists, or albums. Results update as you type, and your last eight searches are kept on the device.
+- **Library:** songs played and albums, artists, and playlists opened on this device, newest first.
+- **Tap a song to play it.** Its list plays from there. The ⋯ button opens a sheet to play it next, add it to the queue, or go to its album, artist, or lyrics.
+- **Playlist page:** cover, title, description, and every song, with Play and Shuffle.
 - **Song page:** artwork, artists, album, length, view count, lyrics, and the "up next" list YouTube Music would play after it.
 - **Artist page:** photo, bio, top songs, albums, singles and EPs, and similar artists.
 - **Album page:** cover, artists, release kind and year, total length, description, and the numbered tracklist.
-- **Playback:** play a song, an album, or an artist's top songs, or add them to the queue to play next or last. The player shows the queue and the devices you can play on.
+- **Playback:** play or shuffle an album, a playlist, or an artist's top songs, or add songs to the queue to play next or last. A mini player floats above the tabs. Tap it for the full player: artwork over a blurred backdrop, a seek bar, lyrics, the queue, and the devices you can play on. Pull it down to close it.
 - **Play on the TV:** pick the TV in the player. If the TV is off, the server turns it on and opens the TV app. Playback moves over at the same position, and the phone stays in control. The phone can then lock or go offline; the TV keeps playing.
 - **TV app:** a now-playing screen with artwork, progress, and what comes next. The remote's center button plays and pauses, left and right skip 10 seconds, and up and down go to the previous or next song.
 

@@ -1,74 +1,76 @@
 import { Array, Option } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
+import { User } from 'lucide'
 
+import { icon } from '@/lib/icons'
 import { type ArtistDetails } from '@music/shared'
 
 import { Message } from '../message'
-import { Model } from '../model'
 import { artistQuery } from '../query'
+import { type PageModel } from './page'
 import {
-  ArtworkShape,
   albumCard,
   artistCard,
-  artworkImage,
+  artworkUrl,
+  expandableText,
   loadingPage,
   playActions,
-  playFrom,
   remote,
-  rowList,
+  section,
   shelf,
-  songRow,
+  songSection,
 } from './shared'
 
-const HERO_ARTWORK_WIDTH = 192
+const HERO_IMAGE_WIDTH = 480
 
-const description = (
-  maybeDescription: Option.Option<string>,
-  h: HtmlBuilder<Message>,
-): Html =>
-  Option.match(maybeDescription, {
-    onNone: () => h.empty,
-    onSome: text =>
-      h.details(
-        [h.Class('group text-muted-foreground text-sm')],
-        [
-          h.summary(
+/** A photo that runs edge to edge under the status bar, name on top of it. */
+const artistHero = (details: ArtistDetails, h: HtmlBuilder<Message>): Html =>
+  h.header(
+    [
+      h.Class(
+        'relative flex aspect-[4/5] max-h-[68vh] w-full items-end overflow-hidden bg-muted',
+      ),
+    ],
+    [
+      Option.match(artworkUrl(details.artist.artwork, HERO_IMAGE_WIDTH), {
+        onNone: () =>
+          h.span(
             [
               h.Class(
-                'line-clamp-3 cursor-pointer list-none group-open:line-clamp-none [&::-webkit-details-marker]:hidden',
+                'text-muted-foreground absolute inset-0 flex items-center justify-center',
               ),
             ],
-            [text],
+            [icon(h, User, 'size-24')],
+          ),
+        onSome: url =>
+          h.img([
+            h.Src(url),
+            h.Alt(''),
+            h.Loading('eager'),
+            h.Decoding('async'),
+            h.Referrerpolicy('no-referrer'),
+            h.Class('absolute inset-0 size-full object-cover'),
+          ]),
+      }),
+      h.div([
+        h.Class(
+          'absolute inset-0 bg-gradient-to-b from-black/30 via-transparent via-40% to-black/70',
+        ),
+      ]),
+      h.h1(
+        [
+          h.Class(
+            'relative px-4 pb-4 text-[40px] leading-[1.05] font-extrabold tracking-tight text-white drop-shadow-lg text-balance',
           ),
         ],
-      ),
-  })
-
-const artistHeader = (details: ArtistDetails, h: HtmlBuilder<Message>): Html =>
-  h.header(
-    [h.Class('flex flex-col items-center gap-3 text-center')],
-    [
-      artworkImage(
-        {
-          artwork: details.artist.artwork,
-          displayWidth: HERO_ARTWORK_WIDTH,
-          shape: ArtworkShape.Round,
-          className: 'size-48 shadow-lg',
-          isEager: true,
-        },
-        h,
-      ),
-      h.h1(
-        [h.Class('text-3xl font-bold tracking-tight')],
         [details.artist.name],
       ),
-      description(details.maybeDescription, h),
     ],
   )
 
-/** The artist page: photo, bio, top songs, releases, similar artists. */
+/** The artist page: photo, top songs, releases, similar artists, and bio. */
 export const artistView = (
-  model: Model,
+  model: PageModel,
   artistId: string,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -78,30 +80,18 @@ export const artistView = (
       onLoading: () => loadingPage(h),
       onData: details =>
         h.div(
-          [h.Class('flex flex-col gap-8')],
+          [h.Class('flex flex-col gap-8 pb-6')],
           [
-            artistHeader(details, h),
-            Array.isReadonlyArrayNonEmpty(details.topSongs)
-              ? playActions(details.topSongs, h)
-              : h.empty,
-            rowList(
+            h.div(
+              [h.Class('flex flex-col gap-5')],
+              [artistHero(details, h), playActions(details.topSongs, h)],
+            ),
+            songSection(
               {
                 title: 'Top songs',
-                items: details.topSongs,
-                toKey: song => song.videoId,
-                toRow: (song, h) =>
-                  songRow(
-                    {
-                      song,
-                      maybeTrackNumber: Option.none(),
-                      isAlbumHidden: false,
-                      swipe: model.swipe,
-                      maybeOnPlay: Option.some(
-                        playFrom(details.topSongs, song.videoId),
-                      ),
-                    },
-                    h,
-                  ),
+                songs: details.topSongs,
+                playing: model.playing,
+                swipe: model.swipe,
               },
               h,
             ),
@@ -132,6 +122,17 @@ export const artistView = (
               },
               h,
             ),
+            Option.match(details.maybeDescription, {
+              onNone: () => h.empty,
+              onSome: text => section('About', [expandableText(text, h)], h),
+            }),
+            Array.isReadonlyArrayEmpty(details.topSongs) &&
+            Array.isReadonlyArrayEmpty(details.albums)
+              ? h.p(
+                  [h.Class('text-muted-foreground px-4 text-[15px]')],
+                  ['YouTube Music has no songs listed for this artist.'],
+                )
+              : h.empty,
           ],
         ),
     },

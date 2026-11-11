@@ -49,6 +49,11 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
         youTubeMusic
           .getAlbum(albumId)
           .pipe(Effect.tap(details => prepare(details.tracks, 2, 3))),
+      getPlaylist: ({ playlistId }) =>
+        youTubeMusic
+          .getPlaylist(playlistId)
+          .pipe(Effect.tap(details => prepare(details.tracks, 2, 3))),
+      getHome: () => youTubeMusic.getHome(),
     }
   }),
 )

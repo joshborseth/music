@@ -1,12 +1,14 @@
-import { Array, Context, Effect, Layer, Option, pipe } from 'effect'
-import { Innertube, Log, YTNodes } from 'youtubei.js'
+import { Array, Context, Duration, Effect, Layer, Option, pipe } from 'effect'
+import { Innertube, Log, type YTMusic, YTNodes } from 'youtubei.js'
 
 import {
   type AlbumDetails,
   type AlbumSummary,
   type ArtistDetails,
   type ArtistSummary,
+  type HomeFeed,
   MusicNotFoundError,
+  type PlaylistDetails,
   type Song,
   type SongDetails,
   YouTubeMusicError,
@@ -16,11 +18,13 @@ import {
   albumFromListItem,
   artistFromListItem,
   filterSome,
+  homeShelfFromCarousel,
   songFromListItem,
   songFromPlaylistPanelVideo,
   toAlbumDetails,
   toArtistDetails,
   toLyrics,
+  toPlaylistDetails,
 } from './mapping.ts'
 
 /**
@@ -66,6 +70,11 @@ const orNotFound =
 
 type SearchType = 'song' | 'artist' | 'album'
 
+type HomeFeedPage = YTMusic.HomeFeed
+
+/** The home feed changes slowly, and fetching it takes three round trips. */
+const HOME_CACHE_TTL = Duration.minutes(15)
+
 export interface YouTubeMusicShape {
   readonly searchSongs: (
     query: string,
@@ -92,6 +101,10 @@ export interface YouTubeMusicShape {
   readonly getAlbum: (
     albumId: string,
   ) => Effect.Effect<AlbumDetails, MusicNotFoundError | YouTubeMusicError>
+  readonly getPlaylist: (
+    playlistId: string,
+  ) => Effect.Effect<PlaylistDetails, MusicNotFoundError | YouTubeMusicError>
+  readonly getHome: () => Effect.Effect<HomeFeed, YouTubeMusicError>
 }
 
 /** Read-only access to the YouTube Music catalog, mapped to shared Schemas. */
@@ -208,6 +221,48 @@ const make = Effect.gen(function* () {
     return yield* orNotFound(albumId)(toAlbumDetails(albumId, page))
   })
 
+  const getPlaylist = Effect.fn('YouTubeMusic.getPlaylist')(function* (
+    playlistId: string,
+  ) {
+    const page = yield* lookUp(playlistId, () => music.getPlaylist(playlistId))
+    return yield* orNotFound(playlistId)(
+      toPlaylistDetails(playlistId, { header: page.header, items: page.items }),
+    )
+  })
+
+  /** The next page of the home feed, or nothing when it fails or ends. */
+  const nextHomePage = (feed: HomeFeedPage) =>
+    feed.has_continuation
+      ? callYouTube(() => feed.getContinuation()).pipe(
+          Effect.map(Option.some),
+          Effect.orElseSucceed(() => Option.none<HomeFeedPage>()),
+        )
+      : Effect.succeed(Option.none<HomeFeedPage>())
+
+  const fetchHome = Effect.fn('YouTubeMusic.getHome')(function* () {
+    const first = yield* callYouTube(() => music.getHomeFeed())
+    const second = yield* nextHomePage(first)
+    const third = yield* Option.match(second, {
+      onNone: () => Effect.succeed(Option.none<HomeFeedPage>()),
+      onSome: nextHomePage,
+    })
+    const pages = [first, ...Option.toArray(second), ...Option.toArray(third)]
+    const carousels = filterSome(
+      Array.flatMap(pages, page => page.sections ?? []),
+      section =>
+        section.is(YTNodes.MusicCarouselShelf)
+          ? Option.some(section.as(YTNodes.MusicCarouselShelf))
+          : Option.none(),
+    )
+    return { shelves: filterSome(carousels, homeShelfFromCarousel) }
+  })
+
+  const [cachedHome, forgetHome] = yield* Effect.cachedInvalidateWithTTL(
+    fetchHome(),
+    HOME_CACHE_TTL,
+  )
+  const getHome = () => cachedHome.pipe(Effect.tapError(() => forgetHome))
+
   return YouTubeMusic.of({
     searchSongs,
     searchArtists,
@@ -216,6 +271,8 @@ const make = Effect.gen(function* () {
     getUpNext,
     getArtist,
     getAlbum,
+    getPlaylist,
+    getHome,
   })
 })
 

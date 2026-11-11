@@ -6,7 +6,9 @@ import {
   AlbumSummary,
   ArtistDetails,
   ArtistSummary,
+  HomeFeed,
   MusicNotFoundError,
+  PlaylistDetails,
   Song,
   SongDetails,
   YouTubeMusicError,
@@ -52,6 +54,17 @@ export const getAlbumRpc = Rpc.make('getAlbum', {
   error: LookupError,
 })
 
+export const getPlaylistRpc = Rpc.make('getPlaylist', {
+  payload: Schema.Struct({ playlistId: Schema.String }),
+  success: PlaylistDetails,
+  error: LookupError,
+})
+
+export const getHomeRpc = Rpc.make('getHome', {
+  success: HomeFeed,
+  error: YouTubeMusicError,
+})
+
 /** Every read-only call the web app makes to the music server. */
 export const MusicRpcs = RpcGroup.make(
   searchSongsRpc,
@@ -60,5 +73,7 @@ export const MusicRpcs = RpcGroup.make(
   getSongRpc,
   getArtistRpc,
   getAlbumRpc,
+  getPlaylistRpc,
+  getHomeRpc,
 )
 export type MusicRpcs = typeof MusicRpcs

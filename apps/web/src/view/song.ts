@@ -1,12 +1,12 @@
 import { Option } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
 
-import { badge } from '@/components/ui/badge'
 import { type SongDetails } from '@music/shared'
 
 import { Message } from '../message'
-import { Model } from '../model'
 import { songQuery } from '../query'
+import { artworkGlow } from './collection'
+import { type PageModel } from './page'
 import {
   ArtworkShape,
   albumLink,
@@ -14,36 +14,48 @@ import {
   artworkImage,
   formatDuration,
   formatViews,
+  joinDetails,
   loadingPage,
   playActions,
-  playFrom,
   remote,
-  rowList,
   section,
-  songRow,
+  songSection,
 } from './shared'
 
-const HERO_ARTWORK_WIDTH = 288
+const HERO_ARTWORK_WIDTH = 256
 
-const lyricsSection = (details: SongDetails, h: HtmlBuilder<Message>): Html =>
+/** Lyrics in a card, selectable so a line can be copied. */
+export const lyricsCard = (
+  details: SongDetails,
+  h: HtmlBuilder<Message>,
+): Html =>
   Option.match(details.maybeLyrics, {
     onNone: () => h.empty,
     onSome: lyrics =>
       section(
         'Lyrics',
         [
-          h.p(
-            [h.Class('text-base leading-relaxed whitespace-pre-line')],
-            [lyrics.text],
-          ),
-          Option.match(lyrics.maybeSource, {
-            onNone: () => h.empty,
-            onSome: source =>
+          h.div(
+            [h.Class('bg-card mx-4 flex flex-col gap-3 rounded-2xl p-5')],
+            [
               h.p(
-                [h.Class('text-muted-foreground text-xs')],
-                [`Lyrics from ${source}`],
+                [
+                  h.Class(
+                    'text-[17px] leading-relaxed font-medium whitespace-pre-line select-text',
+                  ),
+                ],
+                [lyrics.text],
               ),
-          }),
+              Option.match(lyrics.maybeSource, {
+                onNone: () => h.empty,
+                onSome: source =>
+                  h.p(
+                    [h.Class('text-muted-foreground text-xs')],
+                    [`Lyrics from ${source}`],
+                  ),
+              }),
+            ],
+          ),
         ],
         h,
       ),
@@ -52,41 +64,56 @@ const lyricsSection = (details: SongDetails, h: HtmlBuilder<Message>): Html =>
 const songHeader = (details: SongDetails, h: HtmlBuilder<Message>): Html => {
   const { song } = details
   return h.header(
-    [h.Class('flex flex-col items-center gap-3 text-center')],
+    [
+      h.Class(
+        'flex flex-col items-center gap-1 px-6 pt-[calc(var(--safe-top)+3.75rem)] text-center',
+      ),
+    ],
     [
       artworkImage(
         {
           artwork: song.artwork,
           displayWidth: HERO_ARTWORK_WIDTH,
-          shape: ArtworkShape.Square,
-          className: 'size-72 max-w-full shadow-lg',
+          shape: ArtworkShape.Card,
+          className:
+            'mb-4 aspect-square w-[64vw] max-w-64 shadow-2xl shadow-black/30',
           isEager: true,
         },
         h,
       ),
-      h.h1([h.Class('text-2xl font-bold tracking-tight')], [song.title]),
-      h.p([h.Class('text-base font-medium')], artistLinks(song.artists, h)),
+      h.h1(
+        [
+          h.Class(
+            'text-[22px] leading-tight font-bold tracking-tight text-balance',
+          ),
+        ],
+        [song.title],
+      ),
+      h.p(
+        [h.Class('text-primary text-[17px] font-medium')],
+        artistLinks(song.artists, 'active:opacity-60', h),
+      ),
       Option.match(song.maybeAlbum, {
         onNone: () => h.empty,
         onSome: album =>
           h.p(
-            [h.Class('text-muted-foreground text-sm')],
+            [h.Class('text-muted-foreground text-[15px]')],
             ['From ', albumLink(album, h)],
           ),
       }),
-      h.div(
-        [h.Class('flex flex-wrap justify-center gap-2')],
+      h.p(
+        [h.Class('text-muted-foreground text-[13px] font-medium')],
         [
-          Option.match(song.maybeDurationSeconds, {
-            onNone: () => h.empty,
-            onSome: seconds =>
-              badge({ variant: 'secondary' }, [formatDuration(seconds)], h),
-          }),
-          Option.match(details.maybeViewCount, {
-            onNone: () => h.empty,
-            onSome: viewCount =>
-              badge({ variant: 'secondary' }, [formatViews(viewCount)], h),
-          }),
+          joinDetails([
+            Option.match(song.maybeDurationSeconds, {
+              onNone: () => '',
+              onSome: formatDuration,
+            }),
+            Option.match(details.maybeViewCount, {
+              onNone: () => '',
+              onSome: formatViews,
+            }),
+          ]),
         ],
       ),
     ],
@@ -95,7 +122,7 @@ const songHeader = (details: SongDetails, h: HtmlBuilder<Message>): Html => {
 
 /** The song page: artwork, credits, lyrics, and songs that play next. */
 export const songView = (
-  model: Model,
+  model: PageModel,
   videoId: string,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -105,29 +132,23 @@ export const songView = (
       onLoading: () => loadingPage(h),
       onData: details =>
         h.div(
-          [h.Class('flex flex-col gap-8')],
+          [h.Class('relative isolate flex flex-col gap-8 pb-6')],
           [
-            songHeader(details, h),
-            playActions([details.song, ...details.relatedSongs], h),
-            lyricsSection(details, h),
-            rowList(
+            artworkGlow(details.song.artwork, h),
+            h.div(
+              [h.Class('flex flex-col gap-5')],
+              [
+                songHeader(details, h),
+                playActions([details.song, ...details.relatedSongs], h),
+              ],
+            ),
+            lyricsCard(details, h),
+            songSection(
               {
                 title: 'Up next',
-                items: details.relatedSongs,
-                toKey: song => song.videoId,
-                toRow: (song, h) =>
-                  songRow(
-                    {
-                      song,
-                      maybeTrackNumber: Option.none(),
-                      isAlbumHidden: false,
-                      swipe: model.swipe,
-                      maybeOnPlay: Option.some(
-                        playFrom(details.relatedSongs, song.videoId),
-                      ),
-                    },
-                    h,
-                  ),
+                songs: details.relatedSongs,
+                playing: model.playing,
+                swipe: model.swipe,
               },
               h,
             ),

@@ -60,6 +60,8 @@ type SwipeableRowConfig = Readonly<{
   maybeRightReveal: Option.Option<SwipeReveal>
   /** Shown while the row slides left, uncovering its right edge. */
   maybeLeftReveal: Option.Option<SwipeReveal>
+  /** What covers the reveal while the row slides. Defaults to the page color. */
+  surfaceClass?: string
 }>
 
 const clampOffset = (config: SwipeableRowConfig, deltaX: number): number =>
@@ -136,7 +138,9 @@ export const swipeableRow = (
           onSwipeStart(config.target, h),
           h.Class(
             cn(
-              'bg-background relative touch-pan-y',
+              'relative touch-pan-y',
+              Option.isSome(config.maybeSwipe) &&
+                (config.surfaceClass ?? 'bg-background'),
               swipeTransitionClass(config.maybeSwipe),
             ),
           ),

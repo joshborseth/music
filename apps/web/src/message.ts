@@ -5,6 +5,7 @@ import { UrlRequest } from 'foldkit/navigation'
 
 import { Session, Song } from '@music/shared'
 
+import { LibraryItem } from './library'
 import { MediaKey } from './playback/domain'
 import { SwipeTarget } from './playback/swipe'
 import {
@@ -12,18 +13,37 @@ import {
   albumSearchQuery,
   artistQuery,
   artistSearchQuery,
+  homeQuery,
+  playlistQuery,
   songQuery,
   songSearchQuery,
 } from './query'
-import { SearchKind } from './route'
+import { SearchKind, Tab } from './route'
+import { PlayerPanel } from './sheet'
 
 export const Message = defineMessageUnion({
-  CompletedNavigateInternal: {},
+  CompletedNavigateInternal: {
+    fromUrl: Schema.String,
+    scrollTop: Schema.Number,
+  },
   CompletedLoadExternal: {},
   CompletedNavigateBack: {},
   CompletedReplaceSearchUrl: {},
   CompletedScrollToTop: {},
+  CompletedRestoreScroll: {},
+  CompletedFollowSheetDrags: {},
+  CompletedTakeOverScrollRestoration: {},
   CompletedFocusSearchInput: {},
+  CompletedBlurSearchInput: {},
+  CompletedLockScroll: {},
+  CompletedUnlockScroll: {},
+  CompletedLoadLibrary: {
+    recentlyPlayed: Schema.Array(Session.QueueTrack),
+    recentlyViewed: Schema.Array(LibraryItem),
+  },
+  CompletedSaveRecentlyPlayed: {},
+  CompletedSaveRecentlyViewed: {},
+  CompletedShuffleSongs: { songs: Schema.Array(Song) },
   CompletedWaitBeforeSearch: { query: Schema.String },
   CompletedLoadRecentSearches: { recentSearches: Schema.Array(Schema.String) },
   CompletedSaveRecentSearches: {},
@@ -36,6 +56,15 @@ export const Message = defineMessageUnion({
   ClickedRecentSearch: { query: Schema.String },
   ClickedClearRecentSearches: {},
   ClickedBack: {},
+  ClickedTab: { tab: Tab },
+  ClickedClearLibrary: {},
+  ClickedShuffleSongs: { songs: Schema.Array(Song) },
+  ClickedSongActions: { song: Song },
+  ClickedDevices: {},
+  ClickedCloseSheet: {},
+  SwipedDownSheet: {},
+  SwipedDownPlayer: {},
+  SelectedPlayerPanel: { panel: PlayerPanel },
   ClickedRetry: {},
   GotSongSearchMessage: { message: songSearchQuery.Message },
   GotArtistSearchMessage: { message: artistSearchQuery.Message },
@@ -43,6 +72,8 @@ export const Message = defineMessageUnion({
   GotSongMessage: { message: songQuery.Message },
   GotArtistMessage: { message: artistQuery.Message },
   GotAlbumMessage: { message: albumQuery.Message },
+  GotPlaylistMessage: { message: playlistQuery.Message },
+  GotHomeMessage: { message: homeQuery.Message },
 
   CompletedLoadDeviceIdentity: {
     deviceId: Schema.String,

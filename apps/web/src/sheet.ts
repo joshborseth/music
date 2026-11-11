@@ -1,0 +1,26 @@
+import { Schema } from 'effect'
+import { defineTaggedUnion } from 'foldkit/schema'
+
+import { Song } from '@music/shared'
+
+/** What an action sheet offers. */
+export const SheetContent = defineTaggedUnion({
+  SongActions: { song: Song },
+  Devices: {},
+})
+export type SheetContent = typeof SheetContent.Type
+
+/**
+ * The action sheet that slides up from the bottom. A dismissed sheet keeps its
+ * content so it can slide away showing what it showed.
+ */
+export const ActionSheet = defineTaggedUnion({
+  Hidden: {},
+  Shown: { content: SheetContent },
+  Dismissed: { content: SheetContent },
+})
+export type ActionSheet = typeof ActionSheet.Type
+
+/** Which view fills the middle of the full player. */
+export const PlayerPanel = Schema.Literals(['Artwork', 'Lyrics', 'Queue'])
+export type PlayerPanel = typeof PlayerPanel.Type

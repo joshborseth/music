@@ -4,6 +4,7 @@ import { modifyFields } from 'foldkit/struct'
 
 import { Session, type Song } from '@music/shared'
 
+import { LockScroll, UnlockScroll } from '../command'
 import type { Message } from '../message'
 import type { Model } from '../model'
 import {
@@ -322,7 +323,7 @@ export const failPhoneAudio = (model: Model, error: string): PlaybackReturn =>
 // REMOTE CONTROL
 
 /** Taps that might make this phone the player also unlock its audio. */
-const unlockIfIdle = (model: Model) =>
+export const unlockIfIdle = (model: Model) =>
   Option.isSome(loadedEntry(model.phoneAudio)) ? [] : [UnlockPhoneAudio()]
 
 /** Change the session locally before the server confirms, so taps feel instant. */
@@ -446,7 +447,8 @@ export const pressMediaKey = (model: Model, key: MediaKey): PlaybackReturn => {
   }
 }
 
-export const clickPlaySongs = (
+/** Replace the queue with `songs` and play from `startIndex`. */
+export const playSongs = (
   model: Model,
   songs: ReadonlyArray<Song>,
   startIndex: number,
@@ -455,7 +457,6 @@ export const clickPlaySongs = (
     ? {
         model,
         commands: [
-          ...unlockIfIdle(model),
           send({
             _tag: 'PlayQueue',
             tracks: Array.map(songs, toQueueTrack),
@@ -464,6 +465,18 @@ export const clickPlaySongs = (
         ],
       }
     : { model }
+
+export const clickPlaySongs = (
+  model: Model,
+  songs: ReadonlyArray<Song>,
+  startIndex: number,
+): PlaybackReturn => {
+  const play = playSongs(model, songs, startIndex)
+  return {
+    model: play.model,
+    commands: [...unlockIfIdle(model), ...(play.commands ?? [])],
+  }
+}
 
 export const clickEnqueueSongs = (
   model: Model,
@@ -506,13 +519,22 @@ export const sendCommand = (
   message: Session.ClientMessage,
 ): PlaybackReturn => ({ model, commands: [send(message)] })
 
-export const openPlayer = (model: Model): PlaybackReturn => ({
-  model: modifyFields(model, { playerSheet: () => PlayerSheet.Open() }),
-})
+/** The page underneath stays put while the player covers it. */
+export const openPlayer = (model: Model): PlaybackReturn =>
+  model.playerSheet._tag === 'Open'
+    ? { model }
+    : {
+        model: modifyFields(model, { playerSheet: () => PlayerSheet.Open() }),
+        commands: [LockScroll()],
+      }
 
-export const closePlayer = (model: Model): PlaybackReturn => ({
-  model: modifyFields(model, { playerSheet: () => PlayerSheet.Closed() }),
-})
+export const closePlayer = (model: Model): PlaybackReturn =>
+  model.playerSheet._tag === 'Open'
+    ? {
+        model: modifyFields(model, { playerSheet: () => PlayerSheet.Closed() }),
+        commands: [UnlockScroll()],
+      }
+    : { model }
 
 export const startBlockedAudio = (model: Model): PlaybackReturn => ({
   model,

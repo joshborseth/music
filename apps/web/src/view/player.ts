@@ -1,8 +1,11 @@
 import { Array, Option, pipe } from 'effect'
+import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
   ChevronDown,
+  ListMusic,
   LoaderCircle,
+  MessageSquareQuote,
   Monitor,
   Music,
   Pause,
@@ -12,18 +15,19 @@ import {
   SkipBack,
   SkipForward,
   Smartphone,
+  Speaker,
   Trash2,
   Tv,
   X,
 } from 'lucide'
 
-import { button } from '@/components/ui/button'
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { Session } from '@music/shared'
 
 import { Message } from '../message'
 import { Model } from '../model'
+import { DragToDismiss } from '../mount'
 import {
   SKIP_SECONDS,
   type SessionSnapshot,
@@ -33,11 +37,13 @@ import {
   upcomingEntries,
 } from '../playback/domain'
 import { displayedPosition } from '../playback/position'
-import { SwipeTarget, type TrackingSwipe, swipeOn } from '../playback/swipe'
+import { SwipeTarget, swipeOn } from '../playback/swipe'
+import { songQuery } from '../query'
+import { type PlayerPanel } from '../sheet'
 import { formatDuration } from './shared'
 import { onSwipeStart, swipeTransitionClass, swipeableRow } from './swipe'
 
-// POSITION
+// STATUS
 
 /** The phone has asked for audio and is still waiting for it. */
 const isBuffering = (model: Model): boolean =>
@@ -46,27 +52,40 @@ const isBuffering = (model: Model): boolean =>
     entry => entry.isPlaying && entry.isBuffering,
   )
 
-const deviceIcon = (device: Session.Device, isThisDevice: boolean) => {
+const isThisDevice = (model: Model, device: Session.Device): boolean =>
+  Option.exists(model.maybeIdentity, ({ deviceId }) => deviceId === device.id)
+
+export const deviceIcon = (device: Session.Device, isThisOne: boolean) => {
   if (device.kind === 'Tv') {
     return Tv
-  } else if (isThisDevice) {
+  } else if (isThisOne) {
     return Smartphone
   } else {
     return Monitor
   }
 }
 
-const whereText = (model: Model, snapshot: SessionSnapshot): string =>
-  Option.match(activeDevice(snapshot.state), {
-    onNone: () => '',
-    onSome: device =>
-      Option.exists(
-        model.maybeIdentity,
-        ({ deviceId }) => deviceId === device.id,
-      )
-        ? ''
-        : `Playing on ${device.name}`,
-  })
+/** Where the music is coming out, when it is not this phone. */
+const elsewhereName = (
+  model: Model,
+  snapshot: SessionSnapshot,
+): Option.Option<string> =>
+  pipe(
+    activeDevice(snapshot.state),
+    Option.filter(device => !isThisDevice(model, device)),
+    Option.map(({ name }) => name),
+  )
+
+const progressFraction = (
+  model: Model,
+  snapshot: SessionSnapshot,
+  entry: Session.QueueEntry,
+): number => {
+  const duration = entry.track.durationSeconds ?? 0
+  return duration > 0
+    ? Math.min(1, displayedPosition(model, snapshot) / duration)
+    : 0
+}
 
 // ARTWORK
 
@@ -83,7 +102,7 @@ const artwork = (
           [
             h.Class(
               cn(
-                'bg-muted text-muted-foreground flex shrink-0 items-center justify-center rounded-md',
+                'flex shrink-0 items-center justify-center bg-white/10 text-white/60',
                 className,
               ),
             ),
@@ -95,7 +114,7 @@ const artwork = (
           h.Src(url),
           h.Alt(''),
           h.Referrerpolicy('no-referrer'),
-          h.Class(cn('bg-muted shrink-0 rounded-md object-cover', className)),
+          h.Class(cn('shrink-0 object-cover', className)),
         ]),
     }),
   )
@@ -113,35 +132,40 @@ const playPauseIcon = (isPlaying: boolean, isLoading: boolean) => {
 const playPauseButton = (
   isPlaying: boolean,
   isLoading: boolean,
-  size: 'icon-lg' | 'icon',
+  config: Readonly<{ buttonClass: string; iconClass: string }>,
   h: HtmlBuilder<Message>,
 ): Html =>
-  button(
-    {
-      onClick: Message.ClickedTogglePlayback(),
-      variant: size === 'icon' ? 'ghost' : 'default',
-      size,
-      className: size === 'icon' ? 'rounded-full' : 'size-16 rounded-full',
-    },
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(Message.ClickedTogglePlayback()),
+      h.AriaLabel(isPlaying ? 'Pause' : 'Play'),
+      h.Class(
+        cn(
+          'flex shrink-0 items-center justify-center rounded-full transition-transform active:scale-90',
+          config.buttonClass,
+        ),
+      ),
+    ],
     [
       icon(
         h,
         playPauseIcon(isPlaying, isLoading),
-        cn(size === 'icon' ? 'size-5' : 'size-7', isLoading && 'animate-spin'),
+        cn(
+          config.iconClass,
+          isLoading ? 'animate-spin' : 'fill-current stroke-[1.5]',
+        ),
       ),
-      h.span([h.Class('sr-only')], [isPlaying ? 'Pause' : 'Play']),
     ],
-    h,
   )
 
 // MINI PLAYER
 
-/** How much of a finger's sideways travel the mini player follows. */
+/** How much of a finger's travel the mini player follows sideways. */
 const MINI_PLAYER_SWIPE_FOLLOW = 0.35
 
-/** How much of a finger's travel the full player follows, sideways and down. */
-const SHEET_SWIPE_FOLLOW_X = 0.35
-const SHEET_SWIPE_FOLLOW_Y = 0.55
+/** How much of a finger's travel the artwork follows sideways. */
+const ARTWORK_SWIPE_FOLLOW = 0.5
 
 /** How far a swipe goes before the mini player fades as far as it will. */
 const SWIPE_FADE_DISTANCE = 320
@@ -152,12 +176,11 @@ const miniPlayer = (
   entry: Session.QueueEntry,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const where = whereText(model, snapshot)
-  const duration = entry.track.durationSeconds ?? 0
-  const progress =
-    duration > 0
-      ? Math.min(1, displayedPosition(model, snapshot) / duration)
-      : 0
+  const subtitle = Option.match(elsewhereName(model, snapshot), {
+    onNone: () => entry.track.artists,
+    onSome: name => `Playing on ${name}`,
+  })
+  const progress = progressFraction(model, snapshot, entry)
   const maybeSwipe = swipeOn(
     model.swipe,
     target => target._tag === 'MiniPlayer',
@@ -168,26 +191,18 @@ const miniPlayer = (
   })
   return h.div(
     [
+      h.Style({ viewTransitionName: 'mini-player' }),
       onSwipeStart(SwipeTarget.MiniPlayer(), h),
       h.Class(
-        'bg-card/95 border-border fixed inset-x-0 bottom-0 z-20 mx-auto max-w-xl touch-pan-y overflow-hidden border-t backdrop-blur select-none pb-[env(safe-area-inset-bottom)]',
+        'fixed inset-x-2 bottom-[calc(var(--tab-bar-height)+var(--safe-bottom)+0.375rem)] z-20 touch-pan-y select-none',
       ),
     ],
     [
       h.div(
-        [h.Class('bg-muted h-0.5 w-full')],
-        [
-          h.div([
-            h.Class('bg-primary h-full'),
-            h.Style({ width: `${(progress * 100).toFixed(2)}%` }),
-          ]),
-        ],
-      ),
-      h.div(
         [
           h.Class(
             cn(
-              'flex items-center gap-3 px-3 py-2',
+              'bg-card/95 relative flex h-[var(--mini-player-height)] items-center gap-1 overflow-hidden rounded-2xl border pr-1.5 shadow-lg shadow-black/25 backdrop-blur-xl backdrop-saturate-150',
               swipeTransitionClass(maybeSwipe),
             ),
           ),
@@ -207,20 +222,35 @@ const miniPlayer = (
               h.Type('button'),
               h.OnClick(Message.ClickedOpenPlayer()),
               h.AriaLabel('Open player'),
-              h.Class('flex min-w-0 flex-1 items-center gap-3 text-left'),
+              h.Class(
+                'flex h-full min-w-0 flex-1 items-center gap-3 pl-2 text-left',
+              ),
             ],
             [
-              artwork(entry.track, 'size-11', h),
-              h.div(
-                [h.Class('min-w-0')],
+              artwork(entry.track, 'size-10 rounded-lg', h),
+              h.span(
+                [h.Class('flex min-w-0 flex-col')],
                 [
-                  h.p(
-                    [h.Class('line-clamp-1 text-sm font-medium')],
+                  h.span(
+                    [
+                      h.Class(
+                        'line-clamp-1 text-[15px] leading-tight font-medium',
+                      ),
+                    ],
                     [entry.track.title],
                   ),
-                  h.p(
-                    [h.Class('text-muted-foreground line-clamp-1 text-xs')],
-                    [where === '' ? entry.track.artists : where],
+                  h.span(
+                    [
+                      h.Class(
+                        cn(
+                          'line-clamp-1 text-[13px] leading-tight',
+                          Option.isSome(elsewhereName(model, snapshot))
+                            ? 'text-primary'
+                            : 'text-muted-foreground',
+                        ),
+                      ),
+                    ],
+                    [subtitle],
                   ),
                 ],
               ),
@@ -229,21 +259,28 @@ const miniPlayer = (
           playPauseButton(
             snapshot.state.playing,
             isBuffering(model),
-            'icon',
+            { buttonClass: 'size-11', iconClass: 'size-6' },
             h,
           ),
-          button(
-            {
-              onClick: Message.ClickedNextTrack(),
-              variant: 'ghost',
-              size: 'icon',
-              className: 'rounded-full',
-            },
+          h.button(
             [
-              icon(h, SkipForward, 'size-5'),
-              h.span([h.Class('sr-only')], ['Next']),
+              h.Type('button'),
+              h.OnClick(Message.ClickedNextTrack()),
+              h.AriaLabel('Next'),
+              h.Class(
+                'flex size-11 shrink-0 items-center justify-center rounded-full transition-transform active:scale-90',
+              ),
             ],
-            h,
+            [icon(h, SkipForward, 'size-6 fill-current stroke-[1.5]')],
+          ),
+          h.div(
+            [h.Class('absolute inset-x-3 bottom-0 h-[2px] rounded-full')],
+            [
+              h.div([
+                h.Class('bg-foreground/70 h-full rounded-full'),
+                h.Style({ width: `${(progress * 100).toFixed(2)}%` }),
+              ]),
+            ],
           ),
         ],
       ),
@@ -251,7 +288,7 @@ const miniPlayer = (
   )
 }
 
-// SHEET
+// FULL PLAYER
 
 const seekBar = (
   model: Model,
@@ -261,8 +298,9 @@ const seekBar = (
 ): Html => {
   const duration = entry.track.durationSeconds ?? 0
   const position = Math.min(displayedPosition(model, snapshot), duration)
+  const percent = duration > 0 ? (position / duration) * 100 : 0
   return h.div(
-    [h.Class('flex flex-col gap-1.5')],
+    [h.Class('flex flex-col'), h.DataAttribute('no-drag', '')],
     [
       h.input([
         h.Type('range'),
@@ -277,12 +315,13 @@ const seekBar = (
         h.OnChange(value =>
           Message.ChangedSeekPosition({ seconds: Number(value) }),
         ),
-        h.Class('accent-primary h-6 w-full cursor-pointer touch-none'),
+        h.Style({ '--progress': `${percent.toFixed(2)}%` }),
+        h.Class('seek-bar touch-none'),
       ]),
       h.div(
         [
           h.Class(
-            'text-muted-foreground flex justify-between text-xs tabular-nums',
+            'flex justify-between text-[11px] font-medium text-white/55 tabular-nums',
           ),
         ],
         [
@@ -301,17 +340,19 @@ const transportButton = (
   onClick: Message,
   iconNode: typeof SkipBack,
   label: string,
+  className: string,
   h: HtmlBuilder<Message>,
 ): Html =>
-  button(
-    {
-      onClick,
-      variant: 'ghost',
-      size: 'icon-lg',
-      className: 'size-12 rounded-full',
-    },
-    [icon(h, iconNode, 'size-6'), h.span([h.Class('sr-only')], [label])],
-    h,
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(onClick),
+      h.AriaLabel(label),
+      h.Class(
+        'flex size-14 items-center justify-center rounded-full transition-transform active:scale-90 active:bg-white/10',
+      ),
+    ],
+    [icon(h, iconNode, className)],
   )
 
 const transportControls = (
@@ -320,103 +361,222 @@ const transportControls = (
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
-    [h.Class('flex items-center justify-between px-2')],
+    [h.Class('flex items-center justify-between')],
     [
-      transportButton(Message.ClickedPreviousTrack(), SkipBack, 'Previous', h),
       transportButton(
         Message.ClickedSkipBy({ seconds: -SKIP_SECONDS }),
         RotateCcw,
         `Back ${SKIP_SECONDS} seconds`,
+        'size-6 text-white/60',
         h,
       ),
-      playPauseButton(snapshot.state.playing, isBuffering(model), 'icon-lg', h),
+      transportButton(
+        Message.ClickedPreviousTrack(),
+        SkipBack,
+        'Previous',
+        'size-9 fill-current stroke-[1.25]',
+        h,
+      ),
+      playPauseButton(
+        snapshot.state.playing,
+        isBuffering(model),
+        { buttonClass: 'size-20', iconClass: 'size-12' },
+        h,
+      ),
+      transportButton(
+        Message.ClickedNextTrack(),
+        SkipForward,
+        'Next',
+        'size-9 fill-current stroke-[1.25]',
+        h,
+      ),
       transportButton(
         Message.ClickedSkipBy({ seconds: SKIP_SECONDS }),
         RotateCw,
         `Forward ${SKIP_SECONDS} seconds`,
+        'size-6 text-white/60',
         h,
       ),
-      transportButton(Message.ClickedNextTrack(), SkipForward, 'Next', h),
     ],
   )
 
-const deviceStatus = (device: Session.Device, isActive: boolean): string => {
-  if (device.waking) {
-    return 'Turning on…'
-  } else if (!device.online) {
-    return 'Off: tap to turn on'
-  } else if (isActive) {
-    return 'Playing'
-  } else {
-    return ''
-  }
-}
+const blockedAudioPrompt = (model: Model, h: HtmlBuilder<Message>): Html =>
+  model.phoneAudio._tag === 'Blocked'
+    ? h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedStartBlockedAudio()),
+          h.Class(
+            'pressable flex h-11 items-center justify-center gap-2 rounded-full bg-white text-[15px] font-semibold text-black',
+          ),
+        ],
+        [icon(h, Play, 'size-4 fill-current'), 'Tap to start audio'],
+      )
+    : h.empty
 
-const devicePicker = (
-  model: Model,
-  snapshot: SessionSnapshot,
+const trackTitle = (
+  track: Session.QueueTrack,
+  isLarge: boolean,
   h: HtmlBuilder<Message>,
 ): Html =>
-  h.section(
-    [h.Class('flex flex-col gap-2')],
+  h.div(
+    [h.Class('flex min-w-0 flex-1 flex-col')],
     [
       h.h2(
-        [h.Class('text-muted-foreground text-xs font-semibold uppercase')],
-        ['Play on'],
+        [
+          h.Class(
+            cn(
+              'line-clamp-1 font-bold tracking-tight',
+              isLarge ? 'text-[22px] leading-tight' : 'text-[17px]',
+            ),
+          ),
+        ],
+        [track.title],
       ),
-      h.div(
-        [h.Class('flex flex-col gap-1')],
-        Array.map(snapshot.state.devices, device => {
-          const isThisDevice = Option.exists(
-            model.maybeIdentity,
-            ({ deviceId }) => deviceId === device.id,
-          )
-          const isActive = snapshot.state.activeDeviceId === device.id
-          const status = deviceStatus(device, isActive)
-          return h.keyed('button')(
-            device.id,
-            [
-              h.Type('button'),
-              h.OnClick(Message.ClickedDevice({ deviceId: device.id })),
-              h.AriaPressed(isActive ? 'true' : 'false'),
-              h.Class(
-                cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2 text-left',
-                  isActive ? 'bg-primary/10 text-primary' : 'hover:bg-muted',
-                ),
-              ),
-            ],
-            [
-              icon(h, deviceIcon(device, isThisDevice), 'size-5'),
-              h.span(
-                [h.Class('flex-1 text-sm font-medium')],
-                [isThisDevice ? `This ${device.name}` : device.name],
-              ),
-              h.span([h.Class('text-muted-foreground text-xs')], [status]),
-            ],
-          )
-        }),
+      h.p(
+        [
+          h.Class(
+            cn(
+              'line-clamp-1 text-white/65',
+              isLarge ? 'text-[17px]' : 'text-[15px]',
+            ),
+          ),
+        ],
+        [track.artists],
       ),
     ],
   )
 
-const queueList = (
+/**
+ * The big artwork. Swiping it sideways skips; pulling it down closes the
+ * player, which the whole sheet follows.
+ */
+const artworkPanel = (
+  model: Model,
+  snapshot: SessionSnapshot,
+  entry: Session.QueueEntry,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const maybeSwipe = swipeOn(
+    model.swipe,
+    target => target._tag === 'PlayerArtwork',
+  )
+  const swipeX = Option.match(maybeSwipe, {
+    onNone: () => 0,
+    onSome: swipe => (swipe.axis === 'Horizontal' ? swipe.deltaX : 0),
+  })
+  return h.div(
+    [
+      onSwipeStart(SwipeTarget.PlayerArtwork(), h),
+      h.Class(
+        cn(
+          'flex min-h-0 flex-1 touch-none items-center justify-center py-4 select-none',
+          swipeTransitionClass(maybeSwipe),
+        ),
+      ),
+      h.Style({
+        transform: `translateX(${swipeX * ARTWORK_SWIPE_FOLLOW}px)`,
+      }),
+    ],
+    [
+      artwork(
+        entry.track,
+        cn(
+          'player-artwork aspect-square w-full max-w-[min(100%,24rem,44vh)] rounded-2xl',
+          snapshot.state.playing
+            ? 'scale-100 shadow-2xl shadow-black/50'
+            : 'scale-[0.8] shadow-lg shadow-black/30',
+        ),
+        h,
+      ),
+    ],
+  )
+}
+
+const compactNowPlaying = (
+  entry: Session.QueueEntry,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex items-center gap-3 py-3')],
+    [
+      artwork(entry.track, 'size-14 rounded-lg shadow-md', h),
+      trackTitle(entry.track, false, h),
+    ],
+  )
+
+const scrollPanelClass =
+  'no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(transparent,black_1.5rem,black_calc(100%-1.5rem),transparent)]'
+
+const lyricsPanel = (
+  model: Model,
+  entry: Session.QueueEntry,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const message = (text: string) =>
+    h.p([h.Class('py-10 text-center text-[17px] text-white/60')], [text])
+  return h.div(
+    [h.DataAttribute('sheet-scroll', ''), h.Class(scrollPanelClass)],
+    [
+      AsyncData.matchData(
+        songQuery.read(model.songs, { videoId: entry.track.videoId }),
+        {
+          onEmpty: () =>
+            h.div(
+              [h.Class('flex justify-center py-10 text-white/60')],
+              [icon(h, LoaderCircle, 'size-6 animate-spin')],
+            ),
+          onFailure: () => message('Lyrics could not be loaded.'),
+          onData: details =>
+            Option.match(details.maybeLyrics, {
+              onNone: () => message('No lyrics for this song.'),
+              onSome: lyrics =>
+                h.div(
+                  [h.Class('flex flex-col gap-6 py-6')],
+                  [
+                    h.p(
+                      [
+                        h.Class(
+                          'text-[26px] leading-snug font-bold tracking-tight whitespace-pre-line text-white/90 select-text',
+                        ),
+                      ],
+                      [lyrics.text],
+                    ),
+                    Option.match(lyrics.maybeSource, {
+                      onNone: () => h.empty,
+                      onSome: source =>
+                        h.p(
+                          [h.Class('text-xs text-white/50')],
+                          [`Lyrics from ${source}`],
+                        ),
+                    }),
+                  ],
+                ),
+            }),
+        },
+      ),
+    ],
+  )
+}
+
+const queuePanel = (
   model: Model,
   snapshot: SessionSnapshot,
   h: HtmlBuilder<Message>,
 ): Html =>
-  Array.match(upcomingEntries(snapshot.state), {
-    onEmpty: () => h.empty,
-    onNonEmpty: entries =>
-      h.section(
-        [h.Class('flex flex-col gap-2')],
-        [
-          h.h2(
-            [h.Class('text-muted-foreground text-xs font-semibold uppercase')],
-            ['Up next'],
+  h.div(
+    [h.DataAttribute('sheet-scroll', ''), h.Class(scrollPanelClass)],
+    [
+      h.h3([h.Class('pt-4 pb-2 text-[17px] font-bold')], ['Playing next']),
+      Array.match(upcomingEntries(snapshot.state), {
+        onEmpty: () =>
+          h.p(
+            [h.Class('py-6 text-[15px] text-white/60')],
+            ['Nothing else is queued. Playback stops after this song.'],
           ),
+        onNonEmpty: entries =>
           h.ul(
-            [h.Class('flex flex-col')],
+            [h.Class('-mx-2 flex flex-col pb-4')],
             Array.map(entries, entry =>
               h.keyed('li')(
                 entry.entryId,
@@ -439,6 +599,7 @@ const queueList = (
                         icon: Trash2,
                         isDestructive: true,
                       }),
+                      surfaceClass: 'bg-neutral-800',
                     },
                     queueRow(entry, h),
                     h,
@@ -447,103 +608,140 @@ const queueList = (
               ),
             ),
           ),
-        ],
-      ),
-  })
+      }),
+    ],
+  )
 
+/** One upcoming song: tap to jump to it, or remove it. */
 const queueRow = (entry: Session.QueueEntry, h: HtmlBuilder<Message>): Html =>
   h.div(
-    [h.Class('flex items-center gap-1')],
+    [h.Class('flex items-center')],
     [
       h.button(
         [
           h.Type('button'),
           h.OnClick(Message.ClickedQueueEntry({ entryId: entry.entryId })),
           h.Class(
-            'hover:bg-muted flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left',
+            'flex min-w-0 flex-1 items-center gap-3 rounded-xl px-2 py-1.5 text-left active:bg-white/10',
           ),
         ],
         [
-          artwork(entry.track, 'size-10', h),
-          h.div(
-            [h.Class('min-w-0')],
+          artwork(entry.track, 'size-12 rounded-md', h),
+          h.span(
+            [h.Class('flex min-w-0 flex-col')],
             [
-              h.p([h.Class('line-clamp-1 text-sm')], [entry.track.title]),
-              h.p(
-                [h.Class('text-muted-foreground line-clamp-1 text-xs')],
+              h.span(
+                [h.Class('line-clamp-1 text-[15px] font-medium')],
+                [entry.track.title],
+              ),
+              h.span(
+                [h.Class('line-clamp-1 text-[13px] text-white/60')],
                 [entry.track.artists],
               ),
             ],
           ),
         ],
       ),
-      button(
-        {
-          onClick: Message.ClickedRemoveQueueEntry({
-            entryId: entry.entryId,
-          }),
-          variant: 'ghost',
-          size: 'icon',
-          className: 'rounded-full',
-        },
+      h.button(
         [
-          icon(h, X, 'size-4'),
-          h.span([h.Class('sr-only')], [`Remove ${entry.track.title}`]),
+          h.Type('button'),
+          h.OnClick(
+            Message.ClickedRemoveQueueEntry({
+              entryId: entry.entryId,
+            }),
+          ),
+          h.AriaLabel(`Remove ${entry.track.title}`),
+          h.Class(
+            'flex size-10 shrink-0 items-center justify-center rounded-full text-white/60 active:bg-white/10',
+          ),
         ],
-        h,
+        [icon(h, X, 'size-5')],
       ),
     ],
   )
 
-const blockedAudioPrompt = (model: Model, h: HtmlBuilder<Message>): Html =>
-  model.phoneAudio._tag === 'Blocked'
-    ? button(
-        {
-          onClick: Message.ClickedStartBlockedAudio(),
-          className: 'w-full',
-        },
-        [icon(h, Play, 'size-4'), 'Tap to start audio'],
-        h,
-      )
-    : h.empty
-
-const playerHeader = (where: string, h: HtmlBuilder<Message>): Html =>
-  h.div(
-    [h.Class('flex items-center justify-between')],
+const panelToggle = (
+  panel: PlayerPanel,
+  activePanel: PlayerPanel,
+  iconNode: typeof ListMusic,
+  label: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.button(
     [
-      button(
-        {
-          onClick: Message.ClickedClosePlayer(),
-          variant: 'ghost',
-          size: 'icon-lg',
-          className: 'rounded-full',
-        },
-        [
-          icon(h, ChevronDown, 'size-6'),
-          h.span([h.Class('sr-only')], ['Close player']),
-        ],
-        h,
+      h.Type('button'),
+      h.OnClick(Message.SelectedPlayerPanel({ panel })),
+      h.AriaLabel(label),
+      h.AriaPressed(panel === activePanel ? 'true' : 'false'),
+      h.Class(
+        cn(
+          'flex size-11 items-center justify-center rounded-full transition-colors active:scale-90',
+          panel === activePanel ? 'bg-white/90 text-black' : 'text-white/70',
+        ),
       ),
-      h.p(
-        [h.Class('text-muted-foreground text-xs font-medium')],
-        [where === '' ? 'Playing on this device' : where],
-      ),
-      h.div([h.Class('size-9')]),
     ],
+    [icon(h, iconNode, 'size-[22px]')],
   )
 
-/** The full player follows a swipe on its artwork: sideways to skip, down to close. */
-const sheetSwipeStyle = (maybeSwipe: Option.Option<TrackingSwipe>) =>
-  Option.match(maybeSwipe, {
-    onNone: () => ({ transform: 'translate(0px, 0px)' }),
-    onSome: swipe => {
-      const pullDown = swipe.axis === 'Vertical' ? Math.max(0, swipe.deltaY) : 0
-      const sideways = swipe.axis === 'Horizontal' ? swipe.deltaX : 0
-      return {
-        transform: `translate(${sideways * SHEET_SWIPE_FOLLOW_X}px, ${pullDown * SHEET_SWIPE_FOLLOW_Y}px)`,
-      }
-    },
-  })
+const deviceButton = (
+  model: Model,
+  snapshot: SessionSnapshot,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const maybeElsewhere = elsewhereName(model, snapshot)
+  return h.button(
+    [
+      h.Type('button'),
+      h.OnClick(Message.ClickedDevices()),
+      h.AriaLabel('Choose where to play'),
+      h.Class(
+        cn(
+          'flex h-11 min-w-0 items-center gap-2 rounded-full px-4 text-[13px] font-semibold active:bg-white/10',
+          Option.isSome(maybeElsewhere) ? 'text-primary' : 'text-white/70',
+        ),
+      ),
+    ],
+    [
+      icon(h, Speaker, 'size-5 shrink-0'),
+      h.span(
+        [h.Class('line-clamp-1')],
+        [Option.getOrElse(maybeElsewhere, () => 'This phone')],
+      ),
+    ],
+  )
+}
+
+const playerBackdrop = (
+  track: Session.QueueTrack,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [
+      h.AriaHidden(true),
+      h.Class(
+        'pointer-events-none absolute inset-0 overflow-hidden bg-neutral-900',
+      ),
+    ],
+    [
+      Option.match(Option.fromNullishOr(track.artworkUrl), {
+        onNone: () => h.empty,
+        onSome: url =>
+          h.img([
+            h.Src(url),
+            h.Alt(''),
+            h.Referrerpolicy('no-referrer'),
+            h.Class(
+              'absolute inset-0 size-full scale-[1.6] object-cover opacity-90 blur-[72px] saturate-[1.8]',
+            ),
+          ]),
+      }),
+      h.div([
+        h.Class(
+          'absolute inset-0 bg-gradient-to-b from-black/25 via-black/40 to-black/70',
+        ),
+      ]),
+    ],
+  )
 
 const playerSheet = (
   model: Model,
@@ -551,76 +749,78 @@ const playerSheet = (
   entry: Session.QueueEntry,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const where = whereText(model, snapshot)
-  const maybeSwipe = swipeOn(
-    model.swipe,
-    target => target._tag === 'PlayerArtwork',
-  )
+  const isOpen = model.playerSheet._tag === 'Open'
+  const panel = model.playerPanel
   return h.div(
     [
       h.Role('dialog'),
       h.AriaModal(true),
       h.AriaLabel('Player'),
+      h.AriaHidden(!isOpen),
+      h.Inert(!isOpen),
+      h.DataAttribute('state', isOpen ? 'open' : 'closed'),
+      h.OnMount(DragToDismiss({ sheet: 'Player' })),
       h.Class(
-        cn(
-          'bg-background fixed inset-0 z-30 overflow-y-auto overscroll-contain pt-[env(safe-area-inset-top)] pb-[max(env(safe-area-inset-bottom),2rem)]',
-          swipeTransitionClass(maybeSwipe),
-          Option.isSome(maybeSwipe) && 'rounded-t-3xl shadow-2xl',
-        ),
+        'sheet fixed inset-0 z-40 flex flex-col overflow-hidden text-white',
       ),
-      h.Style(sheetSwipeStyle(maybeSwipe)),
     ],
     [
+      playerBackdrop(entry.track, h),
       h.div(
-        [h.Class('mx-auto flex w-full max-w-xl flex-col gap-6 px-6')],
+        [
+          h.Class(
+            'relative mx-auto flex h-full w-full max-w-xl flex-col px-6 pt-[calc(var(--safe-top)+0.25rem)] pb-[max(var(--safe-bottom),1rem)]',
+          ),
+        ],
         [
           h.div(
+            [h.Class('flex items-center justify-between')],
             [
-              onSwipeStart(SwipeTarget.PlayerArtwork(), h),
-              h.Class('flex touch-none flex-col gap-1 pt-2 select-none'),
-            ],
-            [
-              h.div([
+              h.button(
+                [
+                  h.Type('button'),
+                  h.OnClick(Message.ClickedClosePlayer()),
+                  h.AriaLabel('Close player'),
+                  h.Class(
+                    'flex size-10 items-center justify-center rounded-full text-white/80 active:bg-white/10',
+                  ),
+                ],
+                [icon(h, ChevronDown, 'size-7')],
+              ),
+              h.span([
                 h.AriaHidden(true),
-                h.Class('bg-muted-foreground/40 mx-auto h-1 w-10 rounded-full'),
+                h.Class('h-[5px] w-10 rounded-full bg-white/35'),
               ]),
-              playerHeader(where, h),
+              h.span([h.Class('size-10')]),
             ],
           ),
+          panel === 'Artwork'
+            ? artworkPanel(model, snapshot, entry, h)
+            : compactNowPlaying(entry, h),
+          panel === 'Lyrics' ? lyricsPanel(model, entry, h) : h.empty,
+          panel === 'Queue' ? queuePanel(model, snapshot, h) : h.empty,
           h.div(
+            [h.Class('flex flex-col gap-3 pt-2')],
             [
-              onSwipeStart(SwipeTarget.PlayerArtwork(), h),
-              h.Class('touch-none select-none'),
-            ],
-            [
-              artwork(
-                entry.track,
-                cn(
-                  'aspect-square w-full shadow-xl transition-transform duration-300',
-                  snapshot.state.playing ? 'scale-100' : 'scale-90',
-                ),
-                h,
+              panel === 'Artwork'
+                ? h.div(
+                    [h.Class('flex items-center')],
+                    [trackTitle(entry.track, true, h)],
+                  )
+                : h.empty,
+              seekBar(model, snapshot, entry, h),
+              transportControls(model, snapshot, h),
+              blockedAudioPrompt(model, h),
+              h.div(
+                [h.Class('flex items-center justify-between pt-1')],
+                [
+                  panelToggle('Lyrics', panel, MessageSquareQuote, 'Lyrics', h),
+                  deviceButton(model, snapshot, h),
+                  panelToggle('Queue', panel, ListMusic, 'Up next', h),
+                ],
               ),
             ],
           ),
-          h.div(
-            [h.Class('flex flex-col gap-1')],
-            [
-              h.h2(
-                [h.Class('text-xl font-bold tracking-tight')],
-                [entry.track.title],
-              ),
-              h.p(
-                [h.Class('text-muted-foreground text-sm')],
-                [entry.track.artists],
-              ),
-            ],
-          ),
-          seekBar(model, snapshot, entry, h),
-          transportControls(model, snapshot, h),
-          blockedAudioPrompt(model, h),
-          devicePicker(model, snapshot, h),
-          queueList(model, snapshot, h),
         ],
       ),
     ],
@@ -633,20 +833,29 @@ const noticeToast = (model: Model, h: HtmlBuilder<Message>): Html =>
   Option.match(model.maybeNotice, {
     onNone: () => h.empty,
     onSome: notice =>
-      h.button(
+      h.div(
         [
-          h.Type('button'),
-          h.Role('status'),
-          h.OnClick(Message.ClickedDismissNotice()),
           h.Class(
-            'bg-foreground text-background fixed inset-x-4 bottom-24 z-40 mx-auto max-w-sm rounded-full px-4 py-2 text-center text-sm shadow-lg',
+            'pointer-events-none fixed inset-x-0 bottom-[calc(var(--tab-bar-height)+var(--safe-bottom)+var(--mini-player-height)+1rem)] z-50 flex justify-center px-6',
           ),
         ],
-        [notice],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.Role('status'),
+              h.OnClick(Message.ClickedDismissNotice()),
+              h.Class(
+                'toast chrome pointer-events-auto rounded-full border px-4 py-2.5 text-[15px] font-medium shadow-xl',
+              ),
+            ],
+            [notice],
+          ),
+        ],
       ),
   })
 
-/** The mini player, the full player when open, and any notice. */
+/** The mini player, the full player, and any notice. */
 export const playerView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const maybeNowPlaying = Option.flatMap(model.maybeSession, snapshot =>
     Option.map(currentEntry(snapshot.state), entry => ({ snapshot, entry })),
@@ -657,9 +866,13 @@ export const playerView = (model: Model, h: HtmlBuilder<Message>): Html => {
       Option.match(maybeNowPlaying, {
         onNone: () => h.empty,
         onSome: ({ snapshot, entry }) =>
-          model.playerSheet._tag === 'Open'
-            ? playerSheet(model, snapshot, entry, h)
-            : miniPlayer(model, snapshot, entry, h),
+          h.div(
+            [],
+            [
+              miniPlayer(model, snapshot, entry, h),
+              playerSheet(model, snapshot, entry, h),
+            ],
+          ),
       }),
       noticeToast(model, h),
     ],

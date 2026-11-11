@@ -7,25 +7,24 @@ import { describe, expect, test } from 'vitest'
 import { type Song } from '@music/shared'
 
 import {
+  BlurSearchInput,
   FocusSearchInput,
+  NavigateInternal,
   ReplaceSearchUrl,
   SaveRecentSearches,
+  ScrollToTop,
+  ShuffleSongs,
   WaitBeforeSearch,
 } from './command'
 import { MAX_RECENT_SEARCHES } from './constant'
 import { Message } from './message'
 import { type Model } from './model'
-import { initialPlaybackModel } from './playback/domain'
-import {
-  albumQuery,
-  albumSearchQuery,
-  artistQuery,
-  artistSearchQuery,
-  songQuery,
-  songSearchQuery,
-} from './query'
+import { SendToSession, UnlockPhoneAudio } from './playback/command'
+import { toQueueTrack } from './playback/queueTrack'
+import { albumQuery, homeQuery, songQuery, songSearchQuery } from './query'
 import { AppRoute, searchUrl } from './route'
-import { update } from './update'
+import { initialModel, restoredScrollTop, update } from './update'
+import { viewTransition } from './viewTransition'
 
 const FIRST_REQUEST_GENERATION = 1
 
@@ -35,18 +34,10 @@ const urlOrThrow = (raw: string) =>
     () => new Error(`Failed to parse url: ${raw}`),
   )
 
-const emptySearchModel: Model = {
-  route: AppRoute.Search({ q: Option.none(), kind: Option.none() }),
-  searchInput: '',
-  recentSearches: [],
-  songSearch: songSearchQuery.init(),
-  artistSearch: artistSearchQuery.init(),
-  albumSearch: albumSearchQuery.init(),
-  songs: songQuery.init(),
-  artists: artistQuery.init(),
-  albums: albumQuery.init(),
-  ...initialPlaybackModel,
-}
+const emptySearchModel: Model = initialModel(
+  AppRoute.Search({ q: Option.none(), kind: Option.none() }),
+  '/search',
+)
 
 const theChain: Song = {
   videoId: 'FhgFtXESdPk',
@@ -61,8 +52,10 @@ const theChain: Song = {
 
 describe('search route', () => {
   test('omits the default kind and an empty query from the URL', () => {
-    expect(searchUrl('', 'Songs')).toBe('/')
-    expect(searchUrl('the chain', 'Artists')).toBe('/?q=the+chain&kind=Artists')
+    expect(searchUrl('', 'Songs')).toBe('/search')
+    expect(searchUrl('the chain', 'Artists')).toBe(
+      '/search?q=the+chain&kind=Artists',
+    )
   })
 
   test('an unknown kind falls back to songs and still searches', () => {
@@ -71,7 +64,7 @@ describe('search route', () => {
       given(emptySearchModel),
       message(
         Message.ChangedUrl({
-          url: urlOrThrow('http://localhost/?q=rumours&kind=Podcasts'),
+          url: urlOrThrow('http://localhost/search?q=rumours&kind=Podcasts'),
         }),
       ),
       model(model => {
@@ -111,7 +104,7 @@ describe('typing a search', () => {
         WaitBeforeSearch,
         Message.CompletedWaitBeforeSearch({ query: 'fleetwood' }),
       ),
-      Command.expectExact(ReplaceSearchUrl({ url: '/?q=fleetwood' })),
+      Command.expectExact(ReplaceSearchUrl({ url: '/search?q=fleetwood' })),
       Command.resolve(ReplaceSearchUrl, Message.CompletedReplaceSearchUrl()),
     )
   })
@@ -135,7 +128,7 @@ describe('typing a search', () => {
       ),
       message(
         Message.ChangedUrl({
-          url: urlOrThrow('http://localhost/?q=fleetwood'),
+          url: urlOrThrow('http://localhost/search?q=fleetwood'),
         }),
       ),
       model(model => {
@@ -168,14 +161,16 @@ describe('recent searches', () => {
         expect(model.recentSearches).toStrictEqual(['rumours', 'tusk'])
       }),
       Command.expectExact(
-        ReplaceSearchUrl({ url: '/?q=rumours' }),
+        ReplaceSearchUrl({ url: '/search?q=rumours' }),
         SaveRecentSearches({ recentSearches: ['rumours', 'tusk'] }),
+        BlurSearchInput(),
       ),
       Command.resolve(ReplaceSearchUrl, Message.CompletedReplaceSearchUrl()),
       Command.resolve(
         SaveRecentSearches,
         Message.CompletedSaveRecentSearches(),
       ),
+      Command.resolve(BlurSearchInput, Message.CompletedBlurSearchInput()),
     )
   })
 
@@ -202,6 +197,7 @@ describe('recent searches', () => {
         SaveRecentSearches,
         Message.CompletedSaveRecentSearches(),
       ),
+      Command.resolve(BlurSearchInput, Message.CompletedBlurSearchInput()),
     )
   })
 
@@ -213,7 +209,10 @@ describe('recent searches', () => {
       model(model => {
         expect(model.searchInput).toBe('')
       }),
-      Command.expectExact(ReplaceSearchUrl({ url: '/' }), FocusSearchInput()),
+      Command.expectExact(
+        ReplaceSearchUrl({ url: '/search' }),
+        FocusSearchInput(),
+      ),
       Command.resolve(ReplaceSearchUrl, Message.CompletedReplaceSearchUrl()),
       Command.resolve(FocusSearchInput, Message.CompletedFocusSearchInput()),
     )
@@ -264,6 +263,167 @@ describe('detail pages', () => {
           songQuery.read(model.songs, { videoId: 'FhgFtXESdPk' })._tag,
         ).toBe('Success')
       }),
+    )
+  })
+})
+
+const homeModel: Model = initialModel(AppRoute.Home(), '/')
+
+describe('moving between pages', () => {
+  test('a tapped link slides in, and going back slides it away', () => {
+    story(
+      update,
+      given(homeModel),
+      message(
+        Message.ClickedLink({
+          request: {
+            _tag: 'Internal',
+            url: urlOrThrow('http://localhost/album/MPREb_1SbgcDGdrT4'),
+          },
+        }),
+      ),
+      Command.expectExact(
+        NavigateInternal({ url: 'http://localhost/album/MPREb_1SbgcDGdrT4' }),
+      ),
+      Command.resolve(
+        NavigateInternal,
+        Message.CompletedNavigateInternal({ fromUrl: '/', scrollTop: 640 }),
+      ),
+      message(
+        Message.ChangedUrl({
+          url: urlOrThrow('http://localhost/album/MPREb_1SbgcDGdrT4'),
+        }),
+      ),
+      model(model => {
+        expect(model.navigation.lastNavigation).toBe('Push')
+        expect(model.navigation.scrollPositions['/']).toBe(640)
+        expect(
+          viewTransition({
+            previousModel: homeModel,
+            model,
+            message: Message.ClickedBack(),
+          }),
+        ).toStrictEqual({ types: ['push'] })
+      }),
+      Command.resolve(
+        albumQuery.Fetch,
+        albumQuery.Message.CompletedFetch({
+          args: { albumId: 'MPREb_1SbgcDGdrT4' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.fail('NotFound'),
+        }),
+      ),
+    )
+  })
+
+  test('the browser going back is a pop that restores the scroll position', () => {
+    const albumModel = modifyFields(
+      initialModel(AppRoute.Album({ albumId: 'x' }), '/album/x'),
+      {
+        navigation: navigation =>
+          modifyFields(navigation, { scrollPositions: () => ({ '/': 640 }) }),
+      },
+    )
+    story(
+      update,
+      given(albumModel),
+      message(Message.ChangedUrl({ url: urlOrThrow('http://localhost/') })),
+      Command.resolve(
+        homeQuery.Fetch,
+        homeQuery.Message.CompletedFetch({
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed({ shelves: [] }),
+        }),
+      ),
+      model(model => {
+        expect(model.navigation.lastNavigation).toBe('Pop')
+        expect(restoredScrollTop(model)).toBe(640)
+        expect(
+          viewTransition({
+            previousModel: albumModel,
+            model,
+            message: Message.ClickedBack(),
+          }),
+        ).toStrictEqual({ types: ['pop'] })
+      }),
+    )
+  })
+
+  test('typing a search never animates the page', () => {
+    const typed = update(
+      emptySearchModel,
+      Message.ChangedUrl({ url: urlOrThrow('http://localhost/search?q=a') }),
+    )
+    expect(
+      viewTransition({
+        previousModel: emptySearchModel,
+        model: typed.model,
+        message: Message.ClickedBack(),
+      }),
+    ).toBe(false)
+  })
+})
+
+describe('tab bar', () => {
+  test('switching tabs returns to where that tab was left', () => {
+    const searchWasOnArtist = modifyFields(homeModel, {
+      navigation: navigation =>
+        modifyFields(navigation, {
+          tabUrls: tabUrls =>
+            modifyFields(tabUrls, { Search: () => '/artist/abc' }),
+        }),
+    })
+    story(
+      update,
+      given(searchWasOnArtist),
+      message(Message.ClickedTab({ tab: 'Search' })),
+      model(model => {
+        expect(model.navigation.activeTab).toBe('Search')
+      }),
+      Command.expectExact(NavigateInternal({ url: '/artist/abc' })),
+      Command.resolve(
+        NavigateInternal,
+        Message.CompletedNavigateInternal({ fromUrl: '/', scrollTop: 0 }),
+      ),
+    )
+  })
+
+  test('tapping the tab already open scrolls back to the top', () => {
+    story(
+      update,
+      given(homeModel),
+      message(Message.ClickedTab({ tab: 'Home' })),
+      Command.expectExact(ScrollToTop()),
+      Command.resolve(ScrollToTop, Message.CompletedScrollToTop()),
+    )
+  })
+})
+
+describe('shuffle', () => {
+  test('unlocks audio during the tap, then plays the shuffled order', () => {
+    story(
+      update,
+      given(homeModel),
+      message(Message.ClickedShuffleSongs({ songs: [theChain] })),
+      Command.expectExact(
+        UnlockPhoneAudio(),
+        ShuffleSongs({ songs: [theChain] }),
+      ),
+      Command.resolve(UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()),
+      Command.resolve(
+        ShuffleSongs,
+        Message.CompletedShuffleSongs({ songs: [theChain] }),
+      ),
+      Command.expectExact(
+        SendToSession({
+          message: {
+            _tag: 'PlayQueue',
+            tracks: [toQueueTrack(theChain)],
+            startIndex: 0,
+          },
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
     )
   })
 })
