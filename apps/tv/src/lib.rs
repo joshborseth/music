@@ -6,6 +6,8 @@
 
 mod audio;
 mod controller;
+#[cfg(target_os = "android")]
+mod crash_report;
 pub mod protocol;
 mod screen;
 mod session;
@@ -74,7 +76,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         inbound,
     );
 
-    let screen = screen::Screen::new(app.as_weak(), handle.clone());
+    let screen = screen::Screen::new(SERVER_URL.to_owned(), app.as_weak(), handle.clone());
     let controller = Controller::new(DEVICE_ID.to_owned(), engine, outbound);
     handle.spawn(controller.run(
         inbound_receiver,
@@ -98,6 +100,7 @@ fn android_main(app: slint::android::AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag("music-tv"),
     );
+    crash_report::install(SERVER_URL);
     app.set_window_flags(
         WindowManagerFlags::KEEP_SCREEN_ON | WindowManagerFlags::FULLSCREEN,
         WindowManagerFlags::empty(),

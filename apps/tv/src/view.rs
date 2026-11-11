@@ -56,13 +56,33 @@ pub fn clock(seconds: f64) -> String {
 }
 
 /// Ask Google's image CDN for a size that suits a TV instead of a thumbnail.
-pub fn sized_artwork_url(url: &str, pixels: u32) -> String {
+fn sized_artwork_url(url: &str, pixels: u32) -> String {
     match url.rfind('=') {
         Some(index) if url[index..].starts_with("=w") => {
             format!("{}=w{pixels}-h{pixels}-l90-rj", &url[..index])
         }
         _ => url.to_owned(),
     }
+}
+
+/// Where to fetch artwork: the server relays it, so the TV needs no TLS.
+pub fn relayed_artwork_url(server: &str, url: &str, pixels: u32) -> String {
+    format!(
+        "{server}/artwork?url={}",
+        percent_encode(&sized_artwork_url(url, pixels))
+    )
+}
+
+/// Encode everything but RFC 3986 unreserved characters.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(byte).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -74,6 +94,18 @@ mod tests {
         assert_eq!(clock(0.0), "0:00");
         assert_eq!(clock(61.9), "1:01");
         assert_eq!(clock(3725.0), "1:02:05");
+    }
+
+    #[test]
+    fn relays_artwork_through_the_server() {
+        assert_eq!(
+            relayed_artwork_url(
+                "http://192.168.1.67:4310",
+                "https://lh3.googleusercontent.com/a-b=w120-h120",
+                720
+            ),
+            "http://192.168.1.67:4310/artwork?url=https%3A%2F%2Flh3.googleusercontent.com%2Fa-b%3Dw720-h720-l90-rj"
+        );
     }
 
     #[test]

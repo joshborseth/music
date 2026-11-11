@@ -30,10 +30,9 @@ futures-util = { version = "0.3", default-features = false, features = [
   "sink",
   "std",
 ] }
-reqwest = { version = "0.13", default-features = false, features = [
-  "rustls",
-  "stream",
-] }
+# Plain HTTP only: the TV talks to the server on the LAN, which relays
+# everything from the internet (audio and artwork).
+reqwest = { version = "0.13", default-features = false, features = ["stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = [

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use slint::{Color, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
-use crate::view::{View, clock, sized_artwork_url};
+use crate::view::{View, clock, relayed_artwork_url};
 use crate::{App, UpNextRow};
 
 /// Artwork is decoded at this size: sharp on a 1080p TV, cheap to draw.
@@ -12,6 +12,7 @@ const ARTWORK_PIXELS: u32 = 720;
 const DEFAULT_TINT: Color = Color::from_rgb_u8(0x24, 0x24, 0x2e);
 
 pub struct Screen {
+    server: String,
     app: slint::Weak<App>,
     runtime: tokio::runtime::Handle,
     client: reqwest::Client,
@@ -19,8 +20,9 @@ pub struct Screen {
 }
 
 impl Screen {
-    pub fn new(app: slint::Weak<App>, runtime: tokio::runtime::Handle) -> Self {
+    pub fn new(server: String, app: slint::Weak<App>, runtime: tokio::runtime::Handle) -> Self {
         Self {
+            server,
             app,
             runtime,
             client: reqwest::Client::new(),
@@ -76,9 +78,9 @@ impl Screen {
         let app = self.app.clone();
         let client = self.client.clone();
         let wanted = self.artwork_url.clone();
+        let relayed = relayed_artwork_url(&self.server, &url, ARTWORK_PIXELS);
         self.runtime.spawn(async move {
-            let sized = sized_artwork_url(&url, ARTWORK_PIXELS);
-            let bytes = match fetch(&client, &sized).await {
+            let bytes = match fetch(&client, &relayed).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     log::warn!("artwork download failed: {error}");
