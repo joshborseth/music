@@ -12,6 +12,7 @@ import {
   SkipBack,
   SkipForward,
   Smartphone,
+  Trash2,
   Tv,
   X,
 } from 'lucide'
@@ -32,7 +33,9 @@ import {
   upcomingEntries,
 } from '../playback/domain'
 import { displayedPosition } from '../playback/position'
+import { SwipeTarget, type TrackingSwipe, swipeOn } from '../playback/swipe'
 import { formatDuration } from './shared'
+import { onSwipeStart, swipeTransitionClass, swipeableRow } from './swipe'
 
 // POSITION
 
@@ -133,6 +136,16 @@ const playPauseButton = (
 
 // MINI PLAYER
 
+/** How much of a finger's sideways travel the mini player follows. */
+const MINI_PLAYER_SWIPE_FOLLOW = 0.35
+
+/** How much of a finger's travel the full player follows, sideways and down. */
+const SHEET_SWIPE_FOLLOW_X = 0.35
+const SHEET_SWIPE_FOLLOW_Y = 0.55
+
+/** How far a swipe goes before the mini player fades as far as it will. */
+const SWIPE_FADE_DISTANCE = 320
+
 const miniPlayer = (
   model: Model,
   snapshot: SessionSnapshot,
@@ -145,10 +158,19 @@ const miniPlayer = (
     duration > 0
       ? Math.min(1, displayedPosition(model, snapshot) / duration)
       : 0
+  const maybeSwipe = swipeOn(
+    model.swipe,
+    target => target._tag === 'MiniPlayer',
+  )
+  const swipeX = Option.match(maybeSwipe, {
+    onNone: () => 0,
+    onSome: ({ deltaX }) => deltaX,
+  })
   return h.div(
     [
+      onSwipeStart(SwipeTarget.MiniPlayer(), h),
       h.Class(
-        'bg-card/95 border-border fixed inset-x-0 bottom-0 z-20 mx-auto max-w-xl border-t backdrop-blur pb-[env(safe-area-inset-bottom)]',
+        'bg-card/95 border-border fixed inset-x-0 bottom-0 z-20 mx-auto max-w-xl touch-pan-y overflow-hidden border-t backdrop-blur select-none pb-[env(safe-area-inset-bottom)]',
       ),
     ],
     [
@@ -162,7 +184,23 @@ const miniPlayer = (
         ],
       ),
       h.div(
-        [h.Class('flex items-center gap-3 px-3 py-2')],
+        [
+          h.Class(
+            cn(
+              'flex items-center gap-3 px-3 py-2',
+              swipeTransitionClass(maybeSwipe),
+            ),
+          ),
+          h.Style({
+            transform: `translateX(${swipeX * MINI_PLAYER_SWIPE_FOLLOW}px)`,
+            opacity: (
+              1 -
+              Math.min(Math.abs(swipeX), SWIPE_FADE_DISTANCE) /
+                SWIPE_FADE_DISTANCE /
+                2
+            ).toFixed(3),
+          }),
+        ],
         [
           h.button(
             [
@@ -362,7 +400,11 @@ const devicePicker = (
     ],
   )
 
-const queueList = (snapshot: SessionSnapshot, h: HtmlBuilder<Message>): Html =>
+const queueList = (
+  model: Model,
+  snapshot: SessionSnapshot,
+  h: HtmlBuilder<Message>,
+): Html =>
   Array.match(upcomingEntries(snapshot.state), {
     onEmpty: () => h.empty,
     onNonEmpty: entries =>
@@ -378,55 +420,27 @@ const queueList = (snapshot: SessionSnapshot, h: HtmlBuilder<Message>): Html =>
             Array.map(entries, entry =>
               h.keyed('li')(
                 entry.entryId,
-                [h.Class('flex items-center gap-1')],
+                [],
                 [
-                  h.button(
-                    [
-                      h.Type('button'),
-                      h.OnClick(
-                        Message.ClickedQueueEntry({ entryId: entry.entryId }),
-                      ),
-                      h.Class(
-                        'hover:bg-muted flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left',
-                      ),
-                    ],
-                    [
-                      artwork(entry.track, 'size-10', h),
-                      h.div(
-                        [h.Class('min-w-0')],
-                        [
-                          h.p(
-                            [h.Class('line-clamp-1 text-sm')],
-                            [entry.track.title],
-                          ),
-                          h.p(
-                            [
-                              h.Class(
-                                'text-muted-foreground line-clamp-1 text-xs',
-                              ),
-                            ],
-                            [entry.track.artists],
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                  button(
+                  swipeableRow(
                     {
-                      onClick: Message.ClickedRemoveQueueEntry({
+                      target: SwipeTarget.QueueEntry({
                         entryId: entry.entryId,
                       }),
-                      variant: 'ghost',
-                      size: 'icon',
-                      className: 'rounded-full',
-                    },
-                    [
-                      icon(h, X, 'size-4'),
-                      h.span(
-                        [h.Class('sr-only')],
-                        [`Remove ${entry.track.title}`],
+                      maybeSwipe: swipeOn(
+                        model.swipe,
+                        target =>
+                          target._tag === 'QueueEntry' &&
+                          target.entryId === entry.entryId,
                       ),
-                    ],
+                      maybeRightReveal: Option.none(),
+                      maybeLeftReveal: Option.some({
+                        label: 'Remove',
+                        icon: Trash2,
+                        isDestructive: true,
+                      }),
+                    },
+                    queueRow(entry, h),
                     h,
                   ),
                 ],
@@ -436,6 +450,50 @@ const queueList = (snapshot: SessionSnapshot, h: HtmlBuilder<Message>): Html =>
         ],
       ),
   })
+
+const queueRow = (entry: Session.QueueEntry, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.Class('flex items-center gap-1')],
+    [
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedQueueEntry({ entryId: entry.entryId })),
+          h.Class(
+            'hover:bg-muted flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left',
+          ),
+        ],
+        [
+          artwork(entry.track, 'size-10', h),
+          h.div(
+            [h.Class('min-w-0')],
+            [
+              h.p([h.Class('line-clamp-1 text-sm')], [entry.track.title]),
+              h.p(
+                [h.Class('text-muted-foreground line-clamp-1 text-xs')],
+                [entry.track.artists],
+              ),
+            ],
+          ),
+        ],
+      ),
+      button(
+        {
+          onClick: Message.ClickedRemoveQueueEntry({
+            entryId: entry.entryId,
+          }),
+          variant: 'ghost',
+          size: 'icon',
+          className: 'rounded-full',
+        },
+        [
+          icon(h, X, 'size-4'),
+          h.span([h.Class('sr-only')], [`Remove ${entry.track.title}`]),
+        ],
+        h,
+      ),
+    ],
+  )
 
 const blockedAudioPrompt = (model: Model, h: HtmlBuilder<Message>): Html =>
   model.phoneAudio._tag === 'Blocked'
@@ -449,6 +507,44 @@ const blockedAudioPrompt = (model: Model, h: HtmlBuilder<Message>): Html =>
       )
     : h.empty
 
+const playerHeader = (where: string, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.Class('flex items-center justify-between')],
+    [
+      button(
+        {
+          onClick: Message.ClickedClosePlayer(),
+          variant: 'ghost',
+          size: 'icon-lg',
+          className: 'rounded-full',
+        },
+        [
+          icon(h, ChevronDown, 'size-6'),
+          h.span([h.Class('sr-only')], ['Close player']),
+        ],
+        h,
+      ),
+      h.p(
+        [h.Class('text-muted-foreground text-xs font-medium')],
+        [where === '' ? 'Playing on this device' : where],
+      ),
+      h.div([h.Class('size-9')]),
+    ],
+  )
+
+/** The full player follows a swipe on its artwork: sideways to skip, down to close. */
+const sheetSwipeStyle = (maybeSwipe: Option.Option<TrackingSwipe>) =>
+  Option.match(maybeSwipe, {
+    onNone: () => ({ transform: 'translate(0px, 0px)' }),
+    onSome: swipe => {
+      const pullDown = swipe.axis === 'Vertical' ? Math.max(0, swipe.deltaY) : 0
+      const sideways = swipe.axis === 'Horizontal' ? swipe.deltaX : 0
+      return {
+        transform: `translate(${sideways * SHEET_SWIPE_FOLLOW_X}px, ${pullDown * SHEET_SWIPE_FOLLOW_Y}px)`,
+      }
+    },
+  })
+
 const playerSheet = (
   model: Model,
   snapshot: SessionSnapshot,
@@ -456,49 +552,56 @@ const playerSheet = (
   h: HtmlBuilder<Message>,
 ): Html => {
   const where = whereText(model, snapshot)
+  const maybeSwipe = swipeOn(
+    model.swipe,
+    target => target._tag === 'PlayerArtwork',
+  )
   return h.div(
     [
       h.Role('dialog'),
       h.AriaModal(true),
       h.AriaLabel('Player'),
       h.Class(
-        'bg-background fixed inset-0 z-30 overflow-y-auto pt-[env(safe-area-inset-top)] pb-[max(env(safe-area-inset-bottom),2rem)]',
+        cn(
+          'bg-background fixed inset-0 z-30 overflow-y-auto overscroll-contain pt-[env(safe-area-inset-top)] pb-[max(env(safe-area-inset-bottom),2rem)]',
+          swipeTransitionClass(maybeSwipe),
+          Option.isSome(maybeSwipe) && 'rounded-t-3xl shadow-2xl',
+        ),
       ),
+      h.Style(sheetSwipeStyle(maybeSwipe)),
     ],
     [
       h.div(
         [h.Class('mx-auto flex w-full max-w-xl flex-col gap-6 px-6')],
         [
           h.div(
-            [h.Class('flex items-center justify-between pt-2')],
             [
-              button(
-                {
-                  onClick: Message.ClickedClosePlayer(),
-                  variant: 'ghost',
-                  size: 'icon-lg',
-                  className: 'rounded-full',
-                },
-                [
-                  icon(h, ChevronDown, 'size-6'),
-                  h.span([h.Class('sr-only')], ['Close player']),
-                ],
-                h,
-              ),
-              h.p(
-                [h.Class('text-muted-foreground text-xs font-medium')],
-                [where === '' ? 'Playing on this device' : where],
-              ),
-              h.div([h.Class('size-9')]),
+              onSwipeStart(SwipeTarget.PlayerArtwork(), h),
+              h.Class('flex touch-none flex-col gap-1 pt-2 select-none'),
+            ],
+            [
+              h.div([
+                h.AriaHidden(true),
+                h.Class('bg-muted-foreground/40 mx-auto h-1 w-10 rounded-full'),
+              ]),
+              playerHeader(where, h),
             ],
           ),
-          artwork(
-            entry.track,
-            cn(
-              'aspect-square w-full shadow-xl transition-transform duration-300',
-              snapshot.state.playing ? 'scale-100' : 'scale-90',
-            ),
-            h,
+          h.div(
+            [
+              onSwipeStart(SwipeTarget.PlayerArtwork(), h),
+              h.Class('touch-none select-none'),
+            ],
+            [
+              artwork(
+                entry.track,
+                cn(
+                  'aspect-square w-full shadow-xl transition-transform duration-300',
+                  snapshot.state.playing ? 'scale-100' : 'scale-90',
+                ),
+                h,
+              ),
+            ],
           ),
           h.div(
             [h.Class('flex flex-col gap-1')],
@@ -517,7 +620,7 @@ const playerSheet = (
           transportControls(model, snapshot, h),
           blockedAudioPrompt(model, h),
           devicePicker(model, snapshot, h),
-          queueList(snapshot, h),
+          queueList(model, snapshot, h),
         ],
       ),
     ],

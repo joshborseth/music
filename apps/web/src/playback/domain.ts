@@ -3,6 +3,8 @@ import { defineTaggedUnion } from 'foldkit/schema'
 
 import { Session } from '@music/shared'
 
+import { Swipe } from './swipe'
+
 // MODEL
 
 /** The WebSocket to the shared playback session. */
@@ -156,4 +158,5 @@ export const initialPlaybackModel = {
   playerSheet: PlayerSheet.Closed(),
   maybeNotice: Option.none<string>(),
   maybeScrubSeconds: Option.none<number>(),
+  swipe: Swipe.Idle(),
 }

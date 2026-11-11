@@ -7,6 +7,7 @@ import {
   PlayerSheet,
   SessionSnapshot,
 } from './playback/domain'
+import { Swipe } from './playback/swipe'
 import {
   albumQuery,
   albumSearchQuery,
@@ -38,5 +39,6 @@ export const Model = Schema.Struct({
   maybeNotice: Schema.Option(Schema.String),
   /** Where the seek bar is being dragged to, before it is let go. */
   maybeScrubSeconds: Schema.Option(Schema.Number),
+  swipe: Swipe,
 })
 export type Model = typeof Model.Type

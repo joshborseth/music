@@ -29,8 +29,10 @@ import {
 } from '@music/shared'
 
 import { Message } from '../message'
+import { type Swipe, SwipeTarget, swipeOn } from '../playback/swipe'
 import { type RequestError } from '../query'
 import { albumRouter, artistRouter, songRouter } from '../route'
+import { swipeableRow } from './swipe'
 
 // FORMATTING
 
@@ -179,7 +181,8 @@ type SongRowConfig = Readonly<{
   maybeTrackNumber: Option.Option<number>
   isAlbumHidden: boolean
   /** Adds a play button beside the row that sends this Message. */
-  maybeOnPlay: Option.Option<Message>
+  maybeOnPlay: Option.Option<Message> /** Lets a finger swipe the row to queue the song. */
+  swipe: Swipe
 }>
 
 /** A song in a list: artwork or track number, title, credits, length. */
@@ -252,7 +255,7 @@ export const songRow = (
     h,
   )
 
-  return Option.match(config.maybeOnPlay, {
+  const content = Option.match(config.maybeOnPlay, {
     onNone: () => row,
     onSome: onPlay =>
       h.div(
@@ -275,6 +278,29 @@ export const songRow = (
         ],
       ),
   })
+
+  return swipeableRow(
+    {
+      target: SwipeTarget.SongRow({ song }),
+      maybeSwipe: swipeOn(
+        config.swipe,
+        target =>
+          target._tag === 'SongRow' && target.song.videoId === song.videoId,
+      ),
+      maybeRightReveal: Option.some({
+        label: 'Add to queue',
+        icon: ListEnd,
+        isDestructive: false,
+      }),
+      maybeLeftReveal: Option.some({
+        label: 'Play next',
+        icon: ListStart,
+        isDestructive: false,
+      }),
+    },
+    content,
+    h,
+  )
 }
 
 /** Play these songs now, next, or after everything queued. */

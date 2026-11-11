@@ -417,4 +417,20 @@ export const update = (model: Model, message: Message) =>
     ClickedOpenPlayer: () => Playback.openPlayer(model),
     ClickedClosePlayer: () => Playback.closePlayer(model),
     ClickedStartBlockedAudio: () => Playback.startBlockedAudio(model),
+
+    PressedSwipeable: ({ target, pointerId, clientX, clientY, timeStamp }) =>
+      Playback.pressSwipeable(
+        model,
+        target,
+        pointerId,
+        clientX,
+        clientY,
+        timeStamp,
+      ),
+    MovedSwipePointer: ({ pointerId, clientX, clientY, timeStamp }) =>
+      Playback.moveSwipePointer(model, pointerId, clientX, clientY, timeStamp),
+    ReleasedSwipePointer: ({ pointerId, timeStamp }) =>
+      Playback.releaseSwipePointer(model, pointerId, timeStamp),
+    CancelledSwipePointer: ({ pointerId }) =>
+      Playback.cancelSwipePointer(model, pointerId),
   })
