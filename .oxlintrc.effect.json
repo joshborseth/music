@@ -26,13 +26,13 @@
   "ignorePatterns": [
     "**/dist/",
     "**/node_modules/",
-    "repos/",
     "**/*.d.ts",
     "**/vite.config.ts",
     "**/vitest.config.ts",
     "**/*.config.js",
     "**/*.config.mjs",
     "apps/web/src/components/ui/",
-    "apps/web/src/lib/"
+    "apps/web/src/lib/",
+    "apps/web/repos/"
   ]
 }

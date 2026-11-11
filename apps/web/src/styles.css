@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@source not "../repos";
 @import "tw-animate-css";
 
 @custom-variant dark (@media (prefers-color-scheme: dark));

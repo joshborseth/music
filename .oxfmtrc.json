@@ -24,12 +24,12 @@
   "ignorePatterns": [
     "node_modules",
     "dist",
-    "repos",
     "*.tsbuildinfo",
     "bun.lock",
     "apps/web/src/components/ui",
     "apps/web/src/lib",
     "apps/web/src/styles.css",
-    "apps/web/public"
+    "apps/web/public",
+    "apps/web/repos"
   ]
 }

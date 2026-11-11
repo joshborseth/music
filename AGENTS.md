@@ -11,7 +11,7 @@ Phone-first, read-only YouTube Music browser. See `README.md` for what it does a
 ## Conventions
 
 - Effect 4 (`effect@4.1.x`). Versions shared across packages live in the root `catalog`. Keep `effect` on one version everywhere, because the RPC Schemas cross package boundaries.
-- Foldkit and Effect APIs: check the Foldkit repo (`~/.cache/reference-repos/foldkit`, or `apps/web/repos/foldkit` if vendored) before writing from memory. `examples/api-cache-query` (Query), `examples/query-sync` (URL-owned search state), and `packages/typing-game` (Effect RPC) are the closest references.
+- Foldkit and Effect APIs: check the vendored Foldkit source in `apps/web/repos/foldkit` (a git subtree pinned to the installed release) before writing from memory. After upgrading Foldkit, re-pin it with `git subtree pull --prefix=apps/web/repos/foldkit https://github.com/foldkit/foldkit.git foldkit@<version> --squash` and copy its `packages/create-foldkit-app/templates/base/FOLDKIT.md` over `apps/web/FOLDKIT.md`. `examples/api-cache-query` (Query), `examples/query-sync` (URL-owned search state), and `packages/typing-game` (Effect RPC) are the closest references.
 - Remote data uses `Query.define` from `foldkit/experimental` (`apps/web/src/query.ts`). Each lookup is cached in the Model by its arguments.
 - The search query and kind live in the URL (`/?q=…&kind=Artists`); the Model holds only the text being typed. Typing waits `SEARCH_DEBOUNCE` and then replaces the URL.
 
