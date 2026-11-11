@@ -2,6 +2,12 @@
 
 YouTube Music on the phone (Foldkit PWA) and the TV (Rust Android TV app), sharing one playback session. See `README.md` for what it does and how to run it.
 
+## Finishing a task
+
+When a task changes files in this repo, finish it by following the [`merge-and-deploy`](./.agents/skills/merge-and-deploy/SKILL.md) skill. It opens the PR, merges it, and deploys. Do this without being asked, unless Josh said not to push, open a PR, merge, or deploy.
+
+Add new skills under `.agents/skills/<name>/`, and link each one from `.claude/skills/<name>` so every agent finds it.
+
 ## Layout
 
 - `packages/shared`: the Effect RPC group (`MusicRpcs`) and the domain Schemas. Change the contract here first; both apps compile against it directly from source (no build step).

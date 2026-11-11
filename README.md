@@ -98,7 +98,7 @@ Without those two values, the TV only shows up in the device list while its app 
 
 On the iPhone, open that address in Safari, tap Share, then **Add to Home Screen**.
 
-- Ship changes: `bun run deploy` builds the web app and restarts the service.
+- Ship changes: `bun run deploy` (`scripts/deploy-main.sh`) fast-forwards this checkout to `origin/main`, builds the web app, restarts the service, and rebuilds the TV app when it changed. Pass `--tv` to the script to rebuild the TV app anyway.
 - Logs: `journalctl --user -u music.service -f`
 - Stop publishing it: `sudo tailscale serve --https=7443 off`
 
