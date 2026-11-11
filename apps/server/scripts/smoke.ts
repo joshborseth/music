@@ -77,6 +77,25 @@ const program = Effect.gen(function* () {
       album.tracks[0]?.artwork.length,
     )
   }
+  const home = yield* client.getHome()
+  console.log(
+    'home',
+    home.shelves.map(shelf => `${shelf._tag}:${shelf.title}`),
+  )
+  const playlistId = home.shelves
+    .flatMap(shelf => (shelf._tag === 'PlaylistShelf' ? shelf.playlists : []))
+    .at(0)?.id
+  if (playlistId !== undefined) {
+    const playlist = yield* client.getPlaylist({ playlistId })
+    console.log(
+      'playlist',
+      playlist.playlist.title,
+      playlist.playlist.maybeSubtitle,
+      playlist.maybeLengthSummary,
+      'tracks',
+      playlist.tracks.length,
+    )
+  }
   const missing = yield* client
     .getAlbum({ albumId: 'MPREb_doesnotexist' })
     .pipe(Effect.flip)

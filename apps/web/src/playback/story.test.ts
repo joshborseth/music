@@ -5,18 +5,11 @@ import { describe, expect, test } from 'vitest'
 
 import { type Session, type Song } from '@music/shared'
 
+import { SaveRecentlyPlayed, UnlockScroll } from '../command'
 import { Message } from '../message'
 import { type Model } from '../model'
-import {
-  albumQuery,
-  albumSearchQuery,
-  artistQuery,
-  artistSearchQuery,
-  songQuery,
-  songSearchQuery,
-} from '../query'
 import { AppRoute } from '../route'
-import { update } from '../update'
+import { initialModel, update } from '../update'
 import {
   LoadPhoneAudio,
   PrefetchSongs,
@@ -28,12 +21,7 @@ import {
   UpdateMediaSession,
   WaitBeforeHideNotice,
 } from './command'
-import {
-  Connection,
-  PhoneAudio,
-  PlayerSheet,
-  initialPlaybackModel,
-} from './domain'
+import { Connection, PhoneAudio, PlayerSheet } from './domain'
 import { toQueueTrack } from './queueTrack'
 import { SwipeTarget } from './swipe'
 
@@ -41,16 +29,7 @@ const PHONE_ID = 'phone-1'
 const SERVER_NOW = 1_000_000
 
 const connectedModel: Model = {
-  route: AppRoute.Search({ q: Option.none(), kind: Option.none() }),
-  searchInput: '',
-  recentSearches: [],
-  songSearch: songSearchQuery.init(),
-  artistSearch: artistSearchQuery.init(),
-  albumSearch: albumSearchQuery.init(),
-  songs: songQuery.init(),
-  artists: artistQuery.init(),
-  albums: albumQuery.init(),
-  ...initialPlaybackModel,
+  ...initialModel(AppRoute.Home(), '/'),
   maybeIdentity: Option.some({ deviceId: PHONE_ID, deviceName: 'iPhone' }),
   connection: Connection.Connected(),
   phoneAudio: PhoneAudio.Idle(),
@@ -116,6 +95,14 @@ describe('playing on this phone', () => {
         }),
         mediaSession,
         PrefetchSongs({ videoIds: ['dQw4w9WgXcQ'] }),
+        SaveRecentlyPlayed({ recentlyPlayed: [entry.track] }),
+      ),
+      model(model => {
+        expect(model.recentlyPlayed).toStrictEqual([entry.track])
+      }),
+      Command.resolve(
+        SaveRecentlyPlayed,
+        Message.CompletedSaveRecentlyPlayed(),
       ),
       Command.resolve(
         LoadPhoneAudio,
@@ -155,8 +142,15 @@ describe('playing on this phone', () => {
       model(model => {
         expect(model.phoneAudio._tag).toBe('Idle')
       }),
-      Command.expectExact(StopPhoneAudio()),
+      Command.expectExact(
+        StopPhoneAudio(),
+        SaveRecentlyPlayed({ recentlyPlayed: [entry.track] }),
+      ),
       Command.resolve(StopPhoneAudio, Message.CompletedStopPhoneAudio()),
+      Command.resolve(
+        SaveRecentlyPlayed,
+        Message.CompletedSaveRecentlyPlayed(),
+      ),
     )
   })
 
@@ -428,7 +422,8 @@ describe('swiping', () => {
       model(model => {
         expect(model.playerSheet._tag).toBe('Closed')
       }),
-      Command.expectNone(),
+      Command.expectExact(UnlockScroll()),
+      Command.resolve(UnlockScroll, Message.CompletedUnlockScroll()),
     )
   })
 

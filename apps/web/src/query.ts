@@ -7,7 +7,9 @@ import {
   AlbumSummary,
   ArtistDetails,
   ArtistSummary,
+  HomeFeed,
   type MusicNotFoundError,
+  PlaylistDetails,
   Song,
   SongDetails,
   type YouTubeMusicError,
@@ -105,4 +107,22 @@ export const albumQuery = Query.define({
     MusicClient.use(client => client.getAlbum({ albumId })).pipe(
       withRequestError,
     ),
+})
+
+export const playlistQuery = Query.define({
+  name: 'Playlist',
+  args: { playlistId: Schema.String },
+  data: PlaylistDetails,
+  error: RequestError,
+  execute: ({ playlistId }) =>
+    MusicClient.use(client => client.getPlaylist({ playlistId })).pipe(
+      withRequestError,
+    ),
+})
+
+export const homeQuery = Query.define({
+  name: 'Home',
+  data: HomeFeed,
+  error: RequestError,
+  execute: MusicClient.use(client => client.getHome()).pipe(withRequestError),
 })

@@ -1,6 +1,7 @@
 import { Option, Result } from 'effect'
 import {
   Command,
+  Mount,
   click,
   expect,
   given,
@@ -15,37 +16,33 @@ import { describe, test } from 'vitest'
 
 import { type Song } from '@music/shared'
 
-import { ReplaceSearchUrl, SaveRecentSearches } from './command'
+import { LockScroll, ReplaceSearchUrl, SaveRecentSearches } from './command'
 import { Message } from './message'
 import { type Model } from './model'
-import { initialPlaybackModel } from './playback/domain'
-import {
-  type RequestError,
-  albumQuery,
-  albumSearchQuery,
-  artistQuery,
-  artistSearchQuery,
-  songQuery,
-  songSearchQuery,
-} from './query'
+import { DragToDismiss, RestoreScroll } from './mount'
+import { SendToSession, UnlockPhoneAudio } from './playback/command'
+import { toQueueTrack } from './playback/queueTrack'
+import { type RequestError, songSearchQuery } from './query'
 import { AppRoute, searchUrl } from './route'
-import { update } from './update'
+import { initialModel, update } from './update'
 import { view } from './view'
 
 const FIRST_REQUEST_GENERATION = 1
 
-const emptySearchModel: Model = {
-  route: AppRoute.Search({ q: Option.none(), kind: Option.none() }),
-  searchInput: '',
-  recentSearches: [],
-  songSearch: songSearchQuery.init(),
-  artistSearch: artistSearchQuery.init(),
-  albumSearch: albumSearchQuery.init(),
-  songs: songQuery.init(),
-  artists: artistQuery.init(),
-  albums: albumQuery.init(),
-  ...initialPlaybackModel,
-}
+const pageScrolled = Mount.resolve(
+  RestoreScroll,
+  Message.CompletedRestoreScroll(),
+)
+
+const sheetFollowsDrags = Mount.resolve(
+  DragToDismiss,
+  Message.CompletedFollowSheetDrags(),
+)
+
+const emptySearchModel: Model = initialModel(
+  AppRoute.Search({ q: Option.none(), kind: Option.none() }),
+  '/search',
+)
 
 const theChain: Song = {
   videoId: 'FhgFtXESdPk',
@@ -94,10 +91,11 @@ describe('search page', () => {
       given(
         modifyFields(emptySearchModel, { recentSearches: () => ['rumours'] }),
       ),
+      pageScrolled,
       expect(role('heading', { name: 'Recent searches' })).toExist(),
       click(role('button', { name: 'rumours' })),
       Command.expectExact(
-        ReplaceSearchUrl({ url: '/?q=rumours' }),
+        ReplaceSearchUrl({ url: '/search?q=rumours' }),
         SaveRecentSearches({ recentSearches: ['rumours'] }),
       ),
       Command.resolveAll(
@@ -112,20 +110,63 @@ describe('search page', () => {
     scene(
       { update, view },
       given(emptySearchModel),
+      pageScrolled,
       expect(text('Search YouTube Music')).toExist(),
     )
   })
 
-  test('lists songs with credits and length once results arrive', () => {
+  test('lists songs with their credits once results arrive', () => {
     scene(
       { update, view },
       given(searchResultModel('the chain', Result.succeed([theChain]))),
-      expect(role('link', { name: /The Chain/ })).toHaveAttr(
-        'href',
-        '/song/FhgFtXESdPk',
-      ),
+      pageScrolled,
+      expect(role('button', { name: /The Chain/ })).toExist(),
       expect(text('Fleetwood Mac · Rumours')).toExist(),
-      expect(text('4:30')).toExist(),
+    )
+  })
+
+  test('tapping a song plays it', () => {
+    scene(
+      { update, view },
+      given(searchResultModel('the chain', Result.succeed([theChain]))),
+      pageScrolled,
+      click(role('button', { name: 'The Chain · Fleetwood Mac · Rumours' })),
+      Command.expectExact(
+        UnlockPhoneAudio(),
+        SendToSession({
+          message: {
+            _tag: 'PlayQueue',
+            tracks: [toQueueTrack(theChain)],
+            startIndex: 0,
+          },
+        }),
+      ),
+      Command.resolveAll(
+        [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
+        [SendToSession, Message.CompletedSendToSession()],
+      ),
+    )
+  })
+
+  test('the more button opens a sheet of what else can be done', () => {
+    scene(
+      { update, view },
+      given(searchResultModel('the chain', Result.succeed([theChain]))),
+      pageScrolled,
+      click(role('button', { name: 'More for The Chain' })),
+      Command.expectExact(LockScroll()),
+      Command.resolveAll([LockScroll, Message.CompletedLockScroll()]),
+      sheetFollowsDrags,
+      expect(role('dialog', { name: 'The Chain' })).toExist(),
+      expect(role('button', { name: 'Play next' })).toExist(),
+      expect(role('link', { name: 'Go to album' })).toHaveAttr(
+        'href',
+        '/album/MPREb_1SbgcDGdrT4',
+      ),
+      expect(role('link', { name: 'Go to artist' })).toHaveAttr(
+        'href',
+        '/artist/UCCzULu3prrEaPvM2ZtkJlYQ',
+      ),
     )
   })
 
@@ -133,8 +174,28 @@ describe('search page', () => {
     scene(
       { update, view },
       given(searchResultModel('tusk', Result.fail('ServerUnreachable'))),
+      pageScrolled,
       expect(role('alert')).toContainText('Could not reach the music server'),
       expect(role('button', { name: 'Retry' })).toExist(),
+    )
+  })
+})
+
+describe('tab bar', () => {
+  test('marks the open tab', () => {
+    scene(
+      { update, view },
+      given(initialModel(AppRoute.Library(), '/library')),
+      pageScrolled,
+      expect(role('tab', { name: 'Library' })).toHaveAttr(
+        'aria-selected',
+        'true',
+      ),
+      expect(role('tab', { name: 'Home' })).toHaveAttr(
+        'aria-selected',
+        'false',
+      ),
+      expect(text('Nothing here yet')).toExist(),
     )
   })
 })

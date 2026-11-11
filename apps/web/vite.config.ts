@@ -8,7 +8,7 @@ import tailwindcss from '@tailwindcss/vite'
 const SERVER_URL = process.env.MUSIC_SERVER_URL ?? 'http://localhost:3001'
 
 const APP_NAME = 'Music'
-const THEME_COLOR = '#0a0a0a'
+const THEME_COLOR = '#0b0c0e'
 
 const YOUTUBE_IMAGE_HOSTS =
   /^https:\/\/(lh3|yt3)\.googleusercontent\.com\/|^https:\/\/i\.ytimg\.com\//
@@ -27,12 +27,17 @@ export default defineConfig({
       manifest: {
         name: APP_NAME,
         short_name: APP_NAME,
-        description:
-          'Search YouTube Music and read about songs, artists, and albums.',
+        description: 'Browse YouTube Music and play it on your phone or TV.',
+        id: '/',
         start_url: '/',
         scope: '/',
         display: 'standalone',
         orientation: 'portrait',
+        categories: ['music', 'entertainment'],
+        shortcuts: [
+          { name: 'Search', url: '/search' },
+          { name: 'Library', url: '/library' },
+        ],
         background_color: THEME_COLOR,
         theme_color: THEME_COLOR,
         icons: [

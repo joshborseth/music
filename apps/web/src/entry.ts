@@ -7,6 +7,7 @@ import { subscriptions } from './playback/subscription'
 import { MusicClientLive } from './rpc'
 import { init, update } from './update'
 import { view } from './view'
+import { viewTransition } from './viewTransition'
 
 const application = Runtime.makeApplication({
   Model,
@@ -14,6 +15,7 @@ const application = Runtime.makeApplication({
   update,
   view,
   subscriptions,
+  viewTransition,
   managedResources,
   resources: MusicClientLive,
   container: document.getElementById('root'),

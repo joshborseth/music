@@ -1,5 +1,5 @@
 import { Array, Option, Order, Schema, String, pipe } from 'effect'
-import { type Misc, YTNodes } from 'youtubei.js'
+import { type Helpers, type Misc, YTNodes } from 'youtubei.js'
 
 import {
   type AlbumDetails,
@@ -8,7 +8,10 @@ import {
   type ArtistLink,
   type ArtistSummary,
   type Artwork,
+  type HomeShelf,
   type Lyrics,
+  type PlaylistDetails,
+  type PlaylistSummary,
   ReleaseKind,
   type Song,
   type Thumbnail,
@@ -505,5 +508,170 @@ export const toArtistDetails = (
           ),
         }
       }),
+    ),
+  )
+
+// PLAYLISTS
+
+/** A playlist from a home feed card. */
+export const playlistFromTwoRowItem = (
+  item: YTNodes.MusicTwoRowItem,
+): Option.Option<PlaylistSummary> =>
+  Option.all({
+    id: nonEmptyString(item.id),
+    title: textToOption(item.title),
+  }).pipe(
+    Option.map(({ id, title }) => ({
+      id,
+      title,
+      maybeSubtitle: textToOption(item.subtitle),
+      artwork: toArtwork(item.thumbnail),
+    })),
+  )
+
+/**
+ * The playlist page. Its header reads like an album's, except the subtitle
+ * names the kind and year rather than the artists.
+ */
+export const toPlaylistDetails = (
+  playlistId: string,
+  page: {
+    readonly header: Helpers.YTNode | undefined
+    readonly items: ReadonlyArray<Helpers.YTNode>
+  },
+): Option.Option<PlaylistDetails> =>
+  pipe(
+    Option.fromNullishOr(page.header),
+    Option.filter(header => header.is(YTNodes.MusicResponsiveHeader)),
+    Option.map(header => header.as(YTNodes.MusicResponsiveHeader)),
+    Option.flatMap(header =>
+      Option.map(textToOption(header.title), title => ({
+        playlist: {
+          id: playlistId,
+          title,
+          maybeSubtitle: pipe(
+            textToOption(header.strapline_text_one),
+            Option.filter(text => text !== 'N/A'),
+            Option.orElse(() =>
+              pipe(
+                subtitleSegments(header.subtitle),
+                Array.join(' · '),
+                Option.liftPredicate(String.isNonEmpty),
+              ),
+            ),
+          ),
+          artwork: toArtwork(header.thumbnail?.contents),
+        },
+        maybeDescription: textToOption(header.description?.description),
+        maybeLengthSummary: textToOption(header.second_subtitle),
+        tracks: filterSome(page.items, item =>
+          item.is(YTNodes.MusicResponsiveListItem)
+            ? songFromListItem(item.as(YTNodes.MusicResponsiveListItem))
+            : Option.none(),
+        ),
+      })),
+    ),
+  )
+
+// HOME
+
+/** An album from a home feed card, which credits its own artists. */
+const albumFromHomeItem = (
+  item: YTNodes.MusicTwoRowItem,
+): Option.Option<AlbumSummary> =>
+  Option.all({
+    id: nonEmptyString(item.id),
+    title: textToOption(item.title),
+  }).pipe(
+    Option.map(({ id, title }) => ({
+      id,
+      title,
+      artists: toArtistLinks(item.artists),
+      maybeKind: releaseKindFromSubtitle(item.subtitle),
+      maybeYear: nonEmptyString(item.year),
+      artwork: toArtwork(item.thumbnail),
+    })),
+  )
+
+const twoRowItemsOfType = (
+  items: ReadonlyArray<Helpers.YTNode>,
+  itemType: string,
+): ReadonlyArray<YTNodes.MusicTwoRowItem> =>
+  filterSome(items, item =>
+    item.is(YTNodes.MusicTwoRowItem)
+      ? Option.liftPredicate(
+          item.as(YTNodes.MusicTwoRowItem),
+          twoRow => twoRow.item_type === itemType,
+        )
+      : Option.none(),
+  )
+
+const SONG_ITEM_TYPES: ReadonlyArray<string> = ['song', 'video']
+
+const songsOfShelf = (
+  items: ReadonlyArray<Helpers.YTNode>,
+): ReadonlyArray<Song> =>
+  filterSome(items, item =>
+    item.is(YTNodes.MusicResponsiveListItem)
+      ? pipe(
+          Option.some(item.as(YTNodes.MusicResponsiveListItem)),
+          Option.filter(listItem =>
+            Array.contains(SONG_ITEM_TYPES, listItem.item_type ?? ''),
+          ),
+          Option.flatMap(songFromListItem),
+        )
+      : Option.none(),
+  )
+
+const nonEmptyShelf = <A>(
+  items: ReadonlyArray<A>,
+  toShelf: (items: ReadonlyArray<A>) => HomeShelf,
+): Option.Option<HomeShelf> =>
+  Array.isReadonlyArrayNonEmpty(items)
+    ? Option.some(toShelf(items))
+    : Option.none()
+
+/**
+ * One home feed carousel as a shelf of the kind most of its items are.
+ * Carousels of podcasts, moods, and other things the app cannot open are
+ * left out.
+ */
+export const homeShelfFromCarousel = (
+  carousel: YTNodes.MusicCarouselShelf,
+): Option.Option<HomeShelf> =>
+  Option.flatMap(textToOption(carousel.header?.title), title =>
+    pipe(
+      nonEmptyShelf(songsOfShelf(carousel.contents), songs => ({
+        _tag: 'SongShelf',
+        title,
+        songs,
+      })),
+      Option.orElse(() =>
+        nonEmptyShelf(
+          filterSome(
+            twoRowItemsOfType(carousel.contents, 'album'),
+            albumFromHomeItem,
+          ),
+          albums => ({ _tag: 'AlbumShelf', title, albums }),
+        ),
+      ),
+      Option.orElse(() =>
+        nonEmptyShelf(
+          filterSome(
+            twoRowItemsOfType(carousel.contents, 'playlist'),
+            playlistFromTwoRowItem,
+          ),
+          playlists => ({ _tag: 'PlaylistShelf', title, playlists }),
+        ),
+      ),
+      Option.orElse(() =>
+        nonEmptyShelf(
+          filterSome(
+            twoRowItemsOfType(carousel.contents, 'artist'),
+            artistFromTwoRowItem,
+          ),
+          artists => ({ _tag: 'ArtistShelf', title, artists }),
+        ),
+      ),
     ),
   )

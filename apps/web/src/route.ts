@@ -1,5 +1,5 @@
 import { Option, Schema, SchemaTransformation, pipe } from 'effect'
-import { Route } from 'foldkit'
+import { Route, type Url } from 'foldkit'
 import { defineRouteUnion, literal, slash, string } from 'foldkit/route'
 
 /** Which catalog a search looks through. */
@@ -25,20 +25,25 @@ const searchKindParam = Schema.OptionFromOptional(Schema.String).pipe(
 )
 
 export const AppRoute = defineRouteUnion({
+  Home: {},
   Search: {
     q: Schema.Option(Schema.String),
     kind: Schema.Option(SearchKind),
   },
+  Library: {},
   Song: { videoId: Schema.String },
   Artist: { artistId: Schema.String },
   Album: { albumId: Schema.String },
+  Playlist: { playlistId: Schema.String },
   NotFound: { path: Schema.String },
 })
 export type AppRoute = typeof AppRoute.Type
 export type SearchRoute = typeof AppRoute.Search.Type
 
+export const homeRouter = pipe(Route.root, Route.mapTo(AppRoute.Home))
+
 export const searchRouter = pipe(
-  Route.root,
+  literal('search'),
   Route.query(
     Schema.Struct({
       q: Schema.OptionFromOptional(Schema.String),
@@ -46,6 +51,11 @@ export const searchRouter = pipe(
     }),
   ),
   Route.mapTo(AppRoute.Search),
+)
+
+export const libraryRouter = pipe(
+  literal('library'),
+  Route.mapTo(AppRoute.Library),
 )
 
 export const songRouter = pipe(
@@ -66,11 +76,20 @@ export const albumRouter = pipe(
   Route.mapTo(AppRoute.Album),
 )
 
+export const playlistRouter = pipe(
+  literal('playlist'),
+  slash(string('playlistId')),
+  Route.mapTo(AppRoute.Playlist),
+)
+
 const routeParser = Route.oneOf(
   songRouter,
   artistRouter,
   albumRouter,
+  playlistRouter,
   searchRouter,
+  libraryRouter,
+  homeRouter,
 )
 
 export const urlToAppRoute = Route.parseUrlWithFallback(
@@ -83,4 +102,55 @@ export const searchUrl = (query: string, kind: SearchKind): string =>
   searchRouter({
     q: Option.liftPredicate(query, value => value.length > 0),
     kind: Option.liftPredicate(kind, value => value !== DEFAULT_SEARCH_KIND),
+  })
+
+/** The path and query of a URL, which is how the app tells pages apart. */
+export const urlPath = (url: Url.Url): string =>
+  Option.match(url.search, {
+    onNone: () => url.pathname,
+    onSome: search => `${url.pathname}?${search}`,
+  })
+
+// TABS
+
+/** The sections of the app the tab bar switches between. */
+export const Tab = Schema.Literals(['Home', 'Search', 'Library'])
+export type Tab = typeof Tab.Type
+
+export const TABS: ReadonlyArray<Tab> = Tab.literals
+
+/** The page each tab opens when nothing in it has been visited yet. */
+export const TAB_ROOT_URLS: Readonly<Record<Tab, string>> = {
+  Home: homeRouter(),
+  Search: searchRouter({ q: Option.none(), kind: Option.none() }),
+  Library: libraryRouter(),
+}
+
+/** The tab a route is the top of, if it is one. Detail pages belong to none. */
+export const routeTab = (route: AppRoute): Option.Option<Tab> =>
+  AppRoute.match(route, {
+    Home: () => Option.some<Tab>('Home'),
+    Search: () => Option.some<Tab>('Search'),
+    Library: () => Option.some<Tab>('Library'),
+    Song: () => Option.none(),
+    Artist: () => Option.none(),
+    Album: () => Option.none(),
+    Playlist: () => Option.none(),
+    NotFound: () => Option.none(),
+  })
+
+/**
+ * Identifies a page for the DOM. Typing a search keeps the same page, so the
+ * search box keeps focus; opening another album replaces the page.
+ */
+export const pageKey = (route: AppRoute): string =>
+  AppRoute.match(route, {
+    Home: () => 'home',
+    Search: () => 'search',
+    Library: () => 'library',
+    Song: ({ videoId }) => `song/${videoId}`,
+    Artist: ({ artistId }) => `artist/${artistId}`,
+    Album: ({ albumId }) => `album/${albumId}`,
+    Playlist: ({ playlistId }) => `playlist/${playlistId}`,
+    NotFound: ({ path }) => `not-found/${path}`,
   })

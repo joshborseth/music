@@ -107,6 +107,56 @@ export const ArtistDetails = Schema.Struct({
 })
 export type ArtistDetails = typeof ArtistDetails.Type
 
+// PLAYLIST
+
+/** A playlist as it appears on a shelf. */
+export const PlaylistSummary = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  /** Who made it, or a few of the artists in it. */
+  maybeSubtitle: Schema.Option(Schema.String),
+  artwork: Artwork,
+})
+export type PlaylistSummary = typeof PlaylistSummary.Type
+
+/** Everything the playlist page shows. */
+export const PlaylistDetails = Schema.Struct({
+  playlist: PlaylistSummary,
+  maybeDescription: Schema.Option(Schema.String),
+  maybeLengthSummary: Schema.Option(Schema.String),
+  tracks: Schema.Array(Song),
+})
+export type PlaylistDetails = typeof PlaylistDetails.Type
+
+// HOME
+
+/** One titled row of the home feed. Each holds one kind of item. */
+export const HomeShelf = Schema.Union([
+  Schema.TaggedStruct('SongShelf', {
+    title: Schema.String,
+    songs: Schema.Array(Song),
+  }),
+  Schema.TaggedStruct('AlbumShelf', {
+    title: Schema.String,
+    albums: Schema.Array(AlbumSummary),
+  }),
+  Schema.TaggedStruct('PlaylistShelf', {
+    title: Schema.String,
+    playlists: Schema.Array(PlaylistSummary),
+  }),
+  Schema.TaggedStruct('ArtistShelf', {
+    title: Schema.String,
+    artists: Schema.Array(ArtistSummary),
+  }),
+])
+export type HomeShelf = typeof HomeShelf.Type
+
+/** What YouTube Music recommends on its home page. */
+export const HomeFeed = Schema.Struct({
+  shelves: Schema.Array(HomeShelf),
+})
+export type HomeFeed = typeof HomeFeed.Type
+
 // ERRORS
 
 /** The requested song, artist, or album does not exist on YouTube Music. */
