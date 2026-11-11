@@ -29,3 +29,6 @@ Thumbs.db
 
 # PWA dev output
 dev-dist/
+
+# Rust
+/target/

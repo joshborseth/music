@@ -1,4 +1,4 @@
-import { Option } from 'effect'
+import { Array, Option } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
 
 import { type ArtistDetails } from '@music/shared'
@@ -12,6 +12,8 @@ import {
   artistCard,
   artworkImage,
   loadingPage,
+  playActions,
+  playFrom,
   remote,
   rowList,
   shelf,
@@ -79,6 +81,9 @@ export const artistView = (
           [h.Class('flex flex-col gap-8')],
           [
             artistHeader(details, h),
+            Array.isReadonlyArrayNonEmpty(details.topSongs)
+              ? playActions(details.topSongs, h)
+              : h.empty,
             rowList(
               {
                 title: 'Top songs',
@@ -90,6 +95,9 @@ export const artistView = (
                       song,
                       maybeTrackNumber: Option.none(),
                       isAlbumHidden: false,
+                      maybeOnPlay: Option.some(
+                        playFrom(details.topSongs, song.videoId),
+                      ),
                     },
                     h,
                   ),

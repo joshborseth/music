@@ -15,6 +15,7 @@ import {
 import { MAX_RECENT_SEARCHES } from './constant'
 import { Message } from './message'
 import { type Model } from './model'
+import { initialPlaybackModel } from './playback/domain'
 import {
   albumQuery,
   albumSearchQuery,
@@ -44,6 +45,7 @@ const emptySearchModel: Model = {
   songs: songQuery.init(),
   artists: artistQuery.init(),
   albums: albumQuery.init(),
+  ...initialPlaybackModel,
 }
 
 const theChain: Song = {

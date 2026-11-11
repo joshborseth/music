@@ -2,6 +2,8 @@ import { Runtime } from 'foldkit'
 
 import { Message } from './message'
 import { Model } from './model'
+import { managedResources } from './playback/resource'
+import { subscriptions } from './playback/subscription'
 import { MusicClientLive } from './rpc'
 import { init, update } from './update'
 import { view } from './view'
@@ -11,6 +13,8 @@ const application = Runtime.makeApplication({
   init,
   update,
   view,
+  subscriptions,
+  managedResources,
   resources: MusicClientLive,
   container: document.getElementById('root'),
   devTools: {

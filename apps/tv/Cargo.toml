@@ -1,0 +1,103 @@
+[package]
+name = "music-tv"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+slint = { version = "=1.18.1", default-features = false, features = [
+  "compat-1-2",
+  "std",
+  "backend-android-activity-06",
+  "renderer-femtovg",
+] }
+symphonia = { version = "0.6.1", default-features = false, features = [
+  "aac",
+  "isomp4",
+] }
+tokio = { version = "1.54", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+] }
+tokio-tungstenite = "0.30"
+futures-util = { version = "0.3", default-features = false, features = [
+  "sink",
+  "std",
+] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "rustls",
+  "stream",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = [
+  "jpeg",
+  "png",
+  "webp",
+] }
+rtrb = "0.3"
+log = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
+cpal = "0.18.2"
+
+[build-dependencies]
+slint-build = "=1.18.1"
+
+# APK settings for `cargo apk build` (see README "TV app").
+[package.metadata.android]
+package = "app.music.tv"
+apk_name = "music-tv"
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
+resources = "res"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 35
+
+[[package.metadata.android.uses_feature]]
+name = "android.software.leanback"
+required = false
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.touchscreen"
+required = false
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[package.metadata.android.application]
+label = "Music"
+icon = "@mipmap/ic_launcher"
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+uses_cleartext_traffic = true
+
+[package.metadata.android.application.activity]
+orientation = "landscape"
+launch_mode = "singleTask"
+config_changes = "orientation|keyboardHidden|keyboard|navigation|screenSize|screenLayout|smallestScreenSize|density|uiMode"
+
+# Shows the app on the TV home screen and in the phone-style launcher.
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.MAIN"]
+categories = [
+  "android.intent.category.LAUNCHER",
+  "android.intent.category.LEANBACK_LAUNCHER",
+]
+
+# `music://play`: what the server asks Home Assistant to open when waking the TV.
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.VIEW"]
+categories = [
+  "android.intent.category.DEFAULT",
+  "android.intent.category.BROWSABLE",
+]
+data = [{ scheme = "music" }]
+

@@ -1,0 +1,52 @@
+{
+  "_tag": "State",
+  "serverNow": 1794426000500,
+  "state": {
+    "devices": [
+      {
+        "id": "phone-1",
+        "name": "iPhone",
+        "kind": "Web",
+        "online": true,
+        "waking": false
+      },
+      {
+        "id": "tv",
+        "name": "TV",
+        "kind": "Tv",
+        "online": false,
+        "waking": true
+      }
+    ],
+    "activeDeviceId": "tv",
+    "queue": [
+      {
+        "entryId": "e0",
+        "track": {
+          "videoId": "dQw4w9WgXcQ",
+          "title": "Never Gonna Give You Up",
+          "artists": "Rick Astley",
+          "album": "Whenever You Need Somebody",
+          "durationSeconds": 213,
+          "artworkUrl": "https://lh3.googleusercontent.com/example=w544-h544-l90-rj"
+        }
+      },
+      {
+        "entryId": "e1",
+        "track": {
+          "videoId": "kJQP7kiw5Fk",
+          "title": "Despacito",
+          "artists": "Luis Fonsi, Daddy Yankee",
+          "album": null,
+          "durationSeconds": null,
+          "artworkUrl": null
+        }
+      }
+    ],
+    "currentEntryId": "e0",
+    "playing": true,
+    "positionSeconds": 12,
+    "positionAt": 1794426000000,
+    "seekSeq": 3
+  }
+}

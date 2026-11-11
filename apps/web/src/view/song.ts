@@ -15,6 +15,8 @@ import {
   formatDuration,
   formatViews,
   loadingPage,
+  playActions,
+  playFrom,
   remote,
   rowList,
   section,
@@ -106,6 +108,7 @@ export const songView = (
           [h.Class('flex flex-col gap-8')],
           [
             songHeader(details, h),
+            playActions([details.song, ...details.relatedSongs], h),
             lyricsSection(details, h),
             rowList(
               {
@@ -118,6 +121,9 @@ export const songView = (
                       song,
                       maybeTrackNumber: Option.none(),
                       isAlbumHidden: false,
+                      maybeOnPlay: Option.some(
+                        playFrom(details.relatedSongs, song.videoId),
+                      ),
                     },
                     h,
                   ),

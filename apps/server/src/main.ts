@@ -2,10 +2,14 @@ import { Config, Effect, Layer, Option } from 'effect'
 import { HttpRouter, HttpStaticServer } from 'effect/http'
 import { RpcSerialization, RpcServer } from 'effect/rpc'
 
-import { BunHttpServer, BunRuntime } from '@effect/platform-bun'
+import { BunHttpServer, BunRuntime, BunServices } from '@effect/platform-bun'
 import { MusicRpcs } from '@music/shared'
 
+import { AudioRoutes, AudioSourceLive } from './audio.ts'
 import { MusicRpcsLive } from './rpcHandlers.ts'
+import { SessionHubLive, SessionRoutes } from './session/hub.ts'
+import { TvWakerLive } from './session/wake.ts'
+import { TvApkRoutes } from './tvApk.ts'
 import { YouTubeMusicLive } from './youtubeMusic/service.ts'
 
 const DEFAULT_PORT = 3001
@@ -43,8 +47,18 @@ const WebAppRoutes = Layer.unwrap(
   }),
 )
 
+const AudioSourceWithProcesses = AudioSourceLive.pipe(
+  Layer.provide(BunServices.layer),
+)
+
+const PlaybackRoutes = Layer.mergeAll(AudioRoutes, SessionRoutes).pipe(
+  Layer.provide(SessionHubLive),
+  Layer.provide(TvWakerLive),
+  Layer.provideMerge(AudioSourceWithProcesses),
+)
+
 const ServerLive = HttpRouter.serve(
-  Layer.mergeAll(RpcRoutes, WebAppRoutes),
+  Layer.mergeAll(RpcRoutes, PlaybackRoutes, TvApkRoutes, WebAppRoutes),
 ).pipe(
   Layer.provide(
     BunHttpServer.layerConfig({

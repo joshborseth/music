@@ -13,6 +13,7 @@ import {
   joinDetails,
   list,
   loadingPage,
+  playActions,
   remote,
   section,
   songRow,
@@ -91,6 +92,7 @@ export const albumView = (
           [h.Class('flex flex-col gap-8')],
           [
             albumHeader(details, h),
+            playActions(details.tracks, h),
             section(
               'Tracks',
               [
@@ -107,6 +109,12 @@ export const albumView = (
                           song,
                           maybeTrackNumber: Option.some(trackNumber),
                           isAlbumHidden: true,
+                          maybeOnPlay: Option.some(
+                            Message.ClickedPlaySongs({
+                              songs: details.tracks,
+                              startIndex: trackNumber - 1,
+                            }),
+                          ),
                         },
                         h,
                       ),

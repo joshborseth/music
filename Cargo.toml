@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["apps/tv"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.90"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 2

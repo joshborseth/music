@@ -1,0 +1,254 @@
+// The TV's only screen: what is playing, from across the room.
+// Everything is sized from the window height so it reads the same on any TV.
+
+export struct UpNextRow {
+    title: string,
+    artists: string,
+}
+
+component Hint inherits HorizontalLayout {
+    in property <string> key;
+    in property <string> label;
+    in property <length> unit;
+    spacing: unit * 0.6;
+    Rectangle {
+        border-radius: unit * 0.5;
+        border-width: 1px;
+        border-color: #ffffff40;
+        width: max(unit * 2.4, key-text.preferred-width + unit * 1.2);
+        key-text := Text {
+            text: key;
+            color: #ffffffb0;
+            font-size: unit * 0.9;
+            font-weight: 600;
+        }
+    }
+    Text {
+        text: label;
+        color: #ffffff80;
+        font-size: unit * 0.9;
+        vertical-alignment: center;
+    }
+}
+
+export component App inherits Window {
+    in property <bool> connected;
+    in property <bool> idle: true;
+    in property <string> track-title;
+    in property <string> artists;
+    in property <string> album;
+    in property <image> artwork;
+    in property <bool> has-artwork;
+    in property <color> tint: #24242e;
+    in property <float> progress;
+    in property <string> position-text: "0:00";
+    in property <string> duration-text: "0:00";
+    in property <bool> playing;
+    in property <string> elsewhere;
+    in property <string> notice;
+    in property <string> server;
+    in property <[UpNextRow]> up-next;
+
+    callback toggle-play();
+    callback seek-by(float);
+    callback next();
+    callback previous();
+
+    title: "Music";
+    background: #0a0a0d;
+    forward-focus: keys;
+
+    // One spacing unit: 1/54 of the height (20px on a 1080p screen).
+    property <length> unit: self.height / 54;
+
+    Rectangle {
+        background: @linear-gradient(140deg, root.tint 0%, #0a0a0d 75%);
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.toggle-play();
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.seek-by(-10);
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                root.seek-by(10);
+                return accept;
+            }
+            if (event.text == Key.UpArrow) {
+                root.previous();
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                root.next();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    // NOTHING QUEUED
+
+    if root.idle: VerticalLayout {
+        alignment: center;
+        spacing: root.unit;
+        Text {
+            text: "Music";
+            color: white;
+            font-size: root.unit * 4;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.connected
+                ? "Open Music on your phone and choose this TV."
+                : "Connecting to " + root.server + "…";
+            color: #ffffff99;
+            font-size: root.unit * 1.4;
+            horizontal-alignment: center;
+        }
+    }
+
+    // NOW PLAYING
+
+    if !root.idle: HorizontalLayout {
+        padding: root.unit * 4;
+        spacing: root.unit * 4;
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: root.height * 0.62;
+                height: self.width;
+                border-radius: root.unit;
+                clip: true;
+                background: #ffffff10;
+                drop-shadow-blur: root.unit * 2;
+                drop-shadow-color: #00000080;
+                Image {
+                    source: root.artwork;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: cover;
+                    visible: root.has-artwork;
+                }
+                Text {
+                    text: "♪";
+                    color: #ffffff30;
+                    font-size: root.unit * 8;
+                    visible: !root.has-artwork;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: root.unit * 0.6;
+
+            Text {
+                text: root.elsewhere != "" ? root.elsewhere : (root.playing ? "Now playing" : "Paused");
+                color: #ffffff80;
+                font-size: root.unit * 1;
+                font-weight: 600;
+            }
+            Text {
+                text: root.track-title;
+                color: white;
+                font-size: root.unit * 3;
+                font-weight: 700;
+                wrap: word-wrap;
+                overflow: elide;
+                max-height: root.unit * 7.5;
+            }
+            Text {
+                text: root.album != "" ? root.artists + " · " + root.album : root.artists;
+                color: #ffffffc0;
+                font-size: root.unit * 1.5;
+                overflow: elide;
+            }
+
+            Rectangle { height: root.unit; }
+
+            Rectangle {
+                height: root.unit * 0.3;
+                border-radius: self.height / 2;
+                background: #ffffff26;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * clamp(root.progress, 0, 1);
+                    border-radius: parent.border-radius;
+                    background: white;
+                }
+            }
+            HorizontalLayout {
+                Text {
+                    text: root.position-text;
+                    color: #ffffff99;
+                    font-size: root.unit * 0.9;
+                }
+                Text {
+                    text: root.duration-text;
+                    color: #ffffff99;
+                    font-size: root.unit * 0.9;
+                    horizontal-alignment: right;
+                }
+            }
+
+            Rectangle { height: root.unit; }
+
+            if root.up-next.length > 0: Text {
+                text: "Up next";
+                color: #ffffff80;
+                font-size: root.unit * 1;
+                font-weight: 600;
+            }
+            for row in root.up-next: HorizontalLayout {
+                spacing: root.unit * 0.6;
+                Text {
+                    text: row.title;
+                    color: #ffffffd0;
+                    font-size: root.unit * 1.1;
+                    overflow: elide;
+                    horizontal-stretch: 0;
+                }
+                Text {
+                    text: row.artists;
+                    color: #ffffff70;
+                    font-size: root.unit * 1.1;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
+
+            Rectangle { height: root.unit; }
+
+            HorizontalLayout {
+                spacing: root.unit * 1.6;
+                alignment: start;
+                Hint { key: "OK"; label: root.elsewhere != "" ? "Play here" : (root.playing ? "Pause" : "Play"); unit: root.unit; }
+                Hint { key: "◀ ▶"; label: "10 s"; unit: root.unit; }
+                Hint { key: "▲ ▼"; label: "Previous / next"; unit: root.unit; }
+            }
+        }
+    }
+
+    // STATUS
+
+    if root.notice != "" || (!root.connected && !root.idle): Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - root.unit * 1.5;
+        width: status-text.preferred-width + root.unit * 2;
+        height: status-text.preferred-height + root.unit;
+        border-radius: self.height / 2;
+        background: #000000b0;
+        status-text := Text {
+            text: root.notice != "" ? root.notice : "Reconnecting…";
+            color: white;
+            font-size: root.unit * 0.9;
+        }
+    }
+}

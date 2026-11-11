@@ -3,6 +3,9 @@ import { Url } from 'foldkit'
 import { defineMessageUnion } from 'foldkit/message'
 import { UrlRequest } from 'foldkit/navigation'
 
+import { Session, Song } from '@music/shared'
+
+import { MediaKey } from './playback/domain'
 import {
   albumQuery,
   albumSearchQuery,
@@ -39,5 +42,54 @@ export const Message = defineMessageUnion({
   GotSongMessage: { message: songQuery.Message },
   GotArtistMessage: { message: artistQuery.Message },
   GotAlbumMessage: { message: albumQuery.Message },
+
+  CompletedLoadDeviceIdentity: {
+    deviceId: Schema.String,
+    deviceName: Schema.String,
+  },
+  AcquiredSessionSocket: {},
+  ReleasedSessionSocket: {},
+  FailedConnectSessionSocket: { error: Schema.String },
+  ClosedSessionSocket: {},
+  CompletedWaitBeforeReconnect: {},
+  ReceivedSessionState: {
+    state: Session.SessionState,
+    serverNow: Schema.Number,
+    receivedAt: Schema.Number,
+  },
+  ReceivedSessionNotice: { message: Schema.String },
+  CompletedSendToSession: {},
+  CompletedWaitBeforeHideNotice: { message: Schema.String },
+  TickedClock: { now: Schema.Number },
+
+  AcquiredPhoneAudio: {},
+  ReleasedPhoneAudio: {},
+  FailedAcquirePhoneAudio: {},
+  CompletedUnlockPhoneAudio: {},
+  CompletedLoadPhoneAudio: { isBlocked: Schema.Boolean },
+  CompletedSetPhoneAudioPlaying: { isBlocked: Schema.Boolean },
+  CompletedStopPhoneAudio: {},
+  CompletedUpdateMediaSession: {},
+  UpdatedPhoneAudioTime: { seconds: Schema.Number, at: Schema.Number },
+  EndedPhoneAudio: {},
+  FailedPhoneAudio: { error: Schema.String },
+  PressedMediaKey: { key: MediaKey },
+
+  ClickedPlaySongs: { songs: Schema.Array(Song), startIndex: Schema.Number },
+  ClickedEnqueueSongs: {
+    songs: Schema.Array(Song),
+    placement: Session.Placement,
+  },
+  ClickedTogglePlayback: {},
+  ClickedNextTrack: {},
+  ClickedPreviousTrack: {},
+  ChangedSeekPosition: { seconds: Schema.Number },
+  ClickedDevice: { deviceId: Schema.String },
+  ClickedQueueEntry: { entryId: Schema.String },
+  ClickedRemoveQueueEntry: { entryId: Schema.String },
+  ClickedOpenPlayer: {},
+  ClickedClosePlayer: {},
+  ClickedStartBlockedAudio: {},
+  ClickedDismissNotice: {},
 })
 export type Message = typeof Message.Type

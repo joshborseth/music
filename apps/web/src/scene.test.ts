@@ -18,6 +18,7 @@ import { type Song } from '@music/shared'
 import { ReplaceSearchUrl, SaveRecentSearches } from './command'
 import { Message } from './message'
 import { type Model } from './model'
+import { initialPlaybackModel } from './playback/domain'
 import {
   type RequestError,
   albumQuery,
@@ -43,6 +44,7 @@ const emptySearchModel: Model = {
   songs: songQuery.init(),
   artists: artistQuery.init(),
   albums: albumQuery.init(),
+  ...initialPlaybackModel,
 }
 
 const theChain: Song = {

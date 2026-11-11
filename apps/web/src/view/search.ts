@@ -144,6 +144,12 @@ const resultsView = (
                           song,
                           maybeTrackNumber: Option.none(),
                           isAlbumHidden: false,
+                          maybeOnPlay: Option.some(
+                            Message.ClickedPlaySongs({
+                              songs: [song],
+                              startIndex: 0,
+                            }),
+                          ),
                         },
                         h,
                       ),

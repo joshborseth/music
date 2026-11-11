@@ -17,6 +17,10 @@ import {
 import { MAX_RECENT_SEARCHES } from './constant'
 import { Message } from './message'
 import { Model } from './model'
+import { LoadDeviceIdentity } from './playback/command'
+import { initialPlaybackModel } from './playback/domain'
+import type { PlaybackServices } from './playback/resource'
+import * as Playback from './playback/update'
 import {
   albumQuery,
   albumSearchQuery,
@@ -34,8 +38,12 @@ import {
 } from './route'
 import { type MusicClient } from './rpc'
 
-type UpdateReturn = Update.Return<Model, Message, MusicClient>
-type UpdateStep = Update.Step<Model, Message, MusicClient>
+type UpdateReturn = Update.Return<
+  Model,
+  Message,
+  MusicClient | PlaybackServices
+>
+type UpdateStep = Update.Step<Model, Message, MusicClient | PlaybackServices>
 
 // QUERIES
 
@@ -216,11 +224,16 @@ const loadRecentSearches: UpdateStep = model => ({
   commands: [LoadRecentSearches()],
 })
 
+const loadDeviceIdentity: UpdateStep = model => ({
+  model,
+  commands: [LoadDeviceIdentity()],
+})
+
 export const init: Runtime.RoutingApplicationInit<
   Model,
   Message,
   void,
-  MusicClient
+  MusicClient | PlaybackServices
 > = (url: Url.Url) => {
   const route = urlToAppRoute(url)
   const model = syncSearchInput({
@@ -233,9 +246,14 @@ export const init: Runtime.RoutingApplicationInit<
     songs: songQuery.init(),
     artists: artistQuery.init(),
     albums: albumQuery.init(),
+    ...initialPlaybackModel,
   })
 
-  return Update.combine([loadRoute(route), loadRecentSearches])(model)
+  return Update.combine([
+    loadRoute(route),
+    loadRecentSearches,
+    loadDeviceIdentity,
+  ])(model)
 }
 
 // UPDATE
@@ -337,4 +355,61 @@ export const update = (model: Model, message: Message) =>
     CompletedScrollToTop: () => ({ model }),
     CompletedFocusSearchInput: () => ({ model }),
     CompletedSaveRecentSearches: () => ({ model }),
+
+    CompletedLoadDeviceIdentity: ({ deviceId, deviceName }) =>
+      Playback.completeLoadDeviceIdentity(model, deviceId, deviceName),
+    AcquiredSessionSocket: () => Playback.acquireSessionSocket(model),
+    ReleasedSessionSocket: () => ({ model }),
+    FailedConnectSessionSocket: () => Playback.loseSessionSocket(model),
+    ClosedSessionSocket: () => Playback.loseSessionSocket(model),
+    CompletedWaitBeforeReconnect: () =>
+      Playback.completeWaitBeforeReconnect(model),
+    ReceivedSessionState: ({ state, serverNow, receivedAt }) =>
+      Playback.receiveSessionState(model, state, serverNow, receivedAt),
+    ReceivedSessionNotice: ({ message }) =>
+      Playback.receiveNotice(model, message),
+    CompletedSendToSession: () => ({ model }),
+    CompletedWaitBeforeHideNotice: ({ message }) =>
+      Playback.completeWaitBeforeHideNotice(model, message),
+    ClickedDismissNotice: () => ({
+      model: modifyFields(model, { maybeNotice: () => Option.none() }),
+    }),
+    TickedClock: ({ now }) => ({
+      model: modifyFields(model, { now: () => now }),
+    }),
+
+    AcquiredPhoneAudio: () => Playback.acquirePhoneAudio(model),
+    ReleasedPhoneAudio: () => Playback.releasePhoneAudio(model),
+    FailedAcquirePhoneAudio: () => Playback.releasePhoneAudio(model),
+    CompletedUnlockPhoneAudio: () => ({ model }),
+    CompletedLoadPhoneAudio: ({ isBlocked }) =>
+      Playback.completeStartPhoneAudio(model, isBlocked),
+    CompletedSetPhoneAudioPlaying: ({ isBlocked }) =>
+      Playback.completeStartPhoneAudio(model, isBlocked),
+    CompletedStopPhoneAudio: () => ({ model }),
+    CompletedUpdateMediaSession: () => ({ model }),
+    UpdatedPhoneAudioTime: ({ seconds, at }) =>
+      Playback.updatePhoneAudioTime(model, seconds, at),
+    EndedPhoneAudio: () => Playback.endPhoneAudio(model),
+    FailedPhoneAudio: ({ error }) => Playback.failPhoneAudio(model, error),
+    PressedMediaKey: ({ key }) => Playback.pressMediaKey(model, key),
+
+    ClickedPlaySongs: ({ songs, startIndex }) =>
+      Playback.clickPlaySongs(model, songs, startIndex),
+    ClickedEnqueueSongs: ({ songs, placement }) =>
+      Playback.clickEnqueueSongs(model, songs, placement),
+    ClickedTogglePlayback: () => Playback.clickTogglePlayback(model),
+    ClickedNextTrack: () => Playback.sendCommand(model, { _tag: 'Next' }),
+    ClickedPreviousTrack: () =>
+      Playback.sendCommand(model, { _tag: 'Previous' }),
+    ChangedSeekPosition: ({ seconds }) =>
+      Playback.sendCommand(model, { _tag: 'Seek', positionSeconds: seconds }),
+    ClickedDevice: ({ deviceId }) => Playback.clickDevice(model, deviceId),
+    ClickedQueueEntry: ({ entryId }) =>
+      Playback.sendCommand(model, { _tag: 'SkipTo', entryId }),
+    ClickedRemoveQueueEntry: ({ entryId }) =>
+      Playback.sendCommand(model, { _tag: 'RemoveEntry', entryId }),
+    ClickedOpenPlayer: () => Playback.openPlayer(model),
+    ClickedClosePlayer: () => Playback.closePlayer(model),
+    ClickedStartBlockedAudio: () => Playback.startBlockedAudio(model),
   })

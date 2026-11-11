@@ -48,7 +48,7 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/rpc/],
+        navigateFallbackDenylist: [/^\/rpc/, /^\/audio\//, /^\/session/],
         runtimeCaching: [
           {
             urlPattern: YOUTUBE_IMAGE_HOSTS,
@@ -78,12 +78,16 @@ export default defineConfig({
     host: true,
     proxy: {
       '/rpc': { target: SERVER_URL, changeOrigin: true },
+      '/audio': { target: SERVER_URL, changeOrigin: true },
+      '/session': { target: SERVER_URL, changeOrigin: true, ws: true },
     },
   },
   preview: {
     host: true,
     proxy: {
       '/rpc': { target: SERVER_URL, changeOrigin: true },
+      '/audio': { target: SERVER_URL, changeOrigin: true },
+      '/session': { target: SERVER_URL, changeOrigin: true, ws: true },
     },
   },
 })

@@ -13,6 +13,7 @@ import { AppRoute, searchRouter } from '../route'
 import { routeQuery } from '../update'
 import { albumView } from './album'
 import { artistView } from './artist'
+import { hasMiniPlayer, playerView } from './player'
 import { searchView } from './search'
 import { emptyState } from './shared'
 import { songView } from './song'
@@ -96,10 +97,15 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
       [
         h.Id(PAGE_TOP_ID),
         h.Class(
-          'mx-auto min-h-dvh w-full max-w-xl px-4 pb-[max(env(safe-area-inset-bottom),2rem)]',
+          cn(
+            'mx-auto min-h-dvh w-full max-w-xl px-4',
+            hasMiniPlayer(model)
+              ? 'pb-[calc(env(safe-area-inset-bottom)+6rem)]'
+              : 'pb-[max(env(safe-area-inset-bottom),2rem)]',
+          ),
         ),
       ],
-      [h.main([], [content])],
+      [h.main([], [content]), playerView(model, h)],
     ),
   }
 }

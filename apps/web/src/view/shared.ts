@@ -1,7 +1,16 @@
 import { Array, Option, pipe } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
-import { CircleAlert, Disc3, Music, RotateCw, User } from 'lucide'
+import {
+  CircleAlert,
+  Disc3,
+  ListEnd,
+  ListStart,
+  Music,
+  Play,
+  RotateCw,
+  User,
+} from 'lucide'
 
 import { Alert } from '@/components/ui/alert'
 import { button } from '@/components/ui/button'
@@ -169,6 +178,8 @@ type SongRowConfig = Readonly<{
   song: Song
   maybeTrackNumber: Option.Option<number>
   isAlbumHidden: boolean
+  /** Adds a play button beside the row that sends this Message. */
+  maybeOnPlay: Option.Option<Message>
 }>
 
 /** A song in a list: artwork or track number, title, credits, length. */
@@ -212,7 +223,7 @@ export const songRow = (
       ),
   })
 
-  return rowLink(
+  const row = rowLink(
     songHref(song.videoId),
     Item(
       { size: 'sm', className: rowClass },
@@ -240,7 +251,81 @@ export const songRow = (
     ),
     h,
   )
+
+  return Option.match(config.maybeOnPlay, {
+    onNone: () => row,
+    onSome: onPlay =>
+      h.div(
+        [h.Class('flex items-center gap-1')],
+        [
+          h.div([h.Class('min-w-0 flex-1')], [row]),
+          button(
+            {
+              onClick: onPlay,
+              variant: 'ghost',
+              size: 'icon-lg',
+              className: 'text-muted-foreground rounded-full',
+            },
+            [
+              icon(h, Play, 'size-4'),
+              h.span([h.Class('sr-only')], [`Play ${song.title}`]),
+            ],
+            h,
+          ),
+        ],
+      ),
+  })
 }
+
+/** Play these songs now, next, or after everything queued. */
+export const playActions = (
+  songs: ReadonlyArray<Song>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex flex-wrap justify-center gap-2')],
+    [
+      button(
+        {
+          onClick: Message.ClickedPlaySongs({ songs, startIndex: 0 }),
+          className: 'rounded-full px-5',
+        },
+        [icon(h, Play, 'size-4'), 'Play'],
+        h,
+      ),
+      button(
+        {
+          onClick: Message.ClickedEnqueueSongs({ songs, placement: 'Next' }),
+          variant: 'secondary',
+          className: 'rounded-full',
+        },
+        [icon(h, ListStart, 'size-4'), 'Play next'],
+        h,
+      ),
+      button(
+        {
+          onClick: Message.ClickedEnqueueSongs({ songs, placement: 'Last' }),
+          variant: 'secondary',
+          className: 'rounded-full',
+        },
+        [icon(h, ListEnd, 'size-4'), 'Add to queue'],
+        h,
+      ),
+    ],
+  )
+
+/** Play `songs` from the one with this id. */
+export const playFrom = (
+  songs: ReadonlyArray<Song>,
+  videoId: string,
+): Message =>
+  Message.ClickedPlaySongs({
+    songs,
+    startIndex: Option.getOrElse(
+      Array.findFirstIndex(songs, song => song.videoId === videoId),
+      () => 0,
+    ),
+  })
 
 /** An artist in a list: round photo, name, audience. */
 export const artistRow = (

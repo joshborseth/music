@@ -1,6 +1,13 @@
 import { Schema } from 'effect'
 
 import {
+  Connection,
+  DeviceIdentity,
+  PhoneAudio,
+  PlayerSheet,
+  SessionSnapshot,
+} from './playback/domain'
+import {
   albumQuery,
   albumSearchQuery,
   artistQuery,
@@ -20,5 +27,14 @@ export const Model = Schema.Struct({
   songs: songQuery.Model,
   artists: artistQuery.Model,
   albums: albumQuery.Model,
+  maybeIdentity: Schema.Option(DeviceIdentity),
+  connection: Connection,
+  maybeSession: Schema.Option(SessionSnapshot),
+  phoneAudio: PhoneAudio,
+  phoneAudioSeconds: Schema.Number,
+  lastProgressAt: Schema.Number,
+  now: Schema.Number,
+  playerSheet: PlayerSheet,
+  maybeNotice: Schema.Option(Schema.String),
 })
 export type Model = typeof Model.Type
