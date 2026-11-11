@@ -43,7 +43,10 @@ const albumHeader = (details: AlbumDetails, h: HtmlBuilder<Message>): Html => {
           joinDetails([
             Option.getOrElse(album.maybeKind, () => ''),
             Option.getOrElse(album.maybeYear, () => ''),
-            Option.getOrElse(details.maybeLengthSummary, () => ''),
+            Option.match(details.maybeLengthSummary, {
+              onNone: () => '',
+              onSome: summary => summary.replaceAll(' • ', ' · '),
+            }),
           ]),
         ],
       ),

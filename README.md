@@ -33,7 +33,17 @@ bun run dev
 
 This starts the server on port 3001 and Vite on port 5173. Vite forwards `/rpc` to the server. Open http://localhost:5173, or the `Network` address Vite prints to try it on your phone over the LAN or Tailscale.
 
-To install it as an app, the phone needs an HTTPS address and a production build (`bun run build`, then serve `apps/web/dist` with `/rpc` forwarded to the server). Hosting is not set up yet.
+## Hosting
+
+The installed app runs on this machine as the `music.service` systemd user unit. The Bun server serves the built web app from `apps/web/dist` and `/rpc` together on `127.0.0.1:4310`. Tailscale Serve publishes it to the tailnet only (no Funnel) on port 7443 of this machine's Tailscale name: `https://<machine>.<tailnet>.ts.net:7443`. Run `tailscale serve status` to see the exact address.
+
+On the iPhone, open that address in Safari, tap Share, then **Add to Home Screen**.
+
+- Ship changes: `bun run deploy` builds the web app and restarts the service.
+- Logs: `journalctl --user -u music.service -f`
+- Stop publishing it: `sudo tailscale serve --https=7443 off`
+
+The unit file lives at `~/.config/systemd/user/music.service`.
 
 ## Scripts
 

@@ -1,5 +1,5 @@
-import { Config, Layer } from 'effect'
-import { HttpRouter } from 'effect/http'
+import { Config, Effect, Layer, Option } from 'effect'
+import { HttpRouter, HttpStaticServer } from 'effect/http'
 import { RpcSerialization, RpcServer } from 'effect/rpc'
 
 import { BunHttpServer, BunRuntime } from '@effect/platform-bun'
@@ -9,6 +9,9 @@ import { MusicRpcsLive } from './rpcHandlers.ts'
 import { YouTubeMusicLive } from './youtubeMusic/service.ts'
 
 const DEFAULT_PORT = 3001
+const DEFAULT_HOSTNAME = '127.0.0.1'
+
+const STATIC_MIME_TYPES = { webmanifest: 'application/manifest+json' }
 
 const RpcRoutes = RpcServer.layerHttp({
   group: MusicRpcs,
@@ -20,10 +23,35 @@ const RpcRoutes = RpcServer.layerHttp({
   Layer.provide(RpcSerialization.layerNdjson),
 )
 
-const ServerLive = HttpRouter.serve(RpcRoutes).pipe(
+/**
+ * Serves the built web app when `WEB_DIST_DIR` is set, so one origin carries
+ * both the app and its RPC endpoint. In development Vite serves the app.
+ */
+const WebAppRoutes = Layer.unwrap(
+  Effect.gen(function* () {
+    const maybeWebDistDir = yield* Config.option(Config.String('WEB_DIST_DIR'))
+    return Option.match(maybeWebDistDir, {
+      onNone: () => Layer.empty,
+      onSome: root =>
+        HttpStaticServer.layer({
+          root,
+          spa: true,
+          cacheControl: 'no-cache',
+          mimeTypes: STATIC_MIME_TYPES,
+        }),
+    })
+  }),
+)
+
+const ServerLive = HttpRouter.serve(
+  Layer.mergeAll(RpcRoutes, WebAppRoutes),
+).pipe(
   Layer.provide(
     BunHttpServer.layerConfig({
       port: Config.Port('PORT').pipe(Config.withDefault(DEFAULT_PORT)),
+      hostname: Config.String('HOST').pipe(
+        Config.withDefault(DEFAULT_HOSTNAME),
+      ),
     }),
   ),
 )

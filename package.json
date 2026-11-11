@@ -22,7 +22,8 @@
     "test": "bun run --filter '*' test",
     "lint": "oxlint --disable-nested-config apps packages && effect-tsgo patch --no-typescript --oxlint && oxlint --disable-nested-config --config .oxlintrc.effect.json --deny-warnings apps packages",
     "format": "oxfmt --disable-nested-config",
-    "format:check": "oxfmt --disable-nested-config --check"
+    "format:check": "oxfmt --disable-nested-config --check",
+    "deploy": "bun run build && systemctl --user restart music.service"
   },
   "devDependencies": {
     "@effect/tsgo": "0.50.0",
