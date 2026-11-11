@@ -79,6 +79,13 @@ export interface YouTubeMusicShape {
   readonly getSong: (
     videoId: string,
   ) => Effect.Effect<SongDetails, MusicNotFoundError | YouTubeMusicError>
+  /** The songs YouTube Music would play after this one. */
+  readonly getUpNext: (
+    videoId: string,
+  ) => Effect.Effect<
+    ReadonlyArray<Song>,
+    MusicNotFoundError | YouTubeMusicError
+  >
   readonly getArtist: (
     artistId: string,
   ) => Effect.Effect<ArtistDetails, MusicNotFoundError | YouTubeMusicError>
@@ -136,12 +143,30 @@ const make = Effect.gen(function* () {
     return filterSome(items, albumFromListItem)
   })
 
+  const upNextSongs = (videoId: string) =>
+    Effect.map(
+      lookUp(videoId, () => music.getUpNext(videoId)),
+      queue =>
+        filterSome(queue.contents, item =>
+          item.is(YTNodes.PlaylistPanelVideo)
+            ? songFromPlaylistPanelVideo(item.as(YTNodes.PlaylistPanelVideo))
+            : Option.none(),
+        ),
+    )
+
+  const getUpNext = Effect.fn('YouTubeMusic.getUpNext')(function* (
+    videoId: string,
+  ) {
+    const songs = yield* upNextSongs(videoId)
+    return Array.filter(songs, ({ videoId: id }) => id !== videoId)
+  })
+
   const getSong = Effect.fn('YouTubeMusic.getSong')(function* (
     videoId: string,
   ) {
-    const [queue, info, maybeLyrics] = yield* Effect.all(
+    const [queueSongs, info, maybeLyrics] = yield* Effect.all(
       [
-        lookUp(videoId, () => music.getUpNext(videoId)),
+        upNextSongs(videoId),
         lookUp(videoId, () => music.getInfo(videoId)),
         callYouTube(() => music.getLyrics(videoId)).pipe(
           Effect.map(maybeShelf =>
@@ -151,12 +176,6 @@ const make = Effect.gen(function* () {
         ),
       ],
       { concurrency: 'unbounded' },
-    )
-
-    const queueSongs = filterSome(queue.contents, item =>
-      item.is(YTNodes.PlaylistPanelVideo)
-        ? songFromPlaylistPanelVideo(item.as(YTNodes.PlaylistPanelVideo))
-        : Option.none(),
     )
 
     const song = yield* pipe(
@@ -194,6 +213,7 @@ const make = Effect.gen(function* () {
     searchArtists,
     searchAlbums,
     getSong,
+    getUpNext,
     getArtist,
     getAlbum,
   })

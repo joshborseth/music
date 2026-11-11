@@ -17,15 +17,17 @@ import type { Socket } from 'effect/socket'
 import { Session } from '@music/shared'
 
 import { AudioStore } from '../audioStore.ts'
+import { Prefetcher } from '../prefetch.ts'
+import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import {
   type Model,
   type Outcome,
   initialModel,
+  lookahead,
   playerLost,
   refresh,
   toSessionState,
   unchanged,
-  upcomingVideoIds,
   update,
   wakeTimedOut,
 } from './model.ts'
@@ -44,6 +46,8 @@ const PLAYER_GRACE = '15 seconds'
 const WAKE_TIMEOUT = '60 seconds'
 /** Only the latest state matters to a slow client. */
 const MAILBOX_SIZE = 32
+/** Songs from YouTube's "up next" to find links for as the queue runs out. */
+const QUEUE_END_RESOLVES = 3
 
 interface Connection {
   readonly deviceId: string
@@ -73,6 +77,8 @@ export const SessionHubLive = Layer.effect(SessionHub)(
   Effect.gen(function* () {
     const waker = yield* TvWaker
     const audioStore = yield* AudioStore
+    const prefetcher = yield* Prefetcher
+    const youTubeMusic = yield* YouTubeMusic
     const lock = yield* Semaphore.make(1)
     const timers = yield* FiberMap.make<string>()
     const hubScope = yield* Scope.Scope
@@ -141,9 +147,85 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       )
     })
 
-    const warmUpcoming = Effect.suspend(() =>
-      audioStore.warm(upcomingVideoIds(model)),
-    )
+    let maybeCountedEntryId = Option.none<string>()
+    let maybeQueueEndFor = Option.none<string>()
+
+    /** A song counts as played once it is current and playing. */
+    const countPlay = Effect.suspend(() => {
+      const entryId = model.currentEntryId
+      if (
+        !model.playing ||
+        entryId === null ||
+        Option.contains(maybeCountedEntryId, entryId)
+      ) {
+        return Effect.void
+      }
+      maybeCountedEntryId = Option.some(entryId)
+      const entry = model.queue.find(queued => queued.entryId === entryId)
+      return entry === undefined
+        ? Effect.void
+        : audioStore.markPlayed(entry.track.videoId)
+    })
+
+    /**
+     * As the queue runs out, find links for the first songs YouTube Music
+     * would play after it, so adding one of them starts fast. Once per
+     * last song.
+     */
+    const prepareQueueEnd = (maybeEndingAt: Option.Option<string>) =>
+      Effect.suspend(() => {
+        if (Option.isNone(maybeEndingAt)) {
+          maybeQueueEndFor = Option.none()
+          return prefetcher.plan('QueueEnd', [])
+        }
+        const last = maybeEndingAt.value
+        if (Option.contains(maybeQueueEndFor, last)) return Effect.void
+        maybeQueueEndFor = Option.some(last)
+        const queued = new Set(model.queue.map(entry => entry.track.videoId))
+        return youTubeMusic.getUpNext(last).pipe(
+          Effect.flatMap(songs =>
+            prefetcher.plan(
+              'QueueEnd',
+              songs
+                .filter(song => !queued.has(song.videoId))
+                .slice(0, QUEUE_END_RESOLVES)
+                .map((song, index) => ({
+                  videoId: song.videoId,
+                  kind: 'Resolve' as const,
+                  priority: 30 + index,
+                })),
+            ),
+          ),
+          Effect.ignore,
+          Effect.forkIn(hubScope),
+          Effect.asVoid,
+        )
+      })
+
+    /** Keep the current song and the next five ready, and look ahead further. */
+    const prepareAhead = Effect.suspend(() => {
+      const ahead = lookahead(model)
+      return Effect.all(
+        [
+          countPlay,
+          audioStore.protect(ahead.download),
+          prefetcher.plan('Queue', [
+            ...ahead.download.map((videoId, index) => ({
+              videoId,
+              kind: 'Download' as const,
+              priority: index,
+            })),
+            ...ahead.resolve.map((videoId, index) => ({
+              videoId,
+              kind: 'Resolve' as const,
+              priority: 20 + index,
+            })),
+          ]),
+          prepareQueueEnd(ahead.maybeEndingAt),
+        ],
+        { discard: true },
+      )
+    })
 
     /** Run one transition under the lock and carry out what it asks for. */
     const apply = (
@@ -155,7 +237,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
           model = outcome.model
           if (outcome.broadcast) {
             yield* broadcastState
-            yield* warmUpcoming
+            yield* prepareAhead
           }
           if (Option.isSome(outcome.maybeNotice)) {
             yield* sendAll(

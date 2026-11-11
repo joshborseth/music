@@ -9,7 +9,7 @@ import { Session } from '@music/shared'
 import { Message } from '../message'
 import { DEVICE_ID_KEY, deviceNameFromUserAgent } from './domain'
 import { PhoneAudioElement, SessionSocket } from './resource'
-import { cacheSong, cachedSong } from './songCache'
+import { cachedSong, prefetchSongs, recordPlay } from './songCache'
 
 const RECONNECT_DELAY = Duration.seconds(2)
 const NOTICE_DURATION = Duration.seconds(6)
@@ -166,7 +166,8 @@ const seekWhenReady = (audio: HTMLAudioElement, seconds: number) => {
 
 /**
  * Play a song from the phone's cache when it is there, so it starts and
- * seeks instantly. Otherwise stream it, and cache it for next time.
+ * seeks instantly. Otherwise stream it; `PrefetchSongs`, which always
+ * comes with this, caches it for next time.
  */
 export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
   args: {
@@ -192,8 +193,8 @@ export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
             },
           })
           seekWhenReady(audio, startSeconds)
-          if (Option.isNone(maybeBlob)) {
-            yield* Effect.forkDetach(cacheSong(videoId))
+          if (isPlaying) {
+            yield* recordPlay(videoId)
           }
           if (!isPlaying) {
             audio.pause()
@@ -223,14 +224,15 @@ export const SeekPhoneAudio = Command.define('SeekPhoneAudio', {
     ),
 })
 
-/** Download the songs that play next, so they start without waiting. */
+/**
+ * Keep the current song and the ones that play next on the phone, in play
+ * order, so they start without waiting.
+ */
 export const PrefetchSongs = Command.define('PrefetchSongs', {
   args: { videoIds: Schema.Array(Schema.String) },
   messages: [Message.CompletedPrefetchSongs],
   execute: ({ videoIds }) =>
-    Effect.forEach(videoIds, cacheSong, { discard: true }).pipe(
-      Effect.as(Message.CompletedPrefetchSongs()),
-    ),
+    prefetchSongs(videoIds).pipe(Effect.as(Message.CompletedPrefetchSongs())),
 })
 
 export const SetPhoneAudioPlaying = Command.define('SetPhoneAudioPlaying', {
