@@ -8,6 +8,8 @@ import {
   Schema,
   Scope,
   Semaphore,
+  Stream,
+  SubscriptionRef,
 } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 import type { Socket } from 'effect/socket'
@@ -56,6 +58,8 @@ export class SessionHub extends Context.Service<
     readonly handle: (
       socket: Socket.Socket,
     ) => Effect.Effect<void, never, Scope.Scope>
+    /** The session as every device last saw it, then each change. */
+    readonly states: Stream.Stream<Session.SessionState>
   }
 >()('music/SessionHub') {}
 
@@ -74,6 +78,9 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     const hubScope = yield* Scope.Scope
 
     let model: Model = initialModel
+    const latestState = yield* SubscriptionRef.make(
+      toSessionState(initialModel, []),
+    )
     const connections = new Map<number, Connection>()
     let nextConnectionId = 0
     let nextEntryId = 0
@@ -120,15 +127,19 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         { discard: true },
       )
 
-    const broadcastState = Effect.suspend(() =>
-      sendAll(
-        encodeServerMessage({
-          _tag: 'State',
-          state: toSessionState(model, devices()),
-          serverNow: Date.now(),
-        }),
-      ),
-    )
+    const broadcastState = Effect.suspend(() => {
+      const state = toSessionState(model, devices())
+      return Effect.andThen(
+        SubscriptionRef.set(latestState, state),
+        sendAll(
+          encodeServerMessage({
+            _tag: 'State',
+            state,
+            serverNow: Date.now(),
+          }),
+        ),
+      )
+    })
 
     const warmUpcoming = Effect.suspend(() =>
       audioStore.warm(upcomingVideoIds(model)),
@@ -275,7 +286,10 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         }).pipe(Effect.ignore)
       }).pipe(Effect.ignore)
 
-    return SessionHub.of({ handle })
+    return SessionHub.of({
+      handle,
+      states: SubscriptionRef.changes(latestState),
+    })
   }),
 )
 

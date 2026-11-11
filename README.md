@@ -22,6 +22,7 @@ apps/tv          Rust Android TV app: Slint UI, Symphonia (AAC), cpal (AAudio)
    │  Effect RPC over HTTP (/rpc, NDJSON)      catalog: search and pages (web only)
    │  WebSocket (/session, JSON)               the shared queue and who plays it
    │  HTTP with byte ranges (/audio/:videoId)  the songs themselves
+   │  WebSocket (/now-playing, JSON)           read-only: the song and its cover's colors
 apps/server      Bun + Effect server: youtubei.js for the catalog, yt-dlp for audio
 packages/shared  The RPC contract, the session protocol, and every Schema
 fixtures/session Example session messages that the TypeScript and Rust tests both decode
@@ -43,6 +44,8 @@ To make that first wait rare, the server downloads songs before anyone presses P
 **The TV app.** Rust from top to bottom. The audio engine (`apps/tv/src/audio`) downloads each song into memory, decodes it with Symphonia while it arrives, and writes samples into a lock-free ring buffer that the AAudio callback drains. The next song is downloaded and opened while the current one plays, so it follows without a gap. The screen is a single Slint window drawn by Skia on the GPU, and it only redraws when something on it changes. The app only speaks plain HTTP to the server, so it carries no TLS stack. The server relays album art at `/artwork?url=…`, for Google's image hosts only. If the app crashes, it posts the panic to `/tv-log`, and the report appears in the server's log (`journalctl --user -u music.service`).
 
 **Waking the TV.** Home Assistant is already paired with the TV's Android TV Remote service. When you pick the TV while it is off, the server calls Home Assistant's `remote.turn_on` with `activity: music://play`. That turns the TV on and opens the app through its deep link. If the TV has not connected within 60 seconds, the phone shows a notice and playback pauses.
+
+**Now playing, for the house.** `/now-playing` is a read-only WebSocket for things outside the app, such as the lights. It sends the current song, whether it is playing, which device plays it, and the cover's colors when it connects, then again after every change. Listeners send nothing and never appear as a device. The server finds the colors with k-means in OKLab on a 48×48 copy of the cover (decoded with sharp), drops black, white, grey, and specks, and ranks what is left by area and colorfulness. That takes about 50 ms per cover, and each cover's colors are cached. A cover with no usable color sends an empty palette. The contract is `packages/shared/src/nowPlaying.ts`.
 
 YouTube blocks cross-origin calls from browsers, so the browser never talks to YouTube directly. The server maps YouTube's loosely typed responses into the Schemas in `packages/shared`, and Effect RPC validates them on both ends. Artwork loads straight from Google's image CDN, and the service worker caches it.
 

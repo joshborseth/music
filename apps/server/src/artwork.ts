@@ -10,7 +10,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 const ALLOWED_HOSTS = /(^|\.)(googleusercontent\.com|ytimg\.com|ggpht\.com)$/
 const CACHE_CONTROL = 'public, max-age=604800, immutable'
 
-const allowedUrl = (raw: string | null): URL | undefined => {
+export const allowedArtworkUrl = (raw: string | null): URL | undefined => {
   if (raw === null || !URL.canParse(raw)) {
     return undefined
   }
@@ -22,7 +22,7 @@ const allowedUrl = (raw: string | null): URL | undefined => {
 
 const relayArtwork = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest
-  const url = allowedUrl(
+  const url = allowedArtworkUrl(
     new URL(request.url, 'http://localhost').searchParams.get('url'),
   )
   if (url === undefined) {

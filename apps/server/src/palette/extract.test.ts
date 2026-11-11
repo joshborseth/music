@@ -1,0 +1,132 @@
+import { describe, expect, test } from 'bun:test'
+import { Effect } from 'effect'
+import sharp from 'sharp'
+
+import { oklabToRgb, paletteFromPixels, rgbToOklab } from './extract.ts'
+import { samplePixels } from './service.ts'
+
+type Rgb = readonly [number, number, number]
+
+/** Packed pixels: each color repeated `count` times. */
+const pixels = (...runs: ReadonlyArray<readonly [Rgb, number]>): Uint8Array =>
+  Uint8Array.from(
+    runs.flatMap(([color, count]) =>
+      Array.from({ length: count }, () => color).flat(),
+    ),
+  )
+
+const channels = (hex: string): Rgb => [
+  Number.parseInt(hex.slice(1, 3), 16),
+  Number.parseInt(hex.slice(3, 5), 16),
+  Number.parseInt(hex.slice(5, 7), 16),
+]
+
+const near = (hex: string, [red, green, blue]: Rgb, tolerance = 6) => {
+  const [r, g, b] = channels(hex)
+  return (
+    Math.abs(r - red) <= tolerance &&
+    Math.abs(g - green) <= tolerance &&
+    Math.abs(b - blue) <= tolerance
+  )
+}
+
+describe('paletteFromPixels', () => {
+  test('round-trips sRGB through OKLab', () => {
+    const colors: ReadonlyArray<Rgb> = [
+      [255, 0, 0],
+      [18, 129, 182],
+      [139, 206, 0],
+      [0, 0, 0],
+      [255, 255, 255],
+    ]
+    for (const [red, green, blue] of colors) {
+      expect(oklabToRgb(rgbToOklab(red, green, blue))).toEqual([
+        red,
+        green,
+        blue,
+      ])
+    }
+  })
+
+  test('a single-color cover gives that color', () => {
+    const palette = paletteFromPixels(pixels([[139, 206, 0], 2304]))
+    expect(palette).toHaveLength(1)
+    expect(palette[0]?.hex).toBe('#8bce00')
+    expect(palette[0]?.share).toBe(1)
+  })
+
+  test('black, white, and grey covers give no color', () => {
+    expect(
+      paletteFromPixels(
+        pixels(
+          [[0, 0, 0], 1500],
+          [[255, 255, 255], 500],
+          [[128, 128, 128], 300],
+        ),
+      ),
+    ).toEqual([])
+  })
+
+  test('a large colorful area leads a small brighter one', () => {
+    const palette = paletteFromPixels(
+      pixels([[20, 60, 160], 1600], [[250, 220, 20], 120], [[0, 0, 0], 584]),
+    )
+    expect(palette.map(({ hex }) => hex)).toHaveLength(2)
+    expect(near(palette[0]?.hex ?? '', [20, 60, 160])).toBe(true)
+    expect(near(palette[1]?.hex ?? '', [250, 220, 20])).toBe(true)
+  })
+
+  test('drops specks and merges shades that look alike', () => {
+    const palette = paletteFromPixels(
+      pixels(
+        [[200, 30, 30], 1000],
+        [[205, 34, 32], 1000],
+        [[30, 200, 30], 20],
+        [[255, 255, 255], 284],
+      ),
+    )
+    expect(palette).toHaveLength(1)
+    expect(near(palette[0]?.hex ?? '', [202, 32, 31])).toBe(true)
+  })
+
+  test('an empty image gives no color', () => {
+    expect(paletteFromPixels(new Uint8Array())).toEqual([])
+  })
+})
+
+describe('samplePixels', () => {
+  test('trims the black bars off a letterboxed video thumbnail', async () => {
+    // 480x360 with 45px black bars, like i.ytimg.com's hqdefault.
+    const frame = await sharp({
+      create: { width: 480, height: 360, channels: 3, background: '#000000' },
+    })
+      .composite([
+        {
+          input: await sharp({
+            create: {
+              width: 480,
+              height: 270,
+              channels: 3,
+              background: '#e03070',
+            },
+          })
+            .png()
+            .toBuffer(),
+          top: 45,
+          left: 0,
+        },
+      ])
+      .jpeg()
+      .toBuffer()
+    const image = new Uint8Array(frame)
+    const trimmed = paletteFromPixels(
+      await Effect.runPromise(samplePixels(image, true)),
+    )
+    expect(trimmed[0]?.hex).toBe('#e03070')
+    expect(trimmed[0]?.share).toBeGreaterThan(0.95)
+    const untrimmed = paletteFromPixels(
+      await Effect.runPromise(samplePixels(image, false)),
+    )
+    expect(untrimmed[0]?.share).toBeLessThan(0.8)
+  })
+})
