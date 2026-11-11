@@ -115,7 +115,7 @@ describe('playing on this phone', () => {
           isPlaying: true,
         }),
         mediaSession,
-        PrefetchSongs({ videoIds: [] }),
+        PrefetchSongs({ videoIds: ['dQw4w9WgXcQ'] }),
       ),
       Command.resolve(
         LoadPhoneAudio,
@@ -219,7 +219,32 @@ describe('controlling playback on this phone', () => {
           receivedAt: SERVER_NOW,
         }),
       ),
-      Command.expectExact(PrefetchSongs({ videoIds: [] })),
+      Command.expectExact(PrefetchSongs({ videoIds: ['dQw4w9WgXcQ'] })),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+    )
+  })
+
+  test('adding songs to the queue caches the next five on the phone', () => {
+    const queued = (videoId: string): Session.QueueEntry => ({
+      entryId: `q-${videoId}`,
+      track: { ...entry.track, videoId },
+    })
+    const added = ['s1', 's2', 's3', 's4', 's5', 's6'].map(queued)
+    story(
+      update,
+      given(playingHere(1)),
+      message(
+        Message.ReceivedSessionState({
+          state: { ...sessionState(PHONE_ID, 1), queue: [entry, ...added] },
+          serverNow: SERVER_NOW,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      Command.expectExact(
+        PrefetchSongs({
+          videoIds: ['dQw4w9WgXcQ', 's1', 's2', 's3', 's4', 's5'],
+        }),
+      ),
       Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
     )
   })

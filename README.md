@@ -30,16 +30,23 @@ fixtures/session Example session messages that the TypeScript and Rust tests bot
 
 **The session.** The server holds one queue for every device, and one device at a time plays it (the active device). Each device opens `/session`, says `Hello`, and then receives the whole session state after every change. Commands (play, pause, seek, skip, enqueue, transfer) go to the server, never directly to a player. The active device plays the current song and reports its position about once a second. The protocol is defined in `packages/shared/src/session.ts` and mirrored in `apps/tv/src/protocol.rs`.
 
-**Audio.** yt-dlp finds each song's AAC stream (format 140), using the proof-of-origin token service already on this machine (`yt-music-token`, `127.0.0.1:4416`). YouTube's links only work from the address that requested them, only with yt-dlp's User-Agent, and only a few seconds after they are issued. A request without a byte range is throttled to playback speed, so the server always asks for a range. The server downloads each song whole, once, into a disk cache (`~/.cache/music/audio`, 1 GB, dropping the least recently played songs), and `/audio/:videoId` serves it from there with byte ranges. A song's first download takes about 7 seconds. After that it starts, and seeks, instantly for every device.
+**Audio.** yt-dlp finds each song's AAC stream (format 140), using the proof-of-origin token service already on this machine (`yt-music-token`, `127.0.0.1:4416`). YouTube's links only work from the address that requested them, only with yt-dlp's User-Agent, and only a few seconds after they are issued. A request without a byte range is throttled to playback speed, so the server always asks for a range. The server downloads each song whole, once, into a disk cache (`~/.cache/music/audio`, 1 GB). `/audio/:videoId` serves a song with byte ranges while it is still downloading, then from disk. A song nobody prepared takes about 6 seconds to start: finding the link and YouTube's wait are most of it. A prepared song starts, and seeks, instantly for every device.
 
-To make that first wait rare, the server downloads songs before anyone presses Play:
+When the cache is full, songs played once or twice go first, least recently used first. Favorites (3 plays or more) go last, and the current song and the next five are never dropped. Play counts are kept in `plays.json` next to the songs.
 
-- Opening a song page downloads that song.
-- Opening an album or artist page downloads its first two songs.
-- A song search downloads the top result.
-- During playback, the current song and the next two are kept ready.
+**Getting songs ready early.** The prefetcher (`apps/server/src/prefetch.ts`) downloads some songs whole and only finds links for others. A song with a link already found starts in about a second.
 
-**The phone's player.** The phone keeps up to 50 songs in its own cache (Cache Storage, about 250 MB). A cached song plays from a local copy, so it starts and seeks with no network at all. A song that isn't cached streams right away and is saved for next time. While the phone is the player, it also saves the next two songs in the queue. Seeking jumps within the loaded song, and play and pause respond before the server confirms. The full player has a seek bar that shows the position while you drag it, buttons to skip back and forward 15 seconds, and a spinner while audio loads.
+| What happens               | Downloaded whole                | Link found only                       |
+| -------------------------- | ------------------------------- | ------------------------------------- |
+| Playing a queue            | The current song and the next 5 | The 5 after those                     |
+| Opening an album or artist | The first 2 songs               | Songs 3 to 5                          |
+| Searching songs            | The top result                  | The next 2                            |
+| Opening a song page        | That song                       |                                       |
+| Two or fewer songs left    |                                 | YouTube Music's next 3 after the last |
+
+Two workers take the most urgent job first, and a new page replaces the previous page's jobs. A song someone presses Play on never waits behind them: players go straight to the cache, and prefetching uses at most two of yt-dlp's three slots. To keep YouTube from flagging the server, prefetching may run yt-dlp 400 times a day, and it pauses for 15 minutes after 3 failures in a row.
+
+**The phone's player.** The phone keeps up to 500 MB of songs in its own cache (Cache Storage), and asks the browser to keep it. A cached song plays from a local copy, so it starts and seeks with no network at all. A song that isn't cached streams right away and is saved for next time. While the phone is the player, it saves the current song and the next five, in queue order, again whenever the queue changes. When the cache is full, it drops songs the same way the server does; sizes and play counts live in localStorage. Seeking jumps within the loaded song, and play and pause respond before the server confirms. The full player has a seek bar that shows the position while you drag it, buttons to skip back and forward 15 seconds, and a spinner while audio loads.
 
 **The TV app.** Rust from top to bottom. The audio engine (`apps/tv/src/audio`) downloads each song into memory, decodes it with Symphonia while it arrives, and writes samples into a lock-free ring buffer that the AAudio callback drains. The next song is downloaded and opened while the current one plays, so it follows without a gap. The screen is a single Slint window drawn by Skia on the GPU, and it only redraws when something on it changes. The app only speaks plain HTTP to the server, so it carries no TLS stack. The server relays album art at `/artwork?url=…`, for Google's image hosts only. If the app crashes, it posts the panic to `/tv-log`, and the report appears in the server's log (`journalctl --user -u music.service`).
 

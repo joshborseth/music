@@ -108,10 +108,13 @@ const reconcilePhoneAudio = (model: Model): PlaybackReturn => {
       const { state } = snapshot
       const target = sessionPosition(snapshot, model.now)
       const prefetch = PrefetchSongs({
-        videoIds: Array.map(
-          Array.take(upcomingEntries(state), PREFETCH_COUNT),
-          upcoming => upcoming.track.videoId,
-        ),
+        videoIds: [
+          entry.track.videoId,
+          ...Array.map(
+            Array.take(upcomingEntries(state), PREFETCH_COUNT),
+            upcoming => upcoming.track.videoId,
+          ),
+        ],
       })
       const maybeSameEntry = Option.filter(
         maybeLoaded,
@@ -146,7 +149,8 @@ const reconcilePhoneAudio = (model: Model): PlaybackReturn => {
           const isNewSeek = loaded.seekSeq !== state.seekSeq
           const isPlayingChanged = loaded.isPlaying !== state.playing
           if (!isNewSeek && !isPlayingChanged) {
-            return { model }
+            // The queue may have changed: keep the next songs cached.
+            return { model, commands: [prefetch] }
           }
           const needsJump =
             isNewSeek &&

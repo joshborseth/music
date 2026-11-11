@@ -10,6 +10,7 @@ import { AudioRoutes, AudioSourceLive } from './audio.ts'
 import { AudioStoreLive } from './audioStore.ts'
 import { NowPlayingFeedLive, NowPlayingRoutes } from './nowPlaying.ts'
 import { ArtworkPaletteLive } from './palette/service.ts'
+import { PrefetcherLive } from './prefetch.ts'
 import { MusicRpcsLive } from './rpcHandlers.ts'
 import { SessionHubLive, SessionRoutes } from './session/hub.ts'
 import { TvWakerLive } from './session/wake.ts'
@@ -21,9 +22,13 @@ const DEFAULT_HOSTNAME = '127.0.0.1'
 
 const STATIC_MIME_TYPES = { webmanifest: 'application/manifest+json' }
 
-/** Songs on disk, downloaded through yt-dlp: shared by the RPCs and playback. */
-const AudioLive = AudioStoreLive.pipe(
-  Layer.provide(AudioSourceLive),
+/**
+ * Songs on disk, downloaded through yt-dlp, and the prefetcher that gets
+ * them ready early: shared by the RPCs and playback.
+ */
+const AudioLive = PrefetcherLive.pipe(
+  Layer.provideMerge(AudioStoreLive),
+  Layer.provideMerge(AudioSourceLive),
   Layer.provide(BunServices.layer),
 )
 
@@ -65,6 +70,7 @@ const PlaybackRoutes = Layer.mergeAll(
 ).pipe(
   Layer.provide(NowPlayingFeedLive),
   Layer.provide(SessionHubLive),
+  Layer.provide(YouTubeMusicLive),
   Layer.provide(ArtworkPaletteLive),
   Layer.provide(TvWakerLive),
   Layer.provideMerge(AudioLive),

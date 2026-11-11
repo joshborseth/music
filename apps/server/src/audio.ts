@@ -9,11 +9,12 @@ import {
   Option,
   Schema,
   Semaphore,
+  Stream,
 } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 
-import { AudioStore } from './audioStore.ts'
+import { AudioStore, type SongSource } from './audioStore.ts'
 
 /*
  * Audio for every player comes through here. yt-dlp finds the song's AAC
@@ -21,7 +22,8 @@ import { AudioStore } from './audioStore.ts'
  * YouTube only accepts a fresh link a few seconds after issuing it
  * (`available_at`), so resolving waits for that. `AudioStore` then downloads
  * the whole song once (always as a byte range: a plain request is throttled
- * to playback speed) and `/audio/:videoId` serves it from disk.
+ * to playback speed). `/audio/:videoId` serves it while it downloads, then
+ * from disk.
  */
 
 /** yt-dlp could not produce a playable audio stream for a song. */
@@ -74,6 +76,8 @@ export class AudioSource extends Context.Service<
       videoId: string,
     ) => Effect.Effect<ResolvedAudio, AudioUnavailableError>
     readonly invalidate: (videoId: string) => Effect.Effect<void>
+    /** Whether a link (or a recent failure) is cached, so `resolve` runs no yt-dlp. */
+    readonly isResolved: (videoId: string) => Effect.Effect<boolean>
   }
 >()('music/AudioSource') {}
 
@@ -143,6 +147,7 @@ export const AudioSourceLive = Layer.effect(AudioSource)(
     return AudioSource.of({
       resolve: videoId => Cache.get(cache, videoId),
       invalidate: videoId => Cache.invalidate(cache, videoId),
+      isResolved: videoId => Cache.has(cache, videoId),
     })
   }),
 )
@@ -188,6 +193,34 @@ export const AudioRoutes = HttpRouter.use(router =>
   }),
 )
 
+/** The bytes `start` through `end` of a song, from disk or as they arrive. */
+const songBody = (
+  source: SongSource,
+  start: number,
+  end: number,
+  options: { status: number; headers: Record<string, string> },
+) =>
+  source._tag === 'Stored'
+    ? HttpServerResponse.file(source.path, {
+        ...options,
+        contentType: 'audio/mp4',
+        offset: start,
+        bytesToRead: end - start + 1,
+      })
+    : Effect.succeed(
+        HttpServerResponse.stream(
+          Stream.fromAsyncIterable(
+            source.download.read(start, end),
+            cause => cause,
+          ),
+          {
+            ...options,
+            contentType: 'audio/mp4',
+            contentLength: end - start + 1,
+          },
+        ),
+      )
+
 const serveSong = (store: AudioStore['Service']) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
@@ -196,16 +229,17 @@ const serveSong = (store: AudioStore['Service']) =>
     if (!VIDEO_ID.test(videoId)) {
       return HttpServerResponse.text('Not a video id', { status: 400 })
     }
-    const maybeSong = yield* store.ensure(videoId).pipe(
+    const maybeSource = yield* store.open(videoId).pipe(
       Effect.tapError(error =>
         Effect.logWarning('Audio unavailable', videoId, error.message),
       ),
       Effect.option,
     )
-    if (Option.isNone(maybeSong)) {
+    if (Option.isNone(maybeSource)) {
       return HttpServerResponse.text('Audio unavailable', { status: 502 })
     }
-    const { path, size } = maybeSong.value
+    const source = maybeSource.value
+    const size = source._tag === 'Stored' ? source.size : source.download.size
     const headers = {
       'accept-ranges': 'bytes',
       'cache-control': CACHE_CONTROL,
@@ -215,10 +249,9 @@ const serveSong = (store: AudioStore['Service']) =>
     )
     return yield* Option.match(requestedBytes(request.headers['range'], size), {
       onNone: () =>
-        HttpServerResponse.file(path, {
-          contentType: 'audio/mp4',
-          headers,
-        }).pipe(unavailable),
+        songBody(source, 0, size - 1, { status: 200, headers }).pipe(
+          unavailable,
+        ),
       onSome: Option.match({
         onNone: () =>
           Effect.succeed(
@@ -228,15 +261,12 @@ const serveSong = (store: AudioStore['Service']) =>
             }),
           ),
         onSome: ({ start, end }) =>
-          HttpServerResponse.file(path, {
+          songBody(source, start, end, {
             status: 206,
-            contentType: 'audio/mp4',
             headers: {
               ...headers,
               'content-range': `bytes ${start}-${end}/${size}`,
             },
-            offset: start,
-            bytesToRead: end - start + 1,
           }).pipe(unavailable),
       }),
     })

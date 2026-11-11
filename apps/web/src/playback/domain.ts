@@ -70,7 +70,7 @@ export type MediaKey = typeof MediaKey.Type
 export const DEVICE_ID_KEY = 'music:device-id'
 
 /** Songs the phone downloads ahead of the current one. */
-export const PREFETCH_COUNT = 2
+export const PREFETCH_COUNT = 5
 
 /** A server seek this close to where the phone already is needs no jump. */
 export const SEEK_TOLERANCE_SECONDS = 1.5

@@ -8,8 +8,8 @@ import {
   type Model,
   currentPosition,
   initialModel,
+  lookahead,
   playerLost,
-  upcomingVideoIds,
   update,
   wakeTimedOut,
 } from './model.ts'
@@ -57,7 +57,30 @@ describe('session model', () => {
     expect(model.activeDeviceId).toBe('phone')
     expect(model.currentEntryId).toBe('e0')
     expect(model.playing).toBe(true)
-    expect(upcomingVideoIds(model)).toEqual(['a', 'b', 'c'])
+    expect(lookahead(model)).toEqual({
+      download: ['a', 'b', 'c'],
+      resolve: [],
+      maybeEndingAt: Option.some('c'),
+    })
+  })
+
+  test('lookahead downloads five ahead, resolves five more, then nothing once finished', () => {
+    const ids = Array.from({ length: 14 }, (_, index) => `s${index}`)
+    const model = update(
+      initialModel,
+      { _tag: 'PlayQueue', tracks: ids.map(track), startIndex: 1 },
+      makeContext('phone', 1_000),
+    ).model
+    expect(lookahead(model)).toEqual({
+      download: ['s1', 's2', 's3', 's4', 's5', 's6'],
+      resolve: ['s7', 's8', 's9', 's10', 's11'],
+      maybeEndingAt: Option.none(),
+    })
+    expect(lookahead({ ...model, currentEntryId: null })).toEqual({
+      download: [],
+      resolve: [],
+      maybeEndingAt: Option.none(),
+    })
   })
 
   test('transfer keeps the position and asks to wake an offline TV', () => {
