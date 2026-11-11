@@ -19,7 +19,7 @@
         "@effect/platform-bun": "catalog:",
         "@music/shared": "workspace:*",
         "effect": "catalog:",
-        "sharp": "^0.35.5",
+        "sharp": "0.35.5",
         "youtubei.js": "18.3.0",
       },
       "devDependencies": {

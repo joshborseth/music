@@ -15,7 +15,7 @@ import { Session } from '@music/shared'
 
 import { Message } from '../message'
 import type { Model } from '../model'
-import { type MediaKey, PhoneAudio } from './domain'
+import type { MediaKey } from './domain'
 import {
   PhoneAudioElement,
   type PlaybackServices,
@@ -156,12 +156,28 @@ const MEDIA_SESSION_ACTIONS: ReadonlyArray<
   ['PreviousTrack', 'previoustrack'],
 ]
 
+// NOTE: iOS shows ±10 second skip buttons on the lock screen unless the page
+// handles the track actions, and it prefers seek buttons when both exist.
+const SUPPRESSED_MEDIA_SESSION_ACTIONS: ReadonlyArray<MediaSessionAction> = [
+  'seekbackward',
+  'seekforward',
+]
+
 const hasMediaSession = (): boolean => 'mediaSession' in globalThis.navigator
+
+const clearMediaSessionAction = (action: MediaSessionAction) => {
+  try {
+    globalThis.navigator.mediaSession.setActionHandler(action, null)
+  } catch {
+    // NOTE: browsers throw for actions they do not support.
+  }
+}
 
 const streamMediaKeys = Stream.callback<MediaKey>(queue =>
   Effect.acquireRelease(
     Effect.sync(() => {
       if (hasMediaSession()) {
+        Array.forEach(SUPPRESSED_MEDIA_SESSION_ACTIONS, clearMediaSessionAction)
         Array.forEach(MEDIA_SESSION_ACTIONS, ([key, action]) =>
           globalThis.navigator.mediaSession.setActionHandler(action, () =>
             Queue.offerUnsafe(queue, key),
@@ -173,20 +189,12 @@ const streamMediaKeys = Stream.callback<MediaKey>(queue =>
       Effect.sync(() => {
         if (hasMediaSession()) {
           Array.forEach(MEDIA_SESSION_ACTIONS, ([, action]) =>
-            globalThis.navigator.mediaSession.setActionHandler(action, null),
+            clearMediaSessionAction(action),
           )
         }
       }),
   ).pipe(Effect.flatMap(() => Effect.never)),
 ).pipe(Stream.map(key => Message.PressedMediaKey({ key })))
-
-const isPhonePlaying = (model: Model): boolean =>
-  PhoneAudio.match(model.phoneAudio, {
-    Unavailable: () => false,
-    Idle: () => false,
-    Loaded: () => true,
-    Blocked: () => true,
-  })
 
 export const subscriptions = Subscription.make<
   Model,
@@ -236,14 +244,10 @@ export const subscriptions = Subscription.make<
   ),
 
   mediaSessionActions: entry(
-    { isPhonePlaying: Schema.Boolean },
+    {},
     {
-      modelToDependencies: model => ({ isPhonePlaying: isPhonePlaying(model) }),
-      dependenciesToStream: ({ isPhonePlaying }) =>
-        Stream.when(
-          streamMediaKeys,
-          Effect.sync(() => isPhonePlaying),
-        ),
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () => streamMediaKeys,
     },
   ),
 
