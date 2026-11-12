@@ -58,6 +58,13 @@ export const LocalChanges = Schema.Struct({
   unsent: Schema.Number,
   /** The `ack` that includes every change sent so far. */
   untilAck: Schema.Number,
+  /**
+   * Jumps among those changes (seek, next, previous, a queue tap, the queue
+   * ending), each of which moves the server's `seekSeq` on by one. A state
+   * that includes them and moved `seekSeq` by exactly that much made no
+   * jump the phone has not made already.
+   */
+  ownJumps: Schema.Number,
 })
 export type LocalChanges = typeof LocalChanges.Type
 
@@ -182,6 +189,6 @@ export const initialPlaybackModel = {
   playerSheet: PlayerSheet.Closed(),
   maybeNotice: Option.none<string>(),
   maybeScrubSeconds: Option.none<number>(),
-  localChanges: { unsent: 0, untilAck: 0 },
+  localChanges: { unsent: 0, untilAck: 0, ownJumps: 0 },
   swipe: Swipe.Idle(),
 }

@@ -23,6 +23,7 @@ import {
 import {
   Connection,
   type LoadedEntry,
+  type LocalChanges,
   type MediaKey,
   PREFETCH_COUNT,
   PROGRESS_INTERVAL_MS,
@@ -66,10 +67,23 @@ const sendLocalChange = (
 } => ({
   model: modifyFields(model, {
     localChanges: changes =>
-      modifyFields(changes, { unsent: unsent => unsent + 1 }),
+      modifyFields(changes, {
+        unsent: unsent => unsent + 1,
+        ownJumps: ownJumps =>
+          SERVER_JUMPS.has(message._tag) ? ownJumps + 1 : ownJumps,
+      }),
   }),
   command: SendLocalChange({ message }),
 })
+
+/** Messages after which the server moves `seekSeq` on by one. */
+const SERVER_JUMPS: ReadonlySet<Session.ClientMessage['_tag']> = new Set([
+  'Seek',
+  'Next',
+  'Previous',
+  'SkipTo',
+  'TrackEnded',
+])
 
 const showNotice = (model: Model, message: string): PlaybackReturn => ({
   model: modifyFields(model, { maybeNotice: () => Option.some(message) }),
@@ -334,7 +348,8 @@ export const acquireSessionSocket = (model: Model): PlaybackReturn =>
         connection: () => Connection.Connected(),
         // NOTE: a new connection counts its messages from 1 again. What the
         // phone changed while it was away goes in the Hello's report.
-        localChanges: changes => modifyFields(changes, { untilAck: () => 0 }),
+        localChanges: changes =>
+          modifyFields(changes, { untilAck: () => 0, ownJumps: () => 0 }),
       }),
       commands: [
         send({
@@ -365,46 +380,71 @@ export const completeWaitBeforeReconnect = (model: Model): PlaybackReturn =>
 /**
  * Keep what this phone changed by itself while a server state predates it.
  * A state whose `ack` does not include every message carrying such a change
- * was sent before the server heard of it, so the phone keeps its own song,
- * position, and play or pause over it. The queue and devices are always
- * news, and a state that names another player is always followed.
+ * was sent before the server heard of it. The phone keeps its own play or
+ * pause over it, since the server will apply the phone's after, and its own
+ * song, position, and `seekSeq` while that song is still queued. The queue
+ * and devices are always news, and a state that names another player is
+ * always followed.
+ *
+ * A state that includes them is followed. When it moved `seekSeq` on only
+ * by the phone's own jumps, the phone is already there: it takes the new
+ * `seekSeq` without seeking back to where the server anchored the jump.
  */
 const keepLocalChanges = (
   model: Model,
   state: Session.SessionState,
   serverNow: number,
   ack: number,
-): { readonly state: Session.SessionState; readonly phoneAudio: PhoneAudio } =>
-  Option.match(loadedEntry(model.phoneAudio), {
-    onNone: () => ({ state, phoneAudio: model.phoneAudio }),
+): {
+  readonly state: Session.SessionState
+  readonly phoneAudio: PhoneAudio
+  readonly localChanges: LocalChanges
+} => {
+  const { localChanges } = model
+  const isServerBehind = localChanges.unsent > 0 || ack < localChanges.untilAck
+  const isStillPlayer = Option.contains(
+    myDeviceId(model),
+    state.activeDeviceId ?? '',
+  )
+  return Option.match(loadedEntry(model.phoneAudio), {
+    onNone: () => ({ state, phoneAudio: model.phoneAudio, localChanges }),
     onSome: loaded => {
-      const isServerBehind =
-        model.localChanges.unsent > 0 || ack < model.localChanges.untilAck
-      const isKept =
-        isServerBehind &&
-        Option.contains(myDeviceId(model), state.activeDeviceId ?? '') &&
-        Array.some(state.queue, queued => queued.entryId === loaded.entryId)
-      return isKept
-        ? {
-            state: modifyFields(state, {
-              currentEntryId: () => loaded.entryId,
-              playing: () => isPlaying(model),
-              positionSeconds: () => model.phoneAudioSeconds,
-              positionAt: () => serverNow,
-            }),
-            phoneAudio: model.phoneAudio,
-          }
-        : {
-            state,
-            phoneAudio: isServerBehind
-              ? model.phoneAudio
-              : withLoadedEntry(model.phoneAudio, entry => ({
-                  ...entry,
-                  isPlayingSetHere: false,
-                })),
-          }
+      if (isServerBehind && isStillPlayer) {
+        const isEntryKept = Array.some(
+          state.queue,
+          queued => queued.entryId === loaded.entryId,
+        )
+        const withPlaying = modifyFields(state, {
+          playing: () => isPlaying(model),
+        })
+        return {
+          state: isEntryKept
+            ? modifyFields(withPlaying, {
+                currentEntryId: () => loaded.entryId,
+                positionSeconds: () => model.phoneAudioSeconds,
+                positionAt: () => serverNow,
+                seekSeq: () => loaded.seekSeq,
+              })
+            : withPlaying,
+          phoneAudio: model.phoneAudio,
+          localChanges,
+        }
+      }
+      const isOnlyOwnJumps =
+        state.currentEntryId === loaded.entryId &&
+        state.seekSeq === loaded.seekSeq + localChanges.ownJumps
+      return {
+        state,
+        phoneAudio: withLoadedEntry(model.phoneAudio, entry => ({
+          ...entry,
+          seekSeq: isOnlyOwnJumps ? state.seekSeq : entry.seekSeq,
+          isPlayingSetHere: false,
+        })),
+        localChanges: modifyFields(localChanges, { ownJumps: () => 0 }),
+      }
     },
   })
+}
 
 /** A local change's message went out, or could not (no connection). */
 export const completeSendLocalChange = (
@@ -412,13 +452,15 @@ export const completeSendLocalChange = (
   maybeSeq: Option.Option<number>,
 ): PlaybackReturn => ({
   model: modifyFields(model, {
-    localChanges: ({ unsent, untilAck }) => ({
-      unsent: Math.max(0, unsent - 1),
-      untilAck: Option.match(maybeSeq, {
-        onNone: () => untilAck,
-        onSome: seq => Math.max(untilAck, seq),
+    localChanges: changes =>
+      modifyFields(changes, {
+        unsent: unsent => Math.max(0, unsent - 1),
+        untilAck: untilAck =>
+          Option.match(maybeSeq, {
+            onNone: () => untilAck,
+            onSome: seq => Math.max(untilAck, seq),
+          }),
       }),
-    }),
   }),
 })
 
@@ -450,6 +492,7 @@ export const receiveSessionState = (
           clockOffsetMs: serverNow - receivedAt,
         }),
       phoneAudio: () => kept.phoneAudio,
+      localChanges: () => kept.localChanges,
       now: () => receivedAt,
     }),
   )
@@ -694,7 +737,10 @@ const playingMessage = (
   }
   return Option.match(playingHere(model), {
     onNone: () => ({ _tag: 'Pause' }),
-    onSome: () => ({ _tag: 'Pause', positionSeconds: model.phoneAudioSeconds }),
+    onSome: ({ loaded }) => ({
+      _tag: 'Pause',
+      at: { entryId: loaded.entryId, positionSeconds: model.phoneAudioSeconds },
+    }),
   })
 }
 

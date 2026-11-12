@@ -122,12 +122,20 @@ export const RemoveEntry = Schema.TaggedStruct('RemoveEntry', {
   entryId: Schema.String,
 })
 export const Resume = Schema.TaggedStruct('Resume', {})
+/** A spot in a queue entry. */
+export const EntryPosition = Schema.Struct({
+  entryId: Schema.String,
+  positionSeconds: Schema.Number,
+})
+export type EntryPosition = typeof EntryPosition.Type
+
 export const Pause = Schema.TaggedStruct('Pause', {
   /**
    * Where the player stopped, when the player itself pauses, so every device
-   * and the next resume agree on the spot. Null or missing otherwise.
+   * and the next resume agree on the spot. It counts only while that entry
+   * is still current. Null or missing otherwise.
    */
-  positionSeconds: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  at: Schema.optionalKey(Schema.NullOr(EntryPosition)),
 })
 export const Seek = Schema.TaggedStruct('Seek', {
   positionSeconds: Schema.Number,

@@ -327,7 +327,12 @@ describe('controlling playback on this phone', () => {
       }),
       Command.expectExact(
         SetPhoneAudioPlaying({ isPlaying: false }),
-        SendLocalChange({ message: { _tag: 'Pause', positionSeconds: 40 } }),
+        SendLocalChange({
+          message: {
+            _tag: 'Pause',
+            at: { entryId: 'e0', positionSeconds: 40 },
+          },
+        }),
       ),
       Command.resolve(
         SetPhoneAudioPlaying,
@@ -1044,6 +1049,95 @@ describe('on the lock screen', () => {
     )
   })
 
+  test("a late answer to the phone's own next does not seek it back", () => {
+    story(
+      update,
+      given(playingQueue('e0')),
+      message(Message.PressedMediaKey({ key: 'NextTrack' })),
+      ...resolveLoad(1),
+      // Three seconds into e1 before the slow answer lands.
+      message(
+        Message.UpdatedPhoneAudioTime({
+          entryId: 'e1',
+          seconds: 3,
+          at: SERVER_NOW + 3_000,
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 5),
+            queue,
+            currentEntryId: 'e1',
+            positionSeconds: 0,
+            positionAt: SERVER_NOW + 3_000,
+          },
+          serverNow: SERVER_NOW + 3_000,
+          ack: 2,
+          receivedAt: SERVER_NOW + 3_000,
+        }),
+      ),
+      model(model => {
+        expect(model.phoneAudioSeconds).toBe(3)
+        expect(
+          Option.exists(
+            loadedEntry(model.phoneAudio),
+            ({ seekSeq }) => seekSeq === 5,
+          ),
+        ).toBe(true)
+      }),
+      Command.expectExact(prefetchFrom(1)),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+    )
+  })
+
+  test("another device's seek reaches the phone even while its play is in flight", () => {
+    story(
+      update,
+      given(playingQueue('e1', false)),
+      message(Message.PressedMediaKey({ key: 'Play' })),
+      Command.resolve(
+        SetPhoneAudioPlaying,
+        Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
+      ),
+      sentAs(2),
+      // The other device's seek, before the server took the Resume.
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 5),
+            queue,
+            currentEntryId: 'e1',
+            playing: false,
+            positionSeconds: 10,
+          },
+          serverNow: SERVER_NOW,
+          ack: 1,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      Command.expectExact(prefetchFrom(1)),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 5),
+            queue,
+            currentEntryId: 'e1',
+            positionSeconds: 10,
+          },
+          serverNow: SERVER_NOW,
+          ack: 2,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      Command.expectExact(SeekPhoneAudio({ seconds: 10 }), prefetchFrom(1)),
+      Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+    )
+  })
+
   test('an event from a song the phone already left is ignored', () => {
     story(
       update,
@@ -1151,7 +1245,12 @@ describe('on the lock screen', () => {
         ).toBe(true)
       }),
       Command.expectExact(
-        SendLocalChange({ message: { _tag: 'Pause', positionSeconds: 40 } }),
+        SendLocalChange({
+          message: {
+            _tag: 'Pause',
+            at: { entryId: 'e1', positionSeconds: 40 },
+          },
+        }),
       ),
       sentAs(2),
       message(Message.PressedMediaKey({ key: 'Play' })),
@@ -1184,7 +1283,12 @@ describe('on the lock screen', () => {
       }),
       Command.expectExact(
         SetPhoneAudioPlaying({ isPlaying: false }),
-        SendLocalChange({ message: { _tag: 'Pause', positionSeconds: 40 } }),
+        SendLocalChange({
+          message: {
+            _tag: 'Pause',
+            at: { entryId: 'e1', positionSeconds: 40 },
+          },
+        }),
       ),
       Command.resolve(
         SetPhoneAudioPlaying,

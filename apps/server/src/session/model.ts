@@ -278,13 +278,14 @@ const transition = (
         const maybeOwnPlaying = Option.flatMap(
           Option.fromNullishOr(message.player),
           report =>
-            isPlayer && report.playingSetHere
+            isPlayer && (report.playingSetHere || model.pausedForLostPlayer)
               ? Option.some(report.playing)
               : Option.none(),
         )
         const reloaded: Model = {
           ...model,
           waking,
+          pausedForLostPlayer: isPlayer ? false : model.pausedForLostPlayer,
           // A device that comes back as the player reloads where it left off.
           seekSeq: isWaking || isPlayer ? model.seekSeq + 1 : model.seekSeq,
           ...(isPlayer
@@ -388,14 +389,16 @@ const transition = (
       Pause: message => {
         const settled = settle(model, now)
         const maybeAt = Option.filter(
-          Option.fromNullishOr(message.positionSeconds),
-          () => model.activeDeviceId === context.senderId,
+          Option.fromNullishOr(message.at),
+          at =>
+            model.activeDeviceId === context.senderId &&
+            at.entryId === model.currentEntryId,
         )
         return changed({
           ...settled,
           positionSeconds: Option.match(maybeAt, {
             onNone: () => settled.positionSeconds,
-            onSome: seconds => Math.max(0, seconds),
+            onSome: at => Math.max(0, at.positionSeconds),
           }),
           playing: false,
         })

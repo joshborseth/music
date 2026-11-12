@@ -344,14 +344,14 @@ describe('session model', () => {
   test('the player pausing says where it stopped; others leave it to the server', () => {
     const paused = update(
       playing(),
-      { _tag: 'Pause', positionSeconds: 12.5 },
+      { _tag: 'Pause', at: { entryId: 'e0', positionSeconds: 12.5 } },
       makeContext('phone', 15_000),
     ).model
     expect(paused.playing).toBe(false)
     expect(paused.positionSeconds).toBe(12.5)
     const fromRemote = update(
       playing(),
-      { _tag: 'Pause', positionSeconds: 99 },
+      { _tag: 'Pause', at: { entryId: 'e0', positionSeconds: 99 } },
       makeContext('tv', 15_000),
     ).model
     expect(fromRemote.positionSeconds).toBe(14)
@@ -377,6 +377,44 @@ describe('session model', () => {
     expect(outcome.seekSeq).toBe(sought.seekSeq + 1)
     expect(outcome.playing).toBe(false)
     expect(outcome.positionSeconds).toBe(105)
+  })
+
+  test('a pause position for a song that is no longer current is ignored', () => {
+    const skipped = update(
+      playing(),
+      { _tag: 'Next' },
+      makeContext('tv', 5_000),
+    ).model
+    const paused = update(
+      skipped,
+      { _tag: 'Pause', at: { entryId: 'e0', positionSeconds: 95 } },
+      makeContext('phone', 6_000),
+    ).model
+    expect(paused.currentEntryId).toBe('e1')
+    expect(paused.positionSeconds).toBe(1)
+  })
+
+  test('a player that kept playing past a lost-player pause resumes even when reloaded', () => {
+    const lost = playerLost(playing(), 'phone', 16_000).model
+    const skipped = update(
+      lost,
+      { _tag: 'Next' },
+      makeContext('laptop', 20_000, ['laptop']),
+    ).model
+    const outcome = update(
+      skipped,
+      hello({
+        entryId: 'e0',
+        positionSeconds: 50,
+        playing: true,
+        seekSeq: playing().seekSeq,
+      }),
+      makeContext('phone', 30_000),
+    ).model
+    expect(outcome.currentEntryId).toBe('e1')
+    expect(outcome.seekSeq).toBe(skipped.seekSeq + 1)
+    expect(outcome.playing).toBe(true)
+    expect(outcome.pausedForLostPlayer).toBe(false)
   })
 
   test('only the player is followed, and only to a queued entry', () => {

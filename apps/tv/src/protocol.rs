@@ -91,6 +91,14 @@ pub struct PlayerReport {
     pub seek_seq: u64,
 }
 
+/// A spot in a queue entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryPosition {
+    pub entry_id: String,
+    pub position_seconds: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Placement {
     Next,
@@ -115,7 +123,7 @@ pub enum ClientMessage {
     Pause {
         /// Where the player stopped. The TV leaves it to the server.
         #[serde(default)]
-        position_seconds: Option<f64>,
+        at: Option<EntryPosition>,
     },
     #[serde(rename_all = "camelCase")]
     Seek {
@@ -248,12 +256,7 @@ mod tests {
                     from_entry_id: "e0".into(),
                 },
             ),
-            (
-                "client-pause.json",
-                ClientMessage::Pause {
-                    position_seconds: None,
-                },
-            ),
+            ("client-pause.json", ClientMessage::Pause { at: None }),
         ];
         for (name, message) in cases {
             let expected: serde_json::Value = serde_json::from_str(&fixture(name)).unwrap();
