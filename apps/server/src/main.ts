@@ -15,7 +15,7 @@ import { PrefetcherLive } from './prefetch.ts'
 import { MusicRpcsLive } from './rpcHandlers.ts'
 import { SessionHubLive, SessionRoutes } from './session/hub.ts'
 import { TvWakerLive } from './session/wake.ts'
-import { TvAppRoutes } from './tvApp.ts'
+import { TvAppRoutes, TvUpdatingRoute } from './tvApp.ts'
 import { YouTubeMusicLive } from './youtubeMusic/service.ts'
 
 const DEFAULT_PORT = 3001
@@ -70,6 +70,7 @@ const PlaybackRoutes = Layer.mergeAll(
   AudioRoutes,
   SessionRoutes,
   NowPlayingRoutes,
+  TvUpdatingRoute,
 ).pipe(
   Layer.provide(NowPlayingFeedLive),
   Layer.provide(SessionHubLive),
@@ -84,7 +85,7 @@ const ServerLive = HttpRouter.serve(
     RpcRoutes,
     PlaybackRoutes,
     ArtworkRoutes,
-    TvAppRoutes,
+    TvAppRoutes.pipe(Layer.provide(BunServices.layer)),
     WebAppRoutes,
   ),
 ).pipe(
