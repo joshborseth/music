@@ -38,6 +38,7 @@ import {
   update,
   wakeTimedOut,
 } from './model.ts'
+import { readUtcOffsetMinutes } from './utcOffset.ts'
 import { TvWaker } from './wake.ts'
 
 /*
@@ -60,6 +61,8 @@ const MAX_WARMED_LYRICS = 500
 const KNOWN_DURATIONS_CAPACITY = 2000
 /** How often to ask Home Assistant whether the TV is on, while a phone looks. */
 const POWER_POLL_INTERVAL = '20 seconds'
+/** How often to read the house's UTC offset, to catch a clock change. */
+const UTC_OFFSET_INTERVAL = '1 minute'
 /** Device names remembered, to show a player that went away. */
 const KNOWN_DEVICES_CAPACITY = 200
 
@@ -118,6 +121,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     >()
     /** Whether each TV is on, as Home Assistant last said. */
     const poweredOn = new Map<string, boolean>()
+    let utcOffsetMinutes = yield* readUtcOffsetMinutes
     let nextConnectionId = 0
     let nextEntryId = 0
 
@@ -202,6 +206,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
           _tag: 'State',
           state,
           serverNow,
+          utcOffsetMinutes,
           ack: connection.acked(),
         }),
       )
@@ -626,6 +631,16 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       hasWebConnection() ? checkPower : Effect.void,
     ).pipe(
       Effect.repeat(Schedule.spaced(POWER_POLL_INTERVAL)),
+      Effect.forkIn(hubScope),
+    )
+
+    yield* readUtcOffsetMinutes.pipe(
+      Effect.flatMap(minutes => {
+        if (minutes === utcOffsetMinutes) return Effect.void
+        utcOffsetMinutes = minutes
+        return apply(refresh)
+      }),
+      Effect.repeat(Schedule.spaced(UTC_OFFSET_INTERVAL)),
       Effect.forkIn(hubScope),
     )
 

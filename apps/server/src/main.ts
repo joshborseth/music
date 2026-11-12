@@ -86,7 +86,7 @@ const PlaybackRoutes = Layer.mergeAll(
   TvUpdatingRoute,
 ).pipe(
   Layer.provide(NowPlayingFeedLive),
-  Layer.provide(SessionHubLive),
+  Layer.provide(SessionHubLive.pipe(Layer.provide(BunServices.layer))),
   Layer.provide(YouTubeMusicLive),
   Layer.provide(LyricsLive),
   Layer.provide(ArtworkPaletteLive),

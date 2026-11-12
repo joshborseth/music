@@ -264,5 +264,6 @@ pub fn sample_view(tracks: Vec<QueueTrack>, current: usize, here: bool) -> View 
         player_name: (!here).then(|| "Josh's iPhone".to_owned()),
         loading: false,
         notice: String::new(),
+        utc_offset_minutes: None,
     }
 }

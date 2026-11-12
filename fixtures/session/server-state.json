@@ -1,6 +1,7 @@
 {
   "_tag": "State",
   "serverNow": 1794426000500,
+  "utcOffsetMinutes": -420,
   "ack": 3,
   "state": {
     "devices": [

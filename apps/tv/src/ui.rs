@@ -587,7 +587,7 @@ impl Ui {
                 app.set_drift_y(y);
             }
         }
-        let clock = LocalTime::now().clock();
+        let clock = LocalTime::now(self.nav.session.utc_offset_minutes).clock();
         let notice = self.notice_text(now);
         if clock != self.shown_clock || notice != self.shown_notice {
             changed = true;
@@ -823,7 +823,7 @@ impl Ui {
         };
         let now = Instant::now();
         let nav = &self.nav;
-        let time = LocalTime::now();
+        let time = LocalTime::now(nav.session.utc_offset_minutes);
         self.shown_clock = time.clock();
         self.shown_notice = self.notice_text(now);
         app.set_clock(self.shown_clock.clone().into());
