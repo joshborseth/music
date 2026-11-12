@@ -417,6 +417,11 @@ export const scrub = (model: Model, seconds: number): PlaybackReturn => ({
   model: modifyFields(model, { maybeScrubSeconds: () => Option.some(seconds) }),
 })
 
+/** A drag on the seek bar ended without a seek: show playback again. */
+export const cancelScrub = (model: Model): PlaybackReturn => ({
+  model: modifyFields(model, { maybeScrubSeconds: () => Option.none() }),
+})
+
 export const changePhoneAudioBuffering = (
   model: Model,
   isBuffering: boolean,

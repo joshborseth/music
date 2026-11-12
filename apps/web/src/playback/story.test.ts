@@ -218,6 +218,41 @@ describe('controlling playback on this phone', () => {
     )
   })
 
+  test('dragging the seek bar shows where it is, and letting go seeks there', () => {
+    story(
+      update,
+      given(playingHere(1)),
+      message(Message.UpdatedScrubPosition({ seconds: 120 })),
+      model(model => {
+        expect(model.maybeScrubSeconds).toEqual(Option.some(120))
+      }),
+      message(Message.ChangedSeekPosition({ seconds: 120 })),
+      model(model => {
+        expect(model.maybeScrubSeconds).toEqual(Option.none())
+        expect(model.phoneAudioSeconds).toBe(120)
+      }),
+      Command.expectExact(
+        SeekPhoneAudio({ seconds: 120 }),
+        SendToSession({ message: { _tag: 'Seek', positionSeconds: 120 } }),
+      ),
+      Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('a cancelled drag on the seek bar leaves playback where it was', () => {
+    story(
+      update,
+      given(playingHere(1)),
+      message(Message.UpdatedScrubPosition({ seconds: 120 })),
+      message(Message.CancelledScrub()),
+      model(model => {
+        expect(model.maybeScrubSeconds).toEqual(Option.none())
+        expect(model.phoneAudioSeconds).toBe(40)
+      }),
+    )
+  })
+
   test('adding songs to the queue caches the next five on the phone', () => {
     const queued = (videoId: string): Session.QueueEntry => ({
       entryId: `q-${videoId}`,

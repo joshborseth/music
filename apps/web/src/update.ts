@@ -821,6 +821,8 @@ export const update = (model: Model, message: Message) =>
       Playback.sendCommand(model, { _tag: 'Previous' }),
     ChangedSeekPosition: ({ seconds }) => Playback.seekTo(model, seconds),
     UpdatedScrubPosition: ({ seconds }) => Playback.scrub(model, seconds),
+    CancelledScrub: () => Playback.cancelScrub(model),
+    CompletedFollowSeekBarDrags: () => ({ model }),
     ClickedSkipBy: ({ seconds }) => Playback.skipBy(model, seconds),
     ChangedPhoneAudioBuffering: ({ isBuffering }) =>
       Playback.changePhoneAudioBuffering(model, isBuffering),
