@@ -12,7 +12,7 @@ import { QueueTrack } from './session.ts'
  * sides together, and update the shared fixtures in `fixtures/tv/` that both
  * test suites decode.
  *
- *   GET  /tv/home                          TvShelves  your playlists, then YouTube Music's home feed
+ *   GET  /tv/home                          TvShelves  your playlists, then your latest liked songs
  *   GET  /tv/library                       TvShelves  your playlists, Liked songs first
  *   GET  /tv/search?q=…                    TvShelves  songs, artists, albums, playlists
  *   GET  /tv/collection?kind=…&id=…        TvCollection
@@ -73,7 +73,7 @@ export type TvCollectionKind = typeof TvCollectionKind.Type
 /**
  * An album, playlist, one of my playlists, or an artist. `tracks` is what
  * Play and Shuffle play: the tracklist, or an artist's top songs. An artist
- * also has shelves (albums, singles and EPs, similar artists).
+ * also has shelves (albums, and singles and EPs).
  */
 export const TvCollection = Schema.Struct({
   kind: TvCollectionKind,

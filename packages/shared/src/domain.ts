@@ -78,7 +78,6 @@ export const SongDetails = Schema.Struct({
   song: Song,
   maybeViewCount: Schema.Option(Schema.Number),
   maybeLyrics: Schema.Option(Lyrics),
-  relatedSongs: Schema.Array(Song),
 })
 export type SongDetails = typeof SongDetails.Type
 
@@ -126,7 +125,6 @@ export const ArtistDetails = Schema.Struct({
   topSongs: Schema.Array(Song),
   albums: Schema.Array(AlbumSummary),
   singles: Schema.Array(AlbumSummary),
-  similarArtists: Schema.Array(ArtistSummary),
 })
 export type ArtistDetails = typeof ArtistDetails.Type
 
@@ -222,35 +220,6 @@ export const PlaylistEditResult = Schema.Struct({
   maybePlaylist: Schema.Option(MyPlaylistDetails),
 })
 export type PlaylistEditResult = typeof PlaylistEditResult.Type
-
-// HOME
-
-/** One titled row of the home feed. Each holds one kind of item. */
-export const HomeShelf = Schema.Union([
-  Schema.TaggedStruct('SongShelf', {
-    title: Schema.String,
-    songs: Schema.Array(Song),
-  }),
-  Schema.TaggedStruct('AlbumShelf', {
-    title: Schema.String,
-    albums: Schema.Array(AlbumSummary),
-  }),
-  Schema.TaggedStruct('PlaylistShelf', {
-    title: Schema.String,
-    playlists: Schema.Array(PlaylistSummary),
-  }),
-  Schema.TaggedStruct('ArtistShelf', {
-    title: Schema.String,
-    artists: Schema.Array(ArtistSummary),
-  }),
-])
-export type HomeShelf = typeof HomeShelf.Type
-
-/** What YouTube Music recommends on its home page. */
-export const HomeFeed = Schema.Struct({
-  shelves: Schema.Array(HomeShelf),
-})
-export type HomeFeed = typeof HomeFeed.Type
 
 // ERRORS
 

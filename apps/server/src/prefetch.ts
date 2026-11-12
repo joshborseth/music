@@ -25,7 +25,7 @@ import { AudioStore } from './audioStore.ts'
  * back) pauses prefetching for a while.
  */
 
-export type PlanSource = 'Queue' | 'Page' | 'QueueEnd'
+export type PlanSource = 'Queue' | 'Page'
 
 export interface PrefetchJob {
   readonly videoId: string

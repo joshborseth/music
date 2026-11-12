@@ -1,25 +1,31 @@
-import { Array, Match, Option } from 'effect'
+import { Array, Option } from 'effect'
+import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import { Play } from 'lucide'
 
 import { icon } from '@/lib/icons'
-import { type HomeShelf, Session, type Song } from '@music/shared'
+import {
+  LIKED_PLAYLIST_ID,
+  type MyLibrary,
+  type MyPlaylistSummary,
+  Session,
+  type Song,
+} from '@music/shared'
 
 import { songFromQueueTrack } from '../library'
 import { Message } from '../message'
-import { homeQuery } from '../query'
+import { myLibraryQuery, myPlaylistQuery } from '../query'
 import { largeTitleHeader } from './chrome'
 import { type PageModel } from './page'
 import {
   ArtworkShape,
   type NowPlaying,
-  albumCard,
-  artistCard,
   artistNames,
   artworkImage,
+  emptyState,
   equalizer,
   loadingShelf,
-  playlistCard,
+  myPlaylistCard,
   remote,
   shelf,
   songGridShelf,
@@ -118,73 +124,87 @@ const recentlyPlayedShelf = (
   )
 }
 
-const feedShelf = (
-  homeShelf: HomeShelf,
-  playing: NowPlaying,
+const LIKED_SONGS_ON_HOME = 24
+
+/** My playlists as covers, Liked songs first. */
+const playlistsShelf = (
+  playlists: ReadonlyArray<MyPlaylistSummary>,
   h: HtmlBuilder<Message>,
 ): Html =>
-  Match.valueTags(homeShelf, {
-    SongShelf: ({ title, songs }) =>
-      songGridShelf({ title, songs, playing }, h),
-    AlbumShelf: ({ title, albums }) =>
-      shelf(
-        { title, items: albums, toKey: ({ id }) => id, toCard: albumCard },
-        h,
-      ),
-    PlaylistShelf: ({ title, playlists }) =>
-      shelf(
-        {
-          title,
-          items: playlists,
-          toKey: ({ id }) => id,
-          toCard: playlistCard,
-        },
-        h,
-      ),
-    ArtistShelf: ({ title, artists }) =>
-      shelf(
-        { title, items: artists, toKey: ({ id }) => id, toCard: artistCard },
-        h,
-      ),
-  })
+  shelf(
+    {
+      title: 'Your playlists',
+      items: playlists,
+      toKey: ({ id }) => id,
+      toCard: myPlaylistCard,
+    },
+    h,
+  )
 
-const LOADING_SHELF_COUNT = 3
-
-/** Home: what was played lately, then YouTube Music's recommendations. */
-export const homeView = (
-  model: PageModel,
-  h: HtmlBuilder<Message>,
-): ReadonlyArray<Html> => {
-  const playing = model.playing
-  return [
-    ...largeTitleHeader('Home', h.empty, h),
-    h.div(
-      [h.Class('flex flex-col gap-8 pt-2 pb-6')],
-      [
-        recentlyPlayedShelf(model.recentlyPlayed, playing, h),
-        remote(
-          homeQuery.read(model.home),
+const likedSongsShelf = (model: PageModel, h: HtmlBuilder<Message>): Html =>
+  Option.match(
+    AsyncData.getData(
+      myPlaylistQuery.read(model.myPlaylists, {
+        playlistId: LIKED_PLAYLIST_ID,
+      }),
+    ),
+    {
+      onNone: () => h.empty,
+      onSome: ({ songs }) =>
+        songGridShelf(
           {
-            onLoading: () =>
-              h.div(
-                [h.Class('flex flex-col gap-8'), h.AriaLabel('Loading')],
-                Array.makeBy(LOADING_SHELF_COUNT, () => loadingShelf(h)),
-              ),
-            onData: ({ shelves }) =>
-              h.div(
-                [h.Class('flex flex-col gap-8')],
-                Array.map(shelves, homeShelf =>
-                  h.keyed('div')(
-                    `${homeShelf._tag}:${homeShelf.title}`,
-                    [],
-                    [feedShelf(homeShelf, playing, h)],
-                  ),
-                ),
-              ),
+            title: 'Liked songs',
+            songs: Array.take(songs, LIKED_SONGS_ON_HOME),
+            playing: model.playing,
           },
           h,
         ),
-      ],
-    ),
-  ]
-}
+    },
+  )
+
+/** True once there is nothing of mine to show: no plays, likes, or playlists. */
+const isNothingYet = (model: PageModel, library: MyLibrary): boolean =>
+  Array.isReadonlyArrayEmpty(model.recentlyPlayed) &&
+  Array.isReadonlyArrayEmpty(library.likedVideoIds) &&
+  Array.every(library.playlists, playlist => playlist.isLiked)
+
+/** Home: only my music. What I played lately, my playlists, my likes. */
+export const homeView = (
+  model: PageModel,
+  h: HtmlBuilder<Message>,
+): ReadonlyArray<Html> => [
+  ...largeTitleHeader('Home', h.empty, h),
+  remote(
+    myLibraryQuery.read(model.myLibrary),
+    {
+      onLoading: () =>
+        h.div(
+          [h.Class('flex flex-col gap-8 pt-2 pb-6')],
+          [
+            recentlyPlayedShelf(model.recentlyPlayed, model.playing, h),
+            loadingShelf(h),
+          ],
+        ),
+      onData: library =>
+        isNothingYet(model, library)
+          ? emptyState(
+              {
+                title: 'Your music lives here',
+                description:
+                  'Search for a song, then play it, like it, or add it to a playlist.',
+                kind: 'Song',
+              },
+              h,
+            )
+          : h.div(
+              [h.Class('flex flex-col gap-8 pt-2 pb-6')],
+              [
+                recentlyPlayedShelf(model.recentlyPlayed, model.playing, h),
+                playlistsShelf(library.playlists, h),
+                likedSongsShelf(model, h),
+              ],
+            ),
+    },
+    h,
+  ),
+]

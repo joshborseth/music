@@ -50,8 +50,6 @@ const PLAYER_GRACE = '15 seconds'
 const WAKE_TIMEOUT = '60 seconds'
 /** Only the latest state matters to a slow client. */
 const MAILBOX_SIZE = 32
-/** Songs from YouTube's "up next" to find links for as the queue runs out. */
-const QUEUE_END_RESOLVES = 3
 /** Timed lyrics are looked up for the current song and the one after it. */
 const LYRICS_AHEAD = 2
 const MAX_WARMED_LYRICS = 500
@@ -205,7 +203,6 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       )
 
     let maybeCountedEntryId = Option.none<string>()
-    let maybeQueueEndFor = Option.none<string>()
 
     /** A song counts as played once it is current and playing. */
     const countPlay = Effect.suspend(() => {
@@ -223,41 +220,6 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         ? Effect.void
         : audioStore.markPlayed(entry.track.videoId)
     })
-
-    /**
-     * As the queue runs out, find links for the first songs YouTube Music
-     * would play after it, so adding one of them starts fast. Once per
-     * last song.
-     */
-    const prepareQueueEnd = (maybeEndingAt: Option.Option<string>) =>
-      Effect.suspend(() => {
-        if (Option.isNone(maybeEndingAt)) {
-          maybeQueueEndFor = Option.none()
-          return prefetcher.plan('QueueEnd', [])
-        }
-        const last = maybeEndingAt.value
-        if (Option.contains(maybeQueueEndFor, last)) return Effect.void
-        maybeQueueEndFor = Option.some(last)
-        const queued = new Set(model.queue.map(entry => entry.track.videoId))
-        return youTubeMusic.getUpNext(last).pipe(
-          Effect.flatMap(songs =>
-            prefetcher.plan(
-              'QueueEnd',
-              songs
-                .filter(song => !queued.has(song.videoId))
-                .slice(0, QUEUE_END_RESOLVES)
-                .map((song, index) => ({
-                  videoId: song.videoId,
-                  kind: 'Resolve' as const,
-                  priority: 30 + index,
-                })),
-            ),
-          ),
-          Effect.ignore,
-          Effect.forkIn(hubScope),
-          Effect.asVoid,
-        )
-      })
 
     /**
      * Song lengths looked up so far (`None`: YouTube gave none), and the
@@ -354,7 +316,6 @@ export const SessionHubLive = Layer.effect(SessionHub)(
               priority: 20 + index,
             })),
           ]),
-          prepareQueueEnd(ahead.maybeEndingAt),
         ],
         { discard: true },
       )

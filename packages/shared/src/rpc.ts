@@ -6,7 +6,6 @@ import {
   AlbumSummary,
   ArtistDetails,
   ArtistSummary,
-  HomeFeed,
   MusicNotFoundError,
   MyLibrary,
   MyPlaylistDetails,
@@ -75,11 +74,6 @@ export const getPlaylistRpc = Rpc.make('getPlaylist', {
   error: LookupError,
 })
 
-export const getHomeRpc = Rpc.make('getHome', {
-  success: HomeFeed,
-  error: YouTubeMusicError,
-})
-
 export const getMyLibraryRpc = Rpc.make('getMyLibrary', {
   success: MyLibrary,
   error: PlaylistStoreError,
@@ -119,7 +113,6 @@ export const MusicRpcs = RpcGroup.make(
   getArtistRpc,
   getAlbumRpc,
   getPlaylistRpc,
-  getHomeRpc,
   getMyLibraryRpc,
   getMyPlaylistRpc,
   editPlaylistsRpc,

@@ -849,6 +849,27 @@ export const artistCard = (
     ],
   )
 
+/** One of my playlists as a cover card for a horizontal shelf. */
+export const myPlaylistCard = (
+  playlist: MyPlaylistSummary,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.a(
+    [h.Href(myPlaylistHref(playlist.id)), h.Class(cardClass)],
+    [
+      playlistCover(
+        {
+          playlist,
+          displayWidth: CARD_ARTWORK_WIDTH,
+          shape: ArtworkShape.Card,
+          className: 'aspect-square w-full',
+        },
+        h,
+      ),
+      ...cardTitle(playlist.title, playlistLength(playlist), false, h),
+    ],
+  )
+
 // SECTIONS
 
 const sectionHeading = (title: string, h: HtmlBuilder<Message>): Html =>

@@ -1,4 +1,4 @@
-import { Array, Match, Option, pipe } from 'effect'
+import { Array, Option, pipe } from 'effect'
 
 import {
   type AlbumDetails,
@@ -7,8 +7,6 @@ import {
   type ArtistLink,
   type ArtistSummary,
   type Artwork,
-  type HomeFeed,
-  type HomeShelf,
   type MyLibrary,
   type MyPlaylistDetails,
   type MyPlaylistSummary,
@@ -236,34 +234,20 @@ export const yourPlaylistsShelf = (library: MyLibrary): Tv.TvShelf => ({
   cards: Array.map(library.playlists, myPlaylistCard),
 })
 
-export const homeShelf = (shelf: HomeShelf): Tv.TvShelf =>
-  Match.valueTags(shelf, {
-    SongShelf: ({ title, songs }) => ({
-      title,
-      cards: Array.map(songs, songCard),
-    }),
-    AlbumShelf: ({ title, albums }) => ({
-      title,
-      cards: Array.map(albums, album => albumCard(album)),
-    }),
-    PlaylistShelf: ({ title, playlists }) => ({
-      title,
-      cards: Array.map(playlists, playlistCard),
-    }),
-    ArtistShelf: ({ title, artists }) => ({
-      title,
-      cards: Array.map(artists, artistCard),
-    }),
-  })
+/** The most liked songs Home shows; the whole list is one OK away. */
+export const HOME_LIKED_SONGS = 30
 
-/** Your playlists first, then YouTube Music's home feed. */
+/** Your playlists, then your latest liked songs. Nothing from YouTube's feed. */
 export const homeShelves = (
   library: MyLibrary,
-  feed: HomeFeed,
+  likedSongs: ReadonlyArray<Song>,
 ): Tv.TvShelves => ({
   shelves: nonEmptyShelves([
     yourPlaylistsShelf(library),
-    ...Array.map(feed.shelves, homeShelf),
+    {
+      title: 'Liked songs',
+      cards: Array.map(Array.take(likedSongs, HOME_LIKED_SONGS), songCard),
+    },
   ]),
 })
 
@@ -341,7 +325,7 @@ export const myPlaylistCollection = (
   shelves: [],
 })
 
-/** Top songs to play, then albums, singles and EPs, and similar artists. */
+/** Top songs to play, then albums, and singles and EPs. */
 export const artistCollection = (details: ArtistDetails): Tv.TvCollection => ({
   kind: 'Artist',
   id: details.artist.id,
@@ -361,10 +345,6 @@ export const artistCollection = (details: ArtistDetails): Tv.TvCollection => ({
     {
       title: 'Singles & EPs',
       cards: Array.map(details.singles, album => albumCard(album, false)),
-    },
-    {
-      title: 'Fans might also like',
-      cards: Array.map(details.similarArtists, artistCard),
     },
   ]),
 })

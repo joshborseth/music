@@ -1,4 +1,4 @@
-import { Array, Context, Duration, Effect, Layer, Option, pipe } from 'effect'
+import { Array, Context, Effect, Layer, Option, pipe } from 'effect'
 import {
   type Helpers,
   Innertube,
@@ -12,7 +12,6 @@ import {
   type AlbumSummary,
   type ArtistDetails,
   type ArtistSummary,
-  type HomeFeed,
   MusicNotFoundError,
   type PlaylistDetails,
   type PlaylistSummary,
@@ -25,7 +24,6 @@ import {
   albumFromListItem,
   artistFromListItem,
   filterSome,
-  homeShelfFromCarousel,
   playlistFromListItem,
   songFromListItem,
   songFromPlaylistPanelVideo,
@@ -78,8 +76,6 @@ const orNotFound =
 
 type SearchType = 'song' | 'artist' | 'album' | 'playlist'
 
-type HomeFeedPage = YTMusic.HomeFeed
-
 type PlaylistPage = YTMusic.Playlist
 
 /**
@@ -87,9 +83,6 @@ type PlaylistPage = YTMusic.Playlist
  * to this many, so the page, Play, and Save a copy see the whole list.
  */
 const MAX_PLAYLIST_SONGS = 500
-
-/** The home feed changes slowly, and fetching it takes three round trips. */
-const HOME_CACHE_TTL = Duration.minutes(15)
 
 export interface YouTubeMusicShape {
   readonly searchSongs: (
@@ -107,16 +100,9 @@ export interface YouTubeMusicShape {
   readonly getSong: (
     videoId: string,
   ) => Effect.Effect<SongDetails, MusicNotFoundError | YouTubeMusicError>
-  /** The songs YouTube Music would play after this one. */
-  readonly getUpNext: (
-    videoId: string,
-  ) => Effect.Effect<
-    ReadonlyArray<Song>,
-    MusicNotFoundError | YouTubeMusicError
-  >
   /**
-   * How long a song is, for songs that came without one (Home's rows give
-   * none). "Up next" lists the song itself with its length.
+   * How long a song is, for songs that came without one. YouTube's "up next"
+   * list for a song starts with the song itself, with its length.
    */
   readonly getDurationSeconds: (
     videoId: string,
@@ -130,7 +116,6 @@ export interface YouTubeMusicShape {
   readonly getPlaylist: (
     playlistId: string,
   ) => Effect.Effect<PlaylistDetails, MusicNotFoundError | YouTubeMusicError>
-  readonly getHome: () => Effect.Effect<HomeFeed, YouTubeMusicError>
 }
 
 /** Read-only access to the YouTube Music catalog, mapped to shared Schemas. */
@@ -200,13 +185,6 @@ const make = Effect.gen(function* () {
         ),
     )
 
-  const getUpNext = Effect.fn('YouTubeMusic.getUpNext')(function* (
-    videoId: string,
-  ) {
-    const songs = yield* upNextSongs(videoId)
-    return Array.filter(songs, ({ videoId: id }) => id !== videoId)
-  })
-
   const getDurationSeconds = Effect.fn('YouTubeMusic.getDurationSeconds')(
     function* (videoId: string) {
       const songs = yield* upNextSongs(videoId).pipe(
@@ -245,10 +223,6 @@ const make = Effect.gen(function* () {
       song,
       maybeViewCount: Option.fromNullishOr(info.basic_info.view_count),
       maybeLyrics,
-      relatedSongs: Array.filter(
-        queueSongs,
-        ({ videoId: id }) => id !== videoId,
-      ),
     }
   })
 
@@ -293,51 +267,16 @@ const make = Effect.gen(function* () {
     )
   })
 
-  /** The next page of the home feed, or nothing when it fails or ends. */
-  const nextHomePage = (feed: HomeFeedPage) =>
-    feed.has_continuation
-      ? callYouTube(() => feed.getContinuation()).pipe(
-          Effect.map(Option.some),
-          Effect.orElseSucceed(() => Option.none<HomeFeedPage>()),
-        )
-      : Effect.succeed(Option.none<HomeFeedPage>())
-
-  const fetchHome = Effect.fn('YouTubeMusic.getHome')(function* () {
-    const first = yield* callYouTube(() => music.getHomeFeed())
-    const second = yield* nextHomePage(first)
-    const third = yield* Option.match(second, {
-      onNone: () => Effect.succeed(Option.none<HomeFeedPage>()),
-      onSome: nextHomePage,
-    })
-    const pages = [first, ...Option.toArray(second), ...Option.toArray(third)]
-    const carousels = filterSome(
-      Array.flatMap(pages, page => page.sections ?? []),
-      section =>
-        section.is(YTNodes.MusicCarouselShelf)
-          ? Option.some(section.as(YTNodes.MusicCarouselShelf))
-          : Option.none(),
-    )
-    return { shelves: filterSome(carousels, homeShelfFromCarousel) }
-  })
-
-  const [cachedHome, forgetHome] = yield* Effect.cachedInvalidateWithTTL(
-    fetchHome(),
-    HOME_CACHE_TTL,
-  )
-  const getHome = () => cachedHome.pipe(Effect.tapError(() => forgetHome))
-
   return YouTubeMusic.of({
     searchSongs,
     searchArtists,
     searchAlbums,
     searchPlaylists,
     getSong,
-    getUpNext,
     getDurationSeconds,
     getArtist,
     getAlbum,
     getPlaylist,
-    getHome,
   })
 })
 

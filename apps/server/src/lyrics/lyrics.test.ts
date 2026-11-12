@@ -152,7 +152,6 @@ const details = (videoId: string): SongDetails => ({
     maybeSource: Option.some('Source: Musixmatch'),
     maybeLines: Option.none(),
   }),
-  relatedSongs: [],
 })
 
 describe('timed lyrics', () => {

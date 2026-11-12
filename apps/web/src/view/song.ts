@@ -1,7 +1,9 @@
 import { Option } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
+import { Play } from 'lucide'
 
-import { type SongDetails } from '@music/shared'
+import { icon } from '@/lib/icons'
+import { type Song, type SongDetails } from '@music/shared'
 
 import { Message } from '../message'
 import { SyncTitleBarReveal } from '../mount'
@@ -17,10 +19,8 @@ import {
   formatViews,
   joinDetails,
   loadingPage,
-  playActions,
   remote,
   section,
-  songSection,
 } from './shared'
 
 const HERO_ARTWORK_WIDTH = 256
@@ -122,7 +122,25 @@ const songHeader = (details: SongDetails, h: HtmlBuilder<Message>): Html => {
   )
 }
 
-/** The song page: artwork, credits, lyrics, and songs that play next. */
+/** Plays just this song. */
+const playButton = (song: Song, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.Class('px-4')],
+    [
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedPlaySongs({ songs: [song], startIndex: 0 })),
+          h.Class(
+            'pressable bg-secondary text-primary flex h-12 w-full items-center justify-center gap-2 rounded-xl text-[15px] font-semibold',
+          ),
+        ],
+        [icon(h, Play, 'size-4 fill-current'), 'Play'],
+      ),
+    ],
+  )
+
+/** The song page: artwork, credits, and lyrics. */
 export const songView = (
   model: PageModel,
   videoId: string,
@@ -139,21 +157,9 @@ export const songView = (
             artworkGlow(details.song.artwork, h),
             h.div(
               [h.Class('flex flex-col gap-5')],
-              [
-                songHeader(details, h),
-                playActions([details.song, ...details.relatedSongs], h),
-              ],
+              [songHeader(details, h), playButton(details.song, h)],
             ),
             lyricsCard(details, h),
-            songSection(
-              {
-                title: 'Up next',
-                songs: details.relatedSongs,
-                playing: model.playing,
-                swipe: model.swipe,
-              },
-              h,
-            ),
           ],
         ),
     },

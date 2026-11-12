@@ -7,21 +7,21 @@ Browse YouTube Music on your phone and play it on the phone or on the TV. The ph
 ## What it does
 
 - **Three tabs:** Home, Search, and Library, like a native app. Each tab remembers the page it was on. Tapping the open tab again goes back to its top.
-- **Home:** what you played lately, then YouTube Music's home feed: quick picks, new releases, and playlists. The server keeps the feed for 15 minutes.
+- **Home:** only your own music: what you played lately, your playlists, and your latest liked songs. Nothing from YouTube Music's recommendations.
 - **Search** songs, artists, albums, or playlists. Results update as you type, and your last eight searches are kept on the device.
 - **Library:** your playlists, with Liked songs first, then songs played and albums, artists, and playlists opened on this device, newest first.
 - **Tap a song to play it.** Its list plays from there. The ⋯ button opens a sheet to play it next, add it to the queue, like it, add it to a playlist, or go to its album, artist, or lyrics.
 - **Your playlists:** make a playlist in the Library, or from Add to a Playlist on any song. The ⋯ button on a playlist renames or deletes it, and ⋯ on one of its songs removes that song. The heart in the player and on every song adds it to Liked songs, newest first. The button at the top right of an album or a YouTube Music playlist saves a copy of its songs to one of your playlists or a new one. Playlists live on the music server, so every phone sees the same ones.
 - **Playlist page:** cover, title, description, and every song (up to 500), with Play and Shuffle. Your own playlists show a mosaic of four of their album covers.
-- **Song page:** artwork, artists, album, length, view count, lyrics, and the "up next" list YouTube Music would play after it.
-- **Artist page:** photo, bio, top songs, albums, singles and EPs, and similar artists.
+- **Song page:** artwork, artists, album, length, view count, lyrics, and a Play button.
+- **Artist page:** photo, bio, top songs, albums, and singles and EPs.
 - **Album page:** cover, artists, release kind and year, total length, description, and the numbered tracklist.
 - **Playback:** play or shuffle an album, a playlist, or an artist's top songs, or add songs to the queue to play next or last. A mini player floats above the tabs. Tap it for the full player: artwork over a blurred backdrop, a seek bar, lyrics, the queue, and the devices you can play on. While the TV plays, a volume slider under the controls sets the TV's volume. Pull it down to close it.
 - **Synced lyrics:** when a timed copy of a song's lyrics exists, the lyrics follow the song. The line being sung springs up bright, the lines glide up in a wave as it moves on, words light up one at a time when the lyrics are timed word by word, and a pause in the singing shows three breathing dots that light up as the next line nears. Tap a line to jump to it. Scroll to read ahead; the lyrics catch up a few seconds after you let go.
 - **Play on the TV:** pick the TV in the player. If the TV is off, the server turns it on and opens the TV app. Playback moves over at the same position, and the phone stays in control. The phone can then lock or go offline; the TV keeps playing.
 - **TV app:** works on its own with the remote, no phone needed. Four tabs along the top:
   - **Now playing:** the cover over a blurred copy of itself, the song, a progress bar, and buttons for previous, play or pause, next, like, the queue, and the lyrics. Bars along the bottom move with the music while the TV plays.
-  - **Home:** your playlists, then YouTube Music's home feed, as rows of covers.
+  - **Home:** your playlists, then your latest liked songs.
   - **Search:** an on-screen keyboard. Results appear as you type.
   - **Library:** Liked songs and your playlists.
 
@@ -61,13 +61,12 @@ When the cache is full, songs played once or twice go first, least recently used
 
 **Getting songs ready early.** The prefetcher (`apps/server/src/prefetch.ts`) downloads some songs whole and only finds links for others. A song with a link already found starts in about a second.
 
-| What happens               | Downloaded whole                | Link found only                       |
-| -------------------------- | ------------------------------- | ------------------------------------- |
-| Playing a queue            | The current song and the next 5 | The 5 after those                     |
-| Opening an album or artist | The first 2 songs               | Songs 3 to 5                          |
-| Searching songs            | The top result                  | The next 2                            |
-| Opening a song page        | That song                       |                                       |
-| Two or fewer songs left    |                                 | YouTube Music's next 3 after the last |
+| What happens               | Downloaded whole                | Link found only   |
+| -------------------------- | ------------------------------- | ----------------- |
+| Playing a queue            | The current song and the next 5 | The 5 after those |
+| Opening an album or artist | The first 2 songs               | Songs 3 to 5      |
+| Searching songs            | The top result                  | The next 2        |
+| Opening a song page        | That song                       |                   |
 
 Two workers take the most urgent job first, and a new page replaces the previous page's jobs. A song someone presses Play on never waits behind them: players go straight to the cache, and prefetching uses at most two of yt-dlp's three slots. To keep YouTube from flagging the server, prefetching may run yt-dlp 400 times a day, and it pauses for 15 minutes after 3 failures in a row.
 
@@ -168,4 +167,4 @@ The unit file lives at `~/.config/systemd/user/music.service`.
 - `youtubei.js` uses YouTube's private API. A YouTube change can break it until the library is updated, and using it is against YouTube's terms. It is fine for personal use.
 - Audio depends on yt-dlp and the token service keeping up with YouTube. When songs stop playing, update yt-dlp first: `uv tool upgrade yt-dlp`.
 - yt-dlp solves YouTube's challenges with Bun. It warns that Bun 1.4 is newer than it has been tested with; installing Deno and setting `YTDLP_JS_RUNTIME=deno` is the supported route if that ever breaks.
-- The server picks out some artist-page sections by their English titles ("Albums", "Singles & EPs", "Fans might also like"), so the session is pinned to English.
+- The server picks out some artist-page sections by their English titles ("Albums", "Singles & EPs"), so the session is pinned to English.
