@@ -189,6 +189,7 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
         clock.clone(),
         ui::Hooks {
             open_update_settings: Box::new(|| {}),
+            check_for_updates: Box::new(|| {}),
             set_quiet: Box::new(|_| {}),
         },
     );

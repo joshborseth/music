@@ -34,7 +34,7 @@ pub const BUILD: &str = match option_env!("MUSIC_TV_BUILD") {
     Some(build) => build,
     None => "dev",
 };
-const DEV_BUILD: &str = "dev";
+pub const DEV_BUILD: &str = "dev";
 
 /// Nothing must have played for this long before an update installs.
 pub const QUIET_FOR: Duration = Duration::from_secs(30);
@@ -52,6 +52,9 @@ pub const MAX_INSTALL_ATTEMPTS: u32 = 3;
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateStatus {
     UpToDate,
+    /// Someone asked for a check ([`Updater::check_now`]) and it is running.
+    /// Checks on the timer don't report this, so the top bar stays quiet.
+    Checking,
     Downloading {
         percent: u8,
     },
@@ -112,6 +115,25 @@ pub(crate) fn retry_delay(failures: u32, first: Duration, max: Duration) -> Dura
 pub(crate) fn percent(done: u64, total: Option<u64>) -> Option<u8> {
     let total = total.filter(|total| *total > 0)?;
     Some((done.min(total) * 100 / total) as u8)
+}
+
+/// A build id for people: `f3a82b03-202611120412` (commit, then UTC build
+/// time, from `scripts/build-tv-apk.sh`) reads as `f3a82b03 (12 Nov 2026)`.
+/// Anything else shows as it is.
+pub fn describe_build(build: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let dated = build.rsplit_once('-').and_then(|(commit, time)| {
+        if time.len() != 12 || !time.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let month: usize = time[4..6].parse().ok()?;
+        let day: u32 = time[6..8].parse().ok()?;
+        let month = MONTHS.get(month.checked_sub(1)?)?;
+        Some(format!("{commit} ({day} {month} {})", &time[..4]))
+    });
+    dated.unwrap_or_else(|| build.to_owned())
 }
 
 /// Every APK is a zip file.
@@ -203,7 +225,8 @@ struct Shared {
     /// Starts as playing, so nothing installs before the controller speaks.
     quiet_since: watch::Sender<Option<Instant>>,
     check: Notify,
-    /// Set by [`Updater::check_now`]: try a build again that gave up.
+    /// Set by [`Updater::check_now`]: report the check, and try a build
+    /// again that gave up.
     forced: AtomicBool,
     platform: Arc<dyn Platform>,
     reporter: Reporter,
@@ -455,6 +478,10 @@ impl Worker {
     }
 
     async fn check(&mut self) -> Result<Next, String> {
+        let asked = self.shared.forced.swap(false, Ordering::SeqCst);
+        if asked {
+            self.reporter.set(UpdateStatus::Checking);
+        }
         let offered = self.fetch_version().await?;
         let Some(build) = wants_update(&self.installed, offered.as_deref()) else {
             self.reporter.set(UpdateStatus::UpToDate);
@@ -466,7 +493,7 @@ impl Worker {
         };
         let cache = self.cache_dir().await?;
         self.load_attempts(&cache);
-        if self.shared.forced.swap(false, Ordering::SeqCst) {
+        if asked {
             self.attempts.forgive(&build);
         }
         if !self.attempts.may_install(&build) {

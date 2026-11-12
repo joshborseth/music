@@ -30,7 +30,7 @@ use crate::nav::{
     IdleButton, KEY_COLUMNS, KEYBOARD, Key, Load, Nav, Panel, PlayMode, RowRef, Tab, WIDE_KEYS,
 };
 use crate::protocol::Placement;
-use crate::update::UpdateStatus;
+use crate::update::{self, UpdateStatus};
 use crate::view::{PlayClock, View, clock};
 use crate::visuals::{Cover, Visuals};
 use crate::{
@@ -187,6 +187,8 @@ fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
 /// What the screen's updater hooks do; filled in by `lib.rs`.
 pub struct Hooks {
     pub open_update_settings: Box<dyn Fn()>,
+    /// Look for an update now, from the settings menu.
+    pub check_for_updates: Box<dyn Fn()>,
     /// Tells the updater whether it may install: only while nothing plays here.
     pub set_quiet: Box<dyn Fn(bool)>,
 }
@@ -201,6 +203,10 @@ pub struct Ui {
     actions: UnboundedSender<UiAction>,
     hooks: Hooks,
     update_status: String,
+    /// The updater's latest status, for the settings menu.
+    update: Option<UpdateStatus>,
+    /// Someone picked "Check for updates" and has not heard back yet.
+    update_asked: bool,
     asked_update_permission: bool,
     models: Models,
     images: HashMap<(String, u32), Image>,
@@ -254,6 +260,8 @@ impl Ui {
             actions,
             hooks,
             update_status: String::new(),
+            update: None,
+            update_asked: false,
             asked_update_permission: false,
             models,
             images: HashMap::new(),
@@ -355,9 +363,12 @@ impl Ui {
     }
 
     /// Show the updater's state in the top bar; ask for permission once.
+    /// Answer a check someone asked for.
     pub fn on_update_status(&mut self, status: &UpdateStatus) {
+        self.update = Some(status.clone());
         self.update_status = match status {
             UpdateStatus::UpToDate | UpdateStatus::NeedsPermission => String::new(),
+            UpdateStatus::Checking => "Checking for updates…".to_owned(),
             UpdateStatus::Downloading { percent } => format!("Downloading an update · {percent}%"),
             UpdateStatus::WaitingForQuiet => {
                 "Update ready: installs when the music stops".to_owned()
@@ -365,11 +376,73 @@ impl Ui {
             UpdateStatus::Installing => "Installing an update…".to_owned(),
             UpdateStatus::Failed(_) => "Update failed".to_owned(),
         };
-        if *status == UpdateStatus::NeedsPermission && !self.asked_update_permission {
+        let answer_asked = self.update_asked && *status != UpdateStatus::Checking;
+        if answer_asked {
+            self.update_asked = false;
+            let now = Instant::now();
+            match status {
+                UpdateStatus::UpToDate => self.nav.say("Music is up to date", now),
+                UpdateStatus::Downloading { .. } => self.nav.say("Downloading an update", now),
+                UpdateStatus::Failed(_) => self.nav.say("Couldn't check for updates", now),
+                _ => {}
+            }
+        }
+        if *status == UpdateStatus::NeedsPermission
+            && (answer_asked || !self.asked_update_permission)
+        {
             self.asked_update_permission = true;
             self.nav.ask_update_permission();
         }
         self.render();
+    }
+
+    /// The settings menu's text: this build, and how updates stand.
+    fn about(&self) -> String {
+        let version = format!("Version {}.", update::describe_build(update::BUILD));
+        if update::BUILD == update::DEV_BUILD {
+            return format!("{version} A development build never updates itself.");
+        }
+        let updates = match &self.update {
+            None | Some(UpdateStatus::Checking) => "Checking for updates…".to_owned(),
+            Some(UpdateStatus::UpToDate) => "Up to date.".to_owned(),
+            Some(UpdateStatus::Downloading { percent }) => {
+                format!("Downloading an update ({percent}%).")
+            }
+            Some(UpdateStatus::WaitingForQuiet) => {
+                "An update is ready. It installs when the music stops.".to_owned()
+            }
+            Some(UpdateStatus::Installing) => "Installing an update…".to_owned(),
+            Some(UpdateStatus::NeedsPermission) => {
+                "Updates need “Install unknown apps” turned on for Music.".to_owned()
+            }
+            Some(UpdateStatus::Failed(message)) => format!("The last update failed: {message}"),
+        };
+        format!("{version} {updates}")
+    }
+
+    /// "Check for updates": ask the updater, unless an update is already on
+    /// its way, and say what happens.
+    fn check_for_updates(&mut self) {
+        let now = Instant::now();
+        if update::BUILD == update::DEV_BUILD {
+            self.nav
+                .say("A development build never updates itself", now);
+            return;
+        }
+        match self.update {
+            Some(UpdateStatus::Downloading { .. }) => {
+                self.nav.say("An update is downloading", now);
+            }
+            Some(UpdateStatus::WaitingForQuiet) => {
+                self.nav.say("An update installs when the music stops", now);
+            }
+            Some(UpdateStatus::Installing) => self.nav.say("An update is installing", now),
+            _ => {
+                self.update_asked = true;
+                (self.hooks.check_for_updates)();
+                self.nav.say("Checking for updates…", now);
+            }
+        }
     }
 
     // EFFECTS
@@ -475,6 +548,11 @@ impl Ui {
                     );
                 }
                 Effect::OpenUpdateSettings => (self.hooks.open_update_settings)(),
+                Effect::OpenSettings => {
+                    let about = self.about();
+                    self.nav.show_settings(about);
+                }
+                Effect::CheckForUpdates => self.check_for_updates(),
             }
         }
     }
@@ -753,6 +831,7 @@ impl Ui {
         app.set_controls_shown(nav.controls_shown());
         app.set_tab(nav.tab.index() as i32);
         app.set_tabs_focused(nav.focus == Focus::Tabs && nav.menu.is_none());
+        app.set_settings_focused(nav.focus == Focus::Settings && nav.menu.is_none());
         let status = if nav.session.connected {
             self.update_status.clone()
         } else {
@@ -1390,7 +1469,13 @@ mod tests {
         assert_eq!(queue_summary(0, 0), "This is the last song");
         assert_eq!(queue_summary(1, 0), "1 song after this one");
         assert_eq!(queue_summary(3, 0), "3 songs after this one");
-        assert_eq!(queue_summary(12, 10), "12 songs after this one, 10 from autoplay");
-        assert_eq!(queue_summary(10, 10), "10 songs after this one, all from autoplay");
+        assert_eq!(
+            queue_summary(12, 10),
+            "12 songs after this one, 10 from autoplay"
+        );
+        assert_eq!(
+            queue_summary(10, 10),
+            "10 songs after this one, all from autoplay"
+        );
     }
 }

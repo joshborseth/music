@@ -52,6 +52,24 @@ fn reports_download_progress() {
 }
 
 #[test]
+fn describes_a_build() {
+    assert_eq!(
+        describe_build("f3a82b03-202611120412"),
+        "f3a82b03 (12 Nov 2026)"
+    );
+    assert_eq!(
+        describe_build("f3a82b03-202601310000"),
+        "f3a82b03 (31 Jan 2026)"
+    );
+    assert_eq!(describe_build("dev"), "dev");
+    assert_eq!(describe_build("old-1"), "old-1");
+    assert_eq!(
+        describe_build("f3a82b03-202613120412"),
+        "f3a82b03-202613120412"
+    );
+}
+
+#[test]
 fn recognizes_an_apk() {
     assert!(looks_like_apk(b"PK\x03\x04rest"));
     assert!(!looks_like_apk(b"<html>"));
@@ -373,6 +391,25 @@ async fn stays_put_on_the_same_build_and_on_dev() {
     until(&mut dev_statuses, &UpdateStatus::UpToDate).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(dev_server.requests().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_check_by_hand_reports_itself() {
+    let server = FakeServer::start(Some("same-1"), APK);
+    let android = FakeAndroid::new("same", false);
+    let (updater, mut statuses) = start(&server, "same-1", &android);
+    // The check at start stays quiet.
+    assert_eq!(
+        until(&mut statuses, &UpdateStatus::UpToDate).await,
+        [UpdateStatus::UpToDate]
+    );
+    // One asked for says it is checking, then answers again.
+    updater.check_now();
+    assert_eq!(
+        until(&mut statuses, &UpdateStatus::UpToDate).await,
+        [UpdateStatus::Checking, UpdateStatus::UpToDate]
+    );
+    assert_eq!(server.requests(), ["GET /tv/version", "GET /tv/version"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
