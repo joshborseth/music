@@ -25,6 +25,7 @@ import { ArtworkPalette } from '../palette/service.ts'
 import { Prefetcher } from '../prefetch.ts'
 import { toQueueTrack } from '../tvCatalog/mapping.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
+import { nextClock, songClock } from './clock.ts'
 import {
   type Model,
   type Outcome,
@@ -100,6 +101,8 @@ export class SessionHub extends Context.Service<
     readonly states: Stream.Stream<Session.SessionState>
     /** When the lights should change for a song starting on the TV. */
     readonly cues: Stream.Stream<NowPlaying.Cue | null>
+    /** Where the current song is while it plays (see `clock.ts`). */
+    readonly clocks: Stream.Stream<NowPlaying.SongClock | null>
     /**
      * Join as something that follows the music (the lights). The returned
      * function says whose songs it follows; leaving the scope stops.
@@ -170,6 +173,8 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     const reportsLoaded = new Set<number>()
     let maybeHold = Option.none<Hold>()
     const latestCue = yield* SubscriptionRef.make(Option.none<HubCue>())
+    const latestClock =
+      yield* SubscriptionRef.make<NowPlaying.SongClock | null>(null)
     let nextConnectionId = 0
     let nextEntryId = 0
 
@@ -531,6 +536,9 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         Effect.gen(function* () {
           const outcome = transition(model)
           model = outcome.model
+          yield* SubscriptionRef.update(latestClock, previous =>
+            nextClock(previous, songClock(model)),
+          )
           yield* keepLightsInStep
           if (outcome.broadcast) {
             yield* broadcastState
@@ -975,6 +983,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
           }),
         ),
       ),
+      clocks: SubscriptionRef.changes(latestClock),
       followLights,
     })
   }),

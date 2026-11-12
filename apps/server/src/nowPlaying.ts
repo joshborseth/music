@@ -17,11 +17,11 @@ import { SessionHub } from './session/hub.ts'
 /*
  * `GET /now-playing`: a WebSocket for things outside the app, such as the
  * house lights. It follows the session and adds the cover's color and the
- * hub's cues. Listeners only say what they follow (`Follow`); they never join
+ * hub's cues and song clock. Listeners only say what they follow (`Follow`); they never join
  * the session, so they never show up as a device.
  */
 
-type Base = Omit<NowPlaying.NowPlaying, 'color' | 'cue'>
+type Base = Omit<NowPlaying.NowPlaying, 'color' | 'cue' | 'clock'>
 
 const nothingPlaying: NowPlaying.NowPlaying = {
   _tag: 'NowPlaying',
@@ -30,6 +30,7 @@ const nothingPlaying: NowPlaying.NowPlaying = {
   device: null,
   color: null,
   cue: null,
+  clock: null,
 }
 
 export const toBase = (state: Session.SessionState): Base => {
@@ -54,6 +55,10 @@ export const toBase = (state: Session.SessionState): Base => {
       device === undefined ? null : { name: device.name, kind: device.kind },
   }
 }
+
+/** The frame's clock, if any, belongs to its song. */
+export const isConsistent = (value: NowPlaying.NowPlaying): boolean =>
+  value.clock === null || value.clock.videoId === value.track?.videoId
 
 const encode = Schema.encodeSync(NowPlaying.NowPlayingJson)
 
@@ -88,8 +93,19 @@ export const NowPlayingFeedLive = Layer.effect(NowPlayingFeed)(
       ),
     )
 
-    yield* Stream.zipLatest(withColors, hub.cues).pipe(
-      Stream.map(([base, cue]): NowPlaying.NowPlaying => ({ ...base, cue })),
+    yield* Stream.zipLatest(
+      Stream.zipLatest(withColors, hub.cues),
+      hub.clocks,
+    ).pipe(
+      Stream.map(([[base, cue], clock]): NowPlaying.NowPlaying => ({
+        ...base,
+        cue,
+        clock,
+      })),
+      // NOTE: The clock of a new song can arrive before the song itself,
+      // which waits for its cover color. Listeners only ever see a clock for
+      // the song in the same frame.
+      Stream.filter(isConsistent),
       Stream.changesWith(sameJson),
       Stream.runForEach(value => SubscriptionRef.set(latest, value)),
       Effect.forkScoped,
