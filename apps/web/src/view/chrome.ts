@@ -38,14 +38,11 @@ export const page = (
 
 /**
  * The top of the screen. There is no bar: content fades into the page color
- * and softens as it scrolls under the status bar. Each page fades it in as
- * its own header scrolls away, so the header shows untouched at the top.
+ * as it scrolls under the status bar. Each page fades it in as its own
+ * header scrolls away, so the header shows untouched at the top.
  */
 const scrollEdge = (className: string, h: HtmlBuilder<Message>): Html =>
-  h.div(
-    [h.AriaHidden(true), h.Class(cn('scroll-edge', className))],
-    [h.span([]), h.span([]), h.span([])],
-  )
+  h.div([h.AriaHidden(true), h.Class(cn('scroll-edge', className))])
 
 /** Covers the status bar so scrolled content never runs under the clock. */
 export const statusBarCover = (h: HtmlBuilder<Message>): Html =>

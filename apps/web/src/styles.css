@@ -320,51 +320,28 @@
 /* SCROLL EDGES
 
    There are no bars along the top or bottom of the screen. Content fades
-   into the page color and softens as it scrolls under the status bar, the
-   tab bar, or the search field, as iOS 26 does it. */
+   into the page color as it scrolls under the status bar, the tab bar, or
+   the search field. */
 
-/* The top edge: three blur layers, each stronger and shorter than the last,
-   under a fade to the page color. */
+/* The top edge: solid under the status bar and the small title, then an
+   eased fade to clear. No blur: blurred content behind the title read as a
+   smudge, so content simply fades out as it scrolls up. */
 .scroll-edge {
   position: fixed;
   inset: 0 0 auto;
   z-index: 30;
-  height: calc(var(--safe-top) + var(--nav-bar-height) + 1.25rem);
+  height: calc(var(--safe-top) + var(--nav-bar-height) + 1.5rem);
   pointer-events: none;
-}
-
-.scroll-edge > span,
-.scroll-edge::after {
-  position: absolute;
-  inset: 0;
-}
-
-.scroll-edge > span:nth-child(1) {
-  -webkit-backdrop-filter: blur(1px);
-  backdrop-filter: blur(1px);
-  mask-image: linear-gradient(to bottom, #000 50%, transparent);
-}
-
-.scroll-edge > span:nth-child(2) {
-  -webkit-backdrop-filter: blur(3px);
-  backdrop-filter: blur(3px);
-  mask-image: linear-gradient(to bottom, #000 30%, transparent 75%);
-}
-
-.scroll-edge > span:nth-child(3) {
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  mask-image: linear-gradient(to bottom, #000 15%, transparent 50%);
-}
-
-.scroll-edge::after {
-  content: '';
+  --scroll-edge-solid: calc(var(--safe-top) + var(--nav-bar-height) - 0.5rem);
   background: linear-gradient(
     to bottom,
-    var(--background),
-    var(--background) var(--safe-top),
-    color-mix(in oklch, var(--background) 86%, transparent)
-      calc(var(--safe-top) + var(--nav-bar-height)),
+    var(--background) var(--scroll-edge-solid),
+    color-mix(in oklch, var(--background) 82%, transparent)
+      calc(var(--scroll-edge-solid) + 0.5rem),
+    color-mix(in oklch, var(--background) 50%, transparent)
+      calc(var(--scroll-edge-solid) + 1rem),
+    color-mix(in oklch, var(--background) 18%, transparent)
+      calc(var(--scroll-edge-solid) + 1.5rem),
     transparent
   );
 }
