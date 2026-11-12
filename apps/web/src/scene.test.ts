@@ -1,4 +1,5 @@
 import { Option, Result } from 'effect'
+import { AsyncData } from 'foldkit'
 import {
   Command,
   Mount,
@@ -202,7 +203,51 @@ describe('tab bar', () => {
         'aria-selected',
         'false',
       ),
-      expect(text('Nothing here yet')).toExist(),
+      expect(role('button', { name: 'New Playlist…' })).toExist(),
+    )
+  })
+})
+
+describe('library', () => {
+  test('lists my playlists, Liked songs first', () => {
+    const model = modifyFields(initialModel(AppRoute.Library(), '/library'), {
+      myLibrary: query =>
+        modifyFields(query, {
+          data: () =>
+            AsyncData.succeed({
+              playlists: [
+                {
+                  id: 'liked',
+                  title: 'Liked songs',
+                  isLiked: true,
+                  songCount: 1,
+                  totalSeconds: 270,
+                  covers: [],
+                  updatedAt: 2,
+                },
+                {
+                  id: 'road-trip',
+                  title: 'Road trip',
+                  isLiked: false,
+                  songCount: 12,
+                  totalSeconds: 3_900,
+                  covers: [],
+                  updatedAt: 1,
+                },
+              ],
+              likedVideoIds: ['FhgFtXESdPk'],
+            }),
+        }),
+    })
+    scene(
+      { update, view },
+      given(model),
+      pageScrolled,
+      expect(role('link', { name: /Liked songs/ })).toHaveAttr(
+        'href',
+        '/library/playlist/liked',
+      ),
+      expect(text('12 songs · 1 hr 5 min')).toExist(),
     )
   })
 })

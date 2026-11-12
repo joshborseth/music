@@ -1,0 +1,450 @@
+import { Database } from 'bun:sqlite'
+import {
+  Array,
+  Config,
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Match,
+  Option,
+  Path,
+  Result,
+  Schema,
+  String,
+  pipe,
+} from 'effect'
+
+import {
+  type Artwork,
+  LIKED_PLAYLIST_ID,
+  MAX_PLAYLIST_TITLE_LENGTH,
+  MusicNotFoundError,
+  type MyLibrary,
+  type MyPlaylistDetails,
+  type MyPlaylistSummary,
+  type PlaylistEdit,
+  type PlaylistEditResult,
+  PlaylistStoreError,
+  Song,
+} from '@music/shared'
+
+const LIKED_TITLE = 'Liked songs'
+const UNTITLED = 'Untitled playlist'
+
+/** How many covers the mosaic shows, and how far down to look for them. */
+const MOSAIC_COVERS = 4
+const COVER_SEARCH_DEPTH = 24
+
+/**
+ * Bumped whenever the tables change. Each step in MIGRATIONS takes the file
+ * from the version before it.
+ */
+const MIGRATIONS: ReadonlyArray<string> = [
+  `
+  CREATE TABLE playlists (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE playlist_songs (
+    playlist_id TEXT NOT NULL REFERENCES playlists (id) ON DELETE CASCADE,
+    video_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    duration_seconds REAL,
+    song TEXT NOT NULL,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY (playlist_id, video_id)
+  ) STRICT;
+
+  CREATE INDEX playlist_songs_by_position
+    ON playlist_songs (playlist_id, position);
+  `,
+]
+
+// ROWS
+
+/** A song is kept as JSON, so a playlist page needs no trip to YouTube. */
+const SongJson = Schema.fromJsonString(Schema.toCodecJson(Song))
+const encodeSong = Schema.encodeSync(SongJson)
+const decodeSong = Schema.decodeUnknownOption(SongJson)
+
+const SummaryRow = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  updated_at: Schema.Number,
+  song_count: Schema.Number,
+  total_seconds: Schema.Number,
+})
+type SummaryRow = typeof SummaryRow.Type
+
+const SongRow = Schema.Struct({ song: Schema.String })
+const VideoIdRow = Schema.Struct({ video_id: Schema.String })
+const PositionRow = Schema.Struct({ position: Schema.NullOr(Schema.Number) })
+const VersionRow = Schema.Struct({ user_version: Schema.Number })
+
+const decodeRows =
+  <A, I>(schema: Schema.Codec<A, I>) =>
+  (rows: ReadonlyArray<unknown>): ReadonlyArray<A> =>
+    Schema.decodeUnknownSync(Schema.Array(schema))(rows)
+
+// TITLES
+
+/** A title as it is kept: trimmed, not empty, and not too long. */
+export const normalizeTitle = (title: string): string =>
+  pipe(
+    String.trim(title),
+    Option.liftPredicate(String.isNonEmpty),
+    Option.map(trimmed => trimmed.slice(0, MAX_PLAYLIST_TITLE_LENGTH).trim()),
+    Option.getOrElse(() => UNTITLED),
+  )
+
+/** Up to four covers from different albums, in playlist order. */
+export const mosaicCovers = (
+  songs: ReadonlyArray<Song>,
+): ReadonlyArray<Artwork> =>
+  pipe(
+    songs,
+    Array.filter(song => Array.isReadonlyArrayNonEmpty(song.artwork)),
+    Array.dedupeWith(
+      (left, right) =>
+        Option.getOrElse(
+          Option.map(left.maybeAlbum, ({ id }) => id),
+          () => left.videoId,
+        ) ===
+        Option.getOrElse(
+          Option.map(right.maybeAlbum, ({ id }) => id),
+          () => right.videoId,
+        ),
+    ),
+    Array.take(MOSAIC_COVERS),
+    Array.map(song => song.artwork),
+  )
+
+// SERVICE
+
+export interface PlaylistStoreShape {
+  readonly library: () => Effect.Effect<MyLibrary, PlaylistStoreError>
+  readonly playlist: (
+    playlistId: string,
+  ) => Effect.Effect<MyPlaylistDetails, MusicNotFoundError | PlaylistStoreError>
+  readonly edit: (
+    edit: PlaylistEdit,
+  ) => Effect.Effect<
+    PlaylistEditResult,
+    MusicNotFoundError | PlaylistStoreError
+  >
+}
+
+/** The playlists made in the app, kept in one SQLite file on the server. */
+export class PlaylistStore extends Context.Service<
+  PlaylistStore,
+  PlaylistStoreShape
+>()('PlaylistStore') {}
+
+const errorMessage = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : globalThis.String(cause)
+
+const migrate = (db: Database): void => {
+  db.run('PRAGMA journal_mode = WAL')
+  db.run('PRAGMA foreign_keys = ON')
+  const [versionRow] = decodeRows(VersionRow)(
+    db.query('PRAGMA user_version').all(),
+  )
+  const version = versionRow?.user_version ?? 0
+  db.transaction(() => {
+    Array.forEach(MIGRATIONS.slice(version), step => db.run(step))
+    db.run(`PRAGMA user_version = ${MIGRATIONS.length}`)
+  })()
+}
+
+/**
+ * Builds the store on an open database. `now` and `newId` are passed in so
+ * tests can fix them.
+ */
+export const makePlaylistStore = (
+  db: Database,
+  options: Readonly<{ now: () => number; newId: () => string }>,
+): PlaylistStoreShape => {
+  migrate(db)
+
+  const ensureLiked = (): void => {
+    const now = options.now()
+    db.query(
+      `INSERT OR IGNORE INTO playlists (id, title, created_at, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(LIKED_PLAYLIST_ID, LIKED_TITLE, now, now)
+  }
+  ensureLiked()
+
+  const songsOf = (
+    playlistId: string,
+    limit: number = -1,
+  ): ReadonlyArray<Song> =>
+    pipe(
+      db
+        .query(
+          `SELECT song FROM playlist_songs WHERE playlist_id = ?
+           ORDER BY position LIMIT ?`,
+        )
+        .all(playlistId, limit),
+      decodeRows(SongRow),
+      Array.map(row => decodeSong(row.song)),
+      Array.getSomes,
+    )
+
+  const toSummary = (row: SummaryRow): MyPlaylistSummary => ({
+    id: row.id,
+    title: row.title,
+    isLiked: row.id === LIKED_PLAYLIST_ID,
+    songCount: row.song_count,
+    totalSeconds: Math.round(row.total_seconds),
+    covers: mosaicCovers(songsOf(row.id, COVER_SEARCH_DEPTH)),
+    updatedAt: row.updated_at,
+  })
+
+  const SUMMARY_SELECT = `
+    SELECT p.id, p.title, p.updated_at,
+      COUNT(s.video_id) AS song_count,
+      COALESCE(SUM(s.duration_seconds), 0) AS total_seconds
+    FROM playlists p
+    LEFT JOIN playlist_songs s ON s.playlist_id = p.id`
+
+  const readSummary = (playlistId: string): Option.Option<MyPlaylistSummary> =>
+    pipe(
+      db
+        .query(`${SUMMARY_SELECT} WHERE p.id = ? GROUP BY p.id`)
+        .all(playlistId),
+      decodeRows(SummaryRow),
+      Array.head,
+      Option.map(toSummary),
+    )
+
+  const readLibrary = (): MyLibrary => ({
+    playlists: pipe(
+      db
+        .query(
+          `${SUMMARY_SELECT} GROUP BY p.id
+           ORDER BY p.id = ? DESC, p.updated_at DESC, p.created_at DESC`,
+        )
+        .all(LIKED_PLAYLIST_ID),
+      decodeRows(SummaryRow),
+      Array.map(toSummary),
+    ),
+    likedVideoIds: pipe(
+      db
+        .query(
+          `SELECT video_id FROM playlist_songs WHERE playlist_id = ?
+           ORDER BY position`,
+        )
+        .all(LIKED_PLAYLIST_ID),
+      decodeRows(VideoIdRow),
+      Array.map(row => row.video_id),
+    ),
+  })
+
+  const readDetails = (playlistId: string): Option.Option<MyPlaylistDetails> =>
+    Option.map(readSummary(playlistId), playlist => ({
+      playlist,
+      songs: songsOf(playlistId),
+    }))
+
+  const touch = (playlistId: string): void => {
+    db.query('UPDATE playlists SET updated_at = ? WHERE id = ?').run(
+      options.now(),
+      playlistId,
+    )
+  }
+
+  const edgePosition = (playlistId: string, edge: 'MIN' | 'MAX'): number =>
+    pipe(
+      db
+        .query(
+          `SELECT ${edge}(position) AS position FROM playlist_songs
+           WHERE playlist_id = ?`,
+        )
+        .all(playlistId),
+      decodeRows(PositionRow),
+      Array.head,
+      Option.flatMap(row => Option.fromNullishOr(row.position)),
+      Option.getOrElse(() => 0),
+    )
+
+  /** Adds songs at one end, skipping any the playlist already holds. */
+  const insertSongs = (
+    playlistId: string,
+    songs: ReadonlyArray<Song>,
+    end: 'Start' | 'End',
+  ): void => {
+    const insert = db.query(
+      `INSERT OR IGNORE INTO playlist_songs
+         (playlist_id, video_id, position, duration_seconds, song, added_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    const now = options.now()
+    const unique = Array.dedupeWith(
+      songs,
+      (left, right) => left.videoId === right.videoId,
+    )
+    const ordered = end === 'Start' ? Array.reverse(unique) : unique
+    Array.forEach(ordered, song => {
+      const position =
+        end === 'Start'
+          ? edgePosition(playlistId, 'MIN') - 1
+          : edgePosition(playlistId, 'MAX') + 1
+      insert.run(
+        playlistId,
+        song.videoId,
+        position,
+        Option.getOrNull(song.maybeDurationSeconds),
+        encodeSong(song),
+        now,
+      )
+    })
+  }
+
+  const exists = (playlistId: string): boolean =>
+    Option.isSome(readSummary(playlistId))
+
+  const notFound = (playlistId: string) =>
+    new MusicNotFoundError({ id: playlistId })
+
+  const whenExists =
+    (playlistId: string, change: () => void) =>
+    (): Result.Result<string, MusicNotFoundError> => {
+      if (!exists(playlistId)) {
+        return Result.fail(notFound(playlistId))
+      }
+      change()
+      return Result.succeed(playlistId)
+    }
+
+  const removeSong = (playlistId: string, videoId: string): void => {
+    db.query(
+      'DELETE FROM playlist_songs WHERE playlist_id = ? AND video_id = ?',
+    ).run(playlistId, videoId)
+  }
+
+  /** Changes the database, returning the id of the playlist it changed. */
+  const change = (
+    edit: PlaylistEdit,
+  ): (() => Result.Result<string, MusicNotFoundError>) =>
+    Match.valueTags(edit, {
+      Create:
+        ({ title, songs }) =>
+        () => {
+          const id = options.newId()
+          const now = options.now()
+          db.query(
+            `INSERT INTO playlists (id, title, created_at, updated_at)
+             VALUES (?, ?, ?, ?)`,
+          ).run(id, normalizeTitle(title), now, now)
+          insertSongs(id, songs, 'End')
+          return Result.succeed(id)
+        },
+      Rename: ({ playlistId, title }) =>
+        whenExists(playlistId, () => {
+          if (playlistId !== LIKED_PLAYLIST_ID) {
+            db.query('UPDATE playlists SET title = ? WHERE id = ?').run(
+              normalizeTitle(title),
+              playlistId,
+            )
+            touch(playlistId)
+          }
+        }),
+      Delete: ({ playlistId }) =>
+        whenExists(playlistId, () => {
+          if (playlistId !== LIKED_PLAYLIST_ID) {
+            db.query('DELETE FROM playlists WHERE id = ?').run(playlistId)
+          }
+        }),
+      AddSongs: ({ playlistId, songs }) =>
+        whenExists(playlistId, () => {
+          insertSongs(playlistId, songs, 'End')
+          touch(playlistId)
+        }),
+      RemoveSong: ({ playlistId, videoId }) =>
+        whenExists(playlistId, () => {
+          removeSong(playlistId, videoId)
+          touch(playlistId)
+        }),
+      SetLiked:
+        ({ song, isLiked }) =>
+        () => {
+          ensureLiked()
+          if (isLiked) {
+            insertSongs(LIKED_PLAYLIST_ID, [song], 'Start')
+          } else {
+            removeSong(LIKED_PLAYLIST_ID, song.videoId)
+          }
+          touch(LIKED_PLAYLIST_ID)
+          return Result.succeed(LIKED_PLAYLIST_ID)
+        },
+    })
+
+  /** Runs the change in one transaction, then reads back what it changed. */
+  const applyEdit = (
+    edit: PlaylistEdit,
+  ): Result.Result<PlaylistEditResult, MusicNotFoundError> =>
+    Result.map(db.transaction(change(edit))(), changedId => ({
+      library: readLibrary(),
+      maybePlaylist: readDetails(changedId),
+    }))
+
+  const attempt = <A>(run: () => A) =>
+    Effect.try({
+      try: run,
+      catch: cause => new PlaylistStoreError({ message: errorMessage(cause) }),
+    })
+
+  return {
+    library: Effect.fn('PlaylistStore.library')(function* () {
+      return yield* attempt(readLibrary)
+    }),
+    playlist: Effect.fn('PlaylistStore.playlist')(function* (
+      playlistId: string,
+    ) {
+      const maybeDetails = yield* attempt(() => readDetails(playlistId))
+      return yield* Option.match(maybeDetails, {
+        onNone: () => Effect.fail(notFound(playlistId)),
+        onSome: Effect.succeed,
+      })
+    }),
+    edit: Effect.fn('PlaylistStore.edit')(function* (edit: PlaylistEdit) {
+      const result = yield* attempt(() => applyEdit(edit))
+      return yield* Effect.fromResult(result)
+    }),
+  }
+}
+
+/**
+ * Opens the playlist database at `PLAYLISTS_DB_PATH`, by default
+ * `~/.local/share/music/playlists.sqlite`, for the life of the server.
+ */
+export const PlaylistStoreLive = Layer.effect(PlaylistStore)(
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const home = yield* Config.String('HOME').pipe(Config.withDefault('/tmp'))
+    const file = yield* Config.String('PLAYLISTS_DB_PATH').pipe(
+      Config.withDefault(
+        path.join(home, '.local', 'share', 'music', 'playlists.sqlite'),
+      ),
+    )
+    yield* fs
+      .makeDirectory(path.dirname(file), { recursive: true })
+      .pipe(Effect.orDie)
+    const db = yield* Effect.acquireRelease(
+      Effect.sync(() => new Database(file, { create: true, strict: true })),
+      database => Effect.sync(() => database.close()),
+    )
+    return PlaylistStore.of(
+      makePlaylistStore(db, {
+        now: () => Date.now(),
+        newId: () => crypto.randomUUID(),
+      }),
+    )
+  }),
+)

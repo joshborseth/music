@@ -11,7 +11,12 @@ import {
   SEARCH_RESULTS_ATTRIBUTE,
 } from '../constant'
 import { Message } from '../message'
-import { albumSearchQuery, artistSearchQuery, songSearchQuery } from '../query'
+import {
+  albumSearchQuery,
+  artistSearchQuery,
+  playlistSearchQuery,
+  songSearchQuery,
+} from '../query'
 import { SEARCH_KINDS, type SearchKind } from '../route'
 import { routeQuery, routeSearchKind } from '../update'
 import { largeTitle, statusBarCover } from './chrome'
@@ -22,6 +27,7 @@ import {
   emptyState,
   list,
   loadingRows,
+  playlistRow,
   remote,
   songList,
 } from './shared'
@@ -49,7 +55,7 @@ const searchField = (model: PageModel, h: HtmlBuilder<Message>): Html =>
         h.Id(SEARCH_INPUT_ID),
         h.Type('search'),
         h.Value(model.searchInput),
-        h.Placeholder('Songs, artists, albums'),
+        h.Placeholder('Songs, artists, albums, playlists'),
         h.Autocomplete('off'),
         h.Attribute('autocorrect', 'off'),
         h.Attribute('autocapitalize', 'off'),
@@ -81,7 +87,7 @@ const kindPicker = (selectedKind: SearchKind, h: HtmlBuilder<Message>): Html =>
     [
       h.Role('tablist'),
       h.AriaLabel('Search in'),
-      h.Class('bg-muted grid h-8 grid-cols-3 rounded-[9px] p-0.5'),
+      h.Class('bg-muted grid h-8 grid-cols-4 rounded-[9px] p-0.5'),
     ],
     Array.map(SEARCH_KINDS, kind =>
       h.button(
@@ -128,6 +134,7 @@ const searchKindToItemKind = {
   Songs: 'Song',
   Artists: 'Artist',
   Albums: 'Album',
+  Playlists: 'Playlist',
 } as const
 
 const resultsView = (
@@ -205,6 +212,25 @@ const resultsView = (
         h,
       ),
     ),
+    Match.when('Playlists', () =>
+      remote(
+        playlistSearchQuery.read(model.playlistSearch, { query }),
+        {
+          onLoading: () => loadingRows(h),
+          onData: playlists =>
+            Array.match(playlists, {
+              onEmpty: () => noResults,
+              onNonEmpty: playlists =>
+                list(
+                  playlists,
+                  { toKey: playlist => playlist.id, toRow: playlistRow },
+                  h,
+                ),
+            }),
+        },
+        h,
+      ),
+    ),
     Match.exhaustive,
   )
 }
@@ -217,7 +243,7 @@ const recentSearchesView = (model: PageModel, h: HtmlBuilder<Message>): Html =>
       emptyState(
         {
           title: 'Search YouTube Music',
-          description: 'Find any song, artist, or album and play it.',
+          description: 'Find any song, artist, album, or playlist and play it.',
           kind: 'Song',
         },
         h,

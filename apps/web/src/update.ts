@@ -1,10 +1,30 @@
-import { Array, Match, Option, Record, String, pipe } from 'effect'
+import {
+  Array,
+  HashMap,
+  Match,
+  Option,
+  Record,
+  Result,
+  String,
+  pipe,
+} from 'effect'
 import { AsyncData, Runtime, Update, Url } from 'foldkit'
 import { UrlRequest } from 'foldkit/navigation'
 import { modifyFields } from 'foldkit/struct'
 
 import {
+  LIKED_PLAYLIST_ID,
+  type MyLibrary,
+  type MyPlaylistDetails,
+  type PlaylistEdit,
+  type PlaylistEditResult,
+  type Song,
+} from '@music/shared'
+
+import {
   BlurSearchInput,
+  EditPlaylists,
+  FocusPlaylistTitleInput,
   FocusSearchInput,
   LoadExternal,
   LoadLibrary,
@@ -51,12 +71,16 @@ import { currentEntry, initialPlaybackModel } from './playback/domain'
 import type { PlaybackServices } from './playback/resource'
 import * as Playback from './playback/update'
 import {
+  type RequestError,
   albumQuery,
   albumSearchQuery,
   artistQuery,
   artistSearchQuery,
   homeQuery,
+  myLibraryQuery,
+  myPlaylistQuery,
   playlistQuery,
+  playlistSearchQuery,
   songQuery,
   songSearchQuery,
 } from './query'
@@ -73,7 +97,12 @@ import {
 } from './route'
 import { type MusicClient } from './rpc'
 import { ActionSheet, type PlayerPanel, type SheetContent } from './sheet'
-import { artistNames, artworkUrl, joinDetails } from './view/shared'
+import {
+  artistNames,
+  artworkUrl,
+  joinDetails,
+  myPlaylistHref,
+} from './view/shared'
 
 type UpdateReturn = Update.Return<
   Model,
@@ -102,6 +131,21 @@ const artistSearch = artistSearchQuery.lift<Model, Message>({
 const albumSearch = albumSearchQuery.lift<Model, Message>({
   parentField: 'albumSearch',
   toParentMessage: message => Message.GotAlbumSearchMessage({ message }),
+})
+
+const playlistSearch = playlistSearchQuery.lift<Model, Message>({
+  parentField: 'playlistSearch',
+  toParentMessage: message => Message.GotPlaylistSearchMessage({ message }),
+})
+
+const myLibrary = myLibraryQuery.lift<Model, Message>({
+  parentField: 'myLibrary',
+  toParentMessage: message => Message.GotMyLibraryMessage({ message }),
+})
+
+const myPlaylists = myPlaylistQuery.lift<Model, Message>({
+  parentField: 'myPlaylists',
+  toParentMessage: message => Message.GotMyPlaylistMessage({ message }),
 })
 
 const songs = songQuery.lift<Model, Message>({
@@ -512,6 +556,207 @@ const mergeRemembered = <A>(
     rememberFirst(items, item, isSame, max),
   )
 
+// MY PLAYLISTS
+
+/** The ids of the songs I like, as far as this device knows. */
+export const likedVideoIds = (model: Model): ReadonlyArray<string> =>
+  Option.match(AsyncData.getData(myLibraryQuery.read(model.myLibrary)), {
+    onNone: () => [],
+    onSome: ({ likedVideoIds: ids }) => ids,
+  })
+
+const mapMyLibrary = (
+  model: Model,
+  change: (library: MyLibrary) => MyLibrary,
+): Model =>
+  modifyFields(model, {
+    myLibrary: query =>
+      modifyFields(query, {
+        data: data => AsyncData.map(data, change),
+      }),
+  })
+
+/** Takes my playlists as the server now has them, over any load in flight. */
+const withMyLibrary = (model: Model, library: MyLibrary): Model =>
+  modifyFields(model, {
+    myLibrary: query =>
+      modifyFields(query, { data: () => AsyncData.succeed(library) }),
+  })
+
+/** Changes the loaded copy of one of my playlists, if this device has one. */
+const mapMyPlaylist = (
+  model: Model,
+  playlistId: string,
+  change: (details: MyPlaylistDetails) => MyPlaylistDetails,
+): Model =>
+  modifyFields(model, {
+    myPlaylists: query =>
+      modifyFields(query, {
+        entries: entries =>
+          HashMap.map(entries, entry =>
+            entry.args.playlistId === playlistId
+              ? { ...entry, data: AsyncData.map(entry.data, change) }
+              : entry,
+          ),
+      }),
+  })
+
+const withMyPlaylist = (model: Model, details: MyPlaylistDetails): Model =>
+  mapMyPlaylist(model, details.playlist.id, () => details)
+
+const withoutSong =
+  (videoId: string) =>
+  (details: MyPlaylistDetails): MyPlaylistDetails => ({
+    ...details,
+    songs: Array.filter(details.songs, song => song.videoId !== videoId),
+  })
+
+const withSongFirst =
+  (song: Song) =>
+  (details: MyPlaylistDetails): MyPlaylistDetails => ({
+    ...details,
+    songs: Array.prepend(withoutSong(song.videoId)(details).songs, song),
+  })
+
+/**
+ * Shows a change before the server confirms it, so hearts fill and rows
+ * leave at once. The server's answer replaces this either way.
+ */
+const showEditEarly = (model: Model, edit: PlaylistEdit): Model =>
+  Match.valueTags(edit, {
+    Create: () => model,
+    Rename: () => model,
+    AddSongs: () => model,
+    Delete: ({ playlistId }) =>
+      mapMyLibrary(model, library => ({
+        ...library,
+        playlists: Array.filter(
+          library.playlists,
+          ({ id }) => id !== playlistId,
+        ),
+      })),
+    RemoveSong: ({ playlistId, videoId }) =>
+      mapMyPlaylist(model, playlistId, withoutSong(videoId)),
+    SetLiked: ({ song, isLiked }) =>
+      mapMyPlaylist(
+        mapMyLibrary(model, library => ({
+          ...library,
+          likedVideoIds: isLiked
+            ? Array.prepend(
+                Array.filter(library.likedVideoIds, id => id !== song.videoId),
+                song.videoId,
+              )
+            : Array.filter(library.likedVideoIds, id => id !== song.videoId),
+        })),
+        LIKED_PLAYLIST_ID,
+        isLiked ? withSongFirst(song) : withoutSong(song.videoId),
+      ),
+  })
+
+const editPlaylists =
+  (edit: PlaylistEdit): UpdateStep =>
+  model => ({
+    model: showEditEarly(model, edit),
+    commands: [EditPlaylists({ edit })],
+  })
+
+/** The playlist an edit changes, when it names one that already exists. */
+const editedPlaylistId = (edit: PlaylistEdit): Option.Option<string> =>
+  Match.valueTags(edit, {
+    Create: () => Option.none(),
+    Rename: ({ playlistId }) => Option.some(playlistId),
+    Delete: () => Option.none(),
+    AddSongs: ({ playlistId }) => Option.some(playlistId),
+    RemoveSong: ({ playlistId }) => Option.some(playlistId),
+    SetLiked: () => Option.some(LIKED_PLAYLIST_ID),
+  })
+
+const showNotice =
+  (notice: string): UpdateStep =>
+  model =>
+    Playback.receiveNotice(model, notice)
+
+const addedNotice = (title: string): string => `Added to “${title}”`
+
+const stay: UpdateStep = model => ({ model })
+
+/** What follows a saved edit: a new empty playlist opens, adding says so. */
+const followEdit = (
+  edit: PlaylistEdit,
+  result: PlaylistEditResult,
+): UpdateStep =>
+  Option.match(result.maybePlaylist, {
+    onNone: () => stay,
+    onSome: ({ playlist }) =>
+      Match.valueTags(edit, {
+        Create: ({ songs: createdWith }) =>
+          Array.isReadonlyArrayEmpty(createdWith)
+            ? navigateTo(myPlaylistHref(playlist.id), 'Push')
+            : showNotice(addedNotice(playlist.title)),
+        AddSongs: () => showNotice(addedNotice(playlist.title)),
+        Rename: () => stay,
+        Delete: () => stay,
+        RemoveSong: () => stay,
+        SetLiked: () => stay,
+      }),
+  })
+
+const completeEditPlaylists = (
+  edit: PlaylistEdit,
+  result: Result.Result<PlaylistEditResult, RequestError>,
+): UpdateStep =>
+  Result.match(result, {
+    onSuccess:
+      (saved): UpdateStep =>
+      model =>
+        followEdit(
+          edit,
+          saved,
+        )(
+          Option.match(saved.maybePlaylist, {
+            onNone: () => withMyLibrary(model, saved.library),
+            onSome: details =>
+              withMyPlaylist(withMyLibrary(model, saved.library), details),
+          }),
+        ),
+    onFailure: (): UpdateStep =>
+      Update.combine([
+        showNotice('Could not save that change. Try again.'),
+        model => myLibrary.revalidateOrLoad(model),
+        model =>
+          Option.match(editedPlaylistId(edit), {
+            onNone: () => ({ model }),
+            onSome: playlistId => myPlaylists.revalidate(model, { playlistId }),
+          }),
+      ]),
+  })
+
+const showPlaylistTitleSheet =
+  (title: string, content: SheetContent): UpdateStep =>
+  model =>
+    Update.combine([
+      showSheet(content),
+      stepModel => ({
+        model: stepModel,
+        commands: [FocusPlaylistTitleInput()],
+      }),
+    ])(modifyFields(model, { playlistTitleInput: () => title }))
+
+/** Leaves the page of a playlist that was just deleted. */
+const leaveDeletedPlaylist =
+  (playlistId: string): UpdateStep =>
+  model =>
+    AppRoute.matchOrElse(
+      model.route,
+      {
+        MyPlaylist: route =>
+          route.playlistId === playlistId
+            ? { model, commands: [NavigateBack()] }
+            : { model },
+      },
+      () => ({ model }),
+    )
+
 // ROUTE LOADING
 
 const loadSearch = (query: string, kind: SearchKind): UpdateStep =>
@@ -528,6 +773,10 @@ const loadSearch = (query: string, kind: SearchKind): UpdateStep =>
     Match.when(
       'Albums',
       () => model => albumSearch.loadIfMissing(model, { query }),
+    ),
+    Match.when(
+      'Playlists',
+      () => model => playlistSearch.loadIfMissing(model, { query }),
     ),
     Match.exhaustive,
   )
@@ -547,6 +796,10 @@ const revalidateSearch = (query: string, kind: SearchKind): UpdateStep =>
       'Albums',
       () => model => albumSearch.revalidateOrLoad(model, { query }),
     ),
+    Match.when(
+      'Playlists',
+      () => model => playlistSearch.revalidateOrLoad(model, { query }),
+    ),
     Match.exhaustive,
   )
 
@@ -558,7 +811,7 @@ const loadRoute = (route: AppRoute): UpdateStep =>
         onNone: () => model => ({ model }),
         onSome: query => loadSearch(query, routeSearchKind(route)),
       }),
-    Library: () => model => ({ model }),
+    Library: () => model => myLibrary.revalidateOrLoad(model),
     Song:
       ({ videoId }) =>
       model =>
@@ -575,6 +828,10 @@ const loadRoute = (route: AppRoute): UpdateStep =>
       ({ playlistId }) =>
       model =>
         playlists.loadIfMissing(model, { playlistId }),
+    MyPlaylist:
+      ({ playlistId }) =>
+      model =>
+        myPlaylists.revalidateOrLoad(model, { playlistId }),
     NotFound: () => model => ({ model }),
   })
 
@@ -586,7 +843,7 @@ const retryRoute = (route: AppRoute): UpdateStep =>
         onNone: () => model => ({ model }),
         onSome: query => revalidateSearch(query, routeSearchKind(route)),
       }),
-    Library: () => model => ({ model }),
+    Library: () => model => myLibrary.revalidateOrLoad(model),
     Song:
       ({ videoId }) =>
       model =>
@@ -603,6 +860,10 @@ const retryRoute = (route: AppRoute): UpdateStep =>
       ({ playlistId }) =>
       model =>
         playlists.revalidateOrLoad(model, { playlistId }),
+    MyPlaylist:
+      ({ playlistId }) =>
+      model =>
+        myPlaylists.revalidateOrLoad(model, { playlistId }),
     NotFound: () => model => ({ model }),
   })
 
@@ -625,10 +886,14 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     songSearch: songSearchQuery.init(),
     artistSearch: artistSearchQuery.init(),
     albumSearch: albumSearchQuery.init(),
+    playlistSearch: playlistSearchQuery.init(),
     songs: songQuery.init(),
     artists: artistQuery.init(),
     albums: albumQuery.init(),
     playlists: playlistQuery.init(),
+    myLibrary: myLibraryQuery.init(),
+    myPlaylists: myPlaylistQuery.init(),
+    playlistTitleInput: '',
     actionSheet: ActionSheet.Hidden(),
     playerPanel: 'Artwork',
     ...initialPlaybackModel,
@@ -652,9 +917,11 @@ export const init: Runtime.RoutingApplicationInit<
   MusicClient | PlaybackServices
 > = (url: Url.Url) => {
   const route = urlToAppRoute(url)
-  return Update.combine([loadRoute(route), loadStoredState])(
-    initialModel(route, urlPath(url)),
-  )
+  return Update.combine([
+    loadRoute(route),
+    loadStoredState,
+    model => myLibrary.loadIfMissing(model),
+  ])(initialModel(route, urlPath(url)))
 }
 
 // UPDATE
@@ -855,6 +1122,82 @@ export const update = (model: Model, message: Message) =>
         stepModel => playlists.fold(stepModel, message),
         rememberViewed,
       ])(model),
+    GotPlaylistSearchMessage: ({ message }) =>
+      playlistSearch.fold(model, message),
+    GotMyLibraryMessage: ({ message }) => myLibrary.fold(model, message),
+    GotMyPlaylistMessage: ({ message }) => myPlaylists.fold(model, message),
+
+    ClickedAddToPlaylist: ({ songs: songsToAdd, suggestedTitle }) =>
+      Update.combine([
+        showSheet({
+          _tag: 'AddToPlaylist',
+          songs: songsToAdd,
+          suggestedTitle,
+        }),
+        stepModel => myLibrary.revalidateOrLoad(stepModel),
+      ])(model),
+    ClickedNewPlaylist: ({ songs: songsToAdd, suggestedTitle }) =>
+      showPlaylistTitleSheet(suggestedTitle, {
+        _tag: 'NewPlaylist',
+        songs: songsToAdd,
+      })(model),
+    UpdatedPlaylistTitleInput: ({ value }) => ({
+      model: modifyFields(model, { playlistTitleInput: () => value }),
+    }),
+    SubmittedNewPlaylist: ({ songs: songsToAdd }) =>
+      Update.combine([
+        dismissSheet,
+        editPlaylists({
+          _tag: 'Create',
+          title: model.playlistTitleInput,
+          songs: songsToAdd,
+        }),
+      ])(model),
+    ClickedPlaylistOption: ({ playlistId, songs: songsToAdd }) =>
+      Update.combine([
+        dismissSheet,
+        editPlaylists({ _tag: 'AddSongs', playlistId, songs: songsToAdd }),
+      ])(model),
+    ClickedToggleLiked: ({ song }) =>
+      Update.combine([
+        dismissSheet,
+        editPlaylists({
+          _tag: 'SetLiked',
+          song,
+          isLiked: !Array.contains(likedVideoIds(model), song.videoId),
+        }),
+      ])(model),
+    ClickedRemoveFromPlaylist: ({ playlistId, videoId }) =>
+      Update.combine([
+        dismissSheet,
+        editPlaylists({ _tag: 'RemoveSong', playlistId, videoId }),
+      ])(model),
+    ClickedPlaylistActions: ({ playlistId, title }) =>
+      showSheet({ _tag: 'PlaylistActions', playlistId, title })(model),
+    ClickedRenamePlaylist: ({ playlistId, title }) =>
+      showPlaylistTitleSheet(title, { _tag: 'RenamePlaylist', playlistId })(
+        model,
+      ),
+    SubmittedRenamePlaylist: ({ playlistId }) =>
+      Update.combine([
+        dismissSheet,
+        editPlaylists({
+          _tag: 'Rename',
+          playlistId,
+          title: model.playlistTitleInput,
+        }),
+      ])(model),
+    ClickedDeletePlaylist: ({ playlistId, title }) =>
+      showSheet({ _tag: 'ConfirmDeletePlaylist', playlistId, title })(model),
+    ConfirmedDeletePlaylist: ({ playlistId }) =>
+      Update.combine([
+        dismissSheet,
+        leaveDeletedPlaylist(playlistId),
+        editPlaylists({ _tag: 'Delete', playlistId }),
+      ])(model),
+    CompletedFocusPlaylistTitleInput: () => ({ model }),
+    CompletedEditPlaylists: ({ edit, result }) =>
+      completeEditPlaylists(edit, result)(model),
 
     CompletedLoadExternal: () => ({ model }),
     CompletedNavigateBack: () => ({ model }),

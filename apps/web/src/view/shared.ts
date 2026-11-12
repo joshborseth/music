@@ -5,6 +5,7 @@ import {
   CircleAlert,
   Disc3,
   Ellipsis,
+  Heart,
   ListEnd,
   ListMusic,
   ListStart,
@@ -23,6 +24,7 @@ import {
   type ArtistLink,
   type ArtistSummary,
   type Artwork,
+  type MyPlaylistSummary,
   type PlaylistSummary,
   type Song,
 } from '@music/shared'
@@ -32,7 +34,13 @@ import { type Model } from '../model'
 import { currentEntry } from '../playback/domain'
 import { type Swipe, SwipeTarget, swipeOn } from '../playback/swipe'
 import { type RequestError } from '../query'
-import { albumRouter, artistRouter, playlistRouter, songRouter } from '../route'
+import {
+  albumRouter,
+  artistRouter,
+  myPlaylistRouter,
+  playlistRouter,
+  songRouter,
+} from '../route'
 import { swipeableRow } from './swipe'
 
 // FORMATTING
@@ -44,6 +52,24 @@ export const formatDuration = (totalSeconds: number): string => {
   const minutes = Math.floor(totalSeconds / SECONDS_PER_MINUTE)
   const seconds = totalSeconds % SECONDS_PER_MINUTE
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+const SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE
+
+/** A playlist's length in words, such as "12 songs · 1 hr 5 min". */
+export const playlistLength = (playlist: MyPlaylistSummary): string => {
+  const songs = `${playlist.songCount} ${playlist.songCount === 1 ? 'song' : 'songs'}`
+  const hours = Math.floor(playlist.totalSeconds / SECONDS_PER_HOUR)
+  const minutes = Math.round(
+    (playlist.totalSeconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE,
+  )
+  const length =
+    hours > 0
+      ? `${hours} hr ${minutes} min`
+      : minutes > 0
+        ? `${minutes} min`
+        : ''
+  return joinDetails([songs, length])
 }
 
 const compactNumber = new Intl.NumberFormat('en', {
@@ -81,6 +107,9 @@ export const albumHref = (albumId: string): string => albumRouter({ albumId })
 
 export const playlistHref = (playlistId: string): string =>
   playlistRouter({ playlistId })
+
+export const myPlaylistHref = (playlistId: string): string =>
+  myPlaylistRouter({ playlistId })
 
 /** Artist credits, each linking to its artist page when it has one. */
 export const artistLinks = (
@@ -217,6 +246,79 @@ export const artworkImage = (
         ),
       ]),
   })
+
+// PLAYLIST COVERS
+
+type PlaylistCoverConfig = Readonly<{
+  playlist: MyPlaylistSummary
+  displayWidth: number
+  shape: ArtworkShape
+  className: string
+  isEager?: boolean
+}>
+
+/**
+ * The cover of one of my playlists: a heart for Liked songs, four album
+ * covers once it has songs from four albums, else its first cover.
+ */
+export const playlistCover = (
+  config: PlaylistCoverConfig,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const { playlist } = config
+  if (playlist.isLiked) {
+    return h.div(
+      [
+        h.Class(
+          cn(
+            'flex shrink-0 items-center justify-center bg-gradient-to-br from-rose-400 to-fuchsia-600 text-white',
+            config.shape,
+            config.className,
+          ),
+        ),
+      ],
+      [icon(h, Heart, 'size-2/5 fill-current')],
+    )
+  } else if (playlist.covers.length >= 4) {
+    return h.div(
+      [
+        h.Class(
+          cn(
+            'bg-muted grid shrink-0 grid-cols-2 grid-rows-2 overflow-hidden',
+            config.shape,
+            config.className,
+          ),
+        ),
+      ],
+      Array.map(playlist.covers, artwork =>
+        Option.match(artworkUrl(artwork, config.displayWidth / 2), {
+          onNone: () => h.span([h.Class('bg-muted')]),
+          onSome: url =>
+            h.img([
+              h.Src(url),
+              h.Alt(''),
+              h.Loading(config.isEager === true ? 'eager' : 'lazy'),
+              h.Decoding('async'),
+              h.Referrerpolicy('no-referrer'),
+              h.Class('size-full object-cover'),
+            ]),
+        }),
+      ),
+    )
+  } else {
+    return artworkImage(
+      {
+        artwork: Option.getOrElse(Array.head(playlist.covers), () => []),
+        displayWidth: config.displayWidth,
+        shape: config.shape,
+        className: config.className,
+        placeholderIcon: ListMusic,
+        ...(config.isEager === true ? { isEager: true } : {}),
+      },
+      h,
+    )
+  }
+}
 
 // ROWS
 
@@ -513,6 +615,55 @@ export const albumRow = (album: AlbumSummary, h: HtmlBuilder<Message>): Html =>
         h,
       ),
       rowText(album.title, albumDetails(album), h),
+    ],
+  )
+
+/** A YouTube Music playlist in a list: cover, title, who made it. */
+export const playlistRow = (
+  playlist: PlaylistSummary,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.a(
+    [h.Href(playlistHref(playlist.id)), h.Class(linkRowClass)],
+    [
+      artworkImage(
+        {
+          artwork: playlist.artwork,
+          displayWidth: ROW_ARTWORK_WIDTH,
+          shape: ArtworkShape.Square,
+          className: 'size-12',
+          placeholderIcon: ListMusic,
+        },
+        h,
+      ),
+      rowText(
+        playlist.title,
+        Option.getOrElse(playlist.maybeSubtitle, () => 'Playlist'),
+        h,
+      ),
+    ],
+  )
+
+const MY_PLAYLIST_ROW_ARTWORK_WIDTH = 56
+
+/** One of my playlists in a list: cover, title, how many songs. */
+export const myPlaylistRow = (
+  playlist: MyPlaylistSummary,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.a(
+    [h.Href(myPlaylistHref(playlist.id)), h.Class(linkRowClass)],
+    [
+      playlistCover(
+        {
+          playlist,
+          displayWidth: MY_PLAYLIST_ROW_ARTWORK_WIDTH,
+          shape: ArtworkShape.Square,
+          className: 'size-14',
+        },
+        h,
+      ),
+      rowText(playlist.title, playlistLength(playlist), h),
     ],
   )
 
@@ -915,11 +1066,13 @@ export const loadingPage = (h: HtmlBuilder<Message>): Html =>
 
 const requestErrorText = (error: RequestError): string =>
   ({
-    NotFound: 'YouTube Music has nothing at this address.',
+    NotFound: 'There is nothing at this address.',
     YouTubeUnavailable:
       'YouTube Music did not answer. It may be busy; try again in a moment.',
     ServerUnreachable:
       'Could not reach the music server. Check your connection.',
+    PlaylistsUnavailable:
+      'The music server could not read your playlists. Try again in a moment.',
   })[error]
 
 /** An error message with a retry button. */

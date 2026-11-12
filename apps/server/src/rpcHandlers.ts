@@ -2,11 +2,13 @@ import { Array, Effect } from 'effect'
 
 import { MusicRpcs, type Song } from '@music/shared'
 
+import { PlaylistStore } from './playlists/store.ts'
 import { Prefetcher, pageJobs } from './prefetch.ts'
 import { YouTubeMusic } from './youtubeMusic/service.ts'
 
 /**
- * Answers each MusicRpcs call from the YouTube Music catalog. Opening a
+ * Answers each MusicRpcs call from the YouTube Music catalog or the playlist
+ * store. Opening a
  * page also gets the songs someone is likely to play from it ready, so
  * Play starts instantly: the first ones downloaded whole, the next few
  * with their links found. The latest page replaces the previous one's plan.
@@ -15,6 +17,7 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
   Effect.gen(function* () {
     const youTubeMusic = yield* YouTubeMusic
     const prefetcher = yield* Prefetcher
+    const playlistStore = yield* PlaylistStore
 
     const prepare = (
       songs: ReadonlyArray<Song>,
@@ -37,6 +40,7 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
           .pipe(Effect.tap(songs => prepare(songs, 1, 2))),
       searchArtists: ({ query }) => youTubeMusic.searchArtists(query),
       searchAlbums: ({ query }) => youTubeMusic.searchAlbums(query),
+      searchPlaylists: ({ query }) => youTubeMusic.searchPlaylists(query),
       getSong: ({ videoId }) =>
         youTubeMusic
           .getSong(videoId)
@@ -54,6 +58,12 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
           .getPlaylist(playlistId)
           .pipe(Effect.tap(details => prepare(details.tracks, 2, 3))),
       getHome: () => youTubeMusic.getHome(),
+      getMyLibrary: () => playlistStore.library(),
+      getMyPlaylist: ({ playlistId }) =>
+        playlistStore
+          .playlist(playlistId)
+          .pipe(Effect.tap(details => prepare(details.songs, 2, 3))),
+      editPlaylists: ({ edit }) => playlistStore.edit(edit),
     }
   }),
 )

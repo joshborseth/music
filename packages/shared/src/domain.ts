@@ -128,6 +128,78 @@ export const PlaylistDetails = Schema.Struct({
 })
 export type PlaylistDetails = typeof PlaylistDetails.Type
 
+// MY PLAYLISTS
+
+/** The id of the built-in Liked songs playlist, which cannot be renamed or deleted. */
+export const LIKED_PLAYLIST_ID = 'liked'
+
+/** The longest playlist title the server keeps. */
+export const MAX_PLAYLIST_TITLE_LENGTH = 100
+
+/** A playlist made in this app and kept on the music server. */
+export const MyPlaylistSummary = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  /** The built-in Liked songs playlist. */
+  isLiked: Schema.Boolean,
+  songCount: Schema.Number,
+  totalSeconds: Schema.Number,
+  /** Up to four different covers from its first songs, for the mosaic. */
+  covers: Schema.Array(Artwork),
+  /** When it last changed, in milliseconds since the epoch. */
+  updatedAt: Schema.Number,
+})
+export type MyPlaylistSummary = typeof MyPlaylistSummary.Type
+
+/** Every playlist made in this app, and which songs are liked. */
+export const MyLibrary = Schema.Struct({
+  /** Liked songs first, then the most recently changed. */
+  playlists: Schema.Array(MyPlaylistSummary),
+  likedVideoIds: Schema.Array(Schema.String),
+})
+export type MyLibrary = typeof MyLibrary.Type
+
+/** One of my playlists with its songs in order. Each song appears once. */
+export const MyPlaylistDetails = Schema.Struct({
+  playlist: MyPlaylistSummary,
+  songs: Schema.Array(Song),
+})
+export type MyPlaylistDetails = typeof MyPlaylistDetails.Type
+
+/** A change to my playlists. */
+export const PlaylistEdit = Schema.Union([
+  /** A new playlist, empty or holding a copy of `songs`. */
+  Schema.TaggedStruct('Create', {
+    title: Schema.String,
+    songs: Schema.Array(Song),
+  }),
+  Schema.TaggedStruct('Rename', {
+    playlistId: Schema.String,
+    title: Schema.String,
+  }),
+  Schema.TaggedStruct('Delete', { playlistId: Schema.String }),
+  /** Adds the songs to the end, skipping any already in it. */
+  Schema.TaggedStruct('AddSongs', {
+    playlistId: Schema.String,
+    songs: Schema.Array(Song),
+  }),
+  Schema.TaggedStruct('RemoveSong', {
+    playlistId: Schema.String,
+    videoId: Schema.String,
+  }),
+  /** Likes a song, putting it first in Liked songs, or unlikes it. */
+  Schema.TaggedStruct('SetLiked', { song: Song, isLiked: Schema.Boolean }),
+])
+export type PlaylistEdit = typeof PlaylistEdit.Type
+
+/** My playlists after an edit, and the playlist it changed. */
+export const PlaylistEditResult = Schema.Struct({
+  library: MyLibrary,
+  /** The changed playlist as it now stands. None after a delete. */
+  maybePlaylist: Schema.Option(MyPlaylistDetails),
+})
+export type PlaylistEditResult = typeof PlaylistEditResult.Type
+
 // HOME
 
 /** One titled row of the home feed. Each holds one kind of item. */
@@ -159,10 +231,16 @@ export type HomeFeed = typeof HomeFeed.Type
 
 // ERRORS
 
-/** The requested song, artist, or album does not exist on YouTube Music. */
+/** The requested song, artist, album, or playlist does not exist. */
 export class MusicNotFoundError extends Schema.TaggedError<MusicNotFoundError>()(
   'MusicNotFoundError',
   { id: Schema.String },
+) {}
+
+/** The music server could not read or write its playlist database. */
+export class PlaylistStoreError extends Schema.TaggedError<PlaylistStoreError>()(
+  'PlaylistStoreError',
+  { message: Schema.String },
 ) {}
 
 /** YouTube Music did not answer, or answered with something unusable. */

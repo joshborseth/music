@@ -22,10 +22,13 @@ export type PageModel = Readonly<
     | 'songSearch'
     | 'artistSearch'
     | 'albumSearch'
+    | 'playlistSearch'
     | 'songs'
     | 'artists'
     | 'albums'
     | 'playlists'
+    | 'myLibrary'
+    | 'myPlaylists'
     | 'swipe'
   > & { playing: NowPlaying }
 >
@@ -61,10 +64,13 @@ const renderPage = (
   songSearch: Model['songSearch'],
   artistSearch: Model['artistSearch'],
   albumSearch: Model['albumSearch'],
+  playlistSearch: Model['playlistSearch'],
   songs: Model['songs'],
   artists: Model['artists'],
   albums: Model['albums'],
   playlists: Model['playlists'],
+  myLibrary: Model['myLibrary'],
+  myPlaylists: Model['myPlaylists'],
   swipe: Model['swipe'],
   currentVideoId: string,
   isPlaying: boolean,
@@ -81,10 +87,13 @@ const renderPage = (
       songSearch,
       artistSearch,
       albumSearch,
+      playlistSearch,
       songs,
       artists,
       albums,
       playlists,
+      myLibrary,
+      myPlaylists,
       swipe,
       playing: {
         maybeVideoId: Option.liftPredicate(currentVideoId, id => id !== ''),
@@ -111,10 +120,13 @@ export const memoizedPage = (
     model.songSearch,
     model.artistSearch,
     model.albumSearch,
+    model.playlistSearch,
     model.songs,
     model.artists,
     model.albums,
     model.playlists,
+    model.myLibrary,
+    model.myPlaylists,
     rowSwipe(model.swipe),
     Option.getOrElse(playing.maybeVideoId, () => ''),
     playing.isPlaying,

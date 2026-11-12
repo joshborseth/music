@@ -8,10 +8,11 @@ Browse YouTube Music on your phone and play it on the phone or on the TV. The ph
 
 - **Three tabs:** Home, Search, and Library, like a native app. Each tab remembers the page it was on. Tapping the open tab again goes back to its top.
 - **Home:** what you played lately, then YouTube Music's home feed: quick picks, new releases, and playlists. The server keeps the feed for 15 minutes.
-- **Search** songs, artists, or albums. Results update as you type, and your last eight searches are kept on the device.
-- **Library:** songs played and albums, artists, and playlists opened on this device, newest first.
-- **Tap a song to play it.** Its list plays from there. The ⋯ button opens a sheet to play it next, add it to the queue, or go to its album, artist, or lyrics.
-- **Playlist page:** cover, title, description, and every song, with Play and Shuffle.
+- **Search** songs, artists, albums, or playlists. Results update as you type, and your last eight searches are kept on the device.
+- **Library:** your playlists, with Liked songs first, then songs played and albums, artists, and playlists opened on this device, newest first.
+- **Tap a song to play it.** Its list plays from there. The ⋯ button opens a sheet to play it next, add it to the queue, like it, add it to a playlist, or go to its album, artist, or lyrics.
+- **Your playlists:** make a playlist in the Library, or from Add to a Playlist on any song. The ⋯ button on a playlist renames or deletes it, and ⋯ on one of its songs removes that song. The heart in the player and on every song adds it to Liked songs, newest first. The button at the top right of an album or a YouTube Music playlist saves a copy of its songs to one of your playlists or a new one. Playlists live on the music server, so every phone sees the same ones.
+- **Playlist page:** cover, title, description, and every song (up to 500), with Play and Shuffle. Your own playlists show a mosaic of four of their album covers.
 - **Song page:** artwork, artists, album, length, view count, lyrics, and the "up next" list YouTube Music would play after it.
 - **Artist page:** photo, bio, top songs, albums, singles and EPs, and similar artists.
 - **Album page:** cover, artists, release kind and year, total length, description, and the numbered tracklist.
@@ -28,12 +29,15 @@ apps/tv          Rust Android TV app: Slint UI, Symphonia (AAC), cpal (AAudio)
    │  WebSocket (/session, JSON)               the shared queue and who plays it
    │  HTTP with byte ranges (/audio/:videoId)  the songs themselves
    │  WebSocket (/now-playing, JSON)           read-only: the song and its cover's colors
-apps/server      Bun + Effect server: youtubei.js for the catalog, yt-dlp for audio
+apps/server      Bun + Effect server: youtubei.js for the catalog, yt-dlp for audio,
+                 SQLite (bun:sqlite) for the playlists made in the app
 packages/shared  The RPC contract, the session protocol, and every Schema
 fixtures/session Example session messages that the TypeScript and Rust tests both decode
 ```
 
 **The session.** The server holds one queue for every device, and one device at a time plays it (the active device). Each device opens `/session`, says `Hello`, and then receives the whole session state after every change. Commands (play, pause, seek, skip, enqueue, transfer) go to the server, never directly to a player. The active device plays the current song and reports its position about once a second. The protocol is defined in `packages/shared/src/session.ts` and mirrored in `apps/tv/src/protocol.rs`.
+
+**Playlists.** The playlists made in the app, and Liked songs, are kept in one SQLite file on the server (`~/.local/share/music/playlists.sqlite`), opened with Bun's built-in `bun:sqlite`. Each entry keeps a copy of the song (title, artists, album, length, artwork), so a playlist opens without asking YouTube anything, and a song stays listed even if YouTube later drops it. A song appears once per playlist. The web app shows a change at once (a heart fills, a removed row leaves) and then takes the server's answer; if the server cannot save it, the app says so and reloads. A playlist plays through the same session commands as an album, so the TV app needs nothing new. `apps/server/src/playlists/store.ts` holds the tables and every change.
 
 **Audio.** yt-dlp finds each song's AAC stream (format 140), using the proof-of-origin token service already on this machine (`yt-music-token`, `127.0.0.1:4416`). YouTube's links only work from the address that requested them, only with yt-dlp's User-Agent, and only a few seconds after they are issued. A request without a byte range is throttled to playback speed, so the server always asks for a range. The server downloads each song whole, once, into a disk cache (`~/.cache/music/audio`, 1 GB). `/audio/:videoId` serves a song with byte ranges while it is still downloading, then from disk. A song nobody prepared takes about 6 seconds to start: finding the link and YouTube's wait are most of it. A prepared song starts, and seeks, instantly for every device.
 
@@ -99,7 +103,7 @@ What v1 does not do yet: the app has no TV banner image, so the launcher shows i
 
 ## Hosting
 
-The installed app runs on this machine as the `music.service` systemd user unit. The Bun server serves the built web app from `apps/web/dist`, along with `/rpc`, `/session`, and `/audio`, on port 4310. It listens on every interface (`HOST=0.0.0.0`) so the TV can reach it over the home network. The unit sets `YTDLP_PATH` and `TV_APK_PATH`. `AUDIO_CACHE_DIR` and `AUDIO_CACHE_MAX_BYTES` change where songs are kept and how much space they may use. The unit also reads the Home Assistant settings from `~/.config/music/server.env`:
+The installed app runs on this machine as the `music.service` systemd user unit. The Bun server serves the built web app from `apps/web/dist`, along with `/rpc`, `/session`, and `/audio`, on port 4310. It listens on every interface (`HOST=0.0.0.0`) so the TV can reach it over the home network. The unit sets `YTDLP_PATH` and `TV_APK_PATH`. `AUDIO_CACHE_DIR` and `AUDIO_CACHE_MAX_BYTES` change where songs are kept and how much space they may use. `PLAYLISTS_DB_PATH` changes where the playlists are kept. `bun run dev` uses the same playlist file by default, so set it to a scratch path when you try changes against real playlists. The unit also reads the Home Assistant settings from `~/.config/music/server.env`:
 
 ```sh
 HA_TOKEN=<a long-lived access token from your Home Assistant profile>

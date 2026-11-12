@@ -1,15 +1,38 @@
-import { Array, Option } from 'effect'
+import { Array, Option, pipe } from 'effect'
+import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
-import { Check, Disc3, FileText, ListEnd, ListStart, MicVocal } from 'lucide'
+import {
+  Check,
+  Disc3,
+  FileText,
+  Heart,
+  ListEnd,
+  ListMinus,
+  ListPlus,
+  ListStart,
+  MicVocal,
+  Pencil,
+  Plus,
+  Trash2,
+} from 'lucide'
 
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { type Session, type Song } from '@music/shared'
+import {
+  MAX_PLAYLIST_TITLE_LENGTH,
+  type MyPlaylistSummary,
+  type Session,
+  type Song,
+} from '@music/shared'
 
+import { PLAYLIST_TITLE_INPUT_ID } from '../constant'
 import { Message } from '../message'
 import { type Model } from '../model'
 import { DragToDismiss } from '../mount'
+import { myLibraryQuery, myPlaylistQuery } from '../query'
+import { AppRoute } from '../route'
 import { ActionSheet, SheetContent } from '../sheet'
+import { likedVideoIds } from '../update'
 import { deviceIcon } from './player'
 import {
   ArtworkShape,
@@ -18,6 +41,8 @@ import {
   artistNames,
   artworkImage,
   firstArtistId,
+  playlistCover,
+  playlistLength,
   songHref,
 } from './shared'
 
@@ -29,10 +54,69 @@ const actionButton = (
   iconNode: typeof Disc3,
   label: string,
   h: HtmlBuilder<Message>,
+  isDestructive: boolean = false,
+  iconClass: string = '',
 ): Html =>
   h.button(
-    [h.Type('button'), h.OnClick(onClick), h.Class(actionClass)],
-    [icon(h, iconNode, 'text-primary size-[22px]'), label],
+    [
+      h.Type('button'),
+      h.OnClick(onClick),
+      h.Class(cn(actionClass, isDestructive && 'text-destructive')),
+    ],
+    [
+      icon(
+        h,
+        iconNode,
+        cn(
+          'size-[22px]',
+          isDestructive ? 'text-destructive' : 'text-primary',
+          iconClass,
+        ),
+      ),
+      label,
+    ],
+  )
+
+const sheetHeading = (
+  title: string,
+  maybeSubtitle: Option.Option<string>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex flex-col gap-0.5 px-5 pt-1 pb-3')],
+    [
+      h.h2(
+        [h.Class('line-clamp-2 text-[20px] font-bold tracking-tight')],
+        [title],
+      ),
+      Option.match(maybeSubtitle, {
+        onNone: () => h.empty,
+        onSome: subtitle =>
+          h.p([h.Class('text-muted-foreground text-[15px]')], [subtitle]),
+      }),
+    ],
+  )
+
+/** The playlist of mine this page shows, if it holds the song. */
+const shownPlaylistWith = (
+  model: Model,
+  videoId: string,
+): Option.Option<MyPlaylistSummary> =>
+  AppRoute.matchOrElse(
+    model.route,
+    {
+      MyPlaylist: ({ playlistId }) =>
+        pipe(
+          AsyncData.getData(
+            myPlaylistQuery.read(model.myPlaylists, { playlistId }),
+          ),
+          Option.filter(({ songs }) =>
+            Array.some(songs, song => song.videoId === videoId),
+          ),
+          Option.map(({ playlist }) => playlist),
+        ),
+    },
+    () => Option.none(),
   )
 
 const actionLink = (
@@ -46,7 +130,55 @@ const actionLink = (
     [icon(h, iconNode, 'text-primary size-[22px]'), label],
   )
 
-const songActions = (song: Song, h: HtmlBuilder<Message>): Html =>
+const songActions = (
+  model: Model,
+  song: Song,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const isLiked = Array.contains(likedVideoIds(model), song.videoId)
+  return songActionsFor(
+    song,
+    [
+      actionButton(
+        Message.ClickedToggleLiked({ song }),
+        Heart,
+        isLiked ? 'Remove from Liked Songs' : 'Add to Liked Songs',
+        h,
+        false,
+        isLiked ? 'fill-current' : '',
+      ),
+      actionButton(
+        Message.ClickedAddToPlaylist({ songs: [song], suggestedTitle: '' }),
+        ListPlus,
+        'Add to a Playlist…',
+        h,
+      ),
+      Option.match(shownPlaylistWith(model, song.videoId), {
+        onNone: () => h.empty,
+        onSome: playlist =>
+          playlist.isLiked
+            ? h.empty
+            : actionButton(
+                Message.ClickedRemoveFromPlaylist({
+                  playlistId: playlist.id,
+                  videoId: song.videoId,
+                }),
+                ListMinus,
+                'Remove from This Playlist',
+                h,
+                true,
+              ),
+      }),
+    ],
+    h,
+  )
+}
+
+const songActionsFor = (
+  song: Song,
+  playlistActions: ReadonlyArray<Html>,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.div(
     [h.Class('flex flex-col')],
     [
@@ -92,6 +224,7 @@ const songActions = (song: Song, h: HtmlBuilder<Message>): Html =>
             'Add to queue',
             h,
           ),
+          ...playlistActions,
           Option.match(song.maybeAlbum, {
             onNone: () => h.empty,
             onSome: album =>
@@ -190,20 +323,291 @@ const devicePicker = (model: Model, h: HtmlBuilder<Message>): Html =>
     ],
   )
 
+// PLAYLISTS
+
+const pickerRowClass =
+  'flex w-full items-center gap-3 px-5 py-2 text-left transition-colors active:bg-muted'
+
+const PICKER_COVER_WIDTH = 48
+
+const songCountText = (songs: ReadonlyArray<Song>): Option.Option<string> =>
+  songs.length > 1 ? Option.some(`${songs.length} songs`) : Option.none()
+
+/** Every playlist of mine to add songs to, after a row for a new one. */
+const playlistPicker = (
+  model: Model,
+  songs: ReadonlyArray<Song>,
+  suggestedTitle: string,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const library = myLibraryQuery.read(model.myLibrary)
+  const playlists = Option.match(AsyncData.getData(library), {
+    onNone: () => [],
+    onSome: ({ playlists: mine }) =>
+      Array.filter(mine, playlist => !playlist.isLiked),
+  })
+  return h.div(
+    [h.Class('flex flex-col')],
+    [
+      sheetHeading('Add to a Playlist', songCountText(songs), h),
+      h.div(
+        [
+          h.DataAttribute('sheet-scroll', ''),
+          h.Class('flex max-h-[55dvh] flex-col overflow-y-auto pb-2'),
+        ],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ClickedNewPlaylist({ songs, suggestedTitle })),
+              h.Class(pickerRowClass),
+            ],
+            [
+              h.span(
+                [
+                  h.Class(
+                    'bg-muted text-primary flex size-12 shrink-0 items-center justify-center rounded-md',
+                  ),
+                ],
+                [icon(h, Plus, 'size-6')],
+              ),
+              h.span(
+                [h.Class('text-primary text-[17px] font-medium')],
+                ['New Playlist…'],
+              ),
+            ],
+          ),
+          ...Array.map(playlists, playlist =>
+            h.keyed('button')(
+              playlist.id,
+              [
+                h.Type('button'),
+                h.OnClick(
+                  Message.ClickedPlaylistOption({
+                    playlistId: playlist.id,
+                    songs,
+                  }),
+                ),
+                h.Class(pickerRowClass),
+              ],
+              [
+                playlistCover(
+                  {
+                    playlist,
+                    displayWidth: PICKER_COVER_WIDTH,
+                    shape: ArtworkShape.Square,
+                    className: 'size-12',
+                  },
+                  h,
+                ),
+                h.span(
+                  [h.Class('flex min-w-0 flex-col')],
+                  [
+                    h.span(
+                      [h.Class('line-clamp-1 text-[17px] font-medium')],
+                      [playlist.title],
+                    ),
+                    h.span(
+                      [h.Class('text-muted-foreground text-[13px]')],
+                      [playlistLength(playlist)],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          AsyncData.isPending(library) && Array.isReadonlyArrayEmpty(playlists)
+            ? h.p(
+                [h.Class('text-muted-foreground px-5 py-3 text-[15px]')],
+                ['Loading your playlists…'],
+              )
+            : h.empty,
+        ],
+      ),
+    ],
+  )
+}
+
+const sheetButtonClass =
+  'pressable flex h-12 flex-1 items-center justify-center rounded-xl text-[17px] font-semibold'
+
+/** A form that names a playlist, for a new one or a rename. */
+const playlistTitleForm = (
+  model: Model,
+  config: Readonly<{
+    heading: string
+    maybeSubtitle: Option.Option<string>
+    submitLabel: string
+    onSubmit: Message
+  }>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.form(
+    [h.OnSubmit(config.onSubmit), h.Class('flex flex-col gap-4 px-5 pb-2')],
+    [
+      h.div(
+        [h.Class('-mx-5')],
+        [sheetHeading(config.heading, config.maybeSubtitle, h)],
+      ),
+      h.label(
+        [h.For(PLAYLIST_TITLE_INPUT_ID), h.Class('sr-only')],
+        ['Playlist name'],
+      ),
+      h.input([
+        h.Id(PLAYLIST_TITLE_INPUT_ID),
+        h.Type('text'),
+        h.Value(model.playlistTitleInput),
+        h.Placeholder('Playlist name'),
+        h.Maxlength(MAX_PLAYLIST_TITLE_LENGTH),
+        h.Autocomplete('off'),
+        h.Attribute('enterkeyhint', 'done'),
+        h.DataAttribute('no-drag', ''),
+        h.OnInput(value => Message.UpdatedPlaylistTitleInput({ value })),
+        h.Class(
+          'bg-muted placeholder:text-muted-foreground h-12 w-full rounded-xl px-4 text-[17px] outline-none',
+        ),
+      ]),
+      h.div(
+        [h.Class('flex gap-3')],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ClickedCloseSheet()),
+              h.Class(cn(sheetButtonClass, 'bg-secondary text-primary')),
+            ],
+            ['Cancel'],
+          ),
+          h.button(
+            [
+              h.Type('submit'),
+              h.Class(
+                cn(sheetButtonClass, 'bg-primary text-primary-foreground'),
+              ),
+            ],
+            [config.submitLabel],
+          ),
+        ],
+      ),
+    ],
+  )
+
+const playlistActions = (
+  playlistId: string,
+  title: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex flex-col')],
+    [
+      sheetHeading(title, Option.none(), h),
+      h.div(
+        [h.Class('flex flex-col border-t py-2')],
+        [
+          actionButton(
+            Message.ClickedRenamePlaylist({ playlistId, title }),
+            Pencil,
+            'Rename',
+            h,
+          ),
+          actionButton(
+            Message.ClickedDeletePlaylist({ playlistId, title }),
+            Trash2,
+            'Delete Playlist',
+            h,
+            true,
+          ),
+        ],
+      ),
+    ],
+  )
+
+const confirmDeletePlaylist = (
+  playlistId: string,
+  title: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex flex-col gap-4 pb-2')],
+    [
+      sheetHeading(
+        `Delete “${title}”?`,
+        Option.some(
+          'The playlist goes away on every device. Its songs stay on YouTube Music.',
+        ),
+        h,
+      ),
+      h.div(
+        [h.Class('flex gap-3 px-5')],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ClickedCloseSheet()),
+              h.Class(cn(sheetButtonClass, 'bg-secondary text-primary')),
+            ],
+            ['Cancel'],
+          ),
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ConfirmedDeletePlaylist({ playlistId })),
+              h.Class(cn(sheetButtonClass, 'bg-destructive text-white')),
+            ],
+            ['Delete'],
+          ),
+        ],
+      ),
+    ],
+  )
+
 const sheetContent = (
   model: Model,
   content: SheetContent,
   h: HtmlBuilder<Message>,
 ): Html =>
   SheetContent.match(content, {
-    SongActions: ({ song }) => songActions(song, h),
+    SongActions: ({ song }) => songActions(model, song, h),
     Devices: () => devicePicker(model, h),
+    AddToPlaylist: ({ songs, suggestedTitle }) =>
+      playlistPicker(model, songs, suggestedTitle, h),
+    NewPlaylist: ({ songs }) =>
+      playlistTitleForm(
+        model,
+        {
+          heading: 'New Playlist',
+          maybeSubtitle: songCountText(songs),
+          submitLabel: 'Create',
+          onSubmit: Message.SubmittedNewPlaylist({ songs }),
+        },
+        h,
+      ),
+    PlaylistActions: ({ playlistId, title }) =>
+      playlistActions(playlistId, title, h),
+    RenamePlaylist: ({ playlistId }) =>
+      playlistTitleForm(
+        model,
+        {
+          heading: 'Rename Playlist',
+          maybeSubtitle: Option.none(),
+          submitLabel: 'Save',
+          onSubmit: Message.SubmittedRenamePlaylist({ playlistId }),
+        },
+        h,
+      ),
+    ConfirmDeletePlaylist: ({ playlistId, title }) =>
+      confirmDeletePlaylist(playlistId, title, h),
   })
 
 const sheetLabel = (content: SheetContent): string =>
   SheetContent.match(content, {
     SongActions: ({ song }) => song.title,
     Devices: () => 'Play on',
+    AddToPlaylist: () => 'Add to a playlist',
+    NewPlaylist: () => 'New playlist',
+    PlaylistActions: ({ title }) => title,
+    RenamePlaylist: () => 'Rename playlist',
+    ConfirmDeletePlaylist: () => 'Delete playlist',
   })
 
 const sheetFrame = (

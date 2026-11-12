@@ -96,6 +96,23 @@ const program = Effect.gen(function* () {
       playlist.tracks.length,
     )
   }
+  const playlists = yield* client.searchPlaylists({ query: 'top 500 songs' })
+  console.log(
+    'playlists',
+    playlists.length,
+    playlists[0]?.title,
+    playlists[0]?.maybeSubtitle,
+  )
+  const longPlaylistId = playlists[0]?.id
+  if (longPlaylistId !== undefined) {
+    const long = yield* client.getPlaylist({ playlistId: longPlaylistId })
+    console.log('long playlist tracks', long.tracks.length)
+  }
+  const library = yield* client.getMyLibrary()
+  console.log(
+    'my playlists',
+    library.playlists.map(({ title, songCount }) => `${title}:${songCount}`),
+  )
   const missing = yield* client
     .getAlbum({ albumId: 'MPREb_doesnotexist' })
     .pipe(Effect.flip)
