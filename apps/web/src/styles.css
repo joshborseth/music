@@ -103,10 +103,9 @@
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
     --radius: 0.75rem;
-    --glass: oklch(0.995 0 0 / 0.72);
-    --glass-border: oklch(0 0 0 / 0.07);
-    --glass-highlight: oklch(1 0 0 / 0.7);
-    --glass-shadow: 0 8px 28px -8px oklch(0 0 0 / 0.2);
+    --floating: oklch(1 0 0);
+    --floating-border: oklch(0 0 0 / 0.08);
+    --floating-shadow: 0 8px 28px -8px oklch(0 0 0 / 0.2);
     --tab-bar-height: 3.25rem;
     /* The tab bar floats inside the home indicator's area, as on iOS 26. */
     --tab-bar-bottom: max(calc(var(--safe-bottom) - 0.5rem), 0.75rem);
@@ -151,10 +150,9 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
-    --glass: oklch(0.25 0.005 260 / 0.68);
-    --glass-border: oklch(1 0 0 / 0.1);
-    --glass-highlight: oklch(1 0 0 / 0.08);
-    --glass-shadow: 0 10px 30px -8px oklch(0 0 0 / 0.6);
+    --floating: oklch(0.22 0.005 260);
+    --floating-border: oklch(1 0 0 / 0.1);
+    --floating-shadow: 0 10px 30px -8px oklch(0 0 0 / 0.6);
   }
 }
 
@@ -208,17 +206,12 @@
   }
 }
 
-/* Glass for the small controls that float over content: the tab bar, the
-   mini player, the back button, and notices. Bars that span the screen use
-   the scroll edges below instead. */
-@utility glass {
-  background-color: var(--glass);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-  backdrop-filter: blur(16px) saturate(140%);
-  border: 1px solid var(--glass-border);
-  box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    var(--glass-shadow);
+/* A solid surface for the small controls that float over content: the tab
+   bar, the mini player, the back button, and notices. No blur. */
+@utility floating {
+  background-color: var(--floating);
+  border: 1px solid var(--floating-border);
+  box-shadow: var(--floating-shadow);
 }
 
 /* PAGE TRANSITIONS */
@@ -317,66 +310,30 @@
   }
 }
 
-/* SCROLL EDGES
+/* TOP BARS
 
-   There are no bars along the top or bottom of the screen. Content fades
-   into the page color as it scrolls under the status bar, the tab bar, or
-   the search field. */
+   No blur and no fades anywhere. When a page's own header scrolls away, a
+   plain bar in the page color covers the status bar and holds the small
+   title, with a hairline under it. */
 
-/* The top edge: solid under the status bar and the small title, then an
-   eased fade to clear. No blur: blurred content behind the title read as a
-   smudge, so content simply fades out as it scrolls up. */
 .scroll-edge {
   position: fixed;
   inset: 0 0 auto;
   z-index: 30;
-  height: calc(var(--safe-top) + var(--nav-bar-height) + 1.5rem);
+  height: calc(var(--safe-top) + var(--nav-bar-height) + 0.5rem);
   pointer-events: none;
-  --scroll-edge-solid: calc(var(--safe-top) + var(--nav-bar-height) - 0.5rem);
-  background: linear-gradient(
-    to bottom,
-    var(--background) var(--scroll-edge-solid),
-    color-mix(in oklch, var(--background) 82%, transparent)
-      calc(var(--scroll-edge-solid) + 0.5rem),
-    color-mix(in oklch, var(--background) 50%, transparent)
-      calc(var(--scroll-edge-solid) + 1rem),
-    color-mix(in oklch, var(--background) 18%, transparent)
-      calc(var(--scroll-edge-solid) + 1.5rem),
-    transparent
-  );
+  background-color: var(--background);
+  border-bottom: 1px solid var(--border);
 }
 
-/* Above the search field, which brings its own fade once it sticks. */
+/* Covers the status bar so scrolled content never runs under the clock. */
 .status-bar-edge {
-  background: linear-gradient(
-    to bottom,
-    var(--background) var(--safe-top),
-    transparent
-  );
+  background-color: var(--background);
 }
 
-/* Below the search field, so results soften as they pass under it. */
+/* Behind the sticky search field. */
 .search-bar-edge {
-  background: linear-gradient(
-    to bottom,
-    var(--background) calc(100% - 0.75rem),
-    transparent
-  );
-}
-
-/* Behind the floating tab bar and mini player. */
-.tab-bar-dock::before {
-  content: '';
-  position: absolute;
-  inset: auto 0 0;
-  z-index: -1;
-  height: calc(100% + 2rem);
-  background: linear-gradient(
-    to top,
-    color-mix(in oklch, var(--background) 88%, transparent),
-    transparent
-  );
-  pointer-events: none;
+  background-color: var(--background);
 }
 
 /* SHEETS */

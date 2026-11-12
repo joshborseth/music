@@ -205,13 +205,11 @@ const miniPlayer = (
         [
           h.Class(
             cn(
-              'glass relative flex h-[var(--mini-player-height)] items-center gap-1 overflow-hidden rounded-[1.375rem] pr-1.5',
+              'floating relative flex h-[var(--mini-player-height)] items-center gap-1 overflow-hidden rounded-[1.375rem] pr-1.5',
               swipeTransitionClass(maybeSwipe),
             ),
           ),
           h.Style({
-            // On the glass itself: a named ancestor would cut its blur off
-            // from the page behind.
             viewTransitionName: 'mini-player',
             transform: `translateX(${swipeX * MINI_PLAYER_SWIPE_FOLLOW}px)`,
             opacity: (
@@ -771,37 +769,11 @@ const deviceButton = (
   )
 }
 
-const playerBackdrop = (
-  track: Session.QueueTrack,
-  h: HtmlBuilder<Message>,
-): Html =>
-  h.div(
-    [
-      h.AriaHidden(true),
-      h.Class(
-        'pointer-events-none absolute inset-0 overflow-hidden bg-neutral-900',
-      ),
-    ],
-    [
-      Option.match(Option.fromNullishOr(track.artworkUrl), {
-        onNone: () => h.empty,
-        onSome: url =>
-          h.img([
-            h.Src(url),
-            h.Alt(''),
-            h.Referrerpolicy('no-referrer'),
-            h.Class(
-              'absolute inset-0 size-full scale-[1.6] object-cover opacity-90 blur-[72px] saturate-[1.8]',
-            ),
-          ]),
-      }),
-      h.div([
-        h.Class(
-          'absolute inset-0 bg-gradient-to-b from-black/25 via-black/40 to-black/70',
-        ),
-      ]),
-    ],
-  )
+const playerBackdrop = (h: HtmlBuilder<Message>): Html =>
+  h.div([
+    h.AriaHidden(true),
+    h.Class('pointer-events-none absolute inset-0 bg-neutral-900'),
+  ])
 
 const playerSheet = (
   model: Model,
@@ -825,7 +797,7 @@ const playerSheet = (
       ),
     ],
     [
-      playerBackdrop(entry.track, h),
+      playerBackdrop(h),
       h.div(
         [
           h.Class(
@@ -909,7 +881,7 @@ const noticeToast = (model: Model, h: HtmlBuilder<Message>): Html =>
               h.Role('status'),
               h.OnClick(Message.ClickedDismissNotice()),
               h.Class(
-                'toast glass pointer-events-auto rounded-full px-4 py-2.5 text-[15px] font-medium',
+                'toast floating pointer-events-auto rounded-full px-4 py-2.5 text-[15px] font-medium',
               ),
             ],
             [notice],
