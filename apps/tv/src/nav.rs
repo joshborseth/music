@@ -86,6 +86,10 @@ pub enum Effect {
         liked: bool,
     },
     OpenUpdateSettings,
+    /// Open the settings menu ([`Nav::show_settings`]), which shows the
+    /// version and how updates stand.
+    OpenSettings,
+    CheckForUpdates,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +112,7 @@ pub enum MenuAction {
     PlayEntry(String),
     RemoveEntry(String),
     OpenUpdateSettings,
+    CheckForUpdates,
     Close,
 }
 
@@ -124,6 +129,7 @@ impl MenuAction {
             MenuAction::PlayEntry(_) => "Play now",
             MenuAction::RemoveEntry(_) => "Remove from queue",
             MenuAction::OpenUpdateSettings => "Open settings",
+            MenuAction::CheckForUpdates => "Check for updates",
             MenuAction::Close => "Not now",
         }
     }
@@ -139,6 +145,7 @@ impl MenuAction {
             MenuAction::Like(_) => "heart",
             MenuAction::RemoveEntry(_) => "remove",
             MenuAction::OpenUpdateSettings => "settings",
+            MenuAction::CheckForUpdates => "update",
             MenuAction::Close => "close",
         }
     }
@@ -487,6 +494,8 @@ impl SearchNav {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Tabs,
+    /// The settings button at the end of the tab bar, right of the last tab.
+    Settings,
     Content,
 }
 
@@ -581,7 +590,7 @@ impl Nav {
             .map(|(text, _)| text.as_str())
     }
 
-    fn say(&mut self, text: impl Into<String>, now: Instant) {
+    pub fn say(&mut self, text: impl Into<String>, now: Instant) {
         self.notice = Some((text.into(), now));
     }
 
@@ -821,6 +830,16 @@ impl Nav {
         });
     }
 
+    /// The settings menu: `about` is the version and how updates stand.
+    pub fn show_settings(&mut self, about: String) {
+        self.menu = Some(Menu {
+            title: "Music".into(),
+            subtitle: about,
+            items: vec![MenuAction::CheckForUpdates, MenuAction::Close],
+            selected: 0,
+        });
+    }
+
     // KEYS
 
     /// Handle one key. Returns whether the app used it (an unused Back leaves
@@ -852,6 +871,7 @@ impl Nav {
         }
         let used = match self.focus {
             Focus::Tabs => self.tabs_key(key, now, &mut effects),
+            Focus::Settings => self.settings_key(key, now, &mut effects),
             Focus::Content => match self.tab {
                 Tab::NowPlaying => self.player_key(key, now, &mut effects),
                 Tab::Home | Tab::Library | Tab::Search if self.collection().is_some() => {
@@ -908,6 +928,7 @@ impl Nav {
             Key::Right if index + 1 < Tab::ALL.len() => {
                 self.switch_tab(Tab::ALL[index + 1], effects);
             }
+            Key::Right => self.focus = Focus::Settings,
             Key::Down | Key::Ok => self.focus = Focus::Content,
             Key::Back if self.tab != Tab::NowPlaying && !self.session.is_idle() => {
                 self.show_now_playing();
@@ -916,6 +937,21 @@ impl Nav {
                 self.hide_controls();
             }
             Key::Back => return self.back_to_leave(now),
+            _ => {}
+        }
+        true
+    }
+
+    /// The settings button: the tab bar's last stop.
+    fn settings_key(&mut self, key: Key, now: Instant, effects: &mut Vec<Effect>) -> bool {
+        match key {
+            Key::Ok => effects.push(Effect::OpenSettings),
+            Key::Left => self.focus = Focus::Tabs,
+            Key::Down => self.focus = Focus::Content,
+            Key::Back => {
+                self.focus = Focus::Tabs;
+                return self.tabs_key(key, now, effects);
+            }
             _ => {}
         }
         true
@@ -1454,6 +1490,7 @@ impl Nav {
                 self.say("Removed from the queue", now);
             }
             MenuAction::OpenUpdateSettings => effects.push(Effect::OpenUpdateSettings),
+            MenuAction::CheckForUpdates => effects.push(Effect::CheckForUpdates),
             MenuAction::Close => {}
         }
     }
@@ -1633,6 +1670,23 @@ mod tests {
         let effects = press(&mut nav, &[Key::Right]);
         assert_eq!(nav.tab, Tab::Library);
         assert_eq!(effects, vec![Effect::LoadLibrary]);
+    }
+
+    #[test]
+    fn the_settings_button_ends_the_tab_bar() {
+        let mut nav = Nav::new();
+        nav.switch_tab(Tab::Library, &mut Vec::new());
+        nav.focus = Focus::Tabs;
+        press(&mut nav, &[Key::Right]);
+        assert_eq!((nav.tab, nav.focus), (Tab::Library, Focus::Settings));
+        assert_eq!(press(&mut nav, &[Key::Ok]), vec![Effect::OpenSettings]);
+        nav.show_settings("Version f3a82b03 (12 Nov 2026)".into());
+        assert_eq!(press(&mut nav, &[Key::Ok]), vec![Effect::CheckForUpdates]);
+        assert!(nav.menu.is_none());
+        press(&mut nav, &[Key::Left]);
+        assert_eq!((nav.tab, nav.focus), (Tab::Library, Focus::Tabs));
+        press(&mut nav, &[Key::Right, Key::Down]);
+        assert_eq!(nav.focus, Focus::Content);
     }
 
     #[test]

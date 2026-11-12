@@ -80,6 +80,10 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 let updater = updater.clone();
                 move || updater.open_permission_settings()
             }),
+            check_for_updates: Box::new({
+                let updater = updater.clone();
+                move || updater.check_now()
+            }),
             set_quiet: Box::new(move |quiet| updater.set_quiet(quiet)),
         },
     );
