@@ -1,6 +1,6 @@
-//! Turns the audio this TV plays into bar heights: a windowed FFT of the
-//! newest samples, grouped into log-spaced bands, with a fast rise and a
-//! slow fall so the bars move like a meter.
+//! Turns the audio this TV plays into band levels for the visuals: a
+//! windowed FFT of the newest samples, grouped into log-spaced bands, with a
+//! fast rise and a slow fall so the levels move like a meter.
 
 use std::f32::consts::PI;
 

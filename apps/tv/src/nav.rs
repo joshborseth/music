@@ -163,7 +163,6 @@ pub struct Menu {
 pub enum Panel {
     None,
     Queue,
-    Lyrics,
 }
 
 /// The buttons under the progress bar.
@@ -499,6 +498,10 @@ pub const COLLECTION_ROWS_VISIBLE: usize = 10;
 pub const QUEUE_ROWS_VISIBLE: usize = 8;
 
 const BACK_TO_LEAVE: Duration = Duration::from_millis(2500);
+/// The now-playing controls hide after this long without a key.
+pub const CONTROLS_LINGER: Duration = Duration::from_secs(6);
+/// An open queue closes after this long without a key.
+pub const QUEUE_LINGER: Duration = Duration::from_secs(30);
 const NOTICE_DURATION: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -508,6 +511,12 @@ pub struct Nav {
     pub control: usize,
     pub idle_button: usize,
     pub panel: Panel,
+    /// When a key last touched the now-playing controls; `None` while they
+    /// are hidden and the screen shows only the song, its lyrics, and the
+    /// visuals.
+    pub controls: Option<Instant>,
+    /// The lyrics show beside the song; the Lyrics button turns them off.
+    pub show_lyrics: bool,
     pub queue_row: usize,
     pub queue_top: usize,
     pub home: BrowseNav,
@@ -541,6 +550,8 @@ impl Nav {
             control: 1,
             idle_button: 0,
             panel: Panel::None,
+            controls: None,
+            show_lyrics: true,
             queue_row: 0,
             queue_top: 0,
             home: BrowseNav::new(),
@@ -623,9 +634,7 @@ impl Nav {
             self.liked = None;
             if let Some(video_id) = &current {
                 effects.push(Effect::LoadLiked(video_id.clone()));
-                if self.panel == Panel::Lyrics {
-                    effects.extend(self.request_lyrics());
-                }
+                effects.extend(self.request_lyrics());
             }
         }
         // Opened with music already going (or woken to play): show it.
@@ -676,10 +685,10 @@ impl Nav {
         self.queue_top = keep_visible(self.queue_top, self.queue_row, QUEUE_ROWS_VISIBLE, count);
     }
 
-    /// Nobody has touched the remote for a while and music is playing: go
-    /// back to the now-playing screen, the way a TV app rests.
+    /// Nobody has touched the remote for a while and a song is up: go back
+    /// to the now-playing screen, the screen the app rests on.
     pub fn rest(&mut self) {
-        if self.session.playing && self.tab != Tab::NowPlaying && self.menu.is_none() {
+        if !self.session.is_idle() && self.tab != Tab::NowPlaying && self.menu.is_none() {
             self.show_now_playing();
         }
     }
@@ -687,11 +696,43 @@ impl Nav {
     fn show_now_playing(&mut self) {
         if self.tab != Tab::NowPlaying {
             self.panel = Panel::None;
-            self.control = 1;
         }
         self.tab = Tab::NowPlaying;
-        self.focus = Focus::Content;
         self.menu = None;
+        self.hide_controls();
+    }
+
+    /// Whether the now-playing screen shows its controls and the tab bar.
+    /// Other screens always do.
+    pub fn controls_shown(&self) -> bool {
+        self.tab != Tab::NowPlaying || self.session.is_idle() || self.controls.is_some()
+    }
+
+    fn hide_controls(&mut self) {
+        self.controls = None;
+        self.focus = Focus::Content;
+        self.control = 1;
+    }
+
+    /// Hide the now-playing controls once nobody has used them for a while.
+    /// Returns whether anything changed.
+    pub fn settle(&mut self, now: Instant) -> bool {
+        let Some(touched) = self.controls else {
+            return false;
+        };
+        if self.tab != Tab::NowPlaying || self.menu.is_some() {
+            return false;
+        }
+        let linger = match self.panel {
+            Panel::None => CONTROLS_LINGER,
+            Panel::Queue => QUEUE_LINGER,
+        };
+        if now.duration_since(touched) < linger {
+            return false;
+        }
+        self.panel = Panel::None;
+        self.hide_controls();
+        true
     }
 
     // CATALOG RESULTS
@@ -796,6 +837,19 @@ impl Nav {
         if let Key::Char(_) | Key::Backspace = key {
             return (self.typed(key, &mut effects), effects);
         }
+        if self.tab == Tab::NowPlaying && !self.session.is_idle() {
+            if self.controls.is_none() {
+                // The first key only brings the controls back; Back still
+                // leaves, the way it does from any top-level screen.
+                if key == Key::Back {
+                    return (self.back_to_leave(now), effects);
+                }
+                self.controls = Some(now);
+                self.focus = Focus::Content;
+                return (true, effects);
+            }
+            self.controls = Some(now);
+        }
         let used = match self.focus {
             Focus::Tabs => self.tabs_key(key, now, &mut effects),
             Focus::Content => match self.tab {
@@ -807,6 +861,10 @@ impl Nav {
                 Tab::Search => self.search_key(key, now, &mut effects),
             },
         };
+        // Arriving on now playing along the tab bar keeps the bar up.
+        if self.tab == Tab::NowPlaying && self.focus == Focus::Tabs && self.controls.is_none() {
+            self.controls = Some(now);
+        }
         (used, effects)
     }
 
@@ -852,7 +910,10 @@ impl Nav {
             }
             Key::Down | Key::Ok => self.focus = Focus::Content,
             Key::Back if self.tab != Tab::NowPlaying && !self.session.is_idle() => {
-                self.switch_tab(Tab::NowPlaying, effects);
+                self.show_now_playing();
+            }
+            Key::Back if self.tab == Tab::NowPlaying && !self.session.is_idle() => {
+                self.hide_controls();
             }
             Key::Back => return self.back_to_leave(now),
             _ => {}
@@ -866,15 +927,8 @@ impl Nav {
         if self.session.is_idle() {
             return self.idle_key(key, now, effects);
         }
-        match self.panel {
-            Panel::Queue => return self.queue_key(key, effects),
-            Panel::Lyrics => {
-                if matches!(key, Key::Back | Key::Ok | Key::Left) {
-                    self.panel = Panel::None;
-                }
-                return true;
-            }
-            Panel::None => {}
+        if self.panel == Panel::Queue {
+            return self.queue_key(key, effects);
         }
         match key {
             Key::Left => self.control = self.control.saturating_sub(1),
@@ -892,7 +946,7 @@ impl Nav {
                     });
                 }
             }
-            Key::Back => return self.back_to_leave(now),
+            Key::Back => self.hide_controls(),
             _ => {}
         }
         true
@@ -932,8 +986,10 @@ impl Nav {
                 self.follow_queue();
             }
             Control::Lyrics => {
-                self.panel = Panel::Lyrics;
-                effects.extend(self.request_lyrics());
+                self.show_lyrics = !self.show_lyrics;
+                if self.show_lyrics {
+                    effects.extend(self.request_lyrics());
+                }
             }
         }
     }
@@ -1632,6 +1688,9 @@ mod tests {
         let mut nav = Nav::new();
         nav.tab = Tab::NowPlaying;
         nav.on_session(playing_view());
+        // The first key only shows the controls.
+        assert_eq!(press(&mut nav, &[Key::Ok]), vec![]);
+        assert!(nav.controls_shown());
         assert_eq!(
             press(&mut nav, &[Key::Ok]),
             vec![Effect::Session(UiAction::PlayPause)]
@@ -1667,9 +1726,15 @@ mod tests {
         let mut nav = Nav::new();
         nav.tab = Tab::NowPlaying;
         let effects = nav.on_session(playing_view());
-        assert_eq!(effects, vec![Effect::LoadLiked("q0".into())]);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::LoadLiked("q0".into()),
+                Effect::LoadLyrics("q0".into())
+            ]
+        );
         nav.on_liked("q0", false);
-        let effects = press(&mut nav, &[Key::Right, Key::Right, Key::Ok]);
+        let effects = press(&mut nav, &[Key::Down, Key::Right, Key::Right, Key::Ok]);
         assert_eq!(
             effects,
             vec![Effect::SetLiked {
@@ -1678,6 +1743,84 @@ mod tests {
             }]
         );
         assert_eq!(nav.liked, Some(("q0".into(), true)));
+    }
+
+    #[test]
+    fn the_controls_hide_and_come_back() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        assert_eq!(nav.tab, Tab::NowPlaying);
+        assert!(!nav.controls_shown());
+        let now = Instant::now();
+        assert!(nav.key(Key::Right, now).0);
+        assert!(nav.controls_shown());
+        assert_eq!(nav.control, 1, "showing them moves nothing");
+        nav.key(Key::Right, now);
+        assert_eq!(nav.control, 2);
+        assert!(!nav.settle(now + Duration::from_secs(2)));
+        assert!(nav.settle(now + CONTROLS_LINGER));
+        assert!(!nav.controls_shown());
+        assert_eq!((nav.control, nav.focus), (1, Focus::Content));
+    }
+
+    #[test]
+    fn the_queue_keeps_the_controls_up_for_a_while() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        let now = Instant::now();
+        for key in [Key::Down, Key::Right, Key::Right, Key::Right, Key::Ok] {
+            nav.key(key, now);
+        }
+        assert_eq!(nav.panel, Panel::Queue);
+        assert!(!nav.settle(now + CONTROLS_LINGER * 3));
+        assert!(nav.controls_shown());
+        assert!(nav.settle(now + QUEUE_LINGER));
+        assert_eq!(nav.panel, Panel::None);
+        assert!(!nav.controls_shown());
+    }
+
+    #[test]
+    fn back_hides_the_controls_then_leaves() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        let now = Instant::now();
+        nav.key(Key::Up, now);
+        nav.key(Key::Up, now);
+        assert_eq!(nav.focus, Focus::Tabs);
+        assert!(nav.key(Key::Back, now).0);
+        assert!(!nav.controls_shown());
+        assert!(nav.key(Key::Back, now).0);
+        assert!(!nav.key(Key::Back, now + Duration::from_millis(300)).0);
+    }
+
+    #[test]
+    fn the_tab_bar_stays_up_on_the_way_to_now_playing() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        nav.switch_tab(Tab::Home, &mut Vec::new());
+        nav.focus = Focus::Tabs;
+        press(&mut nav, &[Key::Left]);
+        assert_eq!(nav.tab, Tab::NowPlaying);
+        assert!(nav.controls_shown());
+    }
+
+    #[test]
+    fn the_lyrics_button_turns_the_lyrics_off_and_on() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        nav.on_lyrics("q0", Err("offline".into()));
+        assert!(nav.show_lyrics);
+        let keys = [Key::Down, Key::Right, Key::Right, Key::Right, Key::Right];
+        press(&mut nav, &keys);
+        assert_eq!(CONTROLS[nav.control], Control::Lyrics);
+        assert_eq!(press(&mut nav, &[Key::Ok]), vec![]);
+        assert!(!nav.show_lyrics);
+        // Back on: a failed lookup is tried again.
+        assert_eq!(
+            press(&mut nav, &[Key::Ok]),
+            vec![Effect::LoadLyrics("q0".into())]
+        );
+        assert!(nav.show_lyrics);
     }
 
     #[test]

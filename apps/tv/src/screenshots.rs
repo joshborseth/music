@@ -66,8 +66,9 @@ pub enum Step {
     /// OK held long enough to open the menu.
     Hold,
     Wait(Duration),
-    /// Show the screensaver now; while it shows, move its visuals on a scene.
-    Saver,
+    /// Rest on the now-playing screen, or once there, move its visuals on
+    /// to their next scene.
+    NextScene,
     Shot(&'static str),
 }
 
@@ -222,8 +223,8 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
                 runner.pump(Duration::from_millis(60));
             }
             Step::Wait(duration) => runner.pump(duration),
-            Step::Saver => {
-                ui::with(ui::Ui::show_saver);
+            Step::NextScene => {
+                ui::with(ui::Ui::next_scene);
                 runner.pump(Duration::from_millis(60));
             }
             Step::Shot(name) => {

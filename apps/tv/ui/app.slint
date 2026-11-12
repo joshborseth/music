@@ -517,19 +517,25 @@ export component App inherits Window {
     in property <string> where;
     in property <[ButtonData]> controls;
     in property <[UpNextData]> up-next;
-    in property <[float]> bars;
-    in property <bool> bars-visible;
+    // The controls, tab bar, and scan code; hidden while nobody uses the remote.
+    in property <bool> controls-shown: true;
+    // The music's visuals: a small frame stretched over the screen.
+    in property <bool> has-visuals;
+    in property <image> visuals-frame;
+    // Beside the song: 0 no lyrics (the song takes the middle), 1 timed
+    // lyrics in `lyric-rows`, 2 plain `lyrics` that scroll with the song.
+    in property <int> lyrics-mode;
+    in property <string> lyrics;
+    in property <[LyricRowData]> lyric-rows;
+    // A small shift, each -1 to 1, that moves now and then so nothing burns in.
+    in property <float> drift-x;
+    in property <float> drift-y;
 
-    // Panels over now playing: 0 none, 1 queue, 2 lyrics.
+    // The queue, sliding in over now playing: 0 closed, 1 open.
     in property <int> panel;
     in property <[RowData]> queue-rows;
     in property <int> queue-top;
     in property <string> queue-summary;
-    in property <string> lyrics;
-    in property <string> lyrics-note;
-    // Timed lyrics: `lyric-rows` follow the song instead of `lyrics`.
-    in property <bool> lyrics-timed;
-    in property <[LyricRowData]> lyric-rows;
 
     // Nothing playing
     in property <[ButtonData]> idle-buttons;
@@ -566,14 +572,6 @@ export component App inherits Window {
     in property <string> menu-subtitle;
     in property <[MenuItemData]> menu-items;
 
-    // Screensaver
-    in property <bool> saver;
-    in property <float> saver-x: 0.5;
-    in property <float> saver-y: 0.5;
-    // The visuals while this TV plays: a small frame stretched over the screen.
-    in property <bool> saver-visuals;
-    in property <image> saver-frame;
-
     /// Every remote key: its text, pressed (or released), and whether it repeats.
     /// Returns whether the app used it; Back that the app does not use leaves the app.
     callback key(string, bool, bool) -> bool;
@@ -600,84 +598,97 @@ export component App inherits Window {
     }
 
     // BACKGROUND: the cover's color, its blurred copy, and a vignette.
+    // Now playing paints the music's visuals instead.
 
     Rectangle {
         background: @linear-gradient(160deg, root.tint 0%, Theme.bg 70%);
         animate background { duration: 900ms; }
     }
-    if root.has-backdrop && (root.page == 0): Image {
+    if root.page == 0 && root.has-backdrop && !root.has-visuals: Image {
         width: 100%;
         height: 100%;
         source: root.backdrop;
         image-fit: cover;
         opacity: 0.55;
     }
-    Rectangle {
+    if root.page == 0 && root.has-visuals: Image {
+        width: 100%;
+        height: 100%;
+        source: root.visuals-frame;
+        image-fit: fill;
+        image-rendering: smooth;
+    }
+    if root.page != 0: Rectangle {
         background: @linear-gradient(90deg, #08070dcc 0%, #08070d55 55%, #08070d99 100%);
     }
-    Rectangle {
+    if root.page != 0: Rectangle {
         background: @linear-gradient(180deg, #08070d00 55%, #08070dee 100%);
     }
 
-    // VISUALIZER: bars along the bottom while this TV plays.
+    // NOW PLAYING: the screen the app rests on. The music's visuals fill it,
+    // the song sits on the left with every line of its lyrics on the right,
+    // and the controls only come up when the remote is used.
 
-    if root.bars-visible && root.page == 0 && !root.saver: Rectangle {
-        y: root.height - self.height;
-        height: Metrics.u * 6;
-        opacity: 0.55;
-        for level[i] in root.bars: Rectangle {
-            property <length> step: root.width / root.bars.length;
-            x: i * self.step + self.step * 0.18;
-            width: self.step * 0.64;
-            height: max(Metrics.u * 0.3, parent.height * level);
-            y: parent.height - self.height;
-            border-radius: self.width / 2;
-            background: @linear-gradient(180deg, #ff4f81 0%, #c13bff 60%, #5b5bff00 100%);
-        }
-    }
+    if root.page == 0: stage := Rectangle {
+        property <bool> side: root.lyrics-mode != 0;
+        property <length> shift-x: root.drift-x * Metrics.u * 0.9;
+        property <length> shift-y: root.drift-y * Metrics.u * 0.9;
+        animate shift-x, shift-y { duration: 8s; easing: ease-in-out; }
 
-    // NOW PLAYING
-
-    if root.page == 0: Rectangle {
-        property <length> art: min(root.height * 0.52, root.width * 0.3);
-        // Artwork, left.
+        // Quiet the visuals a little everywhere, and more behind the words.
+        Rectangle { background: #0000003a; }
         Rectangle {
-            x: Metrics.u * 5;
-            y: Metrics.u * 9.5;
-            width: parent.art;
-            height: parent.art;
-            border-radius: Metrics.u * 1.2;
-            drop-shadow-blur: Metrics.u * 4;
-            drop-shadow-color: #000000a0;
-            drop-shadow-offset-y: Metrics.u * 1;
-            Artwork {
-                width: 100%;
-                height: 100%;
-                source: root.artwork;
-                has-source: root.has-artwork;
-            }
+            opacity: stage.side ? 1 : 0;
+            animate opacity { duration: 700ms; }
+            background: @linear-gradient(90deg, #00000066 0%, #00000014 30%, #00000080 46%, #00000099 100%);
         }
-        // Song, progress, and controls, right.
-        VerticalLayout {
-            x: Metrics.u * 8 + parent.art;
-            y: Metrics.u * 9.5;
-            width: root.width - self.x - Metrics.u * 5;
-            height: parent.art;
-            alignment: center;
-            spacing: Metrics.u * 0.5;
+        Rectangle {
+            opacity: stage.side ? 0 : 1;
+            animate opacity { duration: 700ms; }
+            background: @radial-gradient(circle, #00000080 0%, #00000000 60%);
+        }
+
+        // The song.
+        song := VerticalLayout {
+            property <length> art: stage.side ? Metrics.u * 24 : Metrics.u * 26;
+            width: stage.side ? Metrics.u * 26 : Metrics.u * 40;
+            height: self.preferred-height;
+            x: (stage.side ? Metrics.u * 5.5 : (root.width - self.width) / 2) + stage.shift-x;
+            y: (root.height - self.preferred-height) / 2 - (root.controls-shown ? Metrics.u * 3.6 : 0) + stage.shift-y;
+            animate x, y, width { duration: 800ms; easing: cubic-bezier(0.2, 0.9, 0.25, 1); }
+            spacing: Metrics.u * 0.45;
             HorizontalLayout {
-                spacing: Metrics.u * 0.6;
-                alignment: start;
+                alignment: stage.side ? LayoutAlignment.start : LayoutAlignment.center;
+                Rectangle {
+                    width: song.art;
+                    height: song.art;
+                    animate width, height { duration: 800ms; easing: cubic-bezier(0.2, 0.9, 0.25, 1); }
+                    border-radius: Metrics.u * 1.2;
+                    drop-shadow-blur: Metrics.u * 4;
+                    drop-shadow-color: #000000b0;
+                    drop-shadow-offset-y: Metrics.u * 1;
+                    Artwork {
+                        width: 100%;
+                        height: 100%;
+                        source: root.artwork;
+                        has-source: root.has-artwork;
+                    }
+                }
+            }
+            Rectangle { height: Metrics.u * 0.9; }
+            HorizontalLayout {
+                spacing: Metrics.u * 0.5;
+                alignment: stage.side ? LayoutAlignment.start : LayoutAlignment.center;
                 if root.playing: Icon {
                     name: "now";
-                    width: Metrics.u * 1.1;
+                    width: Metrics.u * 0.9;
                     height: self.width;
-                    color: Theme.pink;
+                    color: white;
                 }
                 Text {
                     text: root.where;
                     color: Theme.text-2;
-                    font-size: Metrics.u * 0.95;
+                    font-size: Metrics.u * 0.8;
                     font-weight: 600;
                     letter-spacing: Metrics.u * 0.08;
                 }
@@ -686,96 +697,209 @@ export component App inherits Window {
                 text: root.track-title;
                 color: white;
                 font-family: "Inter Display";
-                font-size: Metrics.u * 3.4;
+                font-size: stage.side ? Metrics.u * 2.2 : Metrics.u * 2.8;
                 font-weight: 800;
                 wrap: word-wrap;
                 overflow: elide;
-                height: min(self.preferred-height, Metrics.u * 8.6);
+                horizontal-alignment: stage.side ? left : center;
+                height: min(self.preferred-height, stage.side ? Metrics.u * 5.6 : Metrics.u * 7.2);
             }
             Text {
-                text: root.album != "" ? root.artists + "  ·  " + root.album : root.artists;
+                text: root.album != "" && !stage.side ? root.artists + "  ·  " + root.album : root.artists;
                 color: Theme.text-2;
-                font-size: Metrics.u * 1.5;
+                font-size: Metrics.u * 1.25;
                 overflow: elide;
+                horizontal-alignment: stage.side ? left : center;
             }
-            Rectangle { height: Metrics.u * 1.4; }
+            Rectangle { height: Metrics.u * 0.9; }
             Rectangle {
-                height: Metrics.u * 0.45;
+                height: Metrics.u * 0.3;
                 border-radius: self.height / 2;
-                background: #ffffff26;
+                background: #ffffff30;
                 Rectangle {
                     x: 0;
                     width: parent.width * clamp(root.progress, 0, 1);
                     border-radius: parent.border-radius;
-                    background: Theme.accent;
-                    animate width { duration: 250ms; }
-                }
-                Rectangle {
-                    x: parent.width * clamp(root.progress, 0, 1) - self.width / 2;
-                    width: Metrics.u * 1.1;
-                    height: self.width;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: self.width / 2;
                     background: white;
-                    animate x { duration: 250ms; }
+                    animate width { duration: 250ms; }
                 }
             }
             HorizontalLayout {
                 Text {
                     text: root.position-text;
                     color: Theme.text-3;
-                    font-size: Metrics.u * 0.9;
+                    font-size: Metrics.u * 0.85;
                 }
                 if root.loading: Text {
                     text: "Loading…";
                     color: Theme.text-3;
-                    font-size: Metrics.u * 0.9;
+                    font-size: Metrics.u * 0.85;
                     horizontal-alignment: center;
                 }
                 Text {
                     text: root.duration-text;
                     color: Theme.text-3;
-                    font-size: Metrics.u * 0.9;
+                    font-size: Metrics.u * 0.85;
                     horizontal-alignment: right;
                 }
             }
-            Rectangle { height: Metrics.u * 1.2; }
+        }
+
+        // The clock, while the tab bar (which has its own) is away.
+        Text {
+            x: root.width - self.width - Metrics.u * 4 + stage.shift-x;
+            y: Metrics.u * 2 + stage.shift-y;
+            text: root.clock;
+            color: #ffffffb0;
+            font-size: Metrics.u * 1.3;
+            font-weight: 600;
+            opacity: root.controls-shown ? 0 : 1;
+            animate opacity { duration: 300ms; }
+        }
+
+        // The lyrics: every line, the one being sung bright and big.
+        lyrics-box := Rectangle {
+            x: Metrics.u * 37 + stage.shift-x;
+            y: Metrics.u * 4;
+            width: root.width - Metrics.u * 42;
+            // Ends above the controls while they show.
+            height: root.height - Metrics.u * (root.controls-shown ? 14 : 8);
+            animate height { duration: 320ms; easing: ease-out; }
+            clip: true;
+            opacity: stage.side ? 1 : 0;
+            animate opacity { duration: 600ms; }
+
+            // Timed: the line being sung springs up to full size, the lines
+            // glide so it sits two fifths of the way down, and a break shows
+            // three dots that pop in, breathe, and light up as it runs out.
+            if root.lyrics-mode == 1: lyric-viewport := Rectangle {
+                // The middle of the current row, in the column's coordinates.
+                property <length> active-y;
+                property <float> breath: root.playing ? 1 + 0.16 * (1 - Math.cos(Math.mod(animation-tick() / 2.4s, 1) * 360deg)) / 2 : 1;
+                VerticalLayout {
+                    width: parent.width;
+                    y: parent.height * 0.4 - parent.active-y;
+                    animate y { duration: 760ms; easing: cubic-bezier(0.2, 0.9, 0.25, 1.06); }
+                    padding-bottom: parent.height;
+                    for row in root.lyric-rows: Rectangle {
+                        property <bool> current: row.kind == 1 || row.kind == 4;
+                        height: row.kind == 3 ? 0px
+                            : row.kind == 4 ? Metrics.u * 4.4
+                            : line-text.preferred-height + Metrics.u * 1.3;
+                        animate height { duration: 520ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
+                        clip: row.kind >= 3;
+                        init => {
+                            if (self.current) { lyric-viewport.active-y = self.y + self.height / 2; }
+                        }
+                        changed current => {
+                            if (self.current) { lyric-viewport.active-y = self.y + self.height / 2; }
+                        }
+                        changed y => {
+                            if (self.current) { lyric-viewport.active-y = self.y + self.height / 2; }
+                        }
+                        changed height => {
+                            if (self.current) { lyric-viewport.active-y = self.y + self.height / 2; }
+                        }
+                        line-text := Text {
+                            visible: row.kind < 3;
+                            y: Metrics.u * 0.65;
+                            width: parent.width;
+                            text: row.text;
+                            wrap: word-wrap;
+                            font-family: "Inter Display";
+                            font-size: Metrics.u * 2.6;
+                            font-weight: 800;
+                            color: row.kind == 1 ? white : row.kind == 0 ? #ffffff47 : #ffffff80;
+                            animate color { duration: 450ms; easing: ease-out; }
+                            transform-origin: { x: 0, y: self.height / 2 };
+                            transform-scale: row.kind == 1 ? 1.0 : 0.88;
+                            animate transform-scale { duration: 720ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
+                        }
+                        if row.kind >= 3: Rectangle {
+                            x: 0;
+                            width: Metrics.u * 7;
+                            height: Metrics.u * 4.4;
+                            transform-origin: { x: Metrics.u * 0.5, y: self.height / 2 };
+                            transform-scale: row.kind == 4 ? 1.0 : 0.0;
+                            animate transform-scale { duration: 650ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
+                            Rectangle {
+                                transform-origin: { x: Metrics.u * 0.5, y: self.height / 2 };
+                                transform-scale: lyric-viewport.breath;
+                                for index in 3: Rectangle {
+                                    property <bool> lit: index < row.lit;
+                                    x: Metrics.u * (0.2 + index * 1.8);
+                                    y: (parent.height - self.height) / 2;
+                                    width: Metrics.u * 1.05;
+                                    height: self.width;
+                                    border-radius: self.width / 2;
+                                    background: self.lit ? white : #ffffff4d;
+                                    animate background { duration: 450ms; easing: ease-out; }
+                                    transform-scale: self.lit ? 1.18 : 1.0;
+                                    animate transform-scale { duration: 520ms; easing: cubic-bezier(0.34, 1.8, 0.64, 1); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Plain: the whole text, scrolling along with the song.
+            if root.lyrics-mode == 2: Text {
+                width: parent.width;
+                y: Metrics.u * 2 - clamp(root.progress, 0, 1) * max(0, self.preferred-height - parent.height + Metrics.u * 8);
+                animate y { duration: 1200ms; easing: linear; }
+                text: root.lyrics;
+                color: #ffffffd8;
+                font-family: "Inter Display";
+                font-size: Metrics.u * 2;
+                font-weight: 800;
+                wrap: word-wrap;
+            }
+        }
+
+        // CONTROLS: up along the bottom while the remote is in use.
+        Rectangle {
+            y: root.height - self.height;
+            height: Metrics.u * 15;
+            background: @linear-gradient(180deg, #00000000 0%, #000000b0 50%, #000000e0 100%);
+            opacity: root.controls-shown ? 1 : 0;
+            animate opacity { duration: 280ms; }
+        }
+        Rectangle {
+            y: root.controls-shown ? 0 : Metrics.u * 3;
+            opacity: root.controls-shown ? 1 : 0;
+            animate y, opacity { duration: 320ms; easing: ease-out; }
             HorizontalLayout {
+                x: Metrics.u * 5;
+                y: root.height - Metrics.u * 7.4;
+                height: Metrics.u * 5;
                 alignment: start;
                 spacing: Metrics.u * 1.1;
                 for button in root.controls: VerticalLayout {
                     alignment: center;
                     RoundButton { data: button; }
                 }
-            }
-        }
-        // Up next, bottom left.
-        if root.up-next.length > 0: VerticalLayout {
-            x: Metrics.u * 5;
-            y: root.height - Metrics.u * 12.2;
-            width: root.width * 0.62;
-            height: self.preferred-height;
-            spacing: Metrics.u * 0.8;
-            Text {
-                text: "Up next";
-                color: Theme.text-3;
-                font-size: Metrics.u * 0.9;
-                font-weight: 700;
-            }
-            HorizontalLayout {
-                spacing: Metrics.u * 1.6;
-                alignment: start;
+                Rectangle { width: Metrics.u * 2; }
                 for item in root.up-next: HorizontalLayout {
                     spacing: Metrics.u * 0.8;
-                    width: Metrics.u * 16;
-                    Artwork {
-                        width: Metrics.u * 3.4;
-                        height: self.width;
-                        source: item.image;
-                        has-source: item.has-image;
+                    width: Metrics.u * 17;
+                    VerticalLayout {
+                        alignment: center;
+                        Artwork {
+                            width: Metrics.u * 3.2;
+                            height: self.width;
+                            source: item.image;
+                            has-source: item.has-image;
+                        }
                     }
                     VerticalLayout {
                         alignment: center;
+                        Text {
+                            text: "UP NEXT";
+                            color: Theme.text-3;
+                            font-size: Metrics.u * 0.7;
+                            font-weight: 700;
+                            letter-spacing: Metrics.u * 0.08;
+                        }
                         Text {
                             text: item.title;
                             color: white;
@@ -792,21 +916,23 @@ export component App inherits Window {
                     }
                 }
             }
-        }
-        // Scan to join, bottom right.
-        QrCard {
-            x: root.width - self.width - Metrics.u * 4;
-            y: root.height - self.height - Metrics.u * 3.2;
-            code: root.qr;
-            size: Metrics.u * 6;
-            title: "Add songs";
-            subtitle: "Scan with your phone\non this Wi-Fi";
+            QrCard {
+                x: root.width - self.width - Metrics.u * 4;
+                y: root.height - self.height - Metrics.u * 2.2;
+                code: root.qr;
+                size: Metrics.u * 5;
+                title: "Add songs";
+                subtitle: "Scan with your phone\non this Wi-Fi";
+            }
         }
     }
 
     // NOTHING PLAYING
 
     if root.page == 1: Rectangle {
+        x: root.drift-x * Metrics.u * 0.9;
+        y: root.drift-y * Metrics.u * 0.9;
+        animate x, y { duration: 8s; easing: ease-in-out; }
         Rectangle {
             x: (parent.width - self.width) / 2 - Metrics.u * 8;
             y: (parent.height - self.height) / 2;
@@ -1093,8 +1219,18 @@ export component App inherits Window {
 
     // TOP BAR
 
-    if root.tabs-visible && !root.saver: Rectangle {
+    if root.page == 0: Rectangle {
         y: 0;
+        height: Metrics.u * 8;
+        background: @linear-gradient(180deg, #000000b0 0%, #00000000 100%);
+        opacity: root.controls-shown ? 1 : 0;
+        animate opacity { duration: 280ms; }
+    }
+
+    if root.tabs-visible: Rectangle {
+        y: root.controls-shown ? 0 : -self.height;
+        opacity: root.controls-shown ? 1 : 0;
+        animate y, opacity { duration: 320ms; easing: ease-out; }
         height: Metrics.u * 5.4;
         HorizontalLayout {
             padding-left: Metrics.u * 4;
@@ -1174,13 +1310,13 @@ export component App inherits Window {
 
     // HINTS: what the remote does here, over a scrim so rows behind stay quiet.
 
-    if !root.saver && root.page >= 2: Rectangle {
+    if root.page >= 2: Rectangle {
         y: root.height - self.height;
         height: Metrics.u * 5;
         background: @linear-gradient(180deg, #08070d00 0%, #08070df0 60%, #08070d 100%);
     }
 
-    if !root.saver && !root.menu-open && root.hints.length > 0 && root.page != 0: HorizontalLayout {
+    if !root.menu-open && root.hints.length > 0 && root.page != 0: HorizontalLayout {
         x: Metrics.u * 4;
         y: root.height - Metrics.u * 2.6;
         height: Metrics.u * 1.6;
@@ -1192,12 +1328,12 @@ export component App inherits Window {
         }
     }
 
-    // PANELS: the queue or the lyrics, sliding in from the right.
+    // THE QUEUE, sliding in from the right.
 
     Rectangle {
-        property <bool> open: root.panel != 0 && root.page == 0 && !root.saver;
+        property <bool> open: root.panel != 0 && root.page == 0;
         x: self.open ? root.width - self.width : root.width;
-        width: root.panel == 2 ? root.width * 0.5 : root.width * 0.4;
+        width: root.width * 0.4;
         height: root.height;
         background: #0e0c16f2;
         border-width: 1px;
@@ -1232,114 +1368,6 @@ export component App inherits Window {
                 Hint { key: "OK"; label: "Play"; }
                 Hint { key: "Hold OK"; label: "More"; }
                 Hint { key: "Back"; label: "Close"; }
-            }
-        }
-        if root.panel == 2: Rectangle {
-            clip: true;
-            property <length> view: self.height - Metrics.u * 8;
-            Text {
-                x: Metrics.u * 3;
-                y: Metrics.u * 3.4;
-                text: "Lyrics";
-                color: Theme.text-3;
-                font-size: Metrics.u * 0.95;
-                font-weight: 700;
-                letter-spacing: Metrics.u * 0.1;
-            }
-            // Timed: the line being sung springs up to full size, the lines
-            // glide so it sits a third of the way down, and a break shows
-            // three dots that pop in, breathe, and light up as it runs out.
-            if root.lyrics-timed: lyric-viewport := Rectangle {
-                x: Metrics.u * 3;
-                y: Metrics.u * 6;
-                width: parent.width - Metrics.u * 6;
-                height: parent.view;
-                clip: true;
-                // The middle of the current row, in the column's coordinates.
-                property <length> active-y;
-                property <float> breath: root.playing ? 1 + 0.16 * (1 - Math.cos(Math.mod(animation-tick() / 2.4s, 1) * 360deg)) / 2 : 1;
-                VerticalLayout {
-                    width: parent.width;
-                    y: parent.height * 0.32 - parent.active-y;
-                    animate y { duration: 760ms; easing: cubic-bezier(0.2, 0.9, 0.25, 1.06); }
-                    padding-bottom: parent.height;
-                    for row in root.lyric-rows: Rectangle {
-                        property <bool> current: row.kind == 1 || row.kind == 4;
-                        height: row.kind == 3 ? 0px
-                            : row.kind == 4 ? Metrics.u * 3.6
-                            : line-text.preferred-height + Metrics.u * 1.1;
-                        animate height { duration: 520ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
-                        clip: row.kind >= 3;
-                        init => {
-                            if (self.current) { lyric-viewport.active-y = self.y + self.height / 2; }
-                        }
-                        changed current => {
-                            if (self.current) { lyric-viewport.active-y = self.y + self.height / 2; }
-                        }
-                        changed y => {
-                            if (self.current) { lyric-viewport.active-y = self.y + self.height / 2; }
-                        }
-                        changed height => {
-                            if (self.current) { lyric-viewport.active-y = self.y + self.height / 2; }
-                        }
-                        line-text := Text {
-                            visible: row.kind < 3;
-                            y: Metrics.u * 0.55;
-                            width: parent.width;
-                            text: row.text;
-                            wrap: word-wrap;
-                            font-family: "Inter Display";
-                            font-size: Metrics.u * 1.9;
-                            font-weight: 800;
-                            color: row.kind == 1 ? white : row.kind == 0 ? #ffffff3a : #ffffff6b;
-                            animate color { duration: 450ms; easing: ease-out; }
-                            transform-origin: { x: 0, y: self.height / 2 };
-                            transform-scale: row.kind == 1 ? 1.0 : 0.9;
-                            animate transform-scale { duration: 720ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
-                        }
-                        if row.kind >= 3: Rectangle {
-                            x: 0;
-                            width: Metrics.u * 6;
-                            height: Metrics.u * 3.6;
-                            transform-origin: { x: Metrics.u * 0.4, y: self.height / 2 };
-                            transform-scale: row.kind == 4 ? 1.0 : 0.0;
-                            animate transform-scale { duration: 650ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
-                            Rectangle {
-                                transform-origin: { x: Metrics.u * 0.4, y: self.height / 2 };
-                                transform-scale: lyric-viewport.breath;
-                                for index in 3: Rectangle {
-                                    property <bool> lit: index < row.lit;
-                                    x: Metrics.u * (0.2 + index * 1.5);
-                                    y: (parent.height - self.height) / 2;
-                                    width: Metrics.u * 0.85;
-                                    height: self.width;
-                                    border-radius: self.width / 2;
-                                    background: self.lit ? white : #ffffff4d;
-                                    animate background { duration: 450ms; easing: ease-out; }
-                                    transform-scale: self.lit ? 1.18 : 1.0;
-                                    animate transform-scale { duration: 520ms; easing: cubic-bezier(0.34, 1.8, 0.64, 1); }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if !root.lyrics-timed: Rectangle {
-                x: Metrics.u * 3;
-                y: Metrics.u * 6;
-                width: parent.width - Metrics.u * 6;
-                height: parent.view;
-                clip: true;
-                lyrics-text := Text {
-                    width: parent.width;
-                    y: -clamp(root.progress, 0, 1) * max(0, self.preferred-height - parent.height + Metrics.u * 6);
-                    animate y { duration: 1200ms; easing: linear; }
-                    text: root.lyrics != "" ? root.lyrics : root.lyrics-note;
-                    color: root.lyrics != "" ? white : Theme.text-3;
-                    font-size: Metrics.u * 1.7;
-                    font-weight: 700;
-                    wrap: word-wrap;
-                }
             }
         }
     }
@@ -1425,78 +1453,6 @@ export component App inherits Window {
             color: white;
             font-size: Metrics.u * 1;
             font-weight: 600;
-        }
-    }
-
-    // SCREENSAVER: the cover drifts slowly over black, so nothing burns in.
-    // While this TV plays, the music's visuals fill the screen behind it.
-
-    if root.saver: Rectangle {
-        background: black;
-        if root.saver-visuals: Image {
-            width: 100%;
-            height: 100%;
-            source: root.saver-frame;
-            image-fit: fill;
-            image-rendering: smooth;
-        }
-        saver-box := Rectangle {
-            property <length> size: root.saver-visuals ? Metrics.u * 9 : Metrics.u * 16;
-            property <length> pad: root.saver-visuals ? Metrics.u * 1.2 : 0;
-            x: (root.width - self.width) * root.saver-x;
-            y: (root.height - self.height) * root.saver-y;
-            width: saver-row.preferred-width + self.pad * 2;
-            height: self.size + self.pad * 2;
-            border-radius: Metrics.u * 2;
-            background: root.saver-visuals ? #000000a8 : transparent;
-            animate x, y { duration: 6s; easing: ease-in-out; }
-            saver-row := HorizontalLayout {
-                x: saver-box.pad;
-                y: saver-box.pad;
-                height: saver-box.size;
-                spacing: Metrics.u * 2;
-                if root.page == 0: Artwork {
-                    width: saver-box.size;
-                    height: self.width;
-                    source: root.artwork;
-                    has-source: root.has-artwork;
-                }
-                if root.page != 0: VerticalLayout {
-                    alignment: center;
-                    Image {
-                        source: root.logo;
-                        height: Metrics.u * 7;
-                        width: self.height * 392 / 340;
-                        image-fit: contain;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    spacing: Metrics.u * 0.4;
-                    Text {
-                        text: root.clock;
-                        color: #ffffffd0;
-                        font-family: "Inter Display";
-                        font-size: Metrics.u * 4;
-                        font-weight: 800;
-                    }
-                    if root.page == 0: Text {
-                        text: root.track-title;
-                        color: #ffffffb0;
-                        font-size: Metrics.u * 1.4;
-                        font-weight: 700;
-                        overflow: elide;
-                        width: Metrics.u * 26;
-                    }
-                    if root.page == 0: Text {
-                        text: root.artists;
-                        color: #ffffff70;
-                        font-size: Metrics.u * 1.1;
-                        overflow: elide;
-                        width: Metrics.u * 26;
-                    }
-                }
-            }
         }
     }
 }
