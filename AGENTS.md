@@ -29,7 +29,9 @@ Add new skills under `.agents/skills/<name>/`, and link each one from `.claude/s
 
 The session protocol is defined twice: Effect Schemas in `packages/shared/src/session.ts` and serde types in `apps/tv/src/protocol.rs`. Change both together, and add or update a file in `fixtures/session/`. The server tests (`apps/server/src/session/model.test.ts`) and the Rust tests (`cargo test -p music-tv`) both decode those fixtures, so a field that changes on one side only fails a test. Keep wire fields plain JSON (`null`, never `Option`).
 
-The server owns the session. Players never change it directly: they follow `State` and report `Progress`, `Advanced`, `TrackEnded`, and `TrackFailed`. A player reloads when `currentEntryId` or `seekSeq` changes.
+The server owns the session. Players follow `State` and report `Progress`, `Advanced`, `TrackEnded`, and `TrackFailed`. A player reloads when `currentEntryId` or `seekSeq` changes.
+
+The phone is the exception, because a locked phone may hear from the server late or never. While it plays, it acts on its own controls and the lock screen first (next song, next, previous, queue taps, seeks, play, pause) and sends the change after (`SendLocalChange`). Each `State` carries `ack`, how many of that connection's messages it includes; the phone keeps its own changes over any `State` whose `ack` does not cover them yet (`LocalChanges` in `apps/web/src/playback/domain.ts`). On reconnect, `Hello.player` reports what the phone did offline, and the server's `model.ts` decides what to follow. Test both sides when changing any of this: `apps/web/src/playback/story.test.ts` and `apps/server/src/session/model.test.ts`.
 
 ## TV app
 

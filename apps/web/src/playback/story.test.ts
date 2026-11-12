@@ -14,6 +14,7 @@ import {
   LoadPhoneAudio,
   PrefetchSongs,
   SeekPhoneAudio,
+  SendLocalChange,
   SendToSession,
   SetPhoneAudioPlaying,
   StopPhoneAudio,
@@ -65,6 +66,13 @@ const sessionState = (
   seekSeq,
 })
 
+/** The local change's message went out as this connection's `seq`th. */
+const sentAs = (seq: number) =>
+  Command.resolve(
+    SendLocalChange,
+    Message.SentLocalChange({ maybeSeq: Option.some(seq) }),
+  )
+
 const mediaSession = UpdateMediaSession({
   title: entry.track.title,
   artist: entry.track.artists,
@@ -81,6 +89,7 @@ describe('playing on this phone', () => {
         Message.ReceivedSessionState({
           state: sessionState(PHONE_ID, 1),
           serverNow: SERVER_NOW + 2_000,
+          ack: 9,
           receivedAt: 5_000,
         }),
       ),
@@ -129,8 +138,7 @@ describe('playing on this phone', () => {
                 seekSeq: 1,
                 isPlaying: true,
                 isBuffering: false,
-                maybeLeftEntryId: Option.none(),
-                maybeAskedPlaying: Option.none(),
+                isPlayingSetHere: false,
               },
             }),
         }),
@@ -139,6 +147,7 @@ describe('playing on this phone', () => {
         Message.ReceivedSessionState({
           state: sessionState('tv', 2),
           serverNow: SERVER_NOW,
+          ack: 9,
           receivedAt: 5_000,
         }),
       ),
@@ -169,8 +178,7 @@ describe('playing on this phone', () => {
                 seekSeq: 1,
                 isPlaying: true,
                 isBuffering: false,
-                maybeLeftEntryId: Option.none(),
-                maybeAskedPlaying: Option.none(),
+                isPlayingSetHere: false,
               },
             }),
         }),
@@ -188,14 +196,14 @@ describe('playing on this phone', () => {
       Command.expectExact(
         SetPhoneAudioPlaying({ isPlaying: false }),
         SeekPhoneAudio({ seconds: 0 }),
-        SendToSession({ message: { _tag: 'TrackEnded', entryId: 'e0' } }),
+        SendLocalChange({ message: { _tag: 'TrackEnded', entryId: 'e0' } }),
       ),
       Command.resolve(
         SetPhoneAudioPlaying,
         Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
       ),
       Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
     )
   })
 })
@@ -211,8 +219,7 @@ const playingHere = (seekSeq: number): Model =>
           seekSeq,
           isPlaying: true,
           isBuffering: false,
-          maybeLeftEntryId: Option.none(),
-          maybeAskedPlaying: Option.none(),
+          isPlayingSetHere: false,
         },
       }),
     phoneAudioSeconds: () => 40,
@@ -230,14 +237,15 @@ describe('controlling playback on this phone', () => {
       }),
       Command.expectExact(
         SeekPhoneAudio({ seconds: 90 }),
-        SendToSession({ message: { _tag: 'Seek', positionSeconds: 90 } }),
+        SendLocalChange({ message: { _tag: 'Seek', positionSeconds: 90 } }),
       ),
       Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
       message(
         Message.ReceivedSessionState({
           state: { ...sessionState(PHONE_ID, 2), positionSeconds: 90 },
           serverNow: SERVER_NOW,
+          ack: 9,
           receivedAt: SERVER_NOW,
         }),
       ),
@@ -261,10 +269,10 @@ describe('controlling playback on this phone', () => {
       }),
       Command.expectExact(
         SeekPhoneAudio({ seconds: 120 }),
-        SendToSession({ message: { _tag: 'Seek', positionSeconds: 120 } }),
+        SendLocalChange({ message: { _tag: 'Seek', positionSeconds: 120 } }),
       ),
       Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
     )
   })
 
@@ -294,6 +302,7 @@ describe('controlling playback on this phone', () => {
         Message.ReceivedSessionState({
           state: { ...sessionState(PHONE_ID, 1), queue: [entry, ...added] },
           serverNow: SERVER_NOW,
+          ack: 9,
           receivedAt: SERVER_NOW,
         }),
       ),
@@ -318,13 +327,13 @@ describe('controlling playback on this phone', () => {
       }),
       Command.expectExact(
         SetPhoneAudioPlaying({ isPlaying: false }),
-        SendToSession({ message: { _tag: 'Pause', positionSeconds: 40 } }),
+        SendLocalChange({ message: { _tag: 'Pause', positionSeconds: 40 } }),
       ),
       Command.resolve(
         SetPhoneAudioPlaying,
         Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
       ),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
     )
   })
 })
@@ -547,8 +556,7 @@ describe('on the lock screen', () => {
             seekSeq: 4,
             isPlaying,
             isBuffering: false,
-            maybeLeftEntryId: Option.none(),
-            maybeAskedPlaying: Option.none(),
+            isPlayingSetHere: false,
           },
         }),
       phoneAudioSeconds: () => 40,
@@ -589,7 +597,7 @@ describe('on the lock screen', () => {
     ),
     Command.resolve(UpdateMediaSession, Message.CompletedUpdateMediaSession()),
     Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
-    Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    sentAs(2),
     Command.resolve(SaveRecentlyPlayed, Message.CompletedSaveRecentlyPlayed()),
   ]
 
@@ -607,8 +615,7 @@ describe('on the lock screen', () => {
               seekSeq: 4,
               isPlaying: true,
               isBuffering: true,
-              maybeLeftEntryId: Option.some('e0'),
-              maybeAskedPlaying: Option.none(),
+              isPlayingSetHere: false,
             },
           }),
         )
@@ -619,7 +626,7 @@ describe('on the lock screen', () => {
         loads(1),
         mediaSessionFor(1),
         prefetchFrom(1),
-        SendToSession({ message: { _tag: 'Advanced', fromEntryId: 'e0' } }),
+        SendLocalChange({ message: { _tag: 'Advanced', fromEntryId: 'e0' } }),
         SaveRecentlyPlayed({ recentlyPlayed: [queue[1]!.track] }),
       ),
       ...resolveLoad(1),
@@ -633,6 +640,7 @@ describe('on the lock screen', () => {
             positionSeconds: 0,
           },
           serverNow: SERVER_NOW,
+          ack: 9,
           receivedAt: SERVER_NOW,
         }),
       ),
@@ -645,6 +653,8 @@ describe('on the lock screen', () => {
     const staleState = Message.ReceivedSessionState({
       state: { ...sessionState(PHONE_ID, 4), queue, currentEntryId: 'e0' },
       serverNow: SERVER_NOW + 500,
+      // The Advanced went out second; this state has only the Hello.
+      ack: 1,
       receivedAt: SERVER_NOW + 500,
     })
     story(
@@ -669,13 +679,15 @@ describe('on the lock screen', () => {
         Message.ReceivedSessionState({
           state: { ...sessionState(PHONE_ID, 4), queue, currentEntryId: 'e1' },
           serverNow: SERVER_NOW + 600,
+          ack: 2,
           receivedAt: SERVER_NOW + 600,
         }),
       ),
       model(model => {
         expect(
-          Option.exists(loadedEntry(model.phoneAudio), ({ maybeLeftEntryId }) =>
-            Option.isNone(maybeLeftEntryId),
+          Option.exists(
+            loadedEntry(model.phoneAudio),
+            ({ entryId }) => entryId === 'e1',
           ),
         ).toBe(true)
       }),
@@ -684,7 +696,7 @@ describe('on the lock screen', () => {
     )
   })
 
-  test('another device jumping during a move wins', () => {
+  test("another device's jump wins once the server has the phone's move", () => {
     story(
       update,
       given(playingQueue('e0')),
@@ -700,6 +712,9 @@ describe('on the lock screen', () => {
             positionAt: SERVER_NOW + 6_000,
           },
           serverNow: SERVER_NOW + 6_000,
+          // The server took the Advanced after the other device's skip,
+          // and ignored it.
+          ack: 2,
           receivedAt: SERVER_NOW + 6_000,
         }),
       ),
@@ -745,7 +760,7 @@ describe('on the lock screen', () => {
         loads(2),
         mediaSessionFor(2),
         prefetchFrom(2),
-        SendToSession({ message: { _tag: 'SkipTo', entryId: 'e2' } }),
+        SendLocalChange({ message: { _tag: 'SkipTo', entryId: 'e2' } }),
         SaveRecentlyPlayed({ recentlyPlayed: [queue[2]!.track] }),
       ),
       ...resolveLoad(2),
@@ -765,14 +780,14 @@ describe('on the lock screen', () => {
       Command.expectExact(
         SetPhoneAudioPlaying({ isPlaying: false }),
         SeekPhoneAudio({ seconds: 0 }),
-        SendToSession({ message: { _tag: 'TrackEnded', entryId: 'e2' } }),
+        SendLocalChange({ message: { _tag: 'TrackEnded', entryId: 'e2' } }),
       ),
       Command.resolve(
         SetPhoneAudioPlaying,
         Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
       ),
       Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
       message(Message.ClosedSessionSocket()),
       Command.resolve(
         WaitBeforeReconnect,
@@ -816,10 +831,10 @@ describe('on the lock screen', () => {
       }),
       Command.expectExact(
         SeekPhoneAudio({ seconds: 0 }),
-        SendToSession({ message: { _tag: 'Seek', positionSeconds: 0 } }),
+        SendLocalChange({ message: { _tag: 'Seek', positionSeconds: 0 } }),
       ),
       Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
     )
   })
 
@@ -834,7 +849,7 @@ describe('on the lock screen', () => {
         SetPhoneAudioPlaying,
         Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
       ),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(3),
       // The answer to Next, sent before the server heard of the pause.
       message(
         Message.ReceivedSessionState({
@@ -845,6 +860,7 @@ describe('on the lock screen', () => {
             positionSeconds: 0,
           },
           serverNow: SERVER_NOW,
+          ack: 2,
           receivedAt: SERVER_NOW,
         }),
       ),
@@ -866,6 +882,7 @@ describe('on the lock screen', () => {
             positionSeconds: 0,
           },
           serverNow: SERVER_NOW,
+          ack: 3,
           receivedAt: SERVER_NOW,
         }),
       ),
@@ -880,6 +897,7 @@ describe('on the lock screen', () => {
             positionSeconds: 0,
           },
           serverNow: SERVER_NOW,
+          ack: 3,
           receivedAt: SERVER_NOW,
         }),
       ),
@@ -930,6 +948,102 @@ describe('on the lock screen', () => {
     )
   })
 
+  test('two quick presses of previous go back a song without replaying the first', () => {
+    story(
+      update,
+      given(playingQueue('e1')),
+      // The first press restarts the song, the second goes back a song.
+      message(Message.PressedMediaKey({ key: 'PreviousTrack' })),
+      Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
+      sentAs(2),
+      message(Message.PressedMediaKey({ key: 'PreviousTrack' })),
+      ...resolveLoad(0).map((step, index) => (index === 3 ? sentAs(3) : step)),
+      // The answer to the restart, before the server heard of the second.
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 5),
+            queue,
+            currentEntryId: 'e1',
+            positionSeconds: 0,
+          },
+          serverNow: SERVER_NOW,
+          ack: 2,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      model(model => {
+        expect(currentEntryId(model)).toEqual(Option.some('e0'))
+      }),
+      Command.expectExact(prefetchFrom(0)),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 6),
+            queue,
+            currentEntryId: 'e0',
+            positionSeconds: 0,
+          },
+          serverNow: SERVER_NOW,
+          ack: 3,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      model(model => {
+        expect(currentEntryId(model)).toEqual(Option.some('e0'))
+      }),
+      Command.expectExact(prefetchFrom(0)),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+    )
+  })
+
+  test('quick play, pause, play ends playing, with no pause in between', () => {
+    const answer = (playing: boolean, ack: number) =>
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 4),
+            queue,
+            currentEntryId: 'e1',
+            playing,
+            positionSeconds: 40,
+          },
+          serverNow: SERVER_NOW,
+          ack,
+          receivedAt: SERVER_NOW,
+        }),
+      )
+    const press = (key: 'Play' | 'Pause', seq: number) => [
+      message(Message.PressedMediaKey({ key })),
+      Command.resolve(
+        SetPhoneAudioPlaying,
+        Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
+      ),
+      sentAs(seq),
+    ]
+    story(
+      update,
+      given(playingQueue('e1', false)),
+      ...press('Play', 2),
+      ...press('Pause', 3),
+      ...press('Play', 4),
+      answer(true, 2),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+      answer(false, 3),
+      model(model => {
+        expect(
+          Option.exists(model.maybeSession, ({ state }) => state.playing),
+        ).toBe(true)
+      }),
+      Command.expectExact(prefetchFrom(1)),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+      answer(true, 4),
+      Command.expectExact(prefetchFrom(1)),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+    )
+  })
+
   test('an event from a song the phone already left is ignored', () => {
     story(
       update,
@@ -959,7 +1073,7 @@ describe('on the lock screen', () => {
         loads(2),
         mediaSessionFor(2),
         prefetchFrom(2),
-        SendToSession({ message: { _tag: 'Next' } }),
+        SendLocalChange({ message: { _tag: 'Next' } }),
         SaveRecentlyPlayed({ recentlyPlayed: [queue[2]!.track] }),
       ),
       ...resolveLoad(2),
@@ -978,7 +1092,7 @@ describe('on the lock screen', () => {
         loads(0),
         mediaSessionFor(0),
         prefetchFrom(0),
-        SendToSession({ message: { _tag: 'SkipTo', entryId: 'e0' } }),
+        SendLocalChange({ message: { _tag: 'SkipTo', entryId: 'e0' } }),
         SaveRecentlyPlayed({ recentlyPlayed: [queue[0]!.track] }),
       ),
       ...resolveLoad(0),
@@ -996,10 +1110,10 @@ describe('on the lock screen', () => {
       }),
       Command.expectExact(
         SeekPhoneAudio({ seconds: 0 }),
-        SendToSession({ message: { _tag: 'Seek', positionSeconds: 0 } }),
+        SendLocalChange({ message: { _tag: 'Seek', positionSeconds: 0 } }),
       ),
       Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
     )
   })
 
@@ -1013,10 +1127,10 @@ describe('on the lock screen', () => {
       }),
       Command.expectExact(
         SeekPhoneAudio({ seconds: 150 }),
-        SendToSession({ message: { _tag: 'Seek', positionSeconds: 150 } }),
+        SendLocalChange({ message: { _tag: 'Seek', positionSeconds: 150 } }),
       ),
       Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
     )
   })
 
@@ -1037,9 +1151,9 @@ describe('on the lock screen', () => {
         ).toBe(true)
       }),
       Command.expectExact(
-        SendToSession({ message: { _tag: 'Pause', positionSeconds: 40 } }),
+        SendLocalChange({ message: { _tag: 'Pause', positionSeconds: 40 } }),
       ),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
       message(Message.PressedMediaKey({ key: 'Play' })),
       model(model => {
         expect(
@@ -1048,13 +1162,13 @@ describe('on the lock screen', () => {
       }),
       Command.expectExact(
         SetPhoneAudioPlaying({ isPlaying: true }),
-        SendToSession({ message: { _tag: 'Resume' } }),
+        SendLocalChange({ message: { _tag: 'Resume' } }),
       ),
       Command.resolve(
         SetPhoneAudioPlaying,
         Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
       ),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
     )
   })
 
@@ -1070,13 +1184,13 @@ describe('on the lock screen', () => {
       }),
       Command.expectExact(
         SetPhoneAudioPlaying({ isPlaying: false }),
-        SendToSession({ message: { _tag: 'Pause', positionSeconds: 40 } }),
+        SendLocalChange({ message: { _tag: 'Pause', positionSeconds: 40 } }),
       ),
       Command.resolve(
         SetPhoneAudioPlaying,
         Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
       ),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      sentAs(2),
     )
   })
 

@@ -156,6 +156,10 @@ pub enum ServerMessage {
         state: SessionState,
         /// Server epoch milliseconds when this was sent.
         server_now: f64,
+        /// Messages from this connection the state includes. The TV waits
+        /// for the server instead, so it does not use it.
+        #[serde(default)]
+        ack: u64,
     },
     Notice {
         message: String,
@@ -174,8 +178,9 @@ mod tests {
 
     #[test]
     fn decodes_server_state() {
-        let ServerMessage::State { state, server_now } =
-            serde_json::from_str(&fixture("server-state.json")).unwrap()
+        let ServerMessage::State {
+            state, server_now, ..
+        } = serde_json::from_str(&fixture("server-state.json")).unwrap()
         else {
             panic!("expected State");
         };

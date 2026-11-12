@@ -68,16 +68,37 @@ export const LoadDeviceIdentity = Command.define('LoadDeviceIdentity', {
   ),
 })
 
+/** How many messages went out on each socket, which the server's `ack` counts too. */
+const sentCounts = new WeakMap<WebSocket, number>()
+
+/** Send a message, and give its number on this socket. */
+const sendMessage = (message: Session.ClientMessage) =>
+  SessionSocket.get.pipe(
+    Effect.flatMap(socket =>
+      Effect.try(() => {
+        socket.send(encodeClientMessage(message))
+        const seq = (sentCounts.get(socket) ?? 0) + 1
+        sentCounts.set(socket, seq)
+        return seq
+      }),
+    ),
+    Effect.option,
+  )
+
 export const SendToSession = Command.define('SendToSession', {
   args: { message: Session.ClientMessage },
   messages: [Message.CompletedSendToSession],
   execute: ({ message }) =>
-    SessionSocket.get.pipe(
-      Effect.flatMap(socket =>
-        Effect.try(() => socket.send(encodeClientMessage(message))),
-      ),
-      Effect.ignore,
-      Effect.as(Message.CompletedSendToSession()),
+    sendMessage(message).pipe(Effect.as(Message.CompletedSendToSession())),
+})
+
+/** Send a change this phone already made as the player (see `LocalChanges`). */
+export const SendLocalChange = Command.define('SendLocalChange', {
+  args: { message: Session.ClientMessage },
+  messages: [Message.SentLocalChange],
+  execute: ({ message }) =>
+    sendMessage(message).pipe(
+      Effect.map(maybeSeq => Message.SentLocalChange({ maybeSeq })),
     ),
 })
 

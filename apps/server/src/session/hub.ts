@@ -54,6 +54,8 @@ interface Connection {
   readonly name: string
   readonly kind: Session.DeviceKind
   readonly mailbox: Queue.Queue<string>
+  /** How many of this connection's messages the session has taken in. */
+  readonly acked: () => number
 }
 
 export class SessionHub extends Context.Service<
@@ -133,19 +135,39 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         { discard: true },
       )
 
+    const stateFor = (
+      connection: Connection,
+      state: Session.SessionState,
+      serverNow: number,
+    ) =>
+      Queue.offer(
+        connection.mailbox,
+        encodeServerMessage({
+          _tag: 'State',
+          state,
+          serverNow,
+          ack: connection.acked(),
+        }),
+      )
+
     const broadcastState = Effect.suspend(() => {
       const state = toSessionState(model, devices())
+      const serverNow = Date.now()
       return Effect.andThen(
         SubscriptionRef.set(latestState, state),
-        sendAll(
-          encodeServerMessage({
-            _tag: 'State',
-            state,
-            serverNow: Date.now(),
-          }),
+        Effect.forEach(
+          connections.values(),
+          connection => stateFor(connection, state, serverNow),
+          { discard: true },
         ),
       )
     })
+
+    /** The state as it is, for one connection waiting on its `ack`. */
+    const replyState = (connection: Connection) =>
+      Effect.suspend(() =>
+        stateFor(connection, toSessionState(model, devices()), Date.now()),
+      )
 
     let maybeCountedEntryId = Option.none<string>()
     let maybeQueueEndFor = Option.none<string>()
@@ -227,9 +249,14 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       )
     })
 
-    /** Run one transition under the lock and carry out what it asks for. */
+    /**
+     * Run one transition under the lock and carry out what it asks for. A
+     * transition that changes nothing still answers `replyTo`, whose `ack`
+     * then covers its message.
+     */
     const apply = (
       transition: (model: Model) => Outcome,
+      maybeReplyTo: Option.Option<Connection> = Option.none(),
     ): Effect.Effect<void> =>
       lock.withPermits(1)(
         Effect.gen(function* () {
@@ -238,6 +265,8 @@ export const SessionHubLive = Layer.effect(SessionHub)(
           if (outcome.broadcast) {
             yield* broadcastState
             yield* prepareAhead
+          } else if (Option.isSome(maybeReplyTo)) {
+            yield* replyState(maybeReplyTo.value)
           }
           if (Option.isSome(outcome.maybeNotice)) {
             yield* sendAll(
@@ -301,6 +330,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         const connectionId = nextConnectionId++
         let maybeDeviceId = Option.none<string>()
         let senderId = ''
+        let received = 0
 
         yield* Effect.addFinalizer(() =>
           Option.match(maybeDeviceId, {
@@ -345,12 +375,23 @@ export const SessionHubLive = Layer.effect(SessionHub)(
                     name: message.name,
                     kind: message.kind,
                     mailbox,
+                    acked: () => received,
                   }),
                 ),
               )
             }
             const from = senderId
-            yield* apply(current => update(current, message, contextFor(from)))
+            // NOTE: progress comes every second and needs no answer.
+            const maybeReplyTo =
+              message._tag === 'Progress'
+                ? Option.none<Connection>()
+                : Option.fromNullishOr(connections.get(connectionId))
+            yield* apply(current => {
+              // NOTE: counted under the lock as it is applied, so no state
+              // claims a message that is still waiting for the lock.
+              received += 1
+              return update(current, message, contextFor(from))
+            }, maybeReplyTo)
           })
 
         yield* Effect.gen(function* () {

@@ -127,10 +127,13 @@ export const Message = defineMessageUnion({
   ReceivedSessionState: {
     state: Session.SessionState,
     serverNow: Schema.Number,
+    ack: Schema.Number,
     receivedAt: Schema.Number,
   },
   ReceivedSessionNotice: { message: Schema.String },
   CompletedSendToSession: {},
+  /** A local change's message went out as this connection's `maybeSeq`th. */
+  SentLocalChange: { maybeSeq: Schema.Option(Schema.Number) },
   CompletedWaitBeforeHideNotice: { message: Schema.String },
   TickedClock: { now: Schema.Number },
 

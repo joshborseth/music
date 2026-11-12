@@ -72,10 +72,15 @@ const streamSessionMessages = (socket: WebSocket) =>
         Match.when('Closed', () =>
           Effect.succeed(Message.ClosedSessionSocket()),
         ),
-        Match.tag('State', ({ state, serverNow }) =>
+        Match.tag('State', ({ state, serverNow, ack }) =>
           Clock.currentTimeMillis.pipe(
             Effect.map(receivedAt =>
-              Message.ReceivedSessionState({ state, serverNow, receivedAt }),
+              Message.ReceivedSessionState({
+                state,
+                serverNow,
+                ack,
+                receivedAt,
+              }),
             ),
           ),
         ),

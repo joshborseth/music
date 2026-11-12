@@ -189,6 +189,12 @@ export const State = Schema.TaggedStruct('State', {
   state: SessionState,
   /** The server clock when this was sent, to correct for clock skew. */
   serverNow: Schema.Number,
+  /**
+   * How many messages from this connection the state includes, counting
+   * `Hello` as the first. A player that changed something itself keeps its
+   * change until this covers the message that carried it.
+   */
+  ack: Schema.Number,
 })
 
 /** Something went wrong that the person should hear about. */

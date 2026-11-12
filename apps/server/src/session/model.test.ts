@@ -357,6 +357,28 @@ describe('session model', () => {
     expect(fromRemote.positionSeconds).toBe(14)
   })
 
+  test('a player reloaded after a jump it missed keeps its own pause', () => {
+    const sought = update(
+      playing(),
+      { _tag: 'Seek', positionSeconds: 100 },
+      makeContext('tv', 5_000),
+    ).model
+    const outcome = update(
+      sought,
+      hello({
+        entryId: 'e0',
+        positionSeconds: 30,
+        playing: false,
+        playingSetHere: true,
+        seekSeq: playing().seekSeq,
+      }),
+      makeContext('phone', 10_000),
+    ).model
+    expect(outcome.seekSeq).toBe(sought.seekSeq + 1)
+    expect(outcome.playing).toBe(false)
+    expect(outcome.positionSeconds).toBe(105)
+  })
+
   test('only the player is followed, and only to a queued entry', () => {
     const model = playing()
     const report = {

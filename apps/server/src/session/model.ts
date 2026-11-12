@@ -272,18 +272,31 @@ const transition = (
             pausedForLostPlayer: false,
           })
         }
-        return changed({
+        const isPlayer = model.activeDeviceId === context.senderId
+        // NOTE: a player whose report is not followed (the session jumped
+        // without it) still keeps a play or pause it made itself.
+        const maybeOwnPlaying = Option.flatMap(
+          Option.fromNullishOr(message.player),
+          report =>
+            isPlayer && report.playingSetHere
+              ? Option.some(report.playing)
+              : Option.none(),
+        )
+        const reloaded: Model = {
           ...model,
           waking,
           // A device that comes back as the player reloads where it left off.
-          seekSeq:
-            isWaking || model.activeDeviceId === context.senderId
-              ? model.seekSeq + 1
-              : model.seekSeq,
-          ...(model.activeDeviceId === context.senderId
+          seekSeq: isWaking || isPlayer ? model.seekSeq + 1 : model.seekSeq,
+          ...(isPlayer
             ? { positionSeconds: currentPosition(model, now), positionAt: now }
             : {}),
-        })
+        }
+        return changed(
+          Option.match(maybeOwnPlaying, {
+            onNone: () => reloaded,
+            onSome: playing => ({ ...reloaded, playing }),
+          }),
+        )
       },
 
       PlayQueue: message => {

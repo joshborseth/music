@@ -1257,13 +1257,21 @@ export const update = (model: Model, message: Message) =>
     ClosedSessionSocket: () => Playback.loseSessionSocket(model),
     CompletedWaitBeforeReconnect: () =>
       Playback.completeWaitBeforeReconnect(model),
-    ReceivedSessionState: ({ state, serverNow, receivedAt }) =>
+    ReceivedSessionState: ({ state, serverNow, ack, receivedAt }) =>
       followingCurrentSong(stepModel =>
-        Playback.receiveSessionState(stepModel, state, serverNow, receivedAt),
+        Playback.receiveSessionState(
+          stepModel,
+          state,
+          serverNow,
+          ack,
+          receivedAt,
+        ),
       )(model),
     ReceivedSessionNotice: ({ message }) =>
       Playback.receiveNotice(model, message),
     CompletedSendToSession: () => ({ model }),
+    SentLocalChange: ({ maybeSeq }) =>
+      Playback.completeSendLocalChange(model, maybeSeq),
     CompletedWaitBeforeHideNotice: ({ message }) =>
       Playback.completeWaitBeforeHideNotice(model, message),
     ClickedDismissNotice: () => ({

@@ -38,20 +38,28 @@ export const LoadedEntry = Schema.Struct({
   /** Waiting for audio data: show that it is loading. */
   isBuffering: Schema.Boolean,
   /**
-   * The entry the server named when this phone moved on by itself (a song
-   * ended, next, previous, a queue tap), until the server catches up. A
-   * server state that still names it at this `seekSeq` was sent before the
-   * server heard of the move, and must not undo it.
+   * This phone played or paused by itself (a tap, the lock screen, the
+   * system pausing it, the queue ending) since it last followed the server.
+   * A reconnect report says so, and the server then keeps it.
    */
-  maybeLeftEntryId: Schema.Option(Schema.String),
-  /**
-   * A play or pause this phone made itself (a tap, the lock screen, the
-   * system pausing it, the queue ending), until a server state agrees. A
-   * state sent before the server heard of it must not undo it.
-   */
-  maybeAskedPlaying: Schema.Option(Schema.Boolean),
+  isPlayingSetHere: Schema.Boolean,
 })
 export type LoadedEntry = typeof LoadedEntry.Type
+
+/**
+ * Changes this phone made by itself, as the player, before telling the
+ * server: a move, a seek, a play or pause. Each `State` says how many of this
+ * connection's messages it includes (`ack`). One that does not include every
+ * message carrying such a change was sent before the server heard of it, so
+ * the phone keeps its own song, position, and play or pause over it.
+ */
+export const LocalChanges = Schema.Struct({
+  /** Changes whose message is not on the socket yet, so its number is unknown. */
+  unsent: Schema.Number,
+  /** The `ack` that includes every change sent so far. */
+  untilAck: Schema.Number,
+})
+export type LocalChanges = typeof LocalChanges.Type
 
 /** The phone's own audio output. */
 export const PhoneAudio = defineTaggedUnion({
@@ -174,5 +182,6 @@ export const initialPlaybackModel = {
   playerSheet: PlayerSheet.Closed(),
   maybeNotice: Option.none<string>(),
   maybeScrubSeconds: Option.none<number>(),
+  localChanges: { unsent: 0, untilAck: 0 },
   swipe: Swipe.Idle(),
 }

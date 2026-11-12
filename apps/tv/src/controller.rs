@@ -119,7 +119,9 @@ impl Controller {
             Inbound::Message(ServerMessage::Notice { message }) => {
                 self.notice = Some((message, Instant::now()));
             }
-            Inbound::Message(ServerMessage::State { state, server_now }) => {
+            Inbound::Message(ServerMessage::State {
+                state, server_now, ..
+            }) => {
                 self.clock_offset = server_now - local_now_ms();
                 self.state = Some(state);
                 self.reconcile();
