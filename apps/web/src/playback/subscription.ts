@@ -15,7 +15,7 @@ import { Session } from '@music/shared'
 
 import { Message } from '../message'
 import type { Model } from '../model'
-import type { MediaKey } from './domain'
+import { type MediaKey, hasNextEntry } from './domain'
 import {
   entryIdOf,
   followIntent,
@@ -258,7 +258,6 @@ const MEDIA_KEY_ACTIONS: ReadonlyArray<
 > = [
   ['Play', 'play'],
   ['Pause', 'pause'],
-  ['NextTrack', 'nexttrack'],
   ['PreviousTrack', 'previoustrack'],
 ]
 
@@ -317,6 +316,57 @@ const applyMediaKeyNow = (audio: HTMLAudioElement, key: MediaKey) => {
   }
 }
 
+/**
+ * Re-run `register` whenever WebKit may have dropped the handlers, until the
+ * stream ends; `unregister` runs then.
+ */
+const keepMediaSessionHandlers = (
+  audio: HTMLAudioElement,
+  register: () => void,
+  unregister: () => void,
+) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      register()
+      Array.forEach(AUDIO_EVENTS_THAT_RESET_MEDIA_SESSION, name =>
+        audio.addEventListener(name, register),
+      )
+    }),
+    () =>
+      Effect.sync(() => {
+        Array.forEach(AUDIO_EVENTS_THAT_RESET_MEDIA_SESSION, name =>
+          audio.removeEventListener(name, register),
+        )
+        unregister()
+      }),
+  )
+
+/**
+ * The lock screen's next button, only while there is a next song: with no
+ * handler iOS greys it out instead of showing a button that does nothing.
+ */
+const streamNextTrackAction = (audio: HTMLAudioElement) =>
+  Stream.callback<MediaSessionMessage>(queue =>
+    keepMediaSessionHandlers(
+      audio,
+      () => {
+        if (hasMediaSession()) {
+          setMediaSessionAction('nexttrack', () =>
+            Queue.offerUnsafe(
+              queue,
+              Message.PressedMediaKey({ key: 'NextTrack' }),
+            ),
+          )
+        }
+      },
+      () => {
+        if (hasMediaSession()) {
+          setMediaSessionAction('nexttrack', null)
+        }
+      },
+    ).pipe(Effect.flatMap(() => Effect.never)),
+  )
+
 const streamMediaSessionActions = (audio: HTMLAudioElement) =>
   Stream.callback<MediaSessionMessage>(queue => {
     const register = () => {
@@ -352,32 +402,31 @@ const streamMediaSessionActions = (audio: HTMLAudioElement) =>
       }
     }
 
-    return Effect.acquireRelease(
-      Effect.sync(() => {
-        register()
-        Array.forEach(AUDIO_EVENTS_THAT_RESET_MEDIA_SESSION, name =>
-          audio.addEventListener(name, register),
+    return keepMediaSessionHandlers(audio, register, () => {
+      if (hasMediaSession()) {
+        Array.forEach(MEDIA_KEY_ACTIONS, ([, action]) =>
+          setMediaSessionAction(action, null),
         )
-        Array.forEach(PLAYBACK_STATE_EVENTS, name =>
-          audio.addEventListener(name, syncPlaybackState),
-        )
-      }),
-      () =>
-        Effect.sync(() => {
-          Array.forEach(AUDIO_EVENTS_THAT_RESET_MEDIA_SESSION, name =>
-            audio.removeEventListener(name, register),
-          )
-          Array.forEach(PLAYBACK_STATE_EVENTS, name =>
-            audio.removeEventListener(name, syncPlaybackState),
-          )
-          if (hasMediaSession()) {
-            Array.forEach(MEDIA_KEY_ACTIONS, ([, action]) =>
-              setMediaSessionAction(action, null),
-            )
-            setMediaSessionAction('seekto', null)
-          }
-        }),
-    ).pipe(Effect.flatMap(() => Effect.never))
+        setMediaSessionAction('seekto', null)
+      }
+    }).pipe(
+      Effect.andThen(
+        Effect.acquireRelease(
+          Effect.sync(() =>
+            Array.forEach(PLAYBACK_STATE_EVENTS, name =>
+              audio.addEventListener(name, syncPlaybackState),
+            ),
+          ),
+          () =>
+            Effect.sync(() =>
+              Array.forEach(PLAYBACK_STATE_EVENTS, name =>
+                audio.removeEventListener(name, syncPlaybackState),
+              ),
+            ),
+        ),
+      ),
+      Effect.flatMap(() => Effect.never),
+    )
   })
 
 const streamSwipePointer = Stream.merge(
@@ -466,6 +515,29 @@ export const subscriptions = Subscription.make<
           Stream.unwrap(
             PhoneAudioElement.get.pipe(
               Effect.map(streamMediaSessionActions),
+              Effect.catchTag('ResourceNotAvailable', () =>
+                Effect.succeed(Stream.empty),
+              ),
+            ),
+          ),
+          Effect.sync(() => isAvailable),
+        ),
+    },
+  ),
+
+  mediaSessionNextTrack: entry(
+    { isAvailable: Schema.Boolean },
+    {
+      modelToDependencies: model => ({
+        isAvailable:
+          model.phoneAudio._tag !== 'Unavailable' &&
+          Option.exists(model.maybeSession, ({ state }) => hasNextEntry(state)),
+      }),
+      dependenciesToStream: ({ isAvailable }) =>
+        Stream.when(
+          Stream.unwrap(
+            PhoneAudioElement.get.pipe(
+              Effect.map(streamNextTrackAction),
               Effect.catchTag('ResourceNotAvailable', () =>
                 Effect.succeed(Stream.empty),
               ),

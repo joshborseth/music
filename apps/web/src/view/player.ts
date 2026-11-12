@@ -38,6 +38,7 @@ import {
   type SessionSnapshot,
   activeDevice,
   currentEntry,
+  hasNextEntry,
   loadedEntry,
   remoteVolumeDevice,
   upcomingEntries,
@@ -275,8 +276,9 @@ const miniPlayer = (
               h.Type('button'),
               h.OnClick(Message.ClickedNextTrack()),
               h.AriaLabel('Next'),
+              h.Disabled(!hasNextEntry(snapshot.state)),
               h.Class(
-                'flex size-11 shrink-0 items-center justify-center rounded-full transition-transform active:scale-90',
+                'flex size-11 shrink-0 items-center justify-center rounded-full transition-transform active:scale-90 disabled:opacity-35 disabled:active:scale-100',
               ),
             ],
             [icon(h, SkipForward, 'size-6 fill-current stroke-[1.5]')],
@@ -361,14 +363,16 @@ const transportButton = (
   label: string,
   className: string,
   h: HtmlBuilder<Message>,
+  isEnabled = true,
 ): Html =>
   h.button(
     [
       h.Type('button'),
       h.OnClick(onClick),
       h.AriaLabel(label),
+      h.Disabled(!isEnabled),
       h.Class(
-        'flex size-14 items-center justify-center rounded-full transition-transform active:scale-90 active:bg-white/10',
+        'flex size-14 items-center justify-center rounded-full transition-transform active:scale-90 active:bg-white/10 disabled:opacity-35 disabled:active:scale-100 disabled:active:bg-transparent',
       ),
     ],
     [icon(h, iconNode, className)],
@@ -408,6 +412,7 @@ const transportControls = (
         'Next',
         'size-9 fill-current stroke-[1.25]',
         h,
+        hasNextEntry(snapshot.state),
       ),
       transportButton(
         Message.ClickedSkipBy({ seconds: SKIP_SECONDS }),
