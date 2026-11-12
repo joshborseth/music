@@ -3,7 +3,7 @@ import { Schema } from 'effect'
 
 import { NowPlaying, type Session } from '@music/shared'
 
-import { toBase } from './nowPlaying.ts'
+import { isConsistent, toBase } from './nowPlaying.ts'
 
 const track: Session.QueueTrack = {
   videoId: 'abc',
@@ -76,6 +76,7 @@ describe('toBase', () => {
       ...toBase(state),
       color: '#1281b6',
       cue: { videoId: 'abc', color: null, at: 1_794_426_000_000 },
+      clock: { videoId: 'abc', positionSeconds: 12.5, at: 1_794_426_001_000 },
     }
     const json = Schema.encodeSync(NowPlaying.NowPlayingJson)(value)
     expect(Schema.decodeSync(NowPlaying.NowPlayingJson)(json)).toEqual(value)
@@ -83,5 +84,28 @@ describe('toBase', () => {
 
   test('rejects a color that is not #rrggbb', () => {
     expect(() => Schema.decodeSync(NowPlaying.Hex)('red')).toThrow()
+  })
+})
+
+describe('isConsistent', () => {
+  const frame: NowPlaying.NowPlaying = {
+    ...toBase(state),
+    color: null,
+    cue: null,
+    clock: { videoId: 'abc', positionSeconds: 0, at: 0 },
+  }
+
+  test('keeps a frame whose clock is its own song, or has none', () => {
+    expect(isConsistent(frame)).toBe(true)
+    expect(isConsistent({ ...frame, clock: null })).toBe(true)
+  })
+
+  test("drops a frame carrying the next song's clock", () => {
+    expect(
+      isConsistent({
+        ...frame,
+        clock: { videoId: 'next', positionSeconds: 0, at: 0 },
+      }),
+    ).toBe(false)
   })
 })

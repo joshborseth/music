@@ -15,6 +15,9 @@ import { DeviceKind } from './session.ts'
  * song starts and the frame carries a `cue` for now. A song that follows the
  * last with no gap can't wait, so the TV says when it will start, and the
  * frame carries its `cue` ahead of time.
+ *
+ * While a song plays, `clock` says where in it the player is, closely enough
+ * to time things to its beats (see `Tv.TvAnalysis` at `/tv/analysis`).
  */
 
 /** A color as `#rrggbb` sRGB. */
@@ -48,6 +51,19 @@ export const Cue = Schema.Struct({
 })
 export type Cue = typeof Cue.Type
 
+/**
+ * Where the current song is: `positionSeconds` into `videoId` at server time
+ * `at` (epoch ms), moving on in real time. It is the position the player
+ * hands to its audio output; sound leaves the speakers a little later. A new
+ * clock comes only when the position jumps or drifts, not every second.
+ */
+export const SongClock = Schema.Struct({
+  videoId: Schema.String,
+  positionSeconds: Schema.Number,
+  at: Schema.Number,
+})
+export type SongClock = typeof SongClock.Type
+
 export const NowPlaying = Schema.TaggedStruct('NowPlaying', {
   /** The current song, or null when the queue is empty or finished. */
   track: Schema.NullOr(NowPlayingTrack),
@@ -64,6 +80,8 @@ export const NowPlaying = Schema.TaggedStruct('NowPlaying', {
    * about to follow with no gap. Null once the session jumps elsewhere.
    */
   cue: Schema.NullOr(Cue),
+  /** Where the song is while it plays. Null while paused or held. */
+  clock: Schema.NullOr(SongClock),
 })
 export type NowPlaying = typeof NowPlaying.Type
 
