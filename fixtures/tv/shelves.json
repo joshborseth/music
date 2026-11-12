@@ -1,0 +1,61 @@
+{
+  "shelves": [
+    {
+      "title": "Your playlists",
+      "cards": [
+        {
+          "kind": "MyPlaylist",
+          "id": "liked",
+          "title": "Liked songs",
+          "subtitle": "Playlist · 12 songs",
+          "artworkUrl": null,
+          "track": null
+        }
+      ]
+    },
+    {
+      "title": "Quick picks",
+      "cards": [
+        {
+          "kind": "Song",
+          "id": "dQw4w9WgXcQ",
+          "title": "Never Gonna Give You Up",
+          "subtitle": "Rick Astley",
+          "artworkUrl": "https://lh3.googleusercontent.com/abc=w120-h120-l90-rj",
+          "track": {
+            "videoId": "dQw4w9WgXcQ",
+            "title": "Never Gonna Give You Up",
+            "artists": "Rick Astley",
+            "album": "Whenever You Need Somebody",
+            "durationSeconds": 213,
+            "artworkUrl": "https://lh3.googleusercontent.com/abc=w120-h120-l90-rj"
+          }
+        },
+        {
+          "kind": "Album",
+          "id": "MPREb_abc",
+          "title": "Whenever You Need Somebody",
+          "subtitle": "Album · Rick Astley · 1987",
+          "artworkUrl": "https://lh3.googleusercontent.com/def=w226-h226-l90-rj",
+          "track": null
+        },
+        {
+          "kind": "Artist",
+          "id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+          "title": "Rick Astley",
+          "subtitle": "Artist",
+          "artworkUrl": null,
+          "track": null
+        },
+        {
+          "kind": "Playlist",
+          "id": "RDCLAK5uy_abc",
+          "title": "80s Hits",
+          "subtitle": "Playlist · YouTube Music",
+          "artworkUrl": "https://lh3.googleusercontent.com/ghi=w226-h226-l90-rj",
+          "track": null
+        }
+      ]
+    }
+  ]
+}

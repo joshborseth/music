@@ -5,6 +5,7 @@
 //! and shows what is playing either way.
 
 mod audio;
+pub mod catalog;
 mod controller;
 #[cfg(target_os = "android")]
 mod crash_report;
