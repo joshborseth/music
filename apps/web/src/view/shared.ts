@@ -26,6 +26,7 @@ import {
   type Artwork,
   type MyPlaylistSummary,
   type PlaylistSummary,
+  Session,
   type Song,
 } from '@music/shared'
 
@@ -160,7 +161,9 @@ export const nowPlaying = (model: Model): NowPlaying => ({
     Option.flatMap(({ state }) => currentEntry(state)),
     Option.map(({ track }) => track.videoId),
   ),
-  isPlaying: Option.exists(model.maybeSession, ({ state }) => state.playing),
+  isPlaying: Option.exists(model.maybeSession, ({ state }) =>
+    Session.isPlayingOrStarting(state),
+  ),
 })
 
 const isCurrentSong = (playing: NowPlaying, videoId: string): boolean =>

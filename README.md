@@ -41,7 +41,7 @@ apps/tv          Rust Android TV app: Slint UI, Symphonia (AAC), cpal (AAudio)
    │  JSON over HTTP (/tv/…)                   the same catalog shaped for the TV (TV only)
    │  WebSocket (/session, JSON)               the shared queue and who plays it
    │  HTTP with byte ranges (/audio/:videoId)  the songs themselves
-   │  WebSocket (/now-playing, JSON)           read-only: the song and its cover's colors
+   │  WebSocket (/now-playing, JSON)           the song, its cover's color, and light cues
 apps/server      Bun + Effect server: youtubei.js for the catalog, yt-dlp for audio,
                  SQLite (bun:sqlite) for the playlists made in the app
 packages/shared  The RPC contract, the session protocol, and every Schema
@@ -80,7 +80,9 @@ Two workers take the most urgent job first, and a new page replaces the previous
 
 **Waking the TV.** Home Assistant is already paired with the TV's Android TV Remote service. When you pick the TV while it is off, the server calls Home Assistant's `remote.turn_on` with `activity: music://play`. That turns the TV on and opens the app through its deep link. If the TV has not connected within 60 seconds, the phone shows a notice and playback pauses.
 
-**Now playing, for the house.** `/now-playing` is a read-only WebSocket for things outside the app, such as the lights. It sends the current song, whether it is playing, which device plays it, and the one color the cover reads as when it connects, then again after every change. Listeners send nothing and never appear as a device. The server finds the color with k-means in OKLab on a 48×48 copy of the cover (decoded with sharp): the cluster that fills the most of the cover, weighted toward colorful ones. It is the same color the full player's background is tinted with. That takes about 50 ms per cover, and each cover's color is cached. A black, white, or grey cover sends no color (`null`). The contract is `packages/shared/src/nowPlaying.ts`.
+**Now playing, for the house.** `/now-playing` is a WebSocket for things outside the app, such as the lights. It sends the current song, whether it is playing, which device plays it, and the one color the cover reads as when it connects, then again after every change. Listeners never appear as a device.
+
+On the TV, the lights change at the moment the song does. The lights say they follow the TV (`Follow`), and the TV says when each song it loads is ready (`Loaded`). Then a song the TV jumps to (a skip, a tap in the queue, a new queue) waits at its start: the TV shows it loading until it reports the song loaded (`Loaded`) and the server knows the cover's color, at most 3 seconds. Then the song starts, and the frame carries a `cue` for that moment. A song that follows the last with no gap can't wait, so the TV reports when it will start (`Advancing`, about half a second ahead, from the audio left in its ring buffer), and the frame carries that song's `cue` ahead of time. The phone never waits: the lights follow it only after the song has played for a moment. The server finds the color with k-means in OKLab on a 48×48 copy of the cover (decoded with sharp): the cluster that fills the most of the cover, weighted toward colorful ones. It is the same color the full player's background is tinted with. That takes about 50 ms per cover, and each cover's color is cached. A black, white, or grey cover sends no color (`null`). The contract is `packages/shared/src/nowPlaying.ts`.
 
 YouTube blocks cross-origin calls from browsers, so the browser never talks to YouTube directly. The server maps YouTube's loosely typed responses into the Schemas in `packages/shared`, and Effect RPC validates them on both ends. Artwork loads straight from Google's image CDN, and the service worker caches it.
 

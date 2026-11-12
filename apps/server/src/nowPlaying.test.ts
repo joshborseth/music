@@ -46,6 +46,7 @@ const state: Session.SessionState = {
   positionAt: 0,
   seekSeq: 0,
   autoplay: true,
+  waitingToStart: false,
 }
 
 describe('toBase', () => {
@@ -74,6 +75,7 @@ describe('toBase', () => {
     const value: NowPlaying.NowPlaying = {
       ...toBase(state),
       color: '#1281b6',
+      cue: { videoId: 'abc', color: null, at: 1_794_426_000_000 },
     }
     const json = Schema.encodeSync(NowPlaying.NowPlayingJson)(value)
     expect(Schema.decodeSync(NowPlaying.NowPlayingJson)(json)).toEqual(value)

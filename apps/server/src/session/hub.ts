@@ -1,5 +1,6 @@
 import {
   Context,
+  Deferred,
   Effect,
   FiberMap,
   Layer,
@@ -16,10 +17,11 @@ import {
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 import type { Socket } from 'effect/socket'
 
-import { Session } from '@music/shared'
+import { type NowPlaying, Session } from '@music/shared'
 
 import { AudioStore } from '../audioStore.ts'
 import { TimedLyrics } from '../lyrics/service.ts'
+import { ArtworkPalette } from '../palette/service.ts'
 import { Prefetcher } from '../prefetch.ts'
 import { toQueueTrack } from '../tvCatalog/mapping.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
@@ -33,6 +35,7 @@ import {
   missingDurations,
   playerLost,
   refresh,
+  startHeld,
   toSessionState,
   unchanged,
   update,
@@ -65,6 +68,14 @@ const POWER_POLL_INTERVAL = '20 seconds'
 const UTC_OFFSET_INTERVAL = '1 minute'
 /** Device names remembered, to show a player that went away. */
 const KNOWN_DEVICES_CAPACITY = 200
+/**
+ * The longest the TV holds a song for the lights. A song that takes longer
+ * to load starts when it can, as it would without the lights.
+ */
+const HOLD_LIMIT = '3 seconds'
+/** Cover colors looked up ahead, so a held song waits for its audio only. */
+const COLORS_AHEAD = 6
+const MAX_WARMED_COLORS = 500
 
 /** A volume from a client, kept between 0 and 1. */
 const clampVolume = (level: number): number =>
@@ -87,8 +98,34 @@ export class SessionHub extends Context.Service<
     ) => Effect.Effect<void, never, Scope.Scope>
     /** The session as every device last saw it, then each change. */
     readonly states: Stream.Stream<Session.SessionState>
+    /** When the lights should change for a song starting on the TV. */
+    readonly cues: Stream.Stream<NowPlaying.Cue | null>
+    /**
+     * Join as something that follows the music (the lights). The returned
+     * function says whose songs it follows; leaving the scope stops.
+     */
+    readonly followLights: Effect.Effect<
+      (kinds: ReadonlyArray<Session.DeviceKind>) => Effect.Effect<void>,
+      never,
+      Scope.Scope
+    >
   }
 >()('music/SessionHub') {}
+
+/** A song the TV holds for the lights, by the jump that brought it. */
+interface Hold {
+  readonly entryId: string
+  readonly seekSeq: number
+  /** The TV said it has the song loaded. */
+  readonly loaded: Deferred.Deferred<void>
+}
+
+/** A cue, and the session jump it belongs to. */
+interface HubCue {
+  readonly cue: NowPlaying.Cue
+  readonly entryId: string
+  readonly seekSeq: number
+}
 
 const encodeServerMessage = Schema.encodeSync(Session.ServerMessageJson)
 const decodeClientMessage = Schema.decodeUnknownOption(
@@ -103,6 +140,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     const prefetcher = yield* Prefetcher
     const youTubeMusic = yield* YouTubeMusic
     const timedLyrics = yield* TimedLyrics
+    const artwork = yield* ArtworkPalette
     const lock = yield* Semaphore.make(1)
     const timers = yield* FiberMap.make<string>()
     const hubScope = yield* Scope.Scope
@@ -122,6 +160,16 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     /** Whether each TV is on, as Home Assistant last said. */
     const poweredOn = new Map<string, boolean>()
     let utcOffsetMinutes = yield* readUtcOffsetMinutes
+    /** What each listener on `/now-playing` follows, by listener. */
+    const lightsFollowers = new Map<number, ReadonlyArray<Session.DeviceKind>>()
+    let nextFollowerId = 0
+    /**
+     * Connections that reported a song `Loaded`. A TV app built before holds
+     * never does, and would wait out every hold, so only these hold.
+     */
+    const reportsLoaded = new Set<number>()
+    let maybeHold = Option.none<Hold>()
+    const latestCue = yield* SubscriptionRef.make(Option.none<HubCue>())
     let nextConnectionId = 0
     let nextEntryId = 0
 
@@ -134,6 +182,47 @@ export const SessionHubLive = Layer.effect(SessionHub)(
 
     const isWakeable = (deviceId: string) =>
       waker.devices.some(device => device.id === deviceId)
+
+    const isLightsFollowingTv = () => {
+      for (const kinds of lightsFollowers.values()) {
+        if (kinds.includes('Tv')) return true
+      }
+      return false
+    }
+
+    /**
+     * Only a TV that is open and says when songs load holds them, and only
+     * while the lights follow it.
+     */
+    const holdsForLights = (deviceId: string) => {
+      if (!isLightsFollowingTv()) return false
+      for (const [connectionId, connection] of connections) {
+        if (
+          connection.deviceId === deviceId &&
+          connection.kind === 'Tv' &&
+          reportsLoaded.has(connectionId)
+        ) {
+          return true
+        }
+      }
+      return false
+    }
+
+    /** The cover color of a queued entry's song. */
+    const entryColor = (entry: Session.QueueEntry) =>
+      entry.track.artworkUrl === null
+        ? Effect.succeed(null)
+        : artwork.colorFor(entry.track.artworkUrl)
+
+    const findEntry = (entryId: string | null) =>
+      Option.fromNullishOr(model.queue.find(entry => entry.entryId === entryId))
+
+    const entryAfter = (entryId: string | null) => {
+      const index = model.queue.findIndex(entry => entry.entryId === entryId)
+      return index === -1
+        ? Option.none<Session.QueueEntry>()
+        : Option.fromNullishOr(model.queue[index + 1])
+    }
 
     const devices = (): ReadonlyArray<Session.Device> => {
       const byId = new Map<string, Session.Device>()
@@ -375,12 +464,39 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         { discard: true },
       )
 
+    /** Covers whose color was already looked up ahead of time. */
+    const warmedColors = new Set<string>()
+
+    /** Look up the colors of the coming songs while the lights follow. */
+    const warmColors = Effect.suspend(() => {
+      if (!isLightsFollowingTv()) return Effect.void
+      const index = model.queue.findIndex(
+        entry => entry.entryId === model.currentEntryId,
+      )
+      const urls = model.queue
+        .slice(Math.max(0, index), Math.max(0, index) + COLORS_AHEAD)
+        .flatMap(entry =>
+          entry.track.artworkUrl === null ? [] : [entry.track.artworkUrl],
+        )
+        .filter(url => !warmedColors.has(url))
+      return Effect.forEach(
+        urls,
+        url => {
+          if (warmedColors.size >= MAX_WARMED_COLORS) warmedColors.clear()
+          warmedColors.add(url)
+          return artwork.colorFor(url).pipe(Effect.forkIn(hubScope))
+        },
+        { discard: true },
+      )
+    })
+
     /** Keep the current song and the next five ready, and look ahead further. */
     const prepareAhead = Effect.suspend(() => {
       const ahead = lookahead(model)
       return Effect.all(
         [
           countPlay,
+          warmColors,
           fillMissingDurations(ahead.download),
           warmLyrics(ahead.download),
           audioStore.protect(ahead.download),
@@ -415,6 +531,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         Effect.gen(function* () {
           const outcome = transition(model)
           model = outcome.model
+          yield* keepLightsInStep
           if (outcome.broadcast) {
             yield* broadcastState
             yield* prepareAhead
@@ -434,6 +551,155 @@ export const SessionHubLive = Layer.effect(SessionHub)(
           }
         }),
       )
+
+    /**
+     * Wait for a held song to load and its color to be known, then start it
+     * with a cue for now. A song that is slow to load starts at
+     * `HOLD_LIMIT`, and gets a cue only if its color is known by then.
+     */
+    const startWhenReady = (hold: Hold, entry: Session.QueueEntry) =>
+      Effect.gen(function* () {
+        let maybeColor = Option.none<string | null>()
+        const color = entryColor(entry).pipe(
+          Effect.tap(found =>
+            Effect.sync(() => {
+              maybeColor = Option.some(found)
+            }),
+          ),
+        )
+        yield* Effect.all([Deferred.await(hold.loaded), color], {
+          concurrency: 'unbounded',
+          discard: true,
+        }).pipe(Effect.timeoutOption(HOLD_LIMIT))
+        const at = Date.now()
+        if (Option.isSome(maybeColor)) {
+          yield* SubscriptionRef.set(
+            latestCue,
+            Option.some({
+              entryId: hold.entryId,
+              seekSeq: hold.seekSeq,
+              cue: {
+                videoId: entry.track.videoId,
+                color: maybeColor.value,
+                at,
+              },
+            }),
+          )
+        }
+        // NOTE: starting runs outside this fiber, because every change
+        // stops the fiber waiting for a song that is no longer held.
+        yield* apply(current =>
+          startHeld(current, hold.entryId, hold.seekSeq, at),
+        ).pipe(Effect.forkIn(hubScope))
+      })
+
+    /**
+     * After every change: start waiting for a song newly held for the
+     * lights, stop waiting for one no longer held, and drop a cue the session
+     * has moved away from.
+     */
+    const keepLightsInStep = Effect.gen(function* () {
+      const isSameHold = Option.exists(
+        maybeHold,
+        hold =>
+          model.waitingToStart &&
+          hold.entryId === model.currentEntryId &&
+          hold.seekSeq === model.seekSeq,
+      )
+      if (!isSameHold) {
+        maybeHold = Option.none()
+        yield* FiberMap.remove(timers, 'hold')
+        const maybeEntry = model.waitingToStart
+          ? findEntry(model.currentEntryId)
+          : Option.none()
+        if (Option.isSome(maybeEntry)) {
+          const hold: Hold = {
+            entryId: maybeEntry.value.entryId,
+            seekSeq: model.seekSeq,
+            loaded: yield* Deferred.make<void>(),
+          }
+          maybeHold = Option.some(hold)
+          yield* FiberMap.run(
+            timers,
+            'hold',
+            startWhenReady(hold, maybeEntry.value),
+          )
+        }
+      }
+      const cue = yield* SubscriptionRef.get(latestCue)
+      const isStale = Option.exists(
+        cue,
+        ({ entryId, seekSeq }) =>
+          seekSeq !== model.seekSeq ||
+          (entryId !== model.currentEntryId &&
+            !Option.exists(
+              entryAfter(model.currentEntryId),
+              next => next.entryId === entryId,
+            )),
+      )
+      if (isStale) {
+        yield* FiberMap.remove(timers, 'cue')
+        yield* SubscriptionRef.set(latestCue, Option.none())
+      }
+    })
+
+    /** The TV has the song it was told to load: a held song may start. */
+    const playerLoaded = (message: typeof Session.Loaded.Type) =>
+      Option.match(maybeHold, {
+        onNone: () => Effect.void,
+        onSome: hold =>
+          hold.entryId === message.entryId && hold.seekSeq === message.seekSeq
+            ? Deferred.succeed(hold.loaded, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+      })
+
+    /**
+     * The TV queued the next song right behind this one: cue the lights for
+     * the moment it starts, if its color is known by then.
+     */
+    const playerAdvancing = (
+      message: typeof Session.Advancing.Type,
+      senderId: string,
+    ) =>
+      Effect.gen(function* () {
+        const receivedAt = Date.now()
+        const maybeNext = Option.filter(
+          entryAfter(message.fromEntryId),
+          next =>
+            next.entryId === message.toEntryId &&
+            model.activeDeviceId === senderId &&
+            model.currentEntryId === message.fromEntryId,
+        )
+        if (Option.isNone(maybeNext)) return
+        const next = maybeNext.value
+        const at = receivedAt + Math.max(0, message.inSeconds) * 1000
+        const seekSeq = model.seekSeq
+        yield* FiberMap.run(
+          timers,
+          'cue',
+          entryColor(next).pipe(
+            Effect.timeoutOption(Math.max(0, at - Date.now())),
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.void,
+                // NOTE: the session may have jumped while the color loaded.
+                onSome: color =>
+                  model.seekSeq !== seekSeq ||
+                  model.currentEntryId !== message.fromEntryId
+                    ? Effect.void
+                    : SubscriptionRef.set(
+                        latestCue,
+                        Option.some({
+                          entryId: next.entryId,
+                          seekSeq,
+                          cue: { videoId: next.track.videoId, color, at },
+                        }),
+                      ),
+              }),
+            ),
+          ),
+        )
+      })
 
     const startWaking = (deviceId: string) =>
       Effect.gen(function* () {
@@ -468,6 +734,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       isOnline,
       isWakeable,
       makeEntryId,
+      holdsForLights,
     })
 
     const handle = (socket: Socket.Socket) =>
@@ -496,6 +763,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
                   Effect.sync(() => {
                     connections.delete(connectionId)
                     volumes.delete(connectionId)
+                    reportsLoaded.delete(connectionId)
                   }),
                 )
                 yield* apply(refresh)
@@ -549,15 +817,26 @@ export const SessionHubLive = Layer.effect(SessionHub)(
             const joining = maybeJoining
             const from = senderId
             // NOTE: progress comes every second, and a dragged volume slider
-            // many times a second. Neither needs an answer.
+            // many times a second. Neither needs an answer, and neither do
+            // the TV's signals for the lights.
             const maybeReplyTo =
-              message._tag === 'Progress' || message._tag === 'SetDeviceVolume'
+              message._tag === 'Progress' ||
+              message._tag === 'SetDeviceVolume' ||
+              message._tag === 'Loaded' ||
+              message._tag === 'Advancing'
                 ? Option.none<Connection>()
                 : Option.orElse(joining, () =>
                     Option.fromNullishOr(connections.get(connectionId)),
                   )
             if (message._tag === 'SetDeviceVolume') {
               yield* forwardVolume(message.deviceId, message.level)
+            }
+            if (message._tag === 'Loaded') {
+              reportsLoaded.add(connectionId)
+              yield* playerLoaded(message)
+            }
+            if (message._tag === 'Advancing') {
+              yield* playerAdvancing(message, from)
             }
             yield* apply(current => {
               // NOTE: a connection joins as its Hello is applied, and each
@@ -579,6 +858,8 @@ export const SessionHubLive = Layer.effect(SessionHub)(
                 }),
                 // NOTE: the device answers with `Volume` once it changed.
                 Match.tag('SetDeviceVolume', () => unchanged(current)),
+                Match.tag('Loaded', () => unchanged(current)),
+                Match.tag('Advancing', () => unchanged(current)),
                 Match.orElse(sessionMessage =>
                   update(current, sessionMessage, contextFor(from)),
                 ),
@@ -644,9 +925,57 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       Effect.forkIn(hubScope),
     )
 
+    const followLights = Effect.gen(function* () {
+      const followerId = nextFollowerId++
+      const follow = (kinds: ReadonlyArray<Session.DeviceKind>) =>
+        lock
+          .withPermits(1)(
+            Effect.sync(() => {
+              lightsFollowers.set(followerId, kinds)
+            }),
+          )
+          .pipe(Effect.andThen(apply(holdsAgain)))
+      yield* Effect.addFinalizer(() =>
+        lock
+          .withPermits(1)(
+            Effect.sync(() => {
+              lightsFollowers.delete(followerId)
+            }),
+          )
+          .pipe(Effect.andThen(apply(holdsAgain))),
+      )
+      return follow
+    })
+
+    /**
+     * Whom the lights follow changed: a song held for lights that no longer
+     * follow the TV starts now.
+     */
+    const holdsAgain = (current: Model) =>
+      current.waitingToStart &&
+      current.activeDeviceId !== null &&
+      !holdsForLights(current.activeDeviceId) &&
+      current.currentEntryId !== null
+        ? startHeld(
+            current,
+            current.currentEntryId,
+            current.seekSeq,
+            Date.now(),
+          )
+        : unchanged(current)
+
     return SessionHub.of({
       handle,
       states: SubscriptionRef.changes(latestState),
+      cues: SubscriptionRef.changes(latestCue).pipe(
+        Stream.map(maybe =>
+          Option.match(maybe, {
+            onNone: () => null,
+            onSome: ({ cue }) => cue,
+          }),
+        ),
+      ),
+      followLights,
     })
   }),
 )
