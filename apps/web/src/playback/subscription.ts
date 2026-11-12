@@ -147,7 +147,7 @@ const streamPhoneAudioEvents = (audio: HTMLAudioElement) =>
     ).pipe(Effect.flatMap(() => Effect.never)),
   ).pipe(Stream.mapEffect(toPhoneAudioMessage(audio)))
 
-const MEDIA_SESSION_ACTIONS: ReadonlyArray<
+const MEDIA_KEY_ACTIONS: ReadonlyArray<
   readonly [MediaKey, MediaSessionAction]
 > = [
   ['Play', 'play'],
@@ -156,45 +156,84 @@ const MEDIA_SESSION_ACTIONS: ReadonlyArray<
   ['PreviousTrack', 'previoustrack'],
 ]
 
-// NOTE: iOS shows ±10 second skip buttons on the lock screen unless the page
+// NOTE: iOS shows ±seconds skip buttons on the lock screen unless the page
 // handles the track actions, and it prefers seek buttons when both exist.
 const SUPPRESSED_MEDIA_SESSION_ACTIONS: ReadonlyArray<MediaSessionAction> = [
   'seekbackward',
   'seekforward',
 ]
 
+// NOTE: WebKit drops action handlers set while no media element has a
+// player, which is the case at startup, and forgets them all again when its
+// last player goes away (a song that fails to load). With no handlers it
+// falls back to its own commands, which are the ±seconds skip buttons. So the
+// handlers are set again each time the audio element loads or plays a song.
+const AUDIO_EVENTS_THAT_RESET_MEDIA_SESSION = ['loadstart', 'playing'] as const
+
+type MediaSessionMessage =
+  | typeof Message.PressedMediaKey.Type
+  | typeof Message.ChangedSeekPosition.Type
+
 const hasMediaSession = (): boolean => 'mediaSession' in globalThis.navigator
 
-const clearMediaSessionAction = (action: MediaSessionAction) => {
+const setMediaSessionAction = (
+  action: MediaSessionAction,
+  handler: MediaSessionActionHandler | null,
+) => {
   try {
-    globalThis.navigator.mediaSession.setActionHandler(action, null)
+    globalThis.navigator.mediaSession.setActionHandler(action, handler)
   } catch {
     // NOTE: browsers throw for actions they do not support.
   }
 }
 
-const streamMediaKeys = Stream.callback<MediaKey>(queue =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      if (hasMediaSession()) {
-        Array.forEach(SUPPRESSED_MEDIA_SESSION_ACTIONS, clearMediaSessionAction)
-        Array.forEach(MEDIA_SESSION_ACTIONS, ([key, action]) =>
-          globalThis.navigator.mediaSession.setActionHandler(action, () =>
-            Queue.offerUnsafe(queue, key),
-          ),
-        )
+const streamMediaSessionActions = (audio: HTMLAudioElement) =>
+  Stream.callback<MediaSessionMessage>(queue => {
+    const register = () => {
+      if (!hasMediaSession()) {
+        return
       }
-    }),
-    () =>
-      Effect.sync(() => {
-        if (hasMediaSession()) {
-          Array.forEach(MEDIA_SESSION_ACTIONS, ([, action]) =>
-            clearMediaSessionAction(action),
+      Array.forEach(SUPPRESSED_MEDIA_SESSION_ACTIONS, action =>
+        setMediaSessionAction(action, null),
+      )
+      Array.forEach(MEDIA_KEY_ACTIONS, ([key, action]) =>
+        setMediaSessionAction(action, () =>
+          Queue.offerUnsafe(queue, Message.PressedMediaKey({ key })),
+        ),
+      )
+      // NOTE: without this the lock screen's scrubber stops working once the
+      // handlers above replace WebKit's own commands.
+      setMediaSessionAction('seekto', ({ seekTime }) => {
+        if (seekTime !== undefined) {
+          Queue.offerUnsafe(
+            queue,
+            Message.ChangedSeekPosition({ seconds: seekTime }),
           )
         }
+      })
+    }
+
+    return Effect.acquireRelease(
+      Effect.sync(() => {
+        register()
+        Array.forEach(AUDIO_EVENTS_THAT_RESET_MEDIA_SESSION, name =>
+          audio.addEventListener(name, register),
+        )
       }),
-  ).pipe(Effect.flatMap(() => Effect.never)),
-).pipe(Stream.map(key => Message.PressedMediaKey({ key })))
+      () =>
+        Effect.sync(() => {
+          Array.forEach(AUDIO_EVENTS_THAT_RESET_MEDIA_SESSION, name =>
+            audio.removeEventListener(name, register),
+          )
+          if (hasMediaSession()) {
+            Array.forEach(MEDIA_KEY_ACTIONS, ([, action]) =>
+              setMediaSessionAction(action, null),
+            )
+            setMediaSessionAction('seekto', null)
+          }
+        }),
+    ).pipe(Effect.flatMap(() => Effect.never))
+  })
 
 const streamSwipePointer = Stream.merge(
   Stream.fromEventListener<PointerEvent>(document, 'pointermove').pipe(
@@ -272,10 +311,23 @@ export const subscriptions = Subscription.make<
   ),
 
   mediaSessionActions: entry(
-    {},
+    { isAvailable: Schema.Boolean },
     {
-      modelToDependencies: () => ({}),
-      dependenciesToStream: () => streamMediaKeys,
+      modelToDependencies: model => ({
+        isAvailable: model.phoneAudio._tag !== 'Unavailable',
+      }),
+      dependenciesToStream: ({ isAvailable }) =>
+        Stream.when(
+          Stream.unwrap(
+            PhoneAudioElement.get.pipe(
+              Effect.map(streamMediaSessionActions),
+              Effect.catchTag('ResourceNotAvailable', () =>
+                Effect.succeed(Stream.empty),
+              ),
+            ),
+          ),
+          Effect.sync(() => isAvailable),
+        ),
     },
   ),
 
