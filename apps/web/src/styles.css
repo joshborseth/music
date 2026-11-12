@@ -343,7 +343,11 @@
    90% of the viewport wide, and takes the first plain background-color on a
    box taller than 10px. A backdrop-filter on the way means glass, so blur.
    The top bar is hidden until a page scrolls, so these bands are always
-   there instead. They live in index.html so they exist from the first frame,
+   there instead. iOS only acts on them where the system bars overlap the
+   page with an obscured inset, so the status bar must not be
+   black-translucent: with it, the page runs under the clock, the inset is
+   0, and the blur stays whatever the page does (WKWebView
+   _updateFixedColorExtensionViews, _shouldHideTopScrollPocket). They live in index.html so they exist from the first frame,
    and `background-clip: text` paints nothing, because WebKit reads the color
    from the style. iOS then fills the status bar and home indicator areas
    with the page color. They sit above the page chrome and below the sheets,
