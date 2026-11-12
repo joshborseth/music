@@ -48,6 +48,7 @@ const entry: Session.QueueEntry = {
     durationSeconds: 213,
     artworkUrl: null,
   },
+  autoplay: false,
 }
 
 const sessionState = (
@@ -77,6 +78,7 @@ const sessionState = (
   currentEntryId: entry.entryId,
   playing: true,
   positionSeconds: 30,
+  autoplay: true,
   positionAt: SERVER_NOW,
   seekSeq,
 })
@@ -308,6 +310,7 @@ describe('controlling playback on this phone', () => {
     const queued = (videoId: string): Session.QueueEntry => ({
       entryId: `q-${videoId}`,
       track: { ...entry.track, videoId },
+      autoplay: false,
     })
     const added = ['s1', 's2', 's3', 's4', 's5', 's6'].map(queued)
     story(
@@ -552,6 +555,7 @@ describe('on the lock screen', () => {
   const queued = (index: number): Session.QueueEntry => ({
     entryId: `e${index}`,
     track: { ...entry.track, videoId: `song-${index}`, title: `Song ${index}` },
+    autoplay: false,
   })
   const queue = [queued(0), queued(1), queued(2)]
 

@@ -46,6 +46,7 @@ const youTubeMusic = YouTubeMusic.of({
             maybeLines: Option.none(),
           }),
         }),
+  getUpNext: () => down,
   getDurationSeconds: () => down,
   getArtist: () => down,
   getAlbum: albumId =>

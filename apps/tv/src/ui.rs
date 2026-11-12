@@ -1016,17 +1016,10 @@ impl Ui {
                 .collect();
             sync(&self.models.queue_rows, rows);
             app.set_queue_top(self.nav.queue_top as i32);
-            let left = session
-                .current
-                .map_or(0, |index| session.queue.len() - index - 1);
-            app.set_queue_summary(
-                match left {
-                    0 => "This is the last song".to_owned(),
-                    1 => "1 song after this one".to_owned(),
-                    count => format!("{count} songs after this one"),
-                }
-                .into(),
-            );
+            let after = session.current.map_or(0, |index| index + 1);
+            let upcoming = session.queue.get(after..).unwrap_or_default();
+            let autoplay = upcoming.iter().filter(|entry| entry.autoplay).count();
+            app.set_queue_summary(queue_summary(upcoming.len(), autoplay).into());
         }
         let (lyrics, note, timed) = match &self.nav.lyrics {
             Some((id, load)) if Some(id) == track.as_ref().map(|t| &t.video_id) => match load {
@@ -1429,4 +1422,33 @@ fn wander(now: Instant) -> (f32, f32) {
     let x = (seed % 1000) as f32 / 1000.0;
     let y = ((seed / 1000) % 1000) as f32 / 1000.0;
     (0.08 + x * 0.84, 0.1 + y * 0.8)
+}
+
+/// The line over the queue: how many songs follow, and how many of those
+/// autoplay added.
+fn queue_summary(upcoming: usize, autoplay: usize) -> String {
+    let songs = match upcoming {
+        0 => return "This is the last song".to_owned(),
+        1 => "1 song after this one".to_owned(),
+        count => format!("{count} songs after this one"),
+    };
+    match autoplay {
+        0 => songs,
+        count if count == upcoming => format!("{songs}, all from autoplay"),
+        count => format!("{songs}, {count} from autoplay"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::queue_summary;
+
+    #[test]
+    fn summarizes_the_queue_with_autoplay() {
+        assert_eq!(queue_summary(0, 0), "This is the last song");
+        assert_eq!(queue_summary(1, 0), "1 song after this one");
+        assert_eq!(queue_summary(3, 0), "3 songs after this one");
+        assert_eq!(queue_summary(12, 10), "12 songs after this one, 10 from autoplay");
+        assert_eq!(queue_summary(10, 10), "10 songs after this one, all from autoplay");
+    }
 }

@@ -20,10 +20,12 @@ import { Session } from '@music/shared'
 import { AudioStore } from '../audioStore.ts'
 import { TimedLyrics } from '../lyrics/service.ts'
 import { Prefetcher } from '../prefetch.ts'
+import { toQueueTrack } from '../tvCatalog/mapping.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import {
   type Model,
   type Outcome,
+  appendAutoplay,
   fillDuration,
   initialModel,
   lookahead,
@@ -203,6 +205,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       )
 
     let maybeCountedEntryId = Option.none<string>()
+    let maybeAutoplayAfter = Option.none<string>()
 
     /** A song counts as played once it is current and playing. */
     const countPlay = Effect.suspend(() => {
@@ -220,6 +223,40 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         ? Effect.void
         : audioStore.markPlayed(entry.track.videoId)
     })
+
+    /**
+     * As the queue runs out with autoplay on, add the songs YouTube Music
+     * would play after its last one. They then get ready like any queued
+     * song. Once per last song.
+     */
+    const extendWithAutoplay = (maybeAfter: Option.Option<string>) =>
+      Effect.suspend(() => {
+        if (Option.isNone(maybeAfter)) {
+          maybeAutoplayAfter = Option.none()
+          return Effect.void
+        }
+        const last = maybeAfter.value
+        if (Option.contains(maybeAutoplayAfter, last)) return Effect.void
+        maybeAutoplayAfter = Option.some(last)
+        return youTubeMusic.getUpNext(last).pipe(
+          Effect.flatMap(songs =>
+            apply(current =>
+              appendAutoplay(
+                current,
+                last,
+                songs.map(toQueueTrack),
+                makeEntryId,
+              ),
+            ),
+          ),
+          Effect.tapError(error =>
+            Effect.logWarning('Autoplay found no songs', error),
+          ),
+          Effect.ignore,
+          Effect.forkIn(hubScope),
+          Effect.asVoid,
+        )
+      })
 
     /**
      * Song lengths looked up so far (`None`: YouTube gave none), and the
@@ -316,6 +353,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
               priority: 20 + index,
             })),
           ]),
+          extendWithAutoplay(ahead.maybeAutoplayAfter),
         ],
         { discard: true },
       )
@@ -379,12 +417,14 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         )
       })
 
+    const makeEntryId = () => `e${(nextEntryId++).toString(36)}`
+
     const contextFor = (senderId: string) => ({
       now: Date.now(),
       senderId,
       isOnline,
       isWakeable,
-      makeEntryId: () => `e${(nextEntryId++).toString(36)}`,
+      makeEntryId,
     })
 
     const handle = (socket: Socket.Socket) =>

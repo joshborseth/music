@@ -35,14 +35,15 @@ const state: Session.SessionState = {
   ],
   activeDeviceId: 'tv',
   queue: [
-    { entryId: 'e0', track: { ...track, videoId: 'first' } },
-    { entryId: 'e1', track },
+    { entryId: 'e0', track: { ...track, videoId: 'first' }, autoplay: false },
+    { entryId: 'e1', track, autoplay: false },
   ],
   currentEntryId: 'e1',
   playing: true,
   positionSeconds: 12,
   positionAt: 0,
   seekSeq: 0,
+  autoplay: true,
 }
 
 describe('toBase', () => {

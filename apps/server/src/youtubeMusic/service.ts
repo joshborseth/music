@@ -101,6 +101,16 @@ export interface YouTubeMusicShape {
     videoId: string,
   ) => Effect.Effect<SongDetails, MusicNotFoundError | YouTubeMusicError>
   /**
+   * The songs YouTube Music's radio would play after this one, for
+   * autoplay. Nothing else shows YouTube's picks.
+   */
+  readonly getUpNext: (
+    videoId: string,
+  ) => Effect.Effect<
+    ReadonlyArray<Song>,
+    MusicNotFoundError | YouTubeMusicError
+  >
+  /**
    * How long a song is, for songs that came without one. YouTube's "up next"
    * list for a song starts with the song itself, with its length.
    */
@@ -184,6 +194,13 @@ const make = Effect.gen(function* () {
             : Option.none(),
         ),
     )
+
+  const getUpNext = Effect.fn('YouTubeMusic.getUpNext')(function* (
+    videoId: string,
+  ) {
+    const songs = yield* upNextSongs(videoId)
+    return Array.filter(songs, ({ videoId: id }) => id !== videoId)
+  })
 
   const getDurationSeconds = Effect.fn('YouTubeMusic.getDurationSeconds')(
     function* (videoId: string) {
@@ -273,6 +290,7 @@ const make = Effect.gen(function* () {
     searchAlbums,
     searchPlaylists,
     getSong,
+    getUpNext,
     getDurationSeconds,
     getArtist,
     getAlbum,

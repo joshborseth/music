@@ -22,6 +22,9 @@ pub struct QueueTrack {
 pub struct QueueEntry {
     pub entry_id: String,
     pub track: QueueTrack,
+    /// Autoplay added it as the queue ran low: a similar song.
+    #[serde(default)]
+    pub autoplay: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +58,9 @@ pub struct SessionState {
     /// Server epoch milliseconds when `position_seconds` was true.
     pub position_at: f64,
     pub seek_seq: u64,
+    /// Similar songs are added as the queue runs out.
+    #[serde(default)]
+    pub autoplay: bool,
 }
 
 impl SessionState {
@@ -153,6 +159,10 @@ pub enum ClientMessage {
     },
     Next {},
     Previous {},
+    /// Turn autoplay on or off.
+    SetAutoplay {
+        enabled: bool,
+    },
     #[serde(rename_all = "camelCase")]
     Transfer {
         device_id: String,
@@ -237,6 +247,9 @@ mod tests {
         assert_eq!(state.devices[1].kind, DeviceKind::Tv);
         assert_eq!(state.devices[0].volume, None);
         assert_eq!(state.devices[1].volume, Some(0.25));
+        assert!(state.autoplay);
+        assert!(!state.queue[0].autoplay);
+        assert!(state.queue[1].autoplay);
         assert!(server_now > state.position_at);
         assert!((state.position_at(state.position_at + 1500.0) - 13.5).abs() < 1e-9);
     }
@@ -380,6 +393,10 @@ mod tests {
             (
                 "client-volume-fixed.json",
                 ClientMessage::Volume { level: None },
+            ),
+            (
+                "client-set-autoplay.json",
+                ClientMessage::SetAutoplay { enabled: false },
             ),
             (
                 "client-set-device-volume.json",

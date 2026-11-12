@@ -4,15 +4,18 @@ import { Option, Schema } from 'effect'
 import { Session } from '@music/shared'
 
 import {
+  AUTOPLAY_BATCH,
   type Context,
   type Model,
   type SessionMessage,
+  appendAutoplay,
   currentPosition,
   fillDuration,
   initialModel,
   lookahead,
   missingDurations,
   playerLost,
+  toSessionState,
   update,
   wakeTimedOut,
 } from './model.ts'
@@ -63,7 +66,11 @@ describe('session model', () => {
     expect(lookahead(model)).toEqual({
       download: ['a', 'b', 'c'],
       resolve: [],
+      maybeAutoplayAfter: Option.some('c'),
     })
+    expect(lookahead({ ...model, autoplay: false }).maybeAutoplayAfter).toEqual(
+      Option.none(),
+    )
   })
 
   test('lookahead downloads five ahead, resolves five more, then nothing once finished', () => {
@@ -76,10 +83,12 @@ describe('session model', () => {
     expect(lookahead(model)).toEqual({
       download: ['s1', 's2', 's3', 's4', 's5', 's6'],
       resolve: ['s7', 's8', 's9', 's10', 's11'],
+      maybeAutoplayAfter: Option.none(),
     })
     expect(lookahead({ ...model, currentEntryId: null })).toEqual({
       download: [],
       resolve: [],
+      maybeAutoplayAfter: Option.none(),
     })
   })
 
@@ -544,6 +553,126 @@ describe('session model', () => {
   })
 })
 
+describe('autoplay', () => {
+  const ids = (model: Model) => model.queue.map(entry => entry.track.videoId)
+  const autoplayed = (model: Model) =>
+    model.queue
+      .filter(entry => entry.autoplay)
+      .map(entry => entry.track.videoId)
+  let counter = 100
+  const makeEntryId = () => `x${counter++}`
+
+  test('is on from the start', () => {
+    expect(initialModel.autoplay).toBe(true)
+  })
+
+  test('adds similar songs after the last one, skipping songs already queued', () => {
+    const outcome = appendAutoplay(
+      playing(),
+      'c',
+      [track('a'), track('d'), track('e'), track('d')],
+      makeEntryId,
+    )
+    expect(outcome.broadcast).toBe(true)
+    expect(ids(outcome.model)).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(autoplayed(outcome.model)).toEqual(['d', 'e'])
+    expect(outcome.model.currentEntryId).toBe('e0')
+    expect(outcome.model.seekSeq).toBe(playing().seekSeq)
+  })
+
+  test(`adds at most ${AUTOPLAY_BATCH} at a time`, () => {
+    const songs = Array.from({ length: 25 }, (_, index) => track(`r${index}`))
+    const outcome = appendAutoplay(playing(), 'c', songs, makeEntryId)
+    expect(autoplayed(outcome.model)).toHaveLength(AUTOPLAY_BATCH)
+  })
+
+  test('drops songs found for a queue that changed meanwhile', () => {
+    const model = update(
+      playing(),
+      { _tag: 'Enqueue', tracks: [track('z')], placement: 'Last' },
+      makeContext('phone', 2_000),
+    ).model
+    const outcome = appendAutoplay(model, 'c', [track('d')], makeEntryId)
+    expect(outcome.broadcast).toBe(false)
+    expect(outcome.model).toBe(model)
+  })
+
+  test('adds nothing while turned off, and turning it off drops what is still to come', () => {
+    const withRadio = appendAutoplay(
+      playing(),
+      'c',
+      [track('d'), track('e')],
+      makeEntryId,
+    ).model
+    const off = update(
+      withRadio,
+      { _tag: 'SetAutoplay', enabled: false },
+      makeContext('phone', 2_000),
+    )
+    expect(off.broadcast).toBe(true)
+    expect(off.model.autoplay).toBe(false)
+    expect(ids(off.model)).toEqual(['a', 'b', 'c'])
+    expect(
+      appendAutoplay(off.model, 'c', [track('d')], makeEntryId).broadcast,
+    ).toBe(false)
+    expect(toSessionState(off.model, []).autoplay).toBe(false)
+  })
+
+  test('turning it off keeps the autoplay song playing now', () => {
+    const withRadio = appendAutoplay(
+      playing(),
+      'c',
+      [track('d'), track('e')],
+      makeEntryId,
+    ).model
+    const onD = update(
+      withRadio,
+      { _tag: 'SkipTo', entryId: withRadio.queue[3]?.entryId ?? '' },
+      makeContext('phone', 2_000),
+    ).model
+    const off = update(
+      onD,
+      { _tag: 'SetAutoplay', enabled: false },
+      makeContext('phone', 3_000),
+    ).model
+    expect(ids(off)).toEqual(['a', 'b', 'c', 'd'])
+    expect(off.currentEntryId).toBe(onD.currentEntryId)
+    expect(off.seekSeq).toBe(onD.seekSeq)
+  })
+
+  test('songs someone adds to the queue go before the autoplay songs', () => {
+    const withRadio = appendAutoplay(
+      playing(),
+      'c',
+      [track('d'), track('e')],
+      makeEntryId,
+    ).model
+    const added = update(
+      withRadio,
+      { _tag: 'Enqueue', tracks: [track('y')], placement: 'Last' },
+      makeContext('phone', 2_000),
+    ).model
+    expect(ids(added)).toEqual(['a', 'b', 'c', 'y', 'd', 'e'])
+    expect(autoplayed(added)).toEqual(['d', 'e'])
+  })
+
+  test('playing a new queue replaces the autoplay songs', () => {
+    const withRadio = appendAutoplay(
+      playing(),
+      'c',
+      [track('d')],
+      makeEntryId,
+    ).model
+    const replaced = update(
+      withRadio,
+      { _tag: 'PlayQueue', tracks: [track('q')], startIndex: 0 },
+      makeContext('phone', 2_000),
+    ).model
+    expect(ids(replaced)).toEqual(['q'])
+    expect(autoplayed(replaced)).toEqual([])
+  })
+})
+
 describe('protocol fixtures shared with the TV app', () => {
   const read = (name: string) => Bun.file(new URL(name, FIXTURES)).text()
 
@@ -573,6 +702,7 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-volume.json',
     'client-volume-fixed.json',
     'client-set-device-volume.json',
+    'client-set-autoplay.json',
   ])('%s decodes as a client message', async name => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(
       await read(name),

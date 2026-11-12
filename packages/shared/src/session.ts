@@ -29,6 +29,12 @@ export type QueueTrack = typeof QueueTrack.Type
 export const QueueEntry = Schema.Struct({
   entryId: Schema.String,
   track: QueueTrack,
+  /**
+   * Autoplay added it after the queue ran low: a song like the ones before
+   * it, from YouTube Music's radio for the last song. Players show these
+   * after the songs someone queued.
+   */
+  autoplay: Schema.Boolean,
 })
 export type QueueEntry = typeof QueueEntry.Type
 
@@ -73,6 +79,8 @@ export const SessionState = Schema.Struct({
   positionSeconds: Schema.Number,
   positionAt: Schema.Number,
   seekSeq: Schema.Number,
+  /** Similar songs are added as the queue runs out, so music keeps playing. */
+  autoplay: Schema.Boolean,
 })
 export type SessionState = typeof SessionState.Type
 
@@ -152,6 +160,14 @@ export const SkipTo = Schema.TaggedStruct('SkipTo', { entryId: Schema.String })
 export const Next = Schema.TaggedStruct('Next', {})
 export const Previous = Schema.TaggedStruct('Previous', {})
 
+/**
+ * Turn autoplay on or off. Turning it off removes the autoplay songs still
+ * to come.
+ */
+export const SetAutoplay = Schema.TaggedStruct('SetAutoplay', {
+  enabled: Schema.Boolean,
+})
+
 /** Move playback to another device, waking it first if it can be woken. */
 export const Transfer = Schema.TaggedStruct('Transfer', {
   deviceId: Schema.String,
@@ -205,6 +221,7 @@ export const ClientMessage = Schema.Union([
   SkipTo,
   Next,
   Previous,
+  SetAutoplay,
   Transfer,
   Progress,
   Advanced,
