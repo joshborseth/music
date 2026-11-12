@@ -112,6 +112,8 @@
     --tab-bar-space: calc(var(--tab-bar-height) + var(--tab-bar-bottom));
     --mini-player-height: 3.5rem;
     --nav-bar-height: 2.75rem;
+    /* Extra room above a tab's large title, under the nav bar's height. */
+    --large-title-gap: 1rem;
     --safe-top: env(safe-area-inset-top);
     --safe-bottom: env(safe-area-inset-bottom);
 }
