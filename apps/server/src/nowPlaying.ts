@@ -8,18 +8,18 @@ import { SessionHub } from './session/hub.ts'
 
 /*
  * `GET /now-playing`: a read-only WebSocket for things outside the app, such
- * as the house lights. It follows the session and adds the cover's colors.
+ * as the house lights. It follows the session and adds the cover's color.
  * Listeners never join the session, so they never show up as a device.
  */
 
-type Base = Omit<NowPlaying.NowPlaying, 'palette'>
+type Base = Omit<NowPlaying.NowPlaying, 'color'>
 
 const nothingPlaying: NowPlaying.NowPlaying = {
   _tag: 'NowPlaying',
   track: null,
   playing: false,
   device: null,
-  palette: [],
+  color: null,
 }
 
 export const toBase = (state: Session.SessionState): Base => {
@@ -61,7 +61,7 @@ export class NowPlayingFeed extends Context.Service<
 export const NowPlayingFeedLive = Layer.effect(NowPlayingFeed)(
   Effect.gen(function* () {
     const hub = yield* SessionHub
-    const palette = yield* ArtworkPalette
+    const artwork = yield* ArtworkPalette
     const latest = yield* SubscriptionRef.make(nothingPlaying)
 
     yield* hub.states.pipe(
@@ -70,9 +70,9 @@ export const NowPlayingFeedLive = Layer.effect(NowPlayingFeed)(
       Stream.switchMap(base =>
         Stream.fromEffect(
           base.track?.artworkUrl == null
-            ? Effect.succeed([])
-            : palette.forUrl(base.track.artworkUrl),
-        ).pipe(Stream.map(swatches => ({ ...base, palette: swatches }))),
+            ? Effect.succeed(null)
+            : artwork.colorFor(base.track.artworkUrl),
+        ).pipe(Stream.map(color => ({ ...base, color }))),
       ),
       Stream.changesWith(sameJson),
       Stream.runForEach(value => SubscriptionRef.set(latest, value)),
