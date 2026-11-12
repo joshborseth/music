@@ -204,6 +204,12 @@ pub struct ShelvesNav {
     pub offsets: Vec<usize>,
 }
 
+impl Default for ShelvesNav {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShelvesNav {
     pub fn new() -> Self {
         Self {
