@@ -81,6 +81,12 @@ export const PlayerReport = Schema.Struct({
   entryId: Schema.String,
   positionSeconds: Schema.Number,
   playing: Schema.Boolean,
+  /**
+   * The player played or paused by itself (a tap, the lock screen, a call)
+   * and no state from the server agreed yet. Otherwise it only followed the
+   * session, which may have changed since without it.
+   */
+  playingSetHere: Schema.Boolean,
   /** The last `seekSeq` this player followed. */
   seekSeq: Schema.Number,
 })

@@ -87,6 +87,7 @@ pub struct PlayerReport {
     pub entry_id: String,
     pub position_seconds: f64,
     pub playing: bool,
+    pub playing_set_here: bool,
     pub seek_seq: u64,
 }
 
@@ -209,6 +210,7 @@ mod tests {
                     entry_id: "e1".into(),
                     position_seconds: 42.5,
                     playing: true,
+                    playing_set_here: false,
                     seek_seq: 3,
                 }),
             }

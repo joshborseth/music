@@ -187,15 +187,19 @@ describe('session model', () => {
     expect(currentPosition(resumed, 21_000)).toBe(20)
   })
 
+  type Report = Omit<Session.PlayerReport, 'playingSetHere'> & {
+    readonly playingSetHere?: boolean
+  }
+
   const hello = (
-    player: Session.PlayerReport | null,
+    player: Report | null,
     deviceId = 'phone',
   ): Session.ClientMessage => ({
     _tag: 'Hello',
     deviceId,
     name: deviceId,
     kind: deviceId === 'tv' ? 'Tv' : 'Web',
-    player,
+    player: player === null ? null : { playingSetHere: false, ...player },
   })
 
   test('a player that reconnects mid-song is followed, without a reload', () => {
@@ -221,6 +225,7 @@ describe('session model', () => {
         entryId: 'e0',
         positionSeconds: 12,
         playing: false,
+        playingSetHere: true,
         seekSeq: playing().seekSeq,
       }),
       makeContext('phone', 60_000),
@@ -297,25 +302,43 @@ describe('session model', () => {
     expect(outcome.currentEntryId).toBe('e1')
   })
 
-  test('a pause from another device while the player was away is kept', () => {
+  test('a pause from another device that the player missed stands', () => {
     const paused = update(
       playing(),
       { _tag: 'Pause' },
-      makeContext('laptop', 5_000, ['laptop']),
+      makeContext('laptop', 5_000, ['phone', 'laptop']),
     ).model
-    const outcome = update(
+    const report = {
+      entryId: 'e0',
+      positionSeconds: 30,
+      playing: true,
+      seekSeq: paused.seekSeq,
+    }
+    const followed = update(
       paused,
-      hello({
-        entryId: 'e0',
-        positionSeconds: 30,
-        playing: true,
-        seekSeq: paused.seekSeq,
-      }),
+      hello(report),
       makeContext('phone', 30_000),
     ).model
-    expect(outcome.playing).toBe(false)
-    expect(outcome.positionSeconds).toBe(30)
-    expect(outcome.pausedWhileAway).toBe(false)
+    expect(followed.playing).toBe(false)
+    expect(followed.positionSeconds).toBe(30)
+    // A play the phone made itself, after it missed the pause, wins.
+    const resumedHere = update(
+      paused,
+      hello({ ...report, playingSetHere: true }),
+      makeContext('phone', 30_000),
+    ).model
+    expect(resumedHere.playing).toBe(true)
+  })
+
+  test('a pause for a lost player ends once anyone plays or pauses', () => {
+    const lost = playerLost(playing(), 'phone', 16_000).model
+    expect(lost.pausedForLostPlayer).toBe(true)
+    const resumed = update(
+      lost,
+      { _tag: 'Resume' },
+      makeContext('laptop', 20_000, ['laptop']),
+    ).model
+    expect(resumed.pausedForLostPlayer).toBe(false)
   })
 
   test('the player pausing says where it stopped; others leave it to the server', () => {

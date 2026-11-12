@@ -44,6 +44,12 @@ export const LoadedEntry = Schema.Struct({
    * server heard of the move, and must not undo it.
    */
   maybeLeftEntryId: Schema.Option(Schema.String),
+  /**
+   * A play or pause this phone made itself (a tap, the lock screen, the
+   * system pausing it, the queue ending), until a server state agrees. A
+   * state sent before the server heard of it must not undo it.
+   */
+  maybeAskedPlaying: Schema.Option(Schema.Boolean),
 })
 export type LoadedEntry = typeof LoadedEntry.Type
 

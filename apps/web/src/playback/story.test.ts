@@ -130,6 +130,7 @@ describe('playing on this phone', () => {
                 isPlaying: true,
                 isBuffering: false,
                 maybeLeftEntryId: Option.none(),
+                maybeAskedPlaying: Option.none(),
               },
             }),
         }),
@@ -169,6 +170,7 @@ describe('playing on this phone', () => {
                 isPlaying: true,
                 isBuffering: false,
                 maybeLeftEntryId: Option.none(),
+                maybeAskedPlaying: Option.none(),
               },
             }),
         }),
@@ -210,6 +212,7 @@ const playingHere = (seekSeq: number): Model =>
           isPlaying: true,
           isBuffering: false,
           maybeLeftEntryId: Option.none(),
+          maybeAskedPlaying: Option.none(),
         },
       }),
     phoneAudioSeconds: () => 40,
@@ -545,6 +548,7 @@ describe('on the lock screen', () => {
             isPlaying,
             isBuffering: false,
             maybeLeftEntryId: Option.none(),
+            maybeAskedPlaying: Option.none(),
           },
         }),
       phoneAudioSeconds: () => 40,
@@ -604,6 +608,7 @@ describe('on the lock screen', () => {
               isPlaying: true,
               isBuffering: true,
               maybeLeftEntryId: Option.some('e0'),
+              maybeAskedPlaying: Option.none(),
             },
           }),
         )
@@ -785,6 +790,7 @@ describe('on the lock screen', () => {
               entryId: 'e2',
               positionSeconds: 0,
               playing: false,
+              playingSetHere: true,
               seekSeq: 4,
             },
           },
@@ -813,6 +819,113 @@ describe('on the lock screen', () => {
         SendToSession({ message: { _tag: 'Seek', positionSeconds: 0 } }),
       ),
       Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test("the server's answer to next does not undo a pause made right after", () => {
+    story(
+      update,
+      given(playingQueue('e0')),
+      message(Message.PressedMediaKey({ key: 'NextTrack' })),
+      ...resolveLoad(1),
+      message(Message.PressedMediaKey({ key: 'Pause' })),
+      Command.resolve(
+        SetPhoneAudioPlaying,
+        Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      // The answer to Next, sent before the server heard of the pause.
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 5),
+            queue,
+            currentEntryId: 'e1',
+            positionSeconds: 0,
+          },
+          serverNow: SERVER_NOW,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      model(model => {
+        expect(
+          Option.exists(model.maybeSession, ({ state }) => !state.playing),
+        ).toBe(true)
+      }),
+      Command.expectExact(prefetchFrom(1)),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+      // The answer to Pause agrees; another device may play again after.
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 5),
+            queue,
+            currentEntryId: 'e1',
+            playing: false,
+            positionSeconds: 0,
+          },
+          serverNow: SERVER_NOW,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      Command.expectExact(prefetchFrom(1)),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 5),
+            queue,
+            currentEntryId: 'e1',
+            positionSeconds: 0,
+          },
+          serverNow: SERVER_NOW,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      Command.expectExact(
+        SetPhoneAudioPlaying({ isPlaying: true }),
+        prefetchFrom(1),
+      ),
+      Command.resolve(
+        SetPhoneAudioPlaying,
+        Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
+      ),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+    )
+  })
+
+  test('a song that fails leaves nothing loaded, so a reconnect retries it', () => {
+    story(
+      update,
+      given(playingQueue('e1')),
+      message(Message.FailedPhoneAudio({ entryId: 'e1', error: 'Network' })),
+      model(model => {
+        expect(model.phoneAudio._tag).toBe('Idle')
+      }),
+      Command.expectExact(
+        SendToSession({
+          message: { _tag: 'TrackFailed', entryId: 'e1', message: 'Network' },
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      message(Message.ClosedSessionSocket()),
+      Command.resolve(
+        WaitBeforeReconnect,
+        Message.CompletedWaitBeforeReconnect(),
+      ),
+      message(Message.AcquiredSessionSocket()),
+      Command.expectExact(
+        SendToSession({
+          message: {
+            _tag: 'Hello',
+            deviceId: PHONE_ID,
+            name: 'iPhone',
+            kind: 'Web',
+            player: null,
+          },
+        }),
+      ),
       Command.resolve(SendToSession, Message.CompletedSendToSession()),
     )
   })
@@ -988,6 +1101,7 @@ describe('on the lock screen', () => {
               entryId: 'e2',
               positionSeconds: 12.5,
               playing: false,
+              playingSetHere: false,
               seekSeq: 4,
             },
           },
