@@ -381,7 +381,7 @@ impl Ui {
             self.update_asked = false;
             let now = Instant::now();
             match status {
-                UpdateStatus::UpToDate => self.nav.say("Music is up to date", now),
+                UpdateStatus::UpToDate => self.nav.say("Joshify is up to date", now),
                 UpdateStatus::Downloading { .. } => self.nav.say("Downloading an update", now),
                 UpdateStatus::Failed(_) => self.nav.say("Couldn't check for updates", now),
                 _ => {}
@@ -413,7 +413,7 @@ impl Ui {
             }
             Some(UpdateStatus::Installing) => "Installing an update…".to_owned(),
             Some(UpdateStatus::NeedsPermission) => {
-                "Updates need “Install unknown apps” turned on for Music.".to_owned()
+                "Updates need “Install unknown apps” turned on for Joshify.".to_owned()
             }
             Some(UpdateStatus::Failed(message)) => format!("The last update failed: {message}"),
         };
@@ -794,7 +794,7 @@ impl Ui {
                             url: wanted,
                             image: Image::from_rgba8(decoded.pixels),
                             backdrop: decoded.backdrop.map(Image::from_rgba8),
-                            tint: decoded.tint.unwrap_or(Color::from_rgb_u8(0x1b, 0x15, 0x30)),
+                            tint: decoded.tint.unwrap_or(Color::from_rgb_u8(0x14, 0x20, 0x19)),
                             cover: decoded.cover,
                         });
                     }
@@ -888,7 +888,7 @@ impl Ui {
             }
             app.set_tint(hero.tint);
         } else {
-            app.set_tint(Color::from_rgb_u8(0x1b, 0x15, 0x30));
+            app.set_tint(Color::from_rgb_u8(0x14, 0x20, 0x19));
         }
         let title = track
             .as_ref()

@@ -615,7 +615,7 @@ export const wakeTimedOut = (
   return {
     ...changed(stopped),
     maybeNotice: Option.some(
-      "The TV didn't open Music. Is it on the same network?",
+      "The TV didn't open Joshify. Is it on the same network?",
     ),
   }
 }

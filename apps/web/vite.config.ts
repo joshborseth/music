@@ -7,7 +7,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 const SERVER_URL = process.env.MUSIC_SERVER_URL ?? 'http://localhost:3001'
 
-const APP_NAME = 'Music'
+const APP_NAME = 'Joshify'
 const THEME_COLOR = '#0b0c0e'
 
 const YOUTUBE_IMAGE_HOSTS =

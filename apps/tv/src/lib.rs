@@ -1,4 +1,4 @@
-//! Music for TV: the session's player and now-playing screen, for Android TV.
+//! Joshify for TV: the session's player and now-playing screen, for Android TV.
 //!
 //! The server (`apps/server`) owns the queue. This app connects to its
 //! session WebSocket, plays audio when the server makes it the active device,
@@ -172,6 +172,6 @@ fn android_main(app: slint::android::AndroidApp) {
     );
     slint::android::init(app).expect("initialize Slint for Android");
     if let Err(error) = run() {
-        log::error!("Music stopped: {error}");
+        log::error!("Joshify stopped: {error}");
     }
 }

@@ -2,6 +2,8 @@
 
 YouTube Music on the phone (Foldkit PWA) and the TV (Rust Android TV app), sharing one playback session. See `README.md` for what it does and how to run it.
 
+The app is called **Joshify**, the sibling of Joshflix: the same monoline J, here with equalizer bars, in green (`#22d46f` on `#0b0d12`) where Joshflix is blue. The logo sources are in `branding/`; run `scripts/render-icons.sh` after changing them. Only what people see says Joshify. Internal names keep `music`: the Android package `app.music.tv`, the `music://` wake link, `music.service`, the `@music/*` packages, and the data paths. A new Android package would install as a second app that the installed one can't update.
+
 ## Finishing a task
 
 When a task changes files in this repo, finish it by following the [`merge-and-deploy`](./.agents/skills/merge-and-deploy/SKILL.md) skill. It opens the PR, merges it, and deploys. Do this without being asked, unless Josh said not to push, open a PR, merge, or deploy.

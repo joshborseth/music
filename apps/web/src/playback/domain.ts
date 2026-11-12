@@ -217,9 +217,9 @@ const closedText = (device: Session.Device): string => {
   if (device.kind !== 'Tv') {
     return 'Not connected'
   } else if (device.poweredOn === true) {
-    return "On · Music isn't open"
+    return "On · Joshify isn't open"
   } else {
-    return "Music isn't open"
+    return "Joshify isn't open"
   }
 }
 
@@ -233,10 +233,10 @@ export const deviceStatusText = (
     Match.when('Paused', () => 'Paused'),
     Match.when('Reconnecting', () => 'Reconnecting…'),
     Match.when('TurningOn', () =>
-      device.kind === 'Tv' ? 'Turning on and opening Music…' : 'Waking…',
+      device.kind === 'Tv' ? 'Turning on and opening Joshify…' : 'Waking…',
     ),
     Match.when('Ready', () =>
-      device.kind === 'Tv' ? 'Music is open' : 'Connected',
+      device.kind === 'Tv' ? 'Joshify is open' : 'Connected',
     ),
     Match.when('Closed', () => closedText(device)),
     Match.when('Off', () => 'Off'),

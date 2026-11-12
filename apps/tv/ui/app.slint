@@ -1,4 +1,4 @@
-// Music for TV: every screen, drawn from properties the Rust side sets.
+// Joshify for TV: every screen, drawn from properties the Rust side sets.
 //
 // Rust owns navigation. Each remote key goes to `key()`, Rust moves the
 // selection, and sets the models below; this file only lays them out and
@@ -16,16 +16,15 @@ export global Metrics {
 }
 
 global Theme {
-    out property <color> bg: #08070d;
+    out property <color> bg: #0b0d12;
     out property <color> surface: #ffffff12;
     out property <color> surface-strong: #ffffff24;
     out property <color> text: #ffffff;
     out property <color> text-2: #ffffffbf;
     out property <color> text-3: #ffffff80;
-    out property <color> pink: #ff4f81;
-    out property <color> violet: #c13bff;
-    out property <color> blue: #5b5bff;
-    out property <brush> accent: @linear-gradient(120deg, #ff4f81 0%, #c13bff 55%, #5b5bff 100%);
+    // Joshify green: `green` for text and marks, `green-deep` for fills.
+    out property <color> green: #3ee086;
+    out property <color> green-deep: #22d46f;
     out property <duration> quick: 160ms;
     out property <duration> smooth: 320ms;
 }
@@ -147,7 +146,7 @@ component Artwork inherits Rectangle {
     in property <bool> round;
     border-radius: round ? self.width / 2 : self.width * 0.06;
     clip: true;
-    background: @linear-gradient(135deg, #2a2140 0%, #15121f 100%);
+    background: @linear-gradient(135deg, #232833 0%, #13161c 100%);
     if !has-source: Icon {
         name: round ? "artist" : "note";
         width: parent.width * 0.4;
@@ -173,7 +172,7 @@ component RoundButton inherits Rectangle {
     border-radius: self.height / 2;
     background: data.selected ? white : (data.primary ? #ffffff2e : Theme.surface);
     drop-shadow-blur: data.selected ? Metrics.u * 1.4 : 0;
-    drop-shadow-color: #ff4f8170;
+    drop-shadow-color: #22d46f70;
     animate background { duration: Theme.quick; }
     Icon {
         name: root.data.icon;
@@ -181,14 +180,14 @@ component RoundButton inherits Rectangle {
         y: (root.height - self.height) / 2;
         width: root.icon-size;
         height: self.width;
-        color: root.data.selected ? #120f1c : (root.data.active ? Theme.pink : white);
+        color: root.data.selected ? #0b0d12 : (root.data.active ? Theme.green : white);
     }
     label-text := Text {
         x: root.size * 0.42 + root.icon-size + root.size * 0.25;
         y: (root.height - self.height) / 2;
         visible: root.wide;
         text: root.data.label;
-        color: root.data.selected ? #120f1c : white;
+        color: root.data.selected ? #0b0d12 : white;
         font-size: root.size * 0.36;
         font-weight: 600;
     }
@@ -208,7 +207,7 @@ component Card inherits Rectangle {
         border-width: root.data.selected ? Metrics.u * 0.22 : 0;
         border-color: white;
         drop-shadow-blur: root.data.selected ? Metrics.u * 2 : Metrics.u * 0.6;
-        drop-shadow-color: root.data.selected ? #c13bff80 : #00000060;
+        drop-shadow-color: root.data.selected ? #22d46f80 : #00000060;
         drop-shadow-offset-y: Metrics.u * 0.4;
         animate y, drop-shadow-blur { duration: Theme.quick; easing: ease-out; }
         Artwork {
@@ -234,7 +233,7 @@ component Card inherits Rectangle {
                 x: parent.width * 0.27;
                 width: parent.width * 0.5;
                 height: self.width;
-                color: #120f1c;
+                color: #0b0d12;
             }
         }
     }
@@ -321,7 +320,7 @@ component Row inherits Rectangle {
         if root.data.number != "": Text {
             width: Metrics.u * 1.6;
             text: root.data.number;
-            color: root.data.selected ? #120f1caa : Theme.text-3;
+            color: root.data.selected ? #0b0d12aa : Theme.text-3;
             font-size: Metrics.u * 0.95;
             horizontal-alignment: right;
             vertical-alignment: center;
@@ -341,14 +340,14 @@ component Row inherits Rectangle {
             spacing: Metrics.u * 0.15;
             Text {
                 text: root.data.title;
-                color: root.data.selected ? #120f1c : (root.data.current ? Theme.pink : white);
+                color: root.data.selected ? #0b0d12 : (root.data.current ? Theme.green : white);
                 font-size: Metrics.u * 1.05;
                 font-weight: 600;
                 overflow: elide;
             }
             if root.data.subtitle != "": Text {
                 text: root.data.subtitle;
-                color: root.data.selected ? #120f1cb0 : Theme.text-3;
+                color: root.data.selected ? #0b0d12b0 : Theme.text-3;
                 font-size: Metrics.u * 0.88;
                 overflow: elide;
             }
@@ -359,12 +358,12 @@ component Row inherits Rectangle {
                 name: "now";
                 width: Metrics.u * 1.3;
                 height: self.width;
-                color: root.data.selected ? #120f1c : Theme.pink;
+                color: root.data.selected ? #0b0d12 : Theme.green;
             }
         }
         Text {
             text: root.data.detail;
-            color: root.data.selected ? #120f1cb0 : Theme.text-3;
+            color: root.data.selected ? #0b0d12b0 : Theme.text-3;
             font-size: Metrics.u * 0.9;
             horizontal-alignment: right;
             vertical-alignment: center;
@@ -480,7 +479,7 @@ component Spinner inherits Rectangle {
         width: Metrics.u * 0.7;
         height: Metrics.u * (0.7 + 1.1 * Math.abs(Math.sin((root.phase - i * 0.18) * 360deg)));
         border-radius: self.width / 2;
-        background: Theme.violet;
+        background: Theme.green-deep;
     }
 }
 
@@ -511,7 +510,7 @@ export component App inherits Window {
     in property <bool> has-artwork;
     in property <image> backdrop;
     in property <bool> has-backdrop;
-    in property <color> tint: #1b1530;
+    in property <color> tint: #142019;
     in property <float> progress;
     in property <string> position-text: "0:00";
     in property <string> duration-text: "0:00";
@@ -579,7 +578,7 @@ export component App inherits Window {
     /// Returns whether the app used it; Back that the app does not use leaves the app.
     callback key(string, bool, bool) -> bool;
 
-    title: "Music";
+    title: "Joshify";
     background: Theme.bg;
     default-font-family: "Inter";
     forward-focus: keys;
@@ -622,10 +621,10 @@ export component App inherits Window {
         image-rendering: smooth;
     }
     if root.page != 0: Rectangle {
-        background: @linear-gradient(90deg, #08070dcc 0%, #08070d55 55%, #08070d99 100%);
+        background: @linear-gradient(90deg, #0b0d12cc 0%, #0b0d1255 55%, #0b0d1299 100%);
     }
     if root.page != 0: Rectangle {
-        background: @linear-gradient(180deg, #08070d00 55%, #08070dee 100%);
+        background: @linear-gradient(180deg, #0b0d1200 55%, #0b0d12ee 100%);
     }
 
     // NOW PLAYING: the screen the app rests on. The music's visuals fill it,
@@ -942,7 +941,7 @@ export component App inherits Window {
             width: Metrics.u * 40;
             height: Metrics.u * 40;
             border-radius: self.width / 2;
-            background: @radial-gradient(circle, #c13bff30 0%, #c13bff00 70%);
+            background: @radial-gradient(circle, #22d46f30 0%, #22d46f00 70%);
         }
         HorizontalLayout {
             alignment: center;
@@ -953,7 +952,7 @@ export component App inherits Window {
                 Image {
                     source: root.logo;
                     height: Metrics.u * 6;
-                    width: self.height * 392 / 340;
+                    width: self.height * 33 / 45.5;
                     image-fit: contain;
                 }
                 Text {
@@ -1053,7 +1052,7 @@ export component App inherits Window {
                         width: 2px;
                         height: Metrics.u * 1.6;
                         y: (parent.height - self.height) / 2;
-                        background: Theme.pink;
+                        background: Theme.green;
                         opacity: Math.mod(animation-tick() / 1s, 1) < 0.5 ? 1 : 0;
                     }
                     Rectangle { horizontal-stretch: 1; }
@@ -1079,11 +1078,11 @@ export component App inherits Window {
                         name: key.icon;
                         width: Metrics.u * 1.5;
                         height: self.width;
-                        color: key.selected ? #120f1c : white;
+                        color: key.selected ? #0b0d12 : white;
                     }
                     if key.icon == "": Text {
                         text: key.label;
-                        color: key.selected ? #120f1c : white;
+                        color: key.selected ? #0b0d12 : white;
                         font-size: key.span == 1 ? Metrics.u * 1.3 : Metrics.u * 0.95;
                         font-weight: 600;
                     }
@@ -1149,7 +1148,7 @@ export component App inherits Window {
             Rectangle { height: Metrics.u * 0.6; }
             Text {
                 text: root.col-kind;
-                color: Theme.pink;
+                color: Theme.green;
                 font-size: Metrics.u * 0.85;
                 font-weight: 700;
                 letter-spacing: Metrics.u * 0.1;
@@ -1248,12 +1247,12 @@ export component App inherits Window {
                     Image {
                         source: root.logo;
                         height: Metrics.u * 1.7;
-                        width: self.height * 392 / 340;
+                        width: self.height * 33 / 45.5;
                         image-fit: contain;
                     }
                 }
                 Text {
-                    text: "Music";
+                    text: "Joshify";
                     color: white;
                     font-family: "Inter Display";
                     font-size: Metrics.u * 1.4;
@@ -1281,12 +1280,12 @@ export component App inherits Window {
                                 name: i == 0 ? "now" : i == 1 ? "home" : i == 2 ? "search" : "library";
                                 width: Metrics.u * 1.1;
                                 height: self.width;
-                                color: tab-pill.focused ? #120f1c : (tab-pill.current ? white : Theme.text-3);
+                                color: tab-pill.focused ? #0b0d12 : (tab-pill.current ? white : Theme.text-3);
                             }
                         }
                         Text {
                             text: name;
-                            color: tab-pill.focused ? #120f1c : (tab-pill.current ? white : Theme.text-3);
+                            color: tab-pill.focused ? #0b0d12 : (tab-pill.current ? white : Theme.text-3);
                             font-size: Metrics.u * 1;
                             font-weight: 600;
                             vertical-alignment: center;
@@ -1303,7 +1302,7 @@ export component App inherits Window {
                         name: "settings";
                         width: Metrics.u * 1.2;
                         height: self.width;
-                        color: root.settings-focused ? #120f1c : Theme.text-3;
+                        color: root.settings-focused ? #0b0d12 : Theme.text-3;
                     }
                 }
             }
@@ -1329,7 +1328,7 @@ export component App inherits Window {
     if root.page >= 2: Rectangle {
         y: root.height - self.height;
         height: Metrics.u * 5;
-        background: @linear-gradient(180deg, #08070d00 0%, #08070df0 60%, #08070d 100%);
+        background: @linear-gradient(180deg, #0b0d1200 0%, #0b0d12f0 60%, #0b0d12 100%);
     }
 
     if !root.menu-open && root.hints.length > 0 && root.page != 0: HorizontalLayout {
@@ -1351,7 +1350,7 @@ export component App inherits Window {
         x: self.open ? root.width - self.width : root.width;
         width: root.width * 0.4;
         height: root.height;
-        background: #0e0c16f2;
+        background: #0e1116f2;
         border-width: 1px;
         border-color: #ffffff14;
         animate x { duration: Theme.smooth; easing: ease-out; }
@@ -1398,7 +1397,7 @@ export component App inherits Window {
             width: Metrics.u * 30;
             height: menu-column.preferred-height;
             border-radius: Metrics.u * 1.6;
-            background: #191524;
+            background: #161a21;
             border-width: 1px;
             border-color: #ffffff1f;
             drop-shadow-blur: Metrics.u * 4;
@@ -1435,12 +1434,12 @@ export component App inherits Window {
                                 name: item.icon;
                                 width: Metrics.u * 1.4;
                                 height: self.width;
-                                color: item.selected ? #120f1c : white;
+                                color: item.selected ? #0b0d12 : white;
                             }
                         }
                         Text {
                             text: item.label;
-                            color: item.selected ? #120f1c : white;
+                            color: item.selected ? #0b0d12 : white;
                             font-size: Metrics.u * 1.15;
                             font-weight: 600;
                             vertical-alignment: center;

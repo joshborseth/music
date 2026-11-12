@@ -96,7 +96,7 @@ name = "android.permission.REQUEST_INSTALL_PACKAGES"
 name = "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION"
 
 [package.metadata.android.application]
-label = "Music"
+label = "Joshify"
 icon = "@mipmap/ic_launcher"
 theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 uses_cleartext_traffic = true

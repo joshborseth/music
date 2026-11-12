@@ -823,8 +823,8 @@ impl Nav {
     /// The updater needs permission to install: ask once.
     pub fn ask_update_permission(&mut self) {
         self.menu = Some(Menu {
-            title: "Let Music update itself?".into(),
-            subtitle: "Turn on “Install unknown apps” for Music once. After that, updates install by themselves while nothing is playing.".into(),
+            title: "Let Joshify update itself?".into(),
+            subtitle: "Turn on “Install unknown apps” for Joshify once. After that, updates install by themselves while nothing is playing.".into(),
             items: vec![MenuAction::OpenUpdateSettings, MenuAction::Close],
             selected: 0,
         });
@@ -833,7 +833,7 @@ impl Nav {
     /// The settings menu: `about` is the version and how updates stand.
     pub fn show_settings(&mut self, about: String) {
         self.menu = Some(Menu {
-            title: "Music".into(),
+            title: "Joshify".into(),
             subtitle: about,
             items: vec![MenuAction::CheckForUpdates, MenuAction::Close],
             selected: 0,
@@ -897,7 +897,7 @@ impl Nav {
             }
             _ => {
                 self.back_pressed = Some(now);
-                self.say("Press Back again to leave Music", now);
+                self.say("Press Back again to leave Joshify", now);
                 true
             }
         }
@@ -1960,7 +1960,7 @@ mod tests {
         nav.on_session(playing_view());
         let now = Instant::now();
         assert!(nav.key(Key::Back, now).0);
-        assert_eq!(nav.notice(now), Some("Press Back again to leave Music"));
+        assert_eq!(nav.notice(now), Some("Press Back again to leave Joshify"));
         assert!(!nav.key(Key::Back, now + Duration::from_millis(500)).0);
     }
 

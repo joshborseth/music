@@ -14,7 +14,7 @@ import { parseLrc } from './lrc.ts'
  */
 
 /** LRCLIB asks every client to name itself. */
-const USER_AGENT = 'Music (self-hosted music player)'
+const USER_AGENT = 'Joshify (self-hosted music player)'
 
 /**
  * A timed copy is only trusted when its length is this close to the song's:

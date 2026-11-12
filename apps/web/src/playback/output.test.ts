@@ -100,14 +100,14 @@ describe('what a TV says in the device picker', () => {
   test('off, on without the app, or open', () => {
     expect(statusOf({ ...tv, online: false, poweredOn: false })).toBe('Off')
     expect(statusOf({ ...tv, online: false, poweredOn: true })).toBe(
-      "On · Music isn't open",
+      "On · Joshify isn't open",
     )
     expect(statusOf({ ...tv, online: false, poweredOn: null })).toBe(
-      "Music isn't open",
+      "Joshify isn't open",
     )
-    expect(statusOf(tv)).toBe('Music is open')
+    expect(statusOf(tv)).toBe('Joshify is open')
     expect(statusOf({ ...tv, online: false, waking: true })).toBe(
-      'Turning on and opening Music…',
+      'Turning on and opening Joshify…',
     )
   })
 })
