@@ -7,7 +7,6 @@ import { type HomeShelf, Session, type Song } from '@music/shared'
 
 import { songFromQueueTrack } from '../library'
 import { Message } from '../message'
-import { type Swipe } from '../playback/swipe'
 import { homeQuery } from '../query'
 import { largeTitleHeader } from './chrome'
 import { type PageModel } from './page'
@@ -122,12 +121,11 @@ const recentlyPlayedShelf = (
 const feedShelf = (
   homeShelf: HomeShelf,
   playing: NowPlaying,
-  swipe: Swipe,
   h: HtmlBuilder<Message>,
 ): Html =>
   Match.valueTags(homeShelf, {
     SongShelf: ({ title, songs }) =>
-      songGridShelf({ title, songs, playing, swipe }, h),
+      songGridShelf({ title, songs, playing }, h),
     AlbumShelf: ({ title, albums }) =>
       shelf(
         { title, items: albums, toKey: ({ id }) => id, toCard: albumCard },
@@ -179,7 +177,7 @@ export const homeView = (
                   h.keyed('div')(
                     `${homeShelf._tag}:${homeShelf.title}`,
                     [],
-                    [feedShelf(homeShelf, playing, model.swipe, h)],
+                    [feedShelf(homeShelf, playing, h)],
                   ),
                 ),
               ),

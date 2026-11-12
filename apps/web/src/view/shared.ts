@@ -331,8 +331,11 @@ type SongRowConfig = Readonly<{
   maybeTrackNumber: Option.Option<number>
   isAlbumHidden: boolean
   playing: NowPlaying
-  /** Lets a finger swipe the row to queue the song. */
-  swipe: Swipe
+  /**
+   * Lets a finger swipe the row to queue the song. None when the row sits in
+   * something that scrolls sideways, which needs those drags itself.
+   */
+  maybeSwipe: Option.Option<Swipe>
 }>
 
 const songRowDetails = (config: SongRowConfig): string =>
@@ -469,28 +472,32 @@ export const songRow = (
       ),
     ],
   )
-  return swipeableRow(
-    {
-      target: SwipeTarget.SongRow({ song }),
-      maybeSwipe: swipeOn(
-        config.swipe,
-        target =>
-          target._tag === 'SongRow' && target.song.videoId === song.videoId,
+  return Option.match(config.maybeSwipe, {
+    onNone: () => content,
+    onSome: swipe =>
+      swipeableRow(
+        {
+          target: SwipeTarget.SongRow({ song }),
+          maybeSwipe: swipeOn(
+            swipe,
+            target =>
+              target._tag === 'SongRow' && target.song.videoId === song.videoId,
+          ),
+          maybeRightReveal: Option.some({
+            label: 'Add to queue',
+            icon: ListEnd,
+            isDestructive: false,
+          }),
+          maybeLeftReveal: Option.some({
+            label: 'Play next',
+            icon: ListStart,
+            isDestructive: false,
+          }),
+        },
+        content,
+        h,
       ),
-      maybeRightReveal: Option.some({
-        label: 'Add to queue',
-        icon: ListEnd,
-        isDestructive: false,
-      }),
-      maybeLeftReveal: Option.some({
-        label: 'Play next',
-        icon: ListStart,
-        isDestructive: false,
-      }),
-    },
-    content,
-    h,
-  )
+  })
 }
 
 /**
@@ -528,7 +535,7 @@ export const songList = (
                 : Option.none(),
               isAlbumHidden: config.isAlbumHidden,
               playing: config.playing,
-              swipe: config.swipe,
+              maybeSwipe: Option.some(config.swipe),
             },
             h,
           ),
@@ -898,14 +905,14 @@ const SONGS_PER_GRID_COLUMN = 4
 
 /**
  * Songs laid out in columns of four that page sideways, so a long list of
- * picks fits in one band of the screen.
+ * picks fits in one band of the screen. Its rows do not swipe to queue: a
+ * sideways drag pages the grid.
  */
 export const songGridShelf = (
   config: Readonly<{
     title: string
     songs: ReadonlyArray<Song>
     playing: NowPlaying
-    swipe: Swipe
   }>,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -942,7 +949,7 @@ export const songGridShelf = (
                       maybeTrackNumber: Option.none(),
                       isAlbumHidden: false,
                       playing: config.playing,
-                      swipe: config.swipe,
+                      maybeSwipe: Option.none(),
                     },
                     h,
                   ),
