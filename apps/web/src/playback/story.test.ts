@@ -118,6 +118,7 @@ describe('playing on this phone', () => {
         LoadPhoneAudio({
           entryId: 'e0',
           videoId: 'dQw4w9WgXcQ',
+          maybeDurationSeconds: Option.some(213),
           startSeconds: 32,
           isPlaying: true,
         }),
@@ -603,6 +604,7 @@ describe('on the lock screen', () => {
     LoadPhoneAudio({
       entryId: `e${index}`,
       videoId: `song-${index}`,
+      maybeDurationSeconds: Option.some(213),
       startSeconds: 0,
       isPlaying,
     })
@@ -750,6 +752,7 @@ describe('on the lock screen', () => {
         LoadPhoneAudio({
           entryId: 'e2',
           videoId: 'song-2',
+          maybeDurationSeconds: Option.some(213),
           startSeconds: 0,
           isPlaying: true,
         }),

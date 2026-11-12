@@ -8,13 +8,18 @@ import { Option } from 'effect'
  */
 
 const entryIds = new WeakMap<HTMLAudioElement, string>()
+const songLengths = new WeakMap<HTMLAudioElement, number>()
 const playIntents = new WeakMap<HTMLAudioElement, boolean>()
 
-/** Name the queue entry the element plays, or none (stopped, or the silent unlock clip). */
+/**
+ * Name the queue entry the element plays, or none (stopped, or the silent
+ * unlock clip), with the song's length when YouTube Music gave one.
+ */
 export const markEntry = (
   audio: HTMLAudioElement,
   maybeEntryId: Option.Option<string>,
-): void =>
+  maybeDurationSeconds: Option.Option<number> = Option.none(),
+): void => {
   Option.match(maybeEntryId, {
     onNone: () => {
       entryIds.delete(audio)
@@ -23,9 +28,42 @@ export const markEntry = (
       entryIds.set(audio, entryId)
     },
   })
+  Option.match(
+    Option.filter(
+      maybeDurationSeconds,
+      seconds => Number.isFinite(seconds) && seconds > 0,
+    ),
+    {
+      onNone: () => {
+        songLengths.delete(audio)
+      },
+      onSome: seconds => {
+        songLengths.set(audio, seconds)
+      },
+    },
+  )
+}
 
 export const entryIdOf = (audio: HTMLAudioElement): Option.Option<string> =>
   Option.fromNullishOr(entryIds.get(audio))
+
+/**
+ * How long the loaded song is, or NaN before anyone knows. Safari's own
+ * `duration` can be twice the song: YouTube's audio is fragmented MP4 whose
+ * header already holds the whole length, and Apple's player adds each
+ * fragment's length on top as it reads them, which scrubbing makes it do.
+ * So the shorter of Safari's figure and YouTube Music's wins.
+ */
+export const songDurationOf = (audio: HTMLAudioElement): number => {
+  const known = songLengths.get(audio)
+  const reported = audio.duration
+  if (known === undefined) {
+    return reported
+  }
+  return Number.isFinite(reported) && reported > 0
+    ? Math.min(known, reported)
+    : known
+}
 
 /** Whether this app last asked the element to play. */
 export const isMeantToPlay = (audio: HTMLAudioElement): boolean =>

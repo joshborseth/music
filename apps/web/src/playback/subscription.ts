@@ -22,6 +22,7 @@ import {
   isLoading,
   isMeantToPlay,
   pauseAudio,
+  songDurationOf,
   startAudio,
 } from './element'
 import {
@@ -141,10 +142,14 @@ interface PhoneAudioSnapshot {
 /** A pause this close to the end is the song ending, not someone pausing it. */
 const END_SLACK_SECONDS = 0.5
 
-const isAtEnd = (audio: HTMLAudioElement): boolean =>
-  audio.ended ||
-  (Number.isFinite(audio.duration) &&
-    audio.duration - audio.currentTime < END_SLACK_SECONDS)
+const isAtEnd = (audio: HTMLAudioElement): boolean => {
+  const duration = songDurationOf(audio)
+  return (
+    audio.ended ||
+    (Number.isFinite(duration) &&
+      duration - audio.currentTime < END_SLACK_SECONDS)
+  )
+}
 
 /**
  * Events worth telling the player about. Nothing comes from the silent clip
@@ -278,6 +283,20 @@ const AUDIO_EVENTS_THAT_RESET_MEDIA_SESSION = ['loadstart', 'playing'] as const
 /** The lock screen's play/pause button follows the element, not the session. */
 const PLAYBACK_STATE_EVENTS = ['play', 'pause', 'ended'] as const
 
+/**
+ * When the lock screen's scrubber needs its length and position again. iOS
+ * runs the clock on from the last report while the song plays.
+ */
+const POSITION_STATE_EVENTS = [
+  'loadedmetadata',
+  'durationchange',
+  'seeked',
+  'play',
+  'pause',
+  'playing',
+  'ratechange',
+] as const
+
 type MediaSessionMessage =
   | typeof Message.PressedMediaKey.Type
   | typeof Message.ChangedSeekPosition.Type
@@ -402,6 +421,29 @@ const streamMediaSessionActions = (audio: HTMLAudioElement) =>
       }
     }
 
+    // NOTE: left to itself, iOS shows the element's own length, which
+    // Safari can double (see `songDurationOf`).
+    const syncPositionState = () => {
+      const duration = songDurationOf(audio)
+      if (
+        !hasMediaSession() ||
+        Option.isNone(entryIdOf(audio)) ||
+        !Number.isFinite(duration) ||
+        duration <= 0
+      ) {
+        return
+      }
+      try {
+        globalThis.navigator.mediaSession.setPositionState({
+          duration,
+          playbackRate: audio.playbackRate > 0 ? audio.playbackRate : 1,
+          position: Math.min(Math.max(0, audio.currentTime), duration),
+        })
+      } catch {
+        // NOTE: older browsers have no position state.
+      }
+    }
+
     return keepMediaSessionHandlers(audio, register, () => {
       if (hasMediaSession()) {
         Array.forEach(MEDIA_KEY_ACTIONS, ([, action]) =>
@@ -412,17 +454,24 @@ const streamMediaSessionActions = (audio: HTMLAudioElement) =>
     }).pipe(
       Effect.andThen(
         Effect.acquireRelease(
-          Effect.sync(() =>
+          Effect.sync(() => {
             Array.forEach(PLAYBACK_STATE_EVENTS, name =>
               audio.addEventListener(name, syncPlaybackState),
-            ),
-          ),
+            )
+            Array.forEach(POSITION_STATE_EVENTS, name =>
+              audio.addEventListener(name, syncPositionState),
+            )
+            syncPositionState()
+          }),
           () =>
-            Effect.sync(() =>
+            Effect.sync(() => {
               Array.forEach(PLAYBACK_STATE_EVENTS, name =>
                 audio.removeEventListener(name, syncPlaybackState),
-              ),
-            ),
+              )
+              Array.forEach(POSITION_STATE_EVENTS, name =>
+                audio.removeEventListener(name, syncPositionState),
+              )
+            }),
         ),
       ),
       Effect.flatMap(() => Effect.never),
