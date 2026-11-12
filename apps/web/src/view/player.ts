@@ -27,7 +27,7 @@ import { Session } from '@music/shared'
 
 import { Message } from '../message'
 import { Model } from '../model'
-import { DragToDismiss } from '../mount'
+import { DragToDismiss, FollowSeekBarDrags } from '../mount'
 import {
   SKIP_SECONDS,
   type SessionSnapshot,
@@ -302,22 +302,33 @@ const seekBar = (
   return h.div(
     [h.Class('flex flex-col'), h.DataAttribute('no-drag', '')],
     [
-      h.input([
-        h.Type('range'),
-        h.AriaLabel('Position'),
-        h.Min('0'),
-        h.Max(duration.toString()),
-        h.Step('1'),
-        h.Value(Math.floor(position).toString()),
-        h.OnInput(value =>
-          Message.UpdatedScrubPosition({ seconds: Number(value) }),
-        ),
-        h.OnChange(value =>
-          Message.ChangedSeekPosition({ seconds: Number(value) }),
-        ),
-        h.Style({ '--progress': `${percent.toFixed(2)}%` }),
-        h.Class('seek-bar touch-none'),
-      ]),
+      h.div(
+        [
+          h.OnMount(FollowSeekBarDrags()),
+          ...(Option.isSome(model.maybeScrubSeconds)
+            ? [h.DataAttribute('scrubbing', '')]
+            : []),
+          h.Class('seek-area -my-2 flex touch-none items-center py-2'),
+        ],
+        [
+          h.input([
+            h.Type('range'),
+            h.AriaLabel('Position'),
+            h.Min('0'),
+            h.Max(duration.toString()),
+            h.Step('1'),
+            h.Value(Math.floor(position).toString()),
+            h.OnInput(value =>
+              Message.UpdatedScrubPosition({ seconds: Number(value) }),
+            ),
+            h.OnChange(value =>
+              Message.ChangedSeekPosition({ seconds: Number(value) }),
+            ),
+            h.Style({ '--progress': `${percent.toFixed(2)}%` }),
+            h.Class('seek-bar'),
+          ]),
+        ],
+      ),
       h.div(
         [
           h.Class(

@@ -234,3 +234,123 @@ export const DragToDismiss = Mount.defineStream('DragToDismiss', {
       ).pipe(Effect.flatMap(() => Effect.never)),
     ),
 })
+
+// SEEK BAR
+
+const SEEK_INPUT_SELECTOR = 'input[type="range"]'
+
+type SeekBarMessage =
+  | typeof Message.CompletedFollowSeekBarDrags.Type
+  | typeof Message.UpdatedScrubPosition.Type
+  | typeof Message.ChangedSeekPosition.Type
+  | typeof Message.CancelledScrub.Type
+
+/** The whole second under `clientX` on the bar's range input, if it has a length. */
+const secondsAt = (area: HTMLElement, clientX: number): number | undefined => {
+  const input = area.querySelector(SEEK_INPUT_SELECTOR)
+  if (!(input instanceof HTMLInputElement)) {
+    return undefined
+  }
+  const duration = Number(input.max)
+  const rect = input.getBoundingClientRect()
+  if (!(duration > 0) || rect.width <= 0) {
+    return undefined
+  }
+  const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+  return Math.round(fraction * duration)
+}
+
+/**
+ * Lets a finger land anywhere on the seek bar and drag, jumping the thumb
+ * under it. iOS only drags a native range input by its thumb, so the input
+ * itself ignores pointers and keeps keyboard and screen reader use.
+ */
+const followSeekBar = (
+  area: HTMLElement,
+  emit: (message: SeekBarMessage) => void,
+) => {
+  let maybePointerId: number | undefined
+  let seconds = 0
+
+  const handlePointerDown = (event: PointerEvent) => {
+    if (maybePointerId !== undefined || event.button !== 0) {
+      return
+    }
+    const maybeSeconds = secondsAt(area, event.clientX)
+    if (maybeSeconds === undefined) {
+      return
+    }
+    event.preventDefault()
+    area.setPointerCapture(event.pointerId)
+    maybePointerId = event.pointerId
+    seconds = maybeSeconds
+    emit(Message.UpdatedScrubPosition({ seconds }))
+  }
+
+  const handlePointerMove = (event: PointerEvent) => {
+    if (event.pointerId !== maybePointerId) {
+      return
+    }
+    const maybeSeconds = secondsAt(area, event.clientX)
+    if (maybeSeconds !== undefined && maybeSeconds !== seconds) {
+      seconds = maybeSeconds
+      emit(Message.UpdatedScrubPosition({ seconds }))
+    }
+  }
+
+  const handlePointerUp = (event: PointerEvent) => {
+    if (event.pointerId !== maybePointerId) {
+      return
+    }
+    maybePointerId = undefined
+    emit(Message.ChangedSeekPosition({ seconds }))
+  }
+
+  const handlePointerCancel = (event: PointerEvent) => {
+    if (event.pointerId !== maybePointerId) {
+      return
+    }
+    maybePointerId = undefined
+    emit(Message.CancelledScrub())
+  }
+
+  area.addEventListener('pointerdown', handlePointerDown)
+  area.addEventListener('pointermove', handlePointerMove)
+  area.addEventListener('pointerup', handlePointerUp)
+  area.addEventListener('pointercancel', handlePointerCancel)
+  area.addEventListener('lostpointercapture', handlePointerCancel)
+
+  return () => {
+    area.removeEventListener('pointerdown', handlePointerDown)
+    area.removeEventListener('pointermove', handlePointerMove)
+    area.removeEventListener('pointerup', handlePointerUp)
+    area.removeEventListener('pointercancel', handlePointerCancel)
+    area.removeEventListener('lostpointercapture', handlePointerCancel)
+  }
+}
+
+/** Scrubs and seeks from pointer drags on the element it is mounted on. */
+export const FollowSeekBarDrags = Mount.defineStream('FollowSeekBarDrags', {
+  messages: [
+    Message.CompletedFollowSeekBarDrags,
+    Message.UpdatedScrubPosition,
+    Message.ChangedSeekPosition,
+    Message.CancelledScrub,
+  ],
+  execute: ({ element }) =>
+    Stream.callback<SeekBarMessage>(queue =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const stopFollowing =
+            element instanceof HTMLElement
+              ? followSeekBar(element, message =>
+                  Queue.offerUnsafe(queue, message),
+                )
+              : () => {}
+          Queue.offerUnsafe(queue, Message.CompletedFollowSeekBarDrags())
+          return stopFollowing
+        }),
+        stopFollowing => Effect.sync(stopFollowing),
+      ).pipe(Effect.flatMap(() => Effect.never)),
+    ),
+})
