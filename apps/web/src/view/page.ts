@@ -18,7 +18,6 @@ export type PageModel = Readonly<
     | 'recentSearches'
     | 'recentlyPlayed'
     | 'recentlyViewed'
-    | 'home'
     | 'songSearch'
     | 'artistSearch'
     | 'albumSearch'
@@ -60,7 +59,6 @@ const renderPage = (
   recentSearches: Model['recentSearches'],
   recentlyPlayed: Model['recentlyPlayed'],
   recentlyViewed: Model['recentlyViewed'],
-  home: Model['home'],
   songSearch: Model['songSearch'],
   artistSearch: Model['artistSearch'],
   albumSearch: Model['albumSearch'],
@@ -83,7 +81,6 @@ const renderPage = (
       recentSearches,
       recentlyPlayed,
       recentlyViewed,
-      home,
       songSearch,
       artistSearch,
       albumSearch,
@@ -116,7 +113,6 @@ export const memoizedPage = (
     model.recentSearches,
     model.recentlyPlayed,
     model.recentlyViewed,
-    model.home,
     model.songSearch,
     model.artistSearch,
     model.albumSearch,

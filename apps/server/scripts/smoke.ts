@@ -43,8 +43,6 @@ const program = Effect.gen(function* () {
       song.song.maybeAlbum,
       song.maybeViewCount,
       Option.map(song.maybeLyrics, lyrics => lyrics.text.slice(0, 40)),
-      'related',
-      song.relatedSongs.length,
     )
   }
   const artistId = artists[0]?.id
@@ -59,8 +57,6 @@ const program = Effect.gen(function* () {
       artist.albums.length,
       'singles',
       artist.singles.length,
-      'similar',
-      artist.similarArtists.length,
       Option.map(artist.maybeDescription, d => d.slice(0, 40)),
     )
   }
@@ -75,25 +71,6 @@ const program = Effect.gen(function* () {
       'tracks',
       album.tracks.length,
       album.tracks[0]?.artwork.length,
-    )
-  }
-  const home = yield* client.getHome()
-  console.log(
-    'home',
-    home.shelves.map(shelf => `${shelf._tag}:${shelf.title}`),
-  )
-  const playlistId = home.shelves
-    .flatMap(shelf => (shelf._tag === 'PlaylistShelf' ? shelf.playlists : []))
-    .at(0)?.id
-  if (playlistId !== undefined) {
-    const playlist = yield* client.getPlaylist({ playlistId })
-    console.log(
-      'playlist',
-      playlist.playlist.title,
-      playlist.playlist.maybeSubtitle,
-      playlist.maybeLengthSummary,
-      'tracks',
-      playlist.tracks.length,
     )
   }
   const playlists = yield* client.searchPlaylists({ query: 'top 500 songs' })

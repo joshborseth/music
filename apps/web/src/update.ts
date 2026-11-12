@@ -77,7 +77,6 @@ import {
   artistQuery,
   artistSearchQuery,
   artworkBackdropQuery,
-  homeQuery,
   myLibraryQuery,
   myPlaylistQuery,
   playlistQuery,
@@ -113,11 +112,6 @@ type UpdateReturn = Update.Return<
 type UpdateStep = Update.Step<Model, Message, MusicClient | PlaybackServices>
 
 // QUERIES
-
-const home = homeQuery.lift<Model, Message>({
-  parentField: 'home',
-  toParentMessage: message => Message.GotHomeMessage({ message }),
-})
 
 const songSearch = songSearchQuery.lift<Model, Message>({
   parentField: 'songSearch',
@@ -823,9 +817,16 @@ const revalidateSearch = (query: string, kind: SearchKind): UpdateStep =>
     Match.exhaustive,
   )
 
+/** Home shows my playlists and Liked songs, so it checks both for changes. */
+const loadHome: UpdateStep = Update.combine([
+  model => myLibrary.revalidateOrLoad(model),
+  model =>
+    myPlaylists.revalidateOrLoad(model, { playlistId: LIKED_PLAYLIST_ID }),
+])
+
 const loadRoute = (route: AppRoute): UpdateStep =>
   AppRoute.match<UpdateStep>(route, {
-    Home: () => model => home.loadIfMissing(model),
+    Home: () => loadHome,
     Search: () =>
       Option.match(routeQuery(route), {
         onNone: () => model => ({ model }),
@@ -857,7 +858,7 @@ const loadRoute = (route: AppRoute): UpdateStep =>
 
 const retryRoute = (route: AppRoute): UpdateStep =>
   AppRoute.match<UpdateStep>(route, {
-    Home: () => model => home.revalidateOrLoad(model),
+    Home: () => loadHome,
     Search: () =>
       Option.match(routeQuery(route), {
         onNone: () => model => ({ model }),
@@ -902,7 +903,6 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     recentSearches: [],
     recentlyPlayed: [],
     recentlyViewed: [],
-    home: homeQuery.init(),
     songSearch: songSearchQuery.init(),
     artistSearch: artistSearchQuery.init(),
     albumSearch: albumSearchQuery.init(),
@@ -1123,7 +1123,6 @@ const updateMessage = (model: Model, message: Message) =>
       ],
     }),
 
-    GotHomeMessage: ({ message }) => home.fold(model, message),
     GotSongSearchMessage: ({ message }) => songSearch.fold(model, message),
     GotArtistSearchMessage: ({ message }) => artistSearch.fold(model, message),
     GotAlbumSearchMessage: ({ message }) => albumSearch.fold(model, message),

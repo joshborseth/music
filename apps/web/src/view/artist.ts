@@ -11,7 +11,6 @@ import { artistQuery } from '../query'
 import { type PageModel } from './page'
 import {
   albumCard,
-  artistCard,
   artworkUrl,
   expandableText,
   loadingPage,
@@ -70,7 +69,7 @@ const artistHero = (details: ArtistDetails, h: HtmlBuilder<Message>): Html =>
     ],
   )
 
-/** The artist page: photo, top songs, releases, similar artists, and bio. */
+/** The artist page: photo, top songs, releases, and bio. */
 export const artistView = (
   model: PageModel,
   artistId: string,
@@ -112,15 +111,6 @@ export const artistView = (
                 items: details.singles,
                 toKey: album => album.id,
                 toCard: albumCard,
-              },
-              h,
-            ),
-            shelf(
-              {
-                title: 'Fans also like',
-                items: details.similarArtists,
-                toKey: artist => artist.id,
-                toCard: artistCard,
               },
               h,
             ),

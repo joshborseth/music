@@ -11,6 +11,7 @@ import {
 } from '@music/shared'
 
 import {
+  HOME_LIKED_SONGS,
   SEARCH_SHELF_SIZE,
   albumCard,
   artistCollection,
@@ -177,18 +178,23 @@ describe('cards', () => {
 })
 
 describe('shelves', () => {
-  test('home puts your playlists first and drops empty shelves', () => {
-    const { shelves } = homeShelves(library, {
-      shelves: [
-        { _tag: 'SongShelf', title: 'Quick picks', songs: [song('a')] },
-        { _tag: 'AlbumShelf', title: 'Empty', albums: [] },
-      ],
-    })
+  test('home is your playlists, then your latest liked songs', () => {
+    const liked = Array.from({ length: HOME_LIKED_SONGS + 5 }, (_, index) =>
+      song(`l${index}`),
+    )
+    const { shelves } = homeShelves(library, liked)
     expect(shelves.map(({ title }) => title)).toEqual([
       'Your playlists',
-      'Quick picks',
+      'Liked songs',
     ])
     expect(shelves[0]?.cards.map(({ id }) => id)).toEqual(['liked', 'p1'])
+    expect(shelves[1]?.cards).toHaveLength(HOME_LIKED_SONGS)
+    expect(shelves[1]?.cards[0]).toMatchObject({ kind: 'Song', id: 'l0' })
+  })
+
+  test('home leaves out Liked songs while it is empty', () => {
+    const { shelves } = homeShelves(library, [])
+    expect(shelves.map(({ title }) => title)).toEqual(['Your playlists'])
   })
 
   test('search caps each shelf and drops empty ones', () => {
@@ -217,7 +223,6 @@ describe('collections', () => {
       topSongs: [song('a')],
       albums: [album()],
       singles: [],
-      similarArtists: [],
     }
     const collection = artistCollection(details)
     expect(collection).toMatchObject({
@@ -264,7 +269,6 @@ describe('lyrics', () => {
         song: song('a'),
         maybeViewCount: Option.none(),
         maybeLyrics: Option.none(),
-        relatedSongs: [],
       }),
     ).toEqual({ text: null, source: null, lines: null })
   })
@@ -298,11 +302,7 @@ describe('fixtures shared with the TV app', () => {
 
   test('the encoded mapping round-trips through the fixture Schema', () => {
     const encoded = Schema.encodeSync(Tv.TvShelves)(
-      homeShelves(library, {
-        shelves: [
-          { _tag: 'SongShelf', title: 'Quick picks', songs: [song('a')] },
-        ],
-      }),
+      homeShelves(library, [song('a')]),
     )
     expect(Schema.decodeExit(Tv.TvShelves)(encoded)._tag).toBe('Success')
   })

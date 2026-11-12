@@ -2,7 +2,7 @@ import { Array, Duration, Effect, Match, Schema } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
 import {
-  type HomeFeed,
+  LIKED_PLAYLIST_ID,
   type MusicNotFoundError,
   type PlaylistStoreError,
   type Session,
@@ -136,20 +136,11 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
       )
 
     const home = Effect.gen(function* () {
-      const [library, feed] = yield* Effect.all(
-        [
-          playlistStore.library(),
-          // Your playlists still show when YouTube Music is down.
-          youTubeMusic.getHome().pipe(
-            Effect.tapError(error =>
-              Effect.logWarning('TV home feed unavailable', error.message),
-            ),
-            Effect.orElseSucceed((): HomeFeed => ({ shelves: [] })),
-          ),
-        ],
+      const [library, liked] = yield* Effect.all(
+        [playlistStore.library(), playlistStore.playlist(LIKED_PLAYLIST_ID)],
         { concurrency: 'unbounded' },
       )
-      return homeShelves(library, feed)
+      return homeShelves(library, liked.songs)
     }).pipe(Effect.mapError(toRouteError))
 
     const library = playlistStore.library().pipe(

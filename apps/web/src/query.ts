@@ -7,7 +7,6 @@ import {
   AlbumSummary,
   ArtistDetails,
   ArtistSummary,
-  HomeFeed,
   type MusicNotFoundError,
   MyLibrary,
   MyPlaylistDetails,
@@ -136,13 +135,6 @@ export const playlistQuery = Query.define({
     MusicClient.use(client => client.getPlaylist({ playlistId })).pipe(
       withRequestError,
     ),
-})
-
-export const homeQuery = Query.define({
-  name: 'Home',
-  data: HomeFeed,
-  error: RequestError,
-  execute: MusicClient.use(client => client.getHome()).pipe(withRequestError),
 })
 
 /** Every playlist made in the app, and which songs are liked. */

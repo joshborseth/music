@@ -45,9 +45,7 @@ const youTubeMusic = YouTubeMusic.of({
             maybeSource: Option.some('Source: Musixmatch'),
             maybeLines: Option.none(),
           }),
-          relatedSongs: [],
         }),
-  getUpNext: () => down,
   getDurationSeconds: () => down,
   getArtist: () => down,
   getAlbum: albumId =>
@@ -65,7 +63,6 @@ const youTubeMusic = YouTubeMusic.of({
       tracks: [song('t1'), song('t2')],
     }),
   getPlaylist: () => down,
-  getHome: () => down,
 })
 
 const { handler, dispose } = HttpRouter.toWebHandler(
@@ -113,7 +110,7 @@ afterAll(() => dispose())
 const get = (path: string) => handler(new Request(`http://tv${path}`))
 
 describe('TV catalog routes', () => {
-  test('home still lists your playlists when YouTube Music is down', async () => {
+  test('home lists your own playlists, without asking YouTube Music', async () => {
     const response = await get('/tv/home')
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({

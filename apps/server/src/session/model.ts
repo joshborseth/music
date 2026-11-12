@@ -581,36 +581,27 @@ export const wakeTimedOut = (
 export const DOWNLOAD_AHEAD = 5
 /** Songs after those whose links are found ahead, so they start in about a second. */
 export const RESOLVE_AHEAD = 5
-/** With this few songs left after the current one, look past the queue's end. */
-export const QUEUE_END_THRESHOLD = 2
 
 export interface Lookahead {
   /** The current song and the next `DOWNLOAD_AHEAD`. */
   readonly download: ReadonlyArray<string>
   /** The `RESOLVE_AHEAD` songs after those. */
   readonly resolve: ReadonlyArray<string>
-  /** The last queued song, when the queue is about to run out. */
-  readonly maybeEndingAt: Option.Option<string>
 }
 
 /** What to get ready ahead of time. Nothing once the queue has finished. */
 export const lookahead = (model: Model): Lookahead => {
   const index = indexOf(model, model.currentEntryId)
   if (index < 0) {
-    return { download: [], resolve: [], maybeEndingAt: Option.none() }
+    return { download: [], resolve: [] }
   }
   const videoIds = model.queue.map(entry => entry.track.videoId)
-  const remaining = videoIds.length - index - 1
   return {
     download: videoIds.slice(index, index + 1 + DOWNLOAD_AHEAD),
     resolve: videoIds.slice(
       index + 1 + DOWNLOAD_AHEAD,
       index + 1 + DOWNLOAD_AHEAD + RESOLVE_AHEAD,
     ),
-    maybeEndingAt:
-      remaining <= QUEUE_END_THRESHOLD
-        ? Option.fromNullishOr(videoIds.at(-1))
-        : Option.none(),
   }
 }
 

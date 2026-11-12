@@ -4,7 +4,7 @@ import { modifyFields } from 'foldkit/struct'
 import { fromString } from 'foldkit/url'
 import { describe, expect, test } from 'vitest'
 
-import { type Song } from '@music/shared'
+import { LIKED_PLAYLIST_ID, type Song } from '@music/shared'
 
 import {
   BlurSearchInput,
@@ -24,12 +24,39 @@ import { Message } from './message'
 import { type Model } from './model'
 import { SendToSession, UnlockPhoneAudio } from './playback/command'
 import { toQueueTrack } from './playback/queueTrack'
-import { albumQuery, homeQuery, songQuery, songSearchQuery } from './query'
+import {
+  albumQuery,
+  myLibraryQuery,
+  myPlaylistQuery,
+  songQuery,
+  songSearchQuery,
+} from './query'
 import { AppRoute, searchUrl } from './route'
 import { initialModel, restoredScrollTop, update } from './update'
 import { viewTransition } from './viewTransition'
 
 const FIRST_REQUEST_GENERATION = 1
+
+const resolveLikedSongs = Command.resolve(
+  myPlaylistQuery.Fetch,
+  myPlaylistQuery.Message.CompletedFetch({
+    args: { playlistId: LIKED_PLAYLIST_ID },
+    generation: FIRST_REQUEST_GENERATION,
+    result: Result.fail('NotFound'),
+  }),
+)
+
+/** Home loads my playlists and Liked songs, and nothing from YouTube. */
+const resolveHome = [
+  Command.resolve(
+    myLibraryQuery.Fetch,
+    myLibraryQuery.Message.CompletedFetch({
+      generation: FIRST_REQUEST_GENERATION,
+      result: Result.succeed({ playlists: [], likedVideoIds: [] }),
+    }),
+  ),
+  resolveLikedSongs,
+]
 
 const urlOrThrow = (raw: string) =>
   Option.getOrThrowWith(
@@ -278,7 +305,6 @@ describe('detail pages', () => {
             song: theChain,
             maybeViewCount: Option.some(168_000_000),
             maybeLyrics: Option.none(),
-            relatedSongs: [],
           }),
         }),
       ),
@@ -352,13 +378,7 @@ describe('moving between pages', () => {
       update,
       given(albumModel),
       message(Message.ChangedUrl({ url: urlOrThrow('http://localhost/') })),
-      Command.resolve(
-        homeQuery.Fetch,
-        homeQuery.Message.CompletedFetch({
-          generation: FIRST_REQUEST_GENERATION,
-          result: Result.succeed({ shelves: [] }),
-        }),
-      ),
+      ...resolveHome,
       model(model => {
         expect(model.navigation.lastNavigation).toBe('Pop')
         expect(restoredScrollTop(model)).toBe(640)
@@ -435,13 +455,8 @@ describe('back button', () => {
       Command.expectExact(NavigateBackTo({ url: '/' })),
       Command.resolve(NavigateBackTo, Message.CompletedNavigateBackTo()),
       message(Message.ChangedUrl({ url: urlOrThrow('http://localhost/') })),
-      Command.resolve(
-        homeQuery.Fetch,
-        homeQuery.Message.CompletedFetch({
-          generation: FIRST_REQUEST_GENERATION,
-          result: Result.succeed({ shelves: [] }),
-        }),
-      ),
+      // The Library tab already asked for my playlists; only Liked songs is new.
+      resolveLikedSongs,
       model(model => {
         expect(model.route._tag).toBe('Home')
         expect(model.navigation.activeTab).toBe('Home')

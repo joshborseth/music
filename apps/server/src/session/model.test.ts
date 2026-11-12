@@ -63,7 +63,6 @@ describe('session model', () => {
     expect(lookahead(model)).toEqual({
       download: ['a', 'b', 'c'],
       resolve: [],
-      maybeEndingAt: Option.some('c'),
     })
   })
 
@@ -77,12 +76,10 @@ describe('session model', () => {
     expect(lookahead(model)).toEqual({
       download: ['s1', 's2', 's3', 's4', 's5', 's6'],
       resolve: ['s7', 's8', 's9', 's10', 's11'],
-      maybeEndingAt: Option.none(),
     })
     expect(lookahead({ ...model, currentEntryId: null })).toEqual({
       download: [],
       resolve: [],
-      maybeEndingAt: Option.none(),
     })
   })
 
