@@ -23,7 +23,11 @@ const BACKDROP_ARTWORK_WIDTH = 120
 export const HERO_ARTWORK_CLASS =
   'mb-4 aspect-square w-[64vw] max-w-64 shadow-2xl shadow-black/30'
 
-/** The artwork, blurred into a soft glow behind the top of the page. */
+/**
+ * The artwork, blurred into a soft glow behind the top of the page. It
+ * starts in the page color at the very top, because iOS fills the status
+ * bar above it with that color (see `.status-bar-color` in styles.css).
+ */
 export const artworkGlow = (artwork: Artwork, h: HtmlBuilder<Message>): Html =>
   Option.match(artworkUrl(artwork, BACKDROP_ARTWORK_WIDTH), {
     onNone: () => h.empty,
@@ -47,6 +51,11 @@ export const artworkGlow = (artwork: Artwork, h: HtmlBuilder<Message>): Html =>
           h.div([
             h.Class(
               'from-background/0 via-background/60 to-background absolute inset-0 bg-gradient-to-b',
+            ),
+          ]),
+          h.div([
+            h.Class(
+              'from-background to-background/0 absolute inset-x-0 top-0 h-24 bg-gradient-to-b',
             ),
           ]),
         ],

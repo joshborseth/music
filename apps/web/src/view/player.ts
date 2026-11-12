@@ -769,40 +769,46 @@ const deviceButton = (
   )
 }
 
+/** The backdrop's color until the server sends the cover's own. */
+const NEUTRAL_BACKDROP = 'oklch(0.205 0 0)'
+
 /**
- * The cover itself, blurred over the whole player and darkened toward the
- * bottom so the controls read. The one blur and fade the app keeps. Under it
- * sits a solid color from the cover (neutral until the server sends it), so
- * the player is already the cover's color while the image loads.
+ * The solid color from the cover that the player sits on, so the player is
+ * already the cover's color while the image loads.
  */
-const playerBackdrop = (
-  model: Model,
-  track: Session.QueueTrack,
-  h: HtmlBuilder<Message>,
-): Html => {
-  const maybeArtworkUrl = Option.fromNullishOr(track.artworkUrl)
-  const maybeColor = pipe(
-    maybeArtworkUrl,
+const backdropColor = (model: Model, track: Session.QueueTrack): string =>
+  pipe(
+    Option.fromNullishOr(track.artworkUrl),
     Option.flatMap(artworkUrl =>
       AsyncData.getData(
         artworkBackdropQuery.read(model.artworkBackdrops, { artworkUrl }),
       ),
     ),
     Option.flatMap(Option.fromNullishOr),
+    Option.getOrElse(() => NEUTRAL_BACKDROP),
   )
-  return h.div(
+
+/**
+ * The cover itself, blurred over the whole player and darkened toward the
+ * bottom so the controls read, on the solid `color`. The one blur and fade
+ * the app keeps. The top starts as `color` itself and fades into the cover,
+ * because iOS fills the status bar above the player with that one solid
+ * color (see `statusBarColor`), and a blurred image under it would show a
+ * seam.
+ */
+const playerBackdrop = (
+  color: string,
+  track: Session.QueueTrack,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
     [
       h.AriaHidden(true),
-      h.Class(
-        'pointer-events-none absolute inset-0 overflow-hidden bg-neutral-900',
-      ),
-      ...Option.match(maybeColor, {
-        onNone: () => [],
-        onSome: backgroundColor => [h.Style({ backgroundColor })],
-      }),
+      h.Class('pointer-events-none absolute inset-0 overflow-hidden'),
+      h.Style({ backgroundColor: color }),
     ],
     [
-      Option.match(maybeArtworkUrl, {
+      Option.match(Option.fromNullishOr(track.artworkUrl), {
         onNone: () => h.empty,
         onSome: url =>
           h.img([
@@ -819,9 +825,28 @@ const playerBackdrop = (
           'absolute inset-0 bg-gradient-to-b from-black/25 via-black/40 to-black/70',
         ),
       ]),
+      h.div([
+        h.Class('absolute inset-x-0 top-0 h-40'),
+        h.Style({
+          backgroundImage: `linear-gradient(to bottom, ${color} 0.75rem, transparent)`,
+        }),
+      ]),
     ],
   )
-}
+
+/**
+ * Tells iOS what color to fill the status bar with while the player is
+ * open. It must be `fixed` (here, fixed to the sheet), so WebKit takes this
+ * strip as the top edge rather than the full-screen sheet, whose color it
+ * would ignore in favor of the page's (see `.status-bar-color` in
+ * styles.css).
+ */
+const statusBarColor = (color: string, h: HtmlBuilder<Message>): Html =>
+  h.div([
+    h.AriaHidden(true),
+    h.Class('status-bar-color z-10'),
+    h.Style({ backgroundColor: color }),
+  ])
 
 const playerSheet = (
   model: Model,
@@ -831,6 +856,7 @@ const playerSheet = (
 ): Html => {
   const isOpen = model.playerSheet._tag === 'Open'
   const panel = model.playerPanel
+  const color = backdropColor(model, entry.track)
   return h.div(
     [
       h.Role('dialog'),
@@ -845,7 +871,7 @@ const playerSheet = (
       ),
     ],
     [
-      playerBackdrop(model, entry.track, h),
+      playerBackdrop(color, entry.track, h),
       h.div(
         [
           h.Class(
@@ -906,6 +932,7 @@ const playerSheet = (
           ),
         ],
       ),
+      statusBarColor(color, h),
     ],
   )
 }

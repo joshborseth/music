@@ -342,16 +342,58 @@
   background-color: var(--background);
 }
 
+/* THE STATUS BAR
+
+   In a Home Screen app, iOS 26 draws the status bar itself, as one solid
+   color, and the page cannot draw under it. Safari does neither. WebKit
+   picks that color from the page (LocalFrameView::fixedContainerEdges): it
+   hit-tests a point 4px below the middle of the top edge, ignoring
+   pointer-events, and walks up from what it hits to the first fixed or
+   sticky box. A full-width box shorter than the screen gives its own
+   background-color, read from the style. A box the size of the screen keeps
+   the last color instead. Only when it finds a color does iOS fill the
+   status bar with it and turn off its own blur at the top
+   (WKWebView _updateFixedColorExtensionViews, _shouldHideTopScrollPocket).
+   With no color, iOS blurs the top of the page: the small title that fades
+   in, for one, is fixed and full width but has no background.
+
+   So a .status-bar-color strip is always at the top: one over every page in
+   index.html, in the page color, and one in the full player, in the cover's
+   color. Each must be the topmost thing at that point, at least 11px tall
+   (WebKit skips boxes 10px or thinner), and visible (not opacity 0, not
+   visibility: hidden). background-clip: text keeps it from painting
+   anything, so the back button under it shows, while WebKit still reads its
+   color. Whatever sits at the very top of a page must start in that same
+   color, or the status bar shows as a strip above it. That is why the cover
+   glow and the full player start from a solid color at the top.
+
+   This needs the status bar style left at its default. With
+   black-translucent, the page runs under the clock, nothing covers it, and
+   iOS never uses the color. Nothing invisible may sit above the strips:
+   a closed overlay hides with visibility: hidden, which hit tests skip. */
+.status-bar-color {
+  position: fixed;
+  inset: 0 0 auto;
+  height: 12px;
+  pointer-events: none;
+  background-color: var(--background);
+  background-clip: text;
+  -webkit-background-clip: text;
+}
+
+/* Above the page and its top bars, below the sheets. */
+.status-bar-color-page {
+  z-index: 35;
+}
+
 /* THE PAGE SCROLLS, NOT THE DOCUMENT
 
-   iOS 26 blurs the top of a Home Screen app whenever the document is
-   scrolled: the blur is UIKit's scroll edge effect on WKWebView's own scroll
-   view. The page cannot turn it off, and the solid-color workaround WebKit
-   offers only applies where the status bar overlaps the page. So html and
-   body never scroll, and each page scrolls in this fixed box instead, as the
-   Lights app does. The cost: tapping the status bar no longer scrolls to the
-   top, because iOS only does that for the document. The nav bars that fade
-   in as a page scrolls follow this box through the --page timeline. */
+   html and body never scroll, and each page scrolls in this fixed box
+   instead, as the Lights app does, so the web view's own scroll view never
+   moves under the status bar. The cost: tapping the status bar no longer scrolls
+   to the top, because iOS only does that for the document. The nav bars
+   that fade in as a page scrolls follow this box through the --page
+   timeline. */
 .page-scroller {
   position: fixed;
   inset: 0;
@@ -390,6 +432,8 @@
   }
 }
 
+/* visibility, not just opacity: an invisible full-screen layer above the
+   .status-bar-color strip hides it from WebKit, and iOS blurs the top. */
 .sheet-backdrop[data-state='closed'] {
   opacity: 0;
   visibility: hidden;
