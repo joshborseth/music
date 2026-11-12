@@ -520,7 +520,7 @@ export component App inherits Window {
     in property <string> where;
     in property <[ButtonData]> controls;
     in property <[UpNextData]> up-next;
-    // The controls, tab bar, and scan code; hidden while nobody uses the remote.
+    // The controls and tab bar; hidden while nobody uses the remote.
     in property <bool> controls-shown: true;
     // The music's visuals: a small frame stretched over the screen.
     in property <bool> has-visuals;
@@ -765,9 +765,8 @@ export component App inherits Window {
             x: Metrics.u * 37 + stage.shift-x;
             y: Metrics.u * 4;
             width: root.width - Metrics.u * 42;
-            // Ends above the controls while they show.
-            height: root.height - Metrics.u * (root.controls-shown ? 14 : 8);
-            animate height { duration: 320ms; easing: ease-out; }
+            // Ends above the controls and the scan code.
+            height: root.height - Metrics.u * 14;
             clip: true;
             opacity: stage.side ? 1 : 0;
             animate opacity { duration: 600ms; }
@@ -919,14 +918,18 @@ export component App inherits Window {
                     }
                 }
             }
-            QrCard {
-                x: root.width - self.width - Metrics.u * 4;
-                y: root.height - self.height - Metrics.u * 2.2;
-                code: root.qr;
-                size: Metrics.u * 5;
-                title: "Add songs";
-                subtitle: "Scan with your phone\non this Wi-Fi";
-            }
+        }
+
+        // The scan code stays up even while the controls rest, so anyone in
+        // the room can pick up their phone and change the queue. It drifts
+        // with the song so it never burns in.
+        QrCard {
+            x: root.width - self.width - Metrics.u * 4 + stage.shift-x;
+            y: root.height - self.height - Metrics.u * 2.2 + stage.shift-y;
+            code: root.qr;
+            size: Metrics.u * 5;
+            title: "Add songs";
+            subtitle: "Scan with your phone\non this Wi-Fi";
         }
     }
 
