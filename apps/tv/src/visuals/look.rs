@@ -1,16 +1,21 @@
-//! What the visuals take from the cover: three vivid colors and a small copy
-//! of the picture itself, ready to upload to the GPU.
+//! What the visuals take from the cover: one strong color, in three shades,
+//! and a small copy of the picture itself, ready to upload to the GPU.
 
 pub type Rgb = [f32; 3];
 
 /// The cover's side, in pixels, as the visuals draw it.
 pub const COVER_SIDE: usize = 256;
-/// Joshify's own green, lime, and teal, for a song without a colorful cover.
-pub const DEFAULT_COLORS: [Rgb; 3] = [[0.13, 0.83, 0.44], [0.72, 0.96, 0.25], [0.05, 0.72, 0.78]];
+/// Joshify's own green, for a song without a colorful cover.
+const DEFAULT_COLOR: Rgb = [0.13, 0.83, 0.44];
+pub const DEFAULT_COLORS: [Rgb; 3] = shades(DEFAULT_COLOR);
 const HUES: usize = 24;
+/// The cover's color is pushed at least this saturated, so it reads strong.
+const MIN_SATURATION: f32 = 0.9;
 
 /// The now-playing cover, decoded off the UI thread with the artwork.
 pub struct Cover {
+    /// One color in three shades, for the shaders' `uColorA`, `uColorB`, and
+    /// `uColorC`: full strength, a little deeper, and deep. See `strong_color`.
     pub colors: [Rgb; 3],
     /// `COVER_SIDE` × `COVER_SIDE` RGBA pixels, row by row from the top.
     pub rgba: Vec<u8>,
@@ -27,63 +32,70 @@ impl Cover {
             .map(|pixel| [0, 1, 2].map(|channel| f32::from(pixel.0[channel]) / 255.0))
             .collect();
         Self {
-            colors: vivid_colors(&pixels),
+            colors: shades(strong_color(&pixels)),
             rgba: small.into_raw(),
         }
     }
 }
 
-/// The cover's three strongest hues at full brightness. Hues are weighed by
-/// how much of the cover is that color and how colorful it is. A cover
-/// with one hue gets a neighbor and its opposite, for contrast; a grey one
-/// gets the app's colors.
-fn vivid_colors(pixels: &[Rgb]) -> [Rgb; 3] {
+/// The color at full strength, a little deeper, and deep: the same hue
+/// throughout, so the visuals never bring in a color the cover lacks.
+const fn shades([red, green, blue]: Rgb) -> [Rgb; 3] {
+    [
+        [red, green, blue],
+        [red * 0.75, green * 0.75, blue * 0.75],
+        [red * 0.5, green * 0.5, blue * 0.5],
+    ]
+}
+
+/// The cover's main color, made strong: the hue that covers the most of it,
+/// weighed by how colorful each pixel is, at full brightness and at least
+/// `MIN_SATURATION`. The hue is the average of the cover's own pixels near
+/// it, not a rounded one, so a yellow title paints that same yellow. A grey
+/// cover gets the app's green.
+fn strong_color(pixels: &[Rgb]) -> Rgb {
+    let colorful: Vec<(f32, f32, f32)> = pixels
+        .iter()
+        .map(|pixel| hsv(*pixel))
+        .filter(|(_, sat, value)| *sat >= 0.25 && *value >= 0.2)
+        .map(|(hue, sat, value)| (hue, sat, sat * value))
+        .collect();
     let mut weight = [0.0f32; HUES];
-    let mut saturation = [0.0f32; HUES];
-    for pixel in pixels {
-        let (hue, sat, value) = hsv(*pixel);
-        if sat < 0.25 || value < 0.2 {
-            continue;
-        }
-        let bucket = ((hue * HUES as f32) as usize).min(HUES - 1);
-        weight[bucket] += sat * value;
-        saturation[bucket] += sat * sat * value;
+    for (hue, _, strength) in &colorful {
+        weight[bucket(*hue)] += strength;
     }
     let total: f32 = weight.iter().sum();
     if total < pixels.len() as f32 * 0.01 {
-        return DEFAULT_COLORS;
+        return DEFAULT_COLOR;
     }
-    let mut picked: Vec<usize> = Vec::new();
-    while picked.len() < 3 {
-        let best = (0..HUES)
-            .filter(|bucket| {
-                picked.iter().all(|other| {
-                    let apart = bucket.abs_diff(*other);
-                    apart.min(HUES - apart) >= 4
-                })
-            })
-            .filter(|bucket| weight[*bucket] > total * 0.04)
-            .max_by(|a, b| weight[*a].total_cmp(&weight[*b]));
-        match best {
-            Some(bucket) => picked.push(bucket),
-            None => break,
+    // The heaviest run of three neighboring buckets, so a hue that sits on a
+    // bucket's edge is not split in two.
+    let around = |center: usize| (0..3).map(move |step| (center + HUES - 1 + step) % HUES);
+    let peak = (0..HUES)
+        .max_by(|a, b| {
+            let sum = |center: usize| around(center).map(|b| weight[b]).sum::<f32>();
+            sum(*a).total_cmp(&sum(*b))
+        })
+        .unwrap_or(0);
+    let near: Vec<usize> = around(peak).collect();
+    // The weighted average hue on the color wheel, and the average saturation.
+    let (mut x, mut y, mut sat, mut sum) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for (hue, saturation, strength) in &colorful {
+        if near.contains(&bucket(*hue)) {
+            let angle = hue * std::f32::consts::TAU;
+            x += angle.cos() * strength;
+            y += angle.sin() * strength;
+            sat += saturation * strength;
+            sum += strength;
         }
     }
-    let color = |bucket: usize, shift: f32| {
-        let hue = (bucket as f32 + 0.5) / HUES as f32 + shift;
-        let sat = (saturation[bucket] / weight[bucket].max(1e-6)).clamp(0.7, 1.0);
-        rgb(hue.rem_euclid(1.0), sat, 1.0)
-    };
-    let first = picked[0];
-    [
-        color(first, 0.0),
-        picked
-            .get(1)
-            .map_or_else(|| color(first, 0.15), |b| color(*b, 0.0)),
-        picked
-            .get(2)
-            .map_or_else(|| color(first, 0.5), |b| color(*b, 0.0)),
-    ]
+    let hue = (y.atan2(x) / std::f32::consts::TAU).rem_euclid(1.0);
+    let sat = (sat / sum.max(1e-6)).clamp(MIN_SATURATION, 1.0);
+    rgb(hue, sat, 1.0)
+}
+
+fn bucket(hue: f32) -> usize {
+    ((hue * HUES as f32) as usize).min(HUES - 1)
 }
 
 fn hsv([red, green, blue]: Rgb) -> (f32, f32, f32) {
@@ -120,16 +132,65 @@ mod tests {
         Cover::new(&image::DynamicImage::ImageRgb8(image))
     }
 
-    #[test]
-    fn a_red_and_blue_cover_paints_red_and_blue() {
-        let cover = cover_of(|x, _| if x < 40 { [200, 20, 30] } else { [20, 40, 210] });
-        let [first, second, _] = cover.colors;
-        assert!(first[0] > 0.9 && first[2] < 0.35, "{first:?}");
-        assert!(second[2] > 0.9 && second[0] < 0.35, "{second:?}");
+    fn hue_degrees(color: Rgb) -> f32 {
+        hsv(color).0 * 360.0
     }
 
     #[test]
-    fn a_grey_cover_paints_with_the_app_colors() {
+    fn a_grey_cover_with_a_yellow_title_paints_strong_yellow() {
+        // Like "A Kid Named Cudi": black and white, with a yellow-green title
+        // (#c8e632, hue 72°) over a tenth of it.
+        let cover = cover_of(|x, y| {
+            if y < 6 {
+                [200, 230, 50]
+            } else {
+                let grey = ((x * 3 + y) % 200) as u8;
+                [grey, grey, grey]
+            }
+        });
+        let (hue, sat, value) = hsv(cover.colors[0]);
+        assert!((hue * 360.0 - 72.0).abs() < 3.0, "{:?}", cover.colors);
+        assert!(sat >= MIN_SATURATION && value == 1.0, "{:?}", cover.colors);
+    }
+
+    #[test]
+    fn a_red_and_blue_cover_paints_only_the_bigger_color() {
+        let cover = cover_of(|x, _| if x < 40 { [200, 20, 30] } else { [20, 40, 210] });
+        let hue = hue_degrees(cover.colors[0]);
+        assert!(hue > 350.0 || hue < 6.0, "{:?}", cover.colors);
+    }
+
+    #[test]
+    fn a_dull_color_is_made_strong_in_its_own_hue() {
+        // A muted teal, #5a8c8c (hue 180°, saturation 0.36).
+        let cover = cover_of(|_, _| [90, 140, 140]);
+        let (hue, sat, value) = hsv(cover.colors[0]);
+        assert!((hue * 360.0 - 180.0).abs() < 1.0, "{:?}", cover.colors);
+        assert!(sat >= MIN_SATURATION && value == 1.0, "{:?}", cover.colors);
+    }
+
+    #[test]
+    fn a_hue_on_a_bucket_edge_is_not_rounded() {
+        // Hue 45° sits exactly where two of the 24 buckets meet.
+        let cover = cover_of(|_, _| [255, 191, 0]);
+        assert!(
+            (hue_degrees(cover.colors[0]) - 45.0).abs() < 1.0,
+            "{:?}",
+            cover.colors
+        );
+    }
+
+    #[test]
+    fn every_shade_keeps_the_one_hue() {
+        let cover = cover_of(|_, _| [200, 20, 30]);
+        let hue = hue_degrees(cover.colors[0]);
+        for shade in cover.colors {
+            assert!((hue_degrees(shade) - hue).abs() < 1.0, "{:?}", cover.colors);
+        }
+    }
+
+    #[test]
+    fn a_grey_cover_paints_with_the_app_green() {
         let cover = cover_of(|x, y| {
             let grey = ((x + y) * 2) as u8;
             [grey, grey, grey]

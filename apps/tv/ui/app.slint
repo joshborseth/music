@@ -22,6 +22,11 @@ global Theme {
     out property <color> text: #ffffff;
     out property <color> text-2: #ffffffbf;
     out property <color> text-3: #ffffff80;
+    // Lyrics over the visuals: solid greys, because see-through white takes
+    // on the color behind it.
+    out property <color> lyric-sung: #6e7178;
+    out property <color> lyric-next: #b4b7bd;
+    out property <color> lyric-plain: #dfe0e3;
     // Joshify green: `green` for text and marks, `green-deep` for fills.
     out property <color> green: #3ee086;
     out property <color> green-deep: #22d46f;
@@ -803,7 +808,7 @@ export component App inherits Window {
                             font-family: "Inter Display";
                             font-size: Metrics.u * 2.6;
                             font-weight: 800;
-                            color: row.kind == 1 ? white : row.kind == 0 ? #ffffff47 : #ffffff80;
+                            color: row.kind == 1 ? white : row.kind == 0 ? Theme.lyric-sung : Theme.lyric-next;
                             animate color { duration: 450ms; easing: ease-out; }
                             transform-origin: { x: 0, y: self.height / 2 };
                             transform-scale: row.kind == 1 ? 1.0 : 0.88;
@@ -826,7 +831,7 @@ export component App inherits Window {
                                     width: Metrics.u * 1.05;
                                     height: self.width;
                                     border-radius: self.width / 2;
-                                    background: self.lit ? white : #ffffff4d;
+                                    background: self.lit ? white : Theme.lyric-sung;
                                     animate background { duration: 450ms; easing: ease-out; }
                                     transform-scale: self.lit ? 1.18 : 1.0;
                                     animate transform-scale { duration: 520ms; easing: cubic-bezier(0.34, 1.8, 0.64, 1); }
@@ -842,7 +847,7 @@ export component App inherits Window {
                 y: Metrics.u * 2 - clamp(root.progress, 0, 1) * max(0, self.preferred-height - parent.height + Metrics.u * 8);
                 animate y { duration: 1200ms; easing: linear; }
                 text: root.lyrics;
-                color: #ffffffd8;
+                color: Theme.lyric-plain;
                 font-family: "Inter Display";
                 font-size: Metrics.u * 2;
                 font-weight: 800;

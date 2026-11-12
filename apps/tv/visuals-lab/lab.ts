@@ -194,11 +194,25 @@ const madeUpCover = (): HTMLCanvasElement => {
   return canvas
 }
 
-/** The cover's three most vivid hues, like `look.rs`. */
-const vividColors = (
-  pixels: Uint8ClampedArray,
-): Array<[number, number, number]> => {
+type Rgb = [number, number, number]
+
+const hsvToRgb = (hue: number, sat: number, value: number): Rgb => {
+  const channel = (n: number) => {
+    const k = (((n + hue * 6) % 6) + 6) % 6
+    return value - value * sat * Math.min(1, Math.max(0, Math.min(k, 4 - k)))
+  }
+  return [channel(5), channel(3), channel(1)]
+}
+
+/**
+ * The cover's one strong color in three shades, like `look.rs`: the hue that
+ * covers the most of it, averaged from its own pixels, at full brightness and
+ * at least 0.9 saturation; then a little deeper, and deep.
+ */
+const strongColors = (pixels: Uint8ClampedArray): Array<Rgb> => {
   const hues = 24
+  const bucketOf = (hue: number) => Math.min(hues - 1, Math.floor(hue * hues))
+  const colorful: Array<{ hue: number; sat: number; strength: number }> = []
   const weight = new Array<number>(hues).fill(0)
   for (let i = 0; i < pixels.length; i += 4) {
     const r = (pixels[i] ?? 0) / 255
@@ -212,37 +226,47 @@ const vividColors = (
     if (max === r) hue = ((g - b) / (max - min) + 6) % 6
     else if (max === g) hue = (b - r) / (max - min) + 2
     else hue = (r - g) / (max - min) + 4
-    const bucket = Math.min(hues - 1, Math.floor((hue / 6) * hues))
+    hue /= 6
+    colorful.push({ hue, sat, strength: sat * max })
+    const bucket = bucketOf(hue)
     weight[bucket] = (weight[bucket] ?? 0) + sat * max
   }
-  const picked: Array<number> = []
-  while (picked.length < 3) {
-    let best = -1
-    let bestWeight = -1
-    weight.forEach((w, bucket) => {
-      const near = picked.some(
-        p => Math.min(Math.abs(p - bucket), hues - Math.abs(p - bucket)) < 3,
-      )
-      if (!near && w > bestWeight) {
-        best = bucket
-        bestWeight = w
-      }
-    })
-    picked.push(best < 0 ? (picked.length * 8) % hues : best)
-  }
-  return picked.map(bucket => {
-    const h = ((bucket + 0.5) / hues) * 6
-    const x = 1 - Math.abs((h % 2) - 1)
-    const table: Array<[number, number, number]> = [
-      [1, x, 0],
-      [x, 1, 0],
-      [0, 1, x],
-      [0, x, 1],
-      [x, 0, 1],
-      [1, 0, x],
-    ]
-    return table[Math.floor(h) % 6] ?? [1, 1, 1]
-  })
+  const total = weight.reduce((sum, w) => sum + w, 0)
+  const strong: Rgb =
+    total < (pixels.length / 4) * 0.01
+      ? [0.13, 0.83, 0.44]
+      : (() => {
+          const around = (center: number) =>
+            [0, 1, 2].map(step => (center + hues - 1 + step) % hues)
+          const sumAround = (center: number) =>
+            around(center).reduce((sum, b) => sum + (weight[b] ?? 0), 0)
+          let peak = 0
+          for (let b = 1; b < hues; b++) {
+            if (sumAround(b) > sumAround(peak)) peak = b
+          }
+          const near = around(peak)
+          let x = 0
+          let y = 0
+          let satSum = 0
+          let sum = 0
+          for (const pixel of colorful) {
+            if (!near.includes(bucketOf(pixel.hue))) continue
+            const angle = pixel.hue * Math.PI * 2
+            x += Math.cos(angle) * pixel.strength
+            y += Math.sin(angle) * pixel.strength
+            satSum += pixel.sat * pixel.strength
+            sum += pixel.strength
+          }
+          const hue = (((Math.atan2(y, x) / (Math.PI * 2)) % 1) + 1) % 1
+          const sat = Math.min(1, Math.max(0.9, satSum / Math.max(sum, 1e-6)))
+          return hsvToRgb(hue, sat, 1)
+        })()
+  const shade = (k: number): Rgb => [
+    strong[0] * k,
+    strong[1] * k,
+    strong[2] * k,
+  ]
+  return [shade(1), shade(0.75), shade(0.5)]
 }
 
 // GL --------------------------------------------------------------------
@@ -487,10 +511,11 @@ const makeEngine = (
   const coverTexture = dataTexture(gl, COVER, COVER, 'rgba', false)
   const history = new Uint8Array(BANDS * HISTORY_ROWS)
   let historyAge = 0
-  let colors: Array<[number, number, number]> = [
-    [1, 0.31, 0.51],
-    [0.76, 0.23, 1],
-    [0.36, 0.36, 1],
+  // Joshify green in its three shades, until a cover loads.
+  let colors: Array<Rgb> = [
+    [0.13, 0.83, 0.44],
+    [0.0975, 0.6225, 0.33],
+    [0.065, 0.415, 0.22],
   ]
   let hasCover = 0
 
@@ -514,7 +539,7 @@ const makeEngine = (
       gl.UNSIGNED_BYTE,
       new Uint8Array(data.data.buffer),
     )
-    colors = vividColors(data.data)
+    colors = strongColors(data.data)
     hasCover = 1
   }
 
