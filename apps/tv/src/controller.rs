@@ -246,7 +246,16 @@ impl Controller {
                 return;
             }
             UiAction::Enqueue { tracks, placement } => {
+                // With nothing queued, the server starts what was added on
+                // the player; songs picked on the TV should play on the TV.
+                let starts_playing = self
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| state.current_entry_id.is_none());
                 self.send(ClientMessage::Enqueue { tracks, placement });
+                if starts_playing && !self.is_active() {
+                    self.send(here);
+                }
                 return;
             }
             UiAction::SkipTo(entry_id) => {
@@ -258,7 +267,7 @@ impl Controller {
                 return;
             }
             UiAction::PlayHere => {
-                self.send(here);
+                self.play_here();
                 return;
             }
             _ => {}
@@ -268,9 +277,7 @@ impl Controller {
             return;
         }
         match action {
-            UiAction::PlayPause if !self.is_active() => self.send(ClientMessage::Transfer {
-                device_id: self.device_id.clone(),
-            }),
+            UiAction::PlayPause if !self.is_active() => self.play_here(),
             UiAction::PlayPause if state.playing => self.send(ClientMessage::Pause { at: None }),
             UiAction::PlayPause => self.send(ClientMessage::Resume {}),
             UiAction::SeekBy(delta) => {
@@ -286,6 +293,17 @@ impl Controller {
             UiAction::Next => self.send(ClientMessage::Next {}),
             UiAction::Previous => self.send(ClientMessage::Previous {}),
             _ => {}
+        }
+    }
+
+    /// Take playback from another device, and play even if it was paused.
+    fn play_here(&self) {
+        let paused = self.state.as_ref().is_some_and(|state| !state.playing);
+        self.send(ClientMessage::Transfer {
+            device_id: self.device_id.clone(),
+        });
+        if paused {
+            self.send(ClientMessage::Resume {});
         }
     }
 

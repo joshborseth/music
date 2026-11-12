@@ -101,7 +101,7 @@ export const TvVersionRoute = HttpRouter.use(router =>
 )
 
 /** How long an installing TV may take to close its session connection. */
-const UPDATE_DROP_TIMEOUT = '10 minutes'
+const UPDATE_DROP_TIMEOUT = '2 minutes'
 /** How long a freshly installed TV app gets to reconnect before it is reopened. */
 const REOPEN_AFTER = '20 seconds'
 
@@ -183,6 +183,17 @@ export const TvUpdatingRoute = HttpRouter.use(router =>
             ),
           ),
         )
+        return HttpServerResponse.empty({ status: 204 })
+      }),
+    )
+    // `DELETE /tv/updating`: the install failed and the app is still open,
+    // so stop watching; reopening later could turn a TV back on.
+    yield* router.add(
+      'DELETE',
+      '/tv/updating',
+      Effect.gen(function* () {
+        yield* FiberHandle.clear(watch)
+        yield* Effect.logInfo('The TV update did not install; not reopening it')
         return HttpServerResponse.empty({ status: 204 })
       }),
     )

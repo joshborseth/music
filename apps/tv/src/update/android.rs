@@ -113,6 +113,9 @@ impl Platform for Android {
         let sdk = sdk_int()?;
         log::info!("update: installing on API {sdk}");
         if sdk >= 31 {
+            if !still_quiet() {
+                return Err("Music started playing, so the update waits".into());
+            }
             let session = with_context("the install session", |env, context| {
                 commit_session(env, context, apk)
             })?;

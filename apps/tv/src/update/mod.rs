@@ -487,13 +487,28 @@ impl Worker {
         if wants_update(&self.installed, latest.as_deref()).as_deref() != Some(build.as_str()) {
             return Ok(Next::Soon);
         }
+        // NOTE: music may have started during the checks above; nothing can
+        // stop an install once it is committed.
+        if self.quiet.borrow().is_none() {
+            return Ok(Next::Soon);
+        }
         let platform = self.platform.clone();
-        match on_own_thread(move || platform.in_foreground()).await {
+        let announced = match on_own_thread(move || platform.in_foreground()).await {
             Ok(true) => self.announce().await,
             Ok(false) => {
-                log::info!("update: installing in the background; Music stays closed after")
+                log::info!("update: installing in the background; Music stays closed after");
+                false
             }
-            Err(error) => log::warn!("update: could not tell whether Music is on screen: {error}"),
+            Err(error) => {
+                log::warn!("update: could not tell whether Music is on screen: {error}");
+                false
+            }
+        };
+        if self.quiet.borrow().is_none() {
+            if announced {
+                self.cancel_announce().await;
+            }
+            return Ok(Next::Soon);
         }
         self.reporter.set(UpdateStatus::Installing);
         self.attempts.record(&build);
@@ -504,11 +519,16 @@ impl Worker {
         );
         let platform = self.platform.clone();
         let quiet = self.quiet.clone();
-        on_own_thread(move || {
+        let installed = on_own_thread(move || {
             let still_quiet = move || quiet.borrow().is_some();
             platform.install(&apk, &still_quiet)
         })
-        .await?;
+        .await;
+        if installed.is_err() && announced {
+            // The app stays up, so the server must not reopen it later.
+            self.cancel_announce().await;
+        }
+        installed?;
         // Still running: Android is showing its installer, or will finish
         // the session later. The next check looks again.
         log::info!("update: the install of build {build} is under way");
@@ -653,8 +673,9 @@ impl Worker {
         }
     }
 
-    /// Tell the server, so it reopens the app once the update has replaced it.
-    async fn announce(&self) {
+    /// Tell the server, so it reopens the app once the update has replaced
+    /// it. Returns whether the server heard.
+    async fn announce(&self) -> bool {
         let sent = self
             .client
             .post(format!("{}/tv/updating", self.server))
@@ -662,9 +683,24 @@ impl Worker {
             .send()
             .await
             .and_then(reqwest::Response::error_for_status);
-        if let Err(error) = sent {
+        if let Err(error) = &sent {
             // NOTE: install anyway; the app just stays closed afterwards.
             log::warn!("update: could not tell the server about the update: {error}");
+        }
+        sent.is_ok()
+    }
+
+    /// The install did not happen: the server should not reopen the app.
+    async fn cancel_announce(&self) {
+        let sent = self
+            .client
+            .delete(format!("{}/tv/updating", self.server))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status);
+        if let Err(error) = sent {
+            log::warn!("update: could not cancel the server's reopen: {error}");
         }
     }
 }

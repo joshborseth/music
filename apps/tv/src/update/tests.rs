@@ -413,6 +413,20 @@ async fn gives_up_on_a_build_that_never_installs() {
     assert_eq!(downloads, 1);
     // Each failure reached the server's log once.
     assert!(server.requests().contains(&"POST /tv-log".to_owned()));
+    // Each failed install took back its announcement, so the server never
+    // reopens (or turns on) a TV whose app never closed.
+    let announced = server
+        .requests()
+        .iter()
+        .filter(|r| *r == "POST /tv/updating")
+        .count();
+    let cancelled = server
+        .requests()
+        .iter()
+        .filter(|r| *r == "DELETE /tv/updating")
+        .count();
+    assert!(announced > 0);
+    assert_eq!(announced, cancelled);
     // A restart remembers the tries.
     let (_again, mut again) = start(&server, "old-1", &android);
     until(&mut again, &gave_up).await;

@@ -41,6 +41,8 @@ const ROW_PIXELS: u32 = 160;
 const COVER_PIXELS: u32 = 540;
 const HERO_PIXELS: u32 = 720;
 const IMAGE_CACHE: usize = 260;
+/// A failed image is asked for again only after this long.
+const IMAGE_RETRY: Duration = Duration::from_secs(30);
 
 /// OK held this long opens the options menu.
 const HOLD: Duration = Duration::from_millis(450);
@@ -201,8 +203,10 @@ pub struct Ui {
     images: HashMap<(String, u32), Image>,
     image_order: VecDeque<(String, u32)>,
     image_pending: HashSet<(String, u32)>,
+    image_failed: HashMap<(String, u32), Instant>,
     hero: Option<Hero>,
     hero_pending: Option<String>,
+    hero_failed: Option<(String, Instant)>,
     analyzer: Analyzer,
     bars_timer: Timer,
     tick_timer: Timer,
@@ -235,7 +239,10 @@ impl Ui {
             nav: Nav::new(),
             runtime,
             catalog: catalog::Client::new(server.clone()),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(20))
+                .build()
+                .unwrap_or_default(),
             server,
             actions,
             hooks,
@@ -245,8 +252,10 @@ impl Ui {
             images: HashMap::new(),
             image_order: VecDeque::new(),
             image_pending: HashSet::new(),
+            image_failed: HashMap::new(),
             hero: None,
             hero_pending: None,
+            hero_failed: None,
             analyzer: Analyzer::new(),
             bars_timer: Timer::default(),
             tick_timer: Timer::default(),
@@ -286,6 +295,7 @@ impl Ui {
             if pressed && !repeat {
                 self.saver = false;
                 self.ok_down = None;
+                self.back_released_to_android = false;
                 self.render();
             }
             return true;
@@ -314,7 +324,8 @@ impl Ui {
             return true;
         }
         if key == Key::Back {
-            if pressed {
+            // Holding Back must not count as pressing it again and again.
+            if pressed && !repeat {
                 self.back_released_to_android = !self.dispatch(Key::Back, now);
                 return !self.back_released_to_android;
             }
@@ -564,6 +575,13 @@ impl Ui {
         if let Some(image) = self.images.get(&key) {
             return Some(image.clone());
         }
+        if self
+            .image_failed
+            .get(&key)
+            .is_some_and(|at| at.elapsed() < IMAGE_RETRY)
+        {
+            return None;
+        }
         if self.image_pending.insert(key.clone()) {
             let http = self.http.clone();
             let server = self.server.clone();
@@ -583,7 +601,13 @@ impl Ui {
                                 }
                             }
                         }
-                        Err(error) => log::warn!("artwork failed: {error}"),
+                        Err(error) => {
+                            log::warn!("artwork failed: {error}");
+                            if ui.image_failed.len() > IMAGE_CACHE {
+                                ui.image_failed.retain(|_, at| at.elapsed() < IMAGE_RETRY);
+                            }
+                            ui.image_failed.insert(key, Instant::now());
+                        }
                     }
                 },
             );
@@ -599,6 +623,10 @@ impl Ui {
         };
         if self.hero.as_ref().is_some_and(|hero| hero.url == url)
             || self.hero_pending.as_deref() == Some(url)
+            || self
+                .hero_failed
+                .as_ref()
+                .is_some_and(|(failed, at)| failed == url && at.elapsed() < IMAGE_RETRY)
         {
             return;
         }
@@ -623,7 +651,10 @@ impl Ui {
                             tint: decoded.tint.unwrap_or(Color::from_rgb_u8(0x1b, 0x15, 0x30)),
                         });
                     }
-                    Err(error) => log::warn!("cover failed: {error}"),
+                    Err(error) => {
+                        log::warn!("cover failed: {error}");
+                        ui.hero_failed = Some((wanted, Instant::now()));
+                    }
                 }
             },
         );
