@@ -150,6 +150,10 @@ export const upcomingEntries = (
     }),
   )
 
+/** Next does nothing once the current song is the last one queued. */
+export const hasNextEntry = (state: Session.SessionState): boolean =>
+  Array.isReadonlyArrayNonEmpty(upcomingEntries(state))
+
 export const activeDevice = (
   state: Session.SessionState,
 ): Option.Option<Session.Device> =>
