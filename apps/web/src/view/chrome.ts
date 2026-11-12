@@ -70,7 +70,7 @@ const compactTitle = (title: string, h: HtmlBuilder<Message>): Html =>
     [
       h.AriaHidden(true),
       h.Class(
-        'reveal-on-scroll pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height))] items-end justify-center pb-2.5',
+        'reveal-on-scroll pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height))] items-end justify-center pb-2.5 [--reveal-start:calc(40px+var(--large-title-gap))] [--reveal-end:calc(96px+var(--large-title-gap))]',
       ),
     ],
     [h.span([h.Class('text-[17px] font-semibold')], [title])],
@@ -85,7 +85,7 @@ export const largeTitle = (
   h.header(
     [
       h.Class(
-        'flex items-end justify-between gap-3 px-4 pt-[calc(var(--safe-top)+var(--nav-bar-height))] pb-2',
+        'flex items-end justify-between gap-3 px-4 pt-[calc(var(--safe-top)+var(--nav-bar-height)+var(--large-title-gap))] pb-2',
       ),
     ],
     [
@@ -107,7 +107,7 @@ export const largeTitleHeader = (
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => [
   scrollEdge(
-    'reveal-on-scroll [--reveal-start:0px] [--reveal-end:var(--nav-bar-height)]',
+    'reveal-on-scroll [--reveal-start:var(--large-title-gap)] [--reveal-end:calc(var(--nav-bar-height)+var(--large-title-gap))]',
     h,
   ),
   compactTitle(title, h),
