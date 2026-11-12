@@ -16,6 +16,7 @@ import { MusicRpcsLive } from './rpcHandlers.ts'
 import { SessionHubLive, SessionRoutes } from './session/hub.ts'
 import { TvWakerLive } from './session/wake.ts'
 import { TvAppRoutes } from './tvApp.ts'
+import { TvCatalogRoutes } from './tvCatalog/routes.ts'
 import { YouTubeMusicLive } from './youtubeMusic/service.ts'
 
 const DEFAULT_PORT = 3001
@@ -39,11 +40,18 @@ const RpcRoutes = RpcServer.layerHttp({
   protocol: 'http',
 }).pipe(
   Layer.provide(MusicRpcsLive),
+  Layer.provide(RpcSerialization.layerNdjson),
+)
+
+/**
+ * The catalog in both shapes: Effect RPC for the web app, plain JSON under
+ * `/tv/` for the TV app. They share one playlist store and one prefetcher.
+ */
+const CatalogRoutes = Layer.mergeAll(RpcRoutes, TvCatalogRoutes).pipe(
   Layer.provide(YouTubeMusicLive),
   Layer.provide(ArtworkPaletteLive),
   Layer.provide(PlaylistStoreLive.pipe(Layer.provide(BunServices.layer))),
   Layer.provide(AudioLive),
-  Layer.provide(RpcSerialization.layerNdjson),
 )
 
 /**
@@ -81,7 +89,7 @@ const PlaybackRoutes = Layer.mergeAll(
 
 const ServerLive = HttpRouter.serve(
   Layer.mergeAll(
-    RpcRoutes,
+    CatalogRoutes,
     PlaybackRoutes,
     ArtworkRoutes,
     TvAppRoutes,
