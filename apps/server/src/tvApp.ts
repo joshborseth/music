@@ -1,10 +1,14 @@
 import {
+  Array,
   Config,
   Effect,
   FiberHandle,
   FileSystem,
   Layer,
   Option,
+  Order,
+  Path,
+  Ref,
   Stream,
 } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
@@ -200,9 +204,135 @@ export const TvUpdatingRoute = HttpRouter.use(router =>
   }),
 )
 
+/** The largest screenshot the TV may send (it sends half size PNGs). */
+const MAX_FRAME_BYTES = 6 * 1024 * 1024
+/** Every PNG file starts with these bytes. */
+const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10]
+/** Screenshots kept; older ones are deleted. */
+const FRAMES_KEPT = 30
+/** A request for a screenshot lapses after this long. */
+const CAPTURE_WINDOW_MS = 60_000
+
+/**
+ * Pictures of the TV's screen, to check its visuals: nobody can see the TV
+ * from this box. `POST /tv/capture?count=N` asks for N; the TV asks
+ * `GET /tv/capture` every few seconds while its visuals show (200 when one
+ * is wanted, 204 when not) and sends each to `POST /tv/frame` as a PNG,
+ * saved in `TV_FRAMES_DIR` (default `~/.cache/music/tv-frames`).
+ */
+export const TvCaptureRoute = HttpRouter.use(router =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const home = yield* Config.String('HOME').pipe(Config.withDefault('/tmp'))
+    const dir = yield* Config.String('TV_FRAMES_DIR').pipe(
+      Config.withDefault(path.join(home, '.cache', 'music', 'tv-frames')),
+    )
+    const wanted = yield* Ref.make({ count: 0, until: 0 })
+    const now = Effect.clockWith(clock => clock.currentTimeMillis)
+
+    yield* router.add(
+      'POST',
+      '/tv/capture',
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const url = new URL(request.url, 'http://tv')
+        const asked = Number(url.searchParams.get('count') ?? '1')
+        const count = Number.isFinite(asked)
+          ? Math.min(Math.max(Math.round(asked), 1), 10)
+          : 1
+        const at = yield* now
+        yield* Ref.set(wanted, { count, until: at + CAPTURE_WINDOW_MS })
+        yield* Effect.logInfo('Asked the TV for screenshots', count)
+        return HttpServerResponse.text(
+          `Asked for ${count}; they land in ${dir}\n`,
+        )
+      }),
+    )
+
+    yield* router.add(
+      'GET',
+      '/tv/capture',
+      Effect.gen(function* () {
+        const at = yield* now
+        const take = yield* Ref.modify(wanted, state =>
+          state.count > 0 && at < state.until
+            ? [true, { ...state, count: state.count - 1 }]
+            : // Keep the window open for the frames already on their way.
+              [false, { ...state, count: 0 }],
+        )
+        return HttpServerResponse.empty({ status: take ? 200 : 204 })
+      }),
+    )
+
+    yield* router.add(
+      'POST',
+      '/tv/frame',
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const at = yield* now
+        const { until } = yield* Ref.get(wanted)
+        // Only frames that were asked for, within a minute or so.
+        if (at > until + CAPTURE_WINDOW_MS) {
+          return HttpServerResponse.text('No screenshot was asked for', {
+            status: 409,
+          })
+        }
+        // Check the size before reading, and that it really is a PNG after:
+        // agents open these files to see the TV.
+        const length = Number(request.headers['content-length'] ?? '0')
+        if (
+          request.headers['content-type'] !== 'image/png' ||
+          !(length <= MAX_FRAME_BYTES)
+        ) {
+          return HttpServerResponse.text('Send a PNG of at most 6 MB', {
+            status: 413,
+          })
+        }
+        const body = yield* request.arrayBuffer
+        const bytes = new Uint8Array(body)
+        if (
+          bytes.byteLength > MAX_FRAME_BYTES ||
+          !PNG_SIGNATURE.every((byte, index) => bytes[index] === byte)
+        ) {
+          return HttpServerResponse.text('Not a PNG', { status: 415 })
+        }
+        yield* fs.makeDirectory(dir, { recursive: true })
+        const file = path.join(
+          dir,
+          `${new Date(at).toISOString().replaceAll(':', '-')}.png`,
+        )
+        yield* fs.writeFile(file, bytes)
+        const names = yield* fs.readDirectory(dir)
+        const old = Array.dropRight(
+          Array.sort(
+            Array.filter(names, name => name.endsWith('.png')),
+            Order.String,
+          ),
+          FRAMES_KEPT,
+        )
+        yield* Effect.forEach(old, name => fs.remove(path.join(dir, name)), {
+          discard: true,
+        })
+        yield* Effect.logInfo('A screenshot from the TV', file)
+        return HttpServerResponse.empty({ status: 204 })
+      }).pipe(
+        Effect.catch(error =>
+          Effect.succeed(
+            HttpServerResponse.text(`Could not save it: ${String(error)}`, {
+              status: 500,
+            }),
+          ),
+        ),
+      ),
+    )
+  }),
+)
+
 /** Routes that need nothing from the session. */
 export const TvAppRoutes = Layer.mergeAll(
   TvLogRoute,
   TvApkRoute,
   TvVersionRoute,
+  TvCaptureRoute,
 )

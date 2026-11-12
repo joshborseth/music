@@ -94,6 +94,47 @@ pub struct Lyrics {
     pub lines: Option<Vec<LyricLine>>,
 }
 
+/// What a stretch of a song is, as the server's analysis heard it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SectionKind {
+    Intro,
+    Verse,
+    Chorus,
+    Bridge,
+    Breakdown,
+    Drop,
+    Outro,
+}
+
+/// A stretch of a song that hangs together. Sections that sound alike share
+/// a `group`; `energy` runs 0 to 1 across the song.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Section {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub kind: SectionKind,
+    pub group: u32,
+    pub energy: f32,
+}
+
+/// A song's beats, bars, sections, and drops, worked out by the server from
+/// the audio before it plays. Times are seconds into the song.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Analysis {
+    pub video_id: String,
+    pub duration_seconds: f64,
+    pub tempo: f64,
+    pub beats: Vec<f64>,
+    pub downbeats: Vec<f64>,
+    pub sections: Vec<Section>,
+    pub drops: Vec<f64>,
+    pub accents: Vec<f64>,
+    pub energy_step_seconds: f64,
+    pub energy: Vec<f32>,
+}
+
 /// One timed line, sung until the next starts. Empty `text` marks a break.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -196,6 +237,14 @@ impl Client {
         })
     }
 
+    pub async fn analysis(&self, video_id: &str) -> Result<Analysis, String> {
+        let path = format!(
+            "/tv/analysis?videoId={}",
+            crate::view::percent_encode(video_id)
+        );
+        self.get(&path).await
+    }
+
     pub async fn liked(&self, video_id: &str) -> Result<bool, String> {
         let path = format!(
             "/tv/liked?videoId={}",
@@ -291,6 +340,15 @@ mod tests {
         assert!(version.build.is_some());
         let none: Version = fixture("version-none.json");
         assert_eq!(none.build, None);
+    }
+
+    #[test]
+    fn decodes_an_analysis() {
+        let analysis: Analysis = fixture("analysis.json");
+        assert_eq!(analysis.video_id, "abc123");
+        assert_eq!(analysis.downbeats.len() * 4, analysis.beats.len());
+        assert_eq!(analysis.sections[1].kind, SectionKind::Drop);
+        assert_eq!(analysis.drops, vec![4.5]);
     }
 
     #[test]

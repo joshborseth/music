@@ -66,9 +66,9 @@ pub enum Step {
     /// OK held long enough to open the menu.
     Hold,
     Wait(Duration),
-    /// Rest on the now-playing screen, or once there, move its visuals on
-    /// to their next scene.
-    NextScene,
+    /// Rest on the now-playing screen. Its visuals need the GPU, so the
+    /// screenshots show the cover backdrop in their place.
+    Rest,
     Shot(&'static str),
 }
 
@@ -224,8 +224,8 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
                 runner.pump(Duration::from_millis(60));
             }
             Step::Wait(duration) => runner.pump(duration),
-            Step::NextScene => {
-                ui::with(ui::Ui::next_scene);
+            Step::Rest => {
+                ui::with(ui::Ui::rest);
                 runner.pump(Duration::from_millis(60));
             }
             Step::Shot(name) => {

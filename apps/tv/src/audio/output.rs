@@ -122,7 +122,17 @@ impl Device {
         let stream = device
             .build_output_stream::<f32, _, _>(
                 config,
-                move |out, _| render(&mut consumer, &shared, out),
+                move |out, info: &cpal::OutputCallbackInfo| {
+                    // How long until the end of this buffer is heard: the
+                    // device's own delay plus the buffer itself.
+                    let timestamp = info.timestamp();
+                    let ahead = timestamp.playback.duration_since(timestamp.callback);
+                    let buffer = std::time::Duration::from_secs_f64(
+                        (out.len() / CHANNELS) as f64 / f64::from(rate),
+                    );
+                    super::scope::SCOPE.set_latency(ahead + buffer);
+                    render(&mut consumer, &shared, out);
+                },
                 |error| log::error!("audio device error: {error}"),
                 None,
             )

@@ -17,6 +17,7 @@ import { QueueTrack } from './session.ts'
  *   GET  /tv/search?q=…                    TvShelves  songs, artists, albums, playlists
  *   GET  /tv/collection?kind=…&id=…        TvCollection
  *   GET  /tv/lyrics?videoId=…              TvLyrics
+ *   GET  /tv/analysis?videoId=…            TvAnalysis the song's beats, bars, sections and drops
  *   GET  /tv/liked?videoId=…               TvLiked
  *   POST /tv/like   (TvLikeRequest)        TvLiked
  *   GET  /tv/version                       TvVersion
@@ -133,3 +134,54 @@ export const TvVersion = Schema.Struct({
   build: Schema.NullOr(Schema.String),
 })
 export type TvVersion = typeof TvVersion.Type
+
+/**
+ * A stretch of a song that hangs together: an intro, a verse, a chorus.
+ * `group` numbers the sections that sound alike, so a chorus that comes back
+ * shares its first appearance's group. `energy` is how loud and busy it is,
+ * 0 to 1 across the song.
+ */
+export const TvSectionKind = Schema.Literals([
+  'Intro',
+  'Verse',
+  'Chorus',
+  'Bridge',
+  'Breakdown',
+  'Drop',
+  'Outro',
+])
+export type TvSectionKind = typeof TvSectionKind.Type
+
+export const TvSection = Schema.Struct({
+  startSeconds: Schema.Number,
+  endSeconds: Schema.Number,
+  kind: TvSectionKind,
+  group: Schema.Number,
+  energy: Schema.Number,
+})
+export type TvSection = typeof TvSection.Type
+
+/**
+ * What the TV's visuals know about a song before it plays, worked out once
+ * from the cached audio. Times are seconds into the song.
+ *
+ * - `beats`: every beat, in order. `downbeats` are the beats that start a bar.
+ * - `drops`: the moments the music lands after a build-up (where the visuals
+ *   hit hardest); the build-up is the few bars before each.
+ * - `accents`: strong hits between beats (snares, stabs), at most a few a second.
+ * - `energy`: loudness 0 to 1 every `energyStepSeconds`, smoothed, normalized
+ *   to the song's own loudest moment.
+ */
+export const TvAnalysis = Schema.Struct({
+  videoId: Schema.String,
+  durationSeconds: Schema.Number,
+  tempo: Schema.Number,
+  beats: Schema.Array(Schema.Number),
+  downbeats: Schema.Array(Schema.Number),
+  sections: Schema.Array(TvSection),
+  drops: Schema.Array(Schema.Number),
+  accents: Schema.Array(Schema.Number),
+  energyStepSeconds: Schema.Number,
+  energy: Schema.Array(Schema.Number),
+})
+export type TvAnalysis = typeof TvAnalysis.Type
