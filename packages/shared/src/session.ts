@@ -47,9 +47,16 @@ export const Device = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   kind: DeviceKind,
+  /** The app is open on it and connected right now. */
   online: Schema.Boolean,
   /** The server asked the TV to wake and open the app, and is waiting. */
   waking: Schema.Boolean,
+  /**
+   * Whether the TV itself is on, as Home Assistant last saw it, so an
+   * offline TV can say whether it is off or only has the app closed. Null
+   * when unknown, and for every device that is not a TV.
+   */
+  poweredOn: Schema.NullOr(Schema.Boolean),
   /**
    * The device's own output volume, from 0 to 1, as it last reported it.
    * Null when it can't be set from another device (the phone, whose
@@ -173,6 +180,14 @@ export const Transfer = Schema.TaggedStruct('Transfer', {
   deviceId: Schema.String,
 })
 
+/**
+ * Turn a device on and open the app on it, without moving playback there:
+ * the TV, so it is ready to pick from, or to show what plays.
+ */
+export const Wake = Schema.TaggedStruct('Wake', {
+  deviceId: Schema.String,
+})
+
 /** The active player's position, about once a second while playing. */
 export const Progress = Schema.TaggedStruct('Progress', {
   entryId: Schema.String,
@@ -223,6 +238,7 @@ export const ClientMessage = Schema.Union([
   Previous,
   SetAutoplay,
   Transfer,
+  Wake,
   Progress,
   Advanced,
   TrackEnded,

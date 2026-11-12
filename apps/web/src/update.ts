@@ -1344,6 +1344,8 @@ const updateMessage = (model: Model, message: Message) =>
         dismissSheet,
         stepModel => Playback.clickDevice(stepModel, deviceId),
       ])(model),
+    ClickedWakeDevice: ({ deviceId }) =>
+      Playback.sendCommand(model, { _tag: 'Wake', deviceId }),
     ClickedQueueEntry: ({ entryId }) =>
       followingCurrentSong(stepModel =>
         Playback.clickQueueEntry(stepModel, entryId),

@@ -1,4 +1,4 @@
-import { Array, Option, Schema, pipe } from 'effect'
+import { Array, Match, Option, Schema, pipe } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
 import { Session } from '@music/shared'
@@ -146,6 +146,111 @@ export const activeDevice = (
   state: Session.SessionState,
 ): Option.Option<Session.Device> =>
   Array.findFirst(state.devices, device => device.id === state.activeDeviceId)
+
+/**
+ * What a device is doing, as the player and the device picker tell it.
+ * - `Playing`, `Paused`: it is the player, with the app open.
+ * - `Reconnecting`: it is the player and went away while playing; the server
+ *   waits a few seconds for it before pausing.
+ * - `TurningOn`: the server asked it to turn on and open the app.
+ * - `Ready`: the app is open on it, but something else plays.
+ * - `Closed`: the app is not open on it (a TV that is on, or not known to be off).
+ * - `Off`: a TV that is off.
+ */
+export type DeviceStatus =
+  | 'Playing'
+  | 'Paused'
+  | 'Reconnecting'
+  | 'TurningOn'
+  | 'Ready'
+  | 'Closed'
+  | 'Off'
+
+export const deviceStatus = (
+  state: Session.SessionState,
+  device: Session.Device,
+): DeviceStatus => {
+  const isPlayer = state.activeDeviceId === device.id
+  const hasSong = state.currentEntryId !== null
+  if (device.waking) {
+    return 'TurningOn'
+  } else if (isPlayer && device.online && hasSong) {
+    return state.playing ? 'Playing' : 'Paused'
+  } else if (isPlayer && hasSong && state.playing) {
+    return 'Reconnecting'
+  } else if (device.online) {
+    return 'Ready'
+  } else if (device.poweredOn === false) {
+    return 'Off'
+  } else {
+    return 'Closed'
+  }
+}
+
+/** Another device, and what it is doing. */
+export interface Output {
+  readonly device: Session.Device
+  readonly status: DeviceStatus
+}
+
+/**
+ * Where the music plays, or plays when Play is pressed, when that is not
+ * this device. Like the server, a player that has gone away and is not
+ * playing or turning on counts for nothing: Play here then plays here.
+ */
+export const playbackOutput = (
+  state: Session.SessionState,
+  maybeMyDeviceId: Option.Option<string>,
+): Option.Option<Output> =>
+  pipe(
+    activeDevice(state),
+    Option.filter(device => !Option.contains(maybeMyDeviceId, device.id)),
+    Option.map(device => ({ device, status: deviceStatus(state, device) })),
+    Option.filter(
+      ({ device, status }) =>
+        device.online || status === 'TurningOn' || status === 'Reconnecting',
+    ),
+  )
+
+/** Why a TV's app is not open, in a few words. */
+const closedText = (device: Session.Device): string => {
+  if (device.kind !== 'Tv') {
+    return 'Not connected'
+  } else if (device.poweredOn === true) {
+    return "On · Music isn't open"
+  } else {
+    return "Music isn't open"
+  }
+}
+
+/** A device's status in a few words. */
+export const deviceStatusText = (
+  device: Session.Device,
+  status: DeviceStatus,
+): string =>
+  Match.value(status).pipe(
+    Match.when('Playing', () => 'Playing'),
+    Match.when('Paused', () => 'Paused'),
+    Match.when('Reconnecting', () => 'Reconnecting…'),
+    Match.when('TurningOn', () =>
+      device.kind === 'Tv' ? 'Turning on and opening Music…' : 'Waking…',
+    ),
+    Match.when('Ready', () =>
+      device.kind === 'Tv' ? 'Music is open' : 'Connected',
+    ),
+    Match.when('Closed', () => closedText(device)),
+    Match.when('Off', () => 'Off'),
+    Match.exhaustive,
+  )
+
+/** Where the music is, as the mini player and the player say it. */
+export const outputText = ({ device, status }: Output): string =>
+  Match.value(status).pipe(
+    Match.when('Paused', () => `Paused on ${device.name}`),
+    Match.when('Reconnecting', () => `Reconnecting to ${device.name}…`),
+    Match.when('TurningOn', () => `Turning on ${device.name}…`),
+    Match.orElse(() => `Playing on ${device.name}`),
+  )
 
 export const isActiveDevice = (
   state: Session.SessionState,

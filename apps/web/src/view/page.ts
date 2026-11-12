@@ -3,8 +3,9 @@ import { type Html, type HtmlBuilder, createLazy } from 'foldkit/html'
 
 import { type Message } from '../message'
 import { type Model } from '../model'
+import { playbackOutput } from '../playback/domain'
 import { Swipe } from '../playback/swipe'
-import { type NowPlaying, nowPlaying } from './shared'
+import { type NowPlaying, type PlayOn, nowPlaying } from './shared'
 
 /**
  * What a page shows. Pages leave out the playback clock, so a playing song
@@ -29,7 +30,7 @@ export type PageModel = Readonly<
     | 'myLibrary'
     | 'myPlaylists'
     | 'swipe'
-  > & { playing: NowPlaying }
+  > & { playing: NowPlaying; playOn: PlayOn }
 >
 
 /** One slot: only the page on screen is worth keeping. */
@@ -72,6 +73,8 @@ const renderPage = (
   swipe: Model['swipe'],
   currentVideoId: string,
   isPlaying: boolean,
+  playOnName: string,
+  isPlayOnTv: boolean,
   h: HtmlBuilder<Message>,
 ): Html =>
   render(
@@ -96,6 +99,10 @@ const renderPage = (
         maybeVideoId: Option.liftPredicate(currentVideoId, id => id !== ''),
         isPlaying,
       },
+      playOn: {
+        maybeDeviceName: Option.liftPredicate(playOnName, name => name !== ''),
+        isTv: isPlayOnTv,
+      },
     },
     h,
   )
@@ -106,6 +113,12 @@ export const memoizedPage = (
   h: HtmlBuilder<Message>,
 ): Html => {
   const playing = nowPlaying(model)
+  const maybeOutput = Option.flatMap(model.maybeSession, ({ state }) =>
+    playbackOutput(
+      state,
+      Option.map(model.maybeIdentity, ({ deviceId }) => deviceId),
+    ),
+  )
   return lazyPage(renderPage, [
     render,
     model.route,
@@ -126,6 +139,11 @@ export const memoizedPage = (
     rowSwipe(model.swipe),
     Option.getOrElse(playing.maybeVideoId, () => ''),
     playing.isPlaying,
+    Option.match(maybeOutput, {
+      onNone: () => '',
+      onSome: ({ device }) => device.name,
+    }),
+    Option.exists(maybeOutput, ({ device }) => device.kind === 'Tv'),
     h,
   ])
 }

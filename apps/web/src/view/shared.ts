@@ -148,6 +148,12 @@ export type NowPlaying = Readonly<{
   isPlaying: boolean
 }>
 
+/** Where songs play, for the Play on button: another device, or this one. */
+export type PlayOn = Readonly<{
+  maybeDeviceName: Option.Option<string>
+  isTv: boolean
+}>
+
 export const nowPlaying = (model: Model): NowPlaying => ({
   maybeVideoId: pipe(
     model.maybeSession,

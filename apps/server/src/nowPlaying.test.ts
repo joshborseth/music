@@ -22,6 +22,7 @@ const state: Session.SessionState = {
       kind: 'Tv',
       online: true,
       waking: false,
+      poweredOn: null,
       volume: null,
     },
     {
@@ -30,6 +31,7 @@ const state: Session.SessionState = {
       kind: 'Web',
       online: true,
       waking: false,
+      poweredOn: null,
       volume: null,
     },
   ],

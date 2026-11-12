@@ -33,12 +33,14 @@ import { Message } from '../message'
 import { Model } from '../model'
 import { DragToDismiss, FollowSeekBarDrags } from '../mount'
 import {
+  type Output,
   SKIP_SECONDS,
   type SessionSnapshot,
-  activeDevice,
   currentEntry,
   hasNextEntry,
   loadedEntry,
+  outputText,
+  playbackOutput,
   upcomingEntries,
 } from '../playback/domain'
 import { displayedPosition } from '../playback/position'
@@ -59,28 +61,42 @@ const isBuffering = (model: Model): boolean =>
     entry => entry.isPlaying && entry.isBuffering,
   )
 
-const isThisDevice = (model: Model, device: Session.Device): boolean =>
-  Option.exists(model.maybeIdentity, ({ deviceId }) => deviceId === device.id)
-
 export const deviceIcon = (device: Session.Device, isThisOne: boolean) => {
   if (device.kind === 'Tv') {
     return Tv
-  } else if (isThisOne) {
+  } else if (isThisOne || /iPhone|iPad|Android/.test(device.name)) {
     return Smartphone
   } else {
     return Monitor
   }
 }
 
-/** Where the music is coming out, when it is not this phone. */
-const elsewhereName = (
+/** Where the music plays, when it is not this phone. */
+const elsewhere = (
   model: Model,
   snapshot: SessionSnapshot,
-): Option.Option<string> =>
-  pipe(
-    activeDevice(snapshot.state),
-    Option.filter(device => !isThisDevice(model, device)),
-    Option.map(({ name }) => name),
+): Option.Option<Output> =>
+  playbackOutput(
+    snapshot.state,
+    Option.map(model.maybeIdentity, ({ deviceId }) => deviceId),
+  )
+
+/** This phone's own name, as the device picker shows it. */
+export const thisDeviceName = (model: Model): string =>
+  Option.match(model.maybeIdentity, {
+    onNone: () => 'This phone',
+    onSome: ({ deviceName }) => `This ${deviceName}`,
+  })
+
+/**
+ * Waiting for sound: this phone's audio is loading, or the device that
+ * should play is still turning on.
+ */
+const isLoading = (model: Model, snapshot: SessionSnapshot): boolean =>
+  isBuffering(model) ||
+  Option.exists(
+    elsewhere(model, snapshot),
+    ({ status }) => status === 'TurningOn',
   )
 
 const progressFraction = (
@@ -183,9 +199,10 @@ const miniPlayer = (
   entry: Session.QueueEntry,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const subtitle = Option.match(elsewhereName(model, snapshot), {
+  const maybeElsewhere = elsewhere(model, snapshot)
+  const subtitle = Option.match(maybeElsewhere, {
     onNone: () => entry.track.artists,
-    onSome: name => `Playing on ${name}`,
+    onSome: outputText,
   })
   const progress = progressFraction(model, snapshot, entry)
   const maybeSwipe = swipeOn(
@@ -251,7 +268,7 @@ const miniPlayer = (
                       h.Class(
                         cn(
                           'line-clamp-1 text-[13px] leading-tight',
-                          Option.isSome(elsewhereName(model, snapshot))
+                          Option.isSome(maybeElsewhere)
                             ? 'text-primary'
                             : 'text-muted-foreground',
                         ),
@@ -265,7 +282,7 @@ const miniPlayer = (
           ),
           playPauseButton(
             snapshot.state.playing,
-            isBuffering(model),
+            isLoading(model, snapshot),
             { buttonClass: 'size-11', iconClass: 'size-6' },
             h,
           ),
@@ -400,7 +417,7 @@ const transportControls = (
       ),
       playPauseButton(
         snapshot.state.playing,
-        isBuffering(model),
+        isLoading(model, snapshot),
         { buttonClass: 'size-20', iconClass: 'size-12' },
         h,
       ),
@@ -846,7 +863,7 @@ const deviceButton = (
   snapshot: SessionSnapshot,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const maybeElsewhere = elsewhereName(model, snapshot)
+  const maybeElsewhere = elsewhere(model, snapshot)
   return h.button(
     [
       h.Type('button'),
@@ -860,10 +877,22 @@ const deviceButton = (
       ),
     ],
     [
-      icon(h, Speaker, 'size-5 shrink-0'),
+      icon(
+        h,
+        Option.match(maybeElsewhere, {
+          onNone: () => Speaker,
+          onSome: ({ device }) => deviceIcon(device, false),
+        }),
+        'size-5 shrink-0',
+      ),
       h.span(
         [h.Class('line-clamp-1')],
-        [Option.getOrElse(maybeElsewhere, () => 'This phone')],
+        [
+          Option.match(maybeElsewhere, {
+            onNone: () => thisDeviceName(model),
+            onSome: outputText,
+          }),
+        ],
       ),
     ],
   )

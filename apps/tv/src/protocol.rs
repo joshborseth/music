@@ -39,8 +39,12 @@ pub struct Device {
     pub id: String,
     pub name: String,
     pub kind: DeviceKind,
+    /// The app is open on it and connected.
     pub online: bool,
     pub waking: bool,
+    /// Whether a TV itself is on, as Home Assistant last saw it.
+    #[serde(default)]
+    pub powered_on: Option<bool>,
     /// The device's own output volume (0 to 1), or none when it can't be set.
     #[serde(default)]
     pub volume: Option<f64>,
@@ -167,6 +171,11 @@ pub enum ClientMessage {
     Transfer {
         device_id: String,
     },
+    /// Turn a device on and open the app, without moving playback there.
+    #[serde(rename_all = "camelCase")]
+    Wake {
+        device_id: String,
+    },
     #[serde(rename_all = "camelCase")]
     Progress {
         entry_id: String,
@@ -247,6 +256,8 @@ mod tests {
         assert_eq!(state.devices[1].kind, DeviceKind::Tv);
         assert_eq!(state.devices[0].volume, None);
         assert_eq!(state.devices[1].volume, Some(0.25));
+        assert_eq!(state.devices[0].powered_on, None);
+        assert_eq!(state.devices[1].powered_on, Some(false));
         assert!(state.autoplay);
         assert!(!state.queue[0].autoplay);
         assert!(state.queue[1].autoplay);
@@ -274,6 +285,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(device.volume, None);
+        assert_eq!(device.powered_on, None);
     }
 
     #[test]
@@ -383,6 +395,12 @@ mod tests {
             (
                 "client-transfer.json",
                 ClientMessage::Transfer {
+                    device_id: "tv".into(),
+                },
+            ),
+            (
+                "client-wake.json",
+                ClientMessage::Wake {
                     device_id: "tv".into(),
                 },
             ),

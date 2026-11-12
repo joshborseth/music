@@ -13,6 +13,8 @@ import {
   MicVocal,
   Pencil,
   Plus,
+  Power,
+  SquareArrowUpRightExit,
   Trash2,
 } from 'lucide'
 
@@ -29,11 +31,16 @@ import { PLAYLIST_TITLE_INPUT_ID } from '../constant'
 import { Message } from '../message'
 import { type Model } from '../model'
 import { DragToDismiss } from '../mount'
+import {
+  deviceStatus,
+  deviceStatusText,
+  playbackOutput,
+} from '../playback/domain'
 import { myLibraryQuery, myPlaylistQuery } from '../query'
 import { AppRoute } from '../route'
 import { ActionSheet, SheetContent } from '../sheet'
 import { likedVideoIds } from '../update'
-import { deviceIcon } from './player'
+import { deviceIcon, thisDeviceName } from './player'
 import {
   ArtworkShape,
   albumHref,
@@ -241,16 +248,54 @@ const songActionsFor = (
     ],
   )
 
-const deviceStatus = (device: Session.Device, isActive: boolean): string => {
-  if (device.waking) {
-    return 'Turning on…'
-  } else if (!device.online) {
-    return 'Off · tap to turn on'
-  } else if (isActive) {
-    return 'Playing'
+/** What a device row says under its name. */
+const deviceRowStatus = (
+  state: Session.SessionState,
+  device: Session.Device,
+  isThisOne: boolean,
+  isOutput: boolean,
+): string => {
+  const status = deviceStatus(state, device)
+  if (!isThisOne) {
+    return deviceStatusText(device, status)
+  } else if (isOutput && state.currentEntryId !== null) {
+    return state.playing ? 'Playing' : 'Paused'
   } else {
-    return ''
+    return 'You are here'
   }
+}
+
+/**
+ * Turn the TV on and open Music, without moving the music: to pick songs on
+ * it, or to watch what plays. Only while the app is not open on it.
+ */
+const wakeButton = (
+  state: Session.SessionState,
+  device: Session.Device,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const status = deviceStatus(state, device)
+  if (device.kind !== 'Tv' || (status !== 'Off' && status !== 'Closed')) {
+    return h.empty
+  }
+  return h.button(
+    [
+      h.Type('button'),
+      h.OnClick(Message.ClickedWakeDevice({ deviceId: device.id })),
+      h.AriaLabel(
+        status === 'Off'
+          ? `Turn on ${device.name} and open Music`
+          : `Open Music on ${device.name}`,
+      ),
+      h.Class(
+        'bg-muted mr-5 flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold active:opacity-60',
+      ),
+    ],
+    [
+      icon(h, status === 'Off' ? Power : SquareArrowUpRightExit, 'size-3.5'),
+      status === 'Off' ? 'Turn on' : 'Open',
+    ],
+  )
 }
 
 const devicePicker = (model: Model, h: HtmlBuilder<Message>): Html =>
@@ -267,58 +312,97 @@ const devicePicker = (model: Model, h: HtmlBuilder<Message>): Html =>
             [h.Class('text-muted-foreground px-5 pb-4 text-[15px]')],
             ['Connecting to the music server…'],
           ),
-        onSome: ({ state }) =>
-          h.div(
+        onSome: ({ state }) => {
+          const maybeMyDeviceId = Option.map(
+            model.maybeIdentity,
+            ({ deviceId }) => deviceId,
+          )
+          const outputId = Option.match(
+            playbackOutput(state, maybeMyDeviceId),
+            {
+              onNone: () => Option.getOrElse(maybeMyDeviceId, () => ''),
+              onSome: ({ device }) => device.id,
+            },
+          )
+          return h.div(
             [h.Class('flex flex-col pb-2')],
-            Array.map(state.devices, device => {
-              const isThisOne = Option.exists(
-                model.maybeIdentity,
-                ({ deviceId }) => deviceId === device.id,
-              )
-              const isActive = state.activeDeviceId === device.id
-              const status = deviceStatus(device, isActive)
-              return h.keyed('button')(
-                device.id,
-                [
-                  h.Type('button'),
-                  h.OnClick(Message.ClickedDevice({ deviceId: device.id })),
-                  h.AriaPressed(isActive ? 'true' : 'false'),
-                  h.Class(cn(actionClass, 'h-16')),
-                ],
-                [
-                  h.span(
-                    [
-                      h.Class(
-                        cn(
-                          'flex size-10 shrink-0 items-center justify-center rounded-full',
-                          isActive
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted',
+            [
+              ...Array.map(state.devices, device => {
+                const isThisOne = Option.contains(maybeMyDeviceId, device.id)
+                const isOutput = device.id === outputId
+                const status = deviceRowStatus(
+                  state,
+                  device,
+                  isThisOne,
+                  isOutput,
+                )
+                return h.keyed('div')(
+                  device.id,
+                  [h.Class('flex items-center')],
+                  [
+                    h.button(
+                      [
+                        h.Type('button'),
+                        h.OnClick(
+                          Message.ClickedDevice({ deviceId: device.id }),
                         ),
-                      ),
-                    ],
-                    [icon(h, deviceIcon(device, isThisOne), 'size-5')],
-                  ),
-                  h.span(
-                    [h.Class('flex min-w-0 flex-1 flex-col')],
-                    [
-                      h.span(
-                        [h.Class('line-clamp-1 font-medium')],
-                        [isThisOne ? `This ${device.name}` : device.name],
-                      ),
-                      status === ''
-                        ? h.empty
-                        : h.span(
-                            [h.Class('text-muted-foreground text-[13px]')],
-                            [status],
-                          ),
-                    ],
-                  ),
-                  isActive ? icon(h, Check, 'text-primary size-5') : h.empty,
+                        h.AriaPressed(isOutput ? 'true' : 'false'),
+                        h.Class(cn(actionClass, 'h-16 min-w-0 flex-1')),
+                      ],
+                      [
+                        h.span(
+                          [
+                            h.Class(
+                              cn(
+                                'flex size-10 shrink-0 items-center justify-center rounded-full',
+                                isOutput
+                                  ? 'bg-primary text-primary-foreground'
+                                  : 'bg-muted',
+                              ),
+                            ),
+                          ],
+                          [icon(h, deviceIcon(device, isThisOne), 'size-5')],
+                        ),
+                        h.span(
+                          [h.Class('flex min-w-0 flex-1 flex-col')],
+                          [
+                            h.span(
+                              [h.Class('line-clamp-1 font-medium')],
+                              [isThisOne ? thisDeviceName(model) : device.name],
+                            ),
+                            h.span(
+                              [
+                                h.Class(
+                                  cn(
+                                    'line-clamp-1 text-[13px]',
+                                    isOutput
+                                      ? 'text-primary'
+                                      : 'text-muted-foreground',
+                                  ),
+                                ),
+                              ],
+                              [status],
+                            ),
+                          ],
+                        ),
+                        isOutput
+                          ? icon(h, Check, 'text-primary size-5 shrink-0')
+                          : h.empty,
+                      ],
+                    ),
+                    wakeButton(state, device, h),
+                  ],
+                )
+              }),
+              h.p(
+                [h.Class('text-muted-foreground px-5 pt-2 text-[13px]')],
+                [
+                  'Tap a device to move the music there. Open and Turn on start Music on the TV without moving the music.',
                 ],
-              )
-            }),
-          ),
+              ),
+            ],
+          )
+        },
       }),
     ],
   )
