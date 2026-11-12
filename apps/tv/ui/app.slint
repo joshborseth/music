@@ -112,7 +112,7 @@ component Icon inherits Path {
         : name == "next" ? "M4.5 5 L14.5 12 L4.5 19 Z M16 5 H19.5 V19 H16 Z"
         : name == "previous" ? "M19.5 5 L9.5 12 L19.5 19 Z M4.5 5 H8 V19 H4.5 Z"
         : name == "heart" ? "M12 20.8 C12 20.8 2.2 14.8 2.2 8.3 C2.2 5.3 4.6 3.2 7.3 3.2 C9.3 3.2 11 4.3 12 6 C13 4.3 14.7 3.2 16.7 3.2 C19.4 3.2 21.8 5.3 21.8 8.3 C21.8 14.8 12 20.8 12 20.8 Z"
-        : name == "heart-outline" ? "M12 20.8 C12 20.8 2.2 14.8 2.2 8.3 C2.2 5.3 4.6 3.2 7.3 3.2 C9.3 3.2 11 4.3 12 6 C13 4.3 14.7 3.2 16.7 3.2 C19.4 3.2 21.8 5.3 21.8 8.3 C21.8 14.8 12 20.8 12 20.8 Z M12 18.3 C12 18.3 4.4 13.5 4.4 8.4 C4.4 6.6 5.8 5.4 7.4 5.4 C9.1 5.4 10.4 6.6 12 8.9 C13.6 6.6 14.9 5.4 16.6 5.4 C18.2 5.4 19.6 6.6 19.6 8.4 C19.6 13.5 12 18.3 12 18.3 Z"
+        : name == "heart-outline" ? "M12 20.8 C12 20.8 2.2 14.8 2.2 8.3 C2.2 5.3 4.6 3.2 7.3 3.2 C9.3 3.2 11 4.3 12 6 C13 4.3 14.7 3.2 16.7 3.2 C19.4 3.2 21.8 5.3 21.8 8.3 C21.8 14.8 12 20.8 12 20.8 Z M12 18.3 C12 18.3 19.6 13.5 19.6 8.4 C19.6 6.6 18.2 5.4 16.6 5.4 C14.9 5.4 13.6 6.6 12 8.9 C10.4 6.6 9.1 5.4 7.4 5.4 C5.8 5.4 4.4 6.6 4.4 8.4 C4.4 13.5 12 18.3 12 18.3 Z"
         : name == "queue" ? "M3 4.5 H16 V7 H3 Z M3 10.5 H16 V13 H3 Z M3 16.5 H11 V19 H3 Z M14 14.2 L21.5 17.9 L14 21.6 Z"
         : name == "lyrics" ? "M4 3.5 H20 C20.8 3.5 21.5 4.2 21.5 5 V15.5 C21.5 16.3 20.8 17 20 17 H10 L5.5 21 V17 H4 C3.2 17 2.5 16.3 2.5 15.5 V5 C2.5 4.2 3.2 3.5 4 3.5 Z M6 7.5 V9.5 H18 V7.5 Z M6 11.5 V13.5 H14 V11.5 Z"
         : name == "shuffle" ? "M16 3.5 L21.5 7 L16 10.5 V8.3 H14.6 L8.6 16.8 H2.5 V14.4 H7.4 L13.4 5.9 H16 Z M2.5 6 H8.6 L10.5 8.7 L9 10.8 L7.4 8.4 H2.5 Z M13.1 15.2 L14.6 15.6 H16 V13.5 L21.5 17 L16 20.5 V18 H13.4 L11.7 15.6 L13.1 13.6 Z"
@@ -158,35 +158,30 @@ component RoundButton inherits Rectangle {
     in property <ButtonData> data;
     in property <length> size: Metrics.u * 3.6;
     property <bool> wide: data.label != "" && !data.primary;
-    width: wide ? label-text.preferred-width + size * 1.55 : (data.primary ? size * 1.4 : size);
+    property <length> icon-size: data.primary ? size * 0.6 : size * 0.46;
+    width: wide ? label-text.preferred-width + size * 1.55 + self.icon-size * 0.5 : (data.primary ? size * 1.4 : size);
     height: data.primary ? size * 1.4 : size;
     border-radius: self.height / 2;
     background: data.selected ? white : (data.primary ? #ffffff2e : Theme.surface);
     drop-shadow-blur: data.selected ? Metrics.u * 1.4 : 0;
     drop-shadow-color: #ff4f8170;
     animate background { duration: Theme.quick; }
-    HorizontalLayout {
-        alignment: center;
-        spacing: root.size * 0.25;
-        padding-left: root.wide ? root.size * 0.45 : 0;
-        padding-right: root.wide ? root.size * 0.55 : 0;
-        VerticalLayout {
-            alignment: center;
-            Icon {
-                name: root.data.icon;
-                width: root.data.primary ? root.size * 0.6 : root.size * 0.46;
-                height: self.width;
-                color: root.data.selected ? #120f1c : (root.data.active ? Theme.pink : white);
-            }
-        }
-        label-text := Text {
-            visible: root.wide;
-            text: root.data.label;
-            color: root.data.selected ? #120f1c : white;
-            font-size: root.size * 0.36;
-            font-weight: 600;
-            vertical-alignment: center;
-        }
+    Icon {
+        name: root.data.icon;
+        x: root.wide ? root.size * 0.42 : (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: root.icon-size;
+        height: self.width;
+        color: root.data.selected ? #120f1c : (root.data.active ? Theme.pink : white);
+    }
+    label-text := Text {
+        x: root.size * 0.42 + root.icon-size + root.size * 0.25;
+        y: (root.height - self.height) / 2;
+        visible: root.wide;
+        text: root.data.label;
+        color: root.data.selected ? #120f1c : white;
+        font-size: root.size * 0.36;
+        font-weight: 600;
     }
 }
 
@@ -286,6 +281,7 @@ component Shelves inherits Rectangle {
                 animate x { duration: Theme.smooth; easing: ease-in-out; }
                 for card[c] in shelf.cards: Card {
                     x: c * (root.card + root.gap);
+                    y: 0;
                     data: card;
                     size: root.card;
                 }
@@ -445,6 +441,7 @@ component QrCard inherits Rectangle {
         x: root.vertical ? Metrics.u : root.size + Metrics.u * 2.2;
         y: root.vertical ? root.size + Metrics.u * 2 : (root.height - self.preferred-height) / 2;
         width: root.vertical ? root.size : self.preferred-width;
+        height: self.preferred-height;
         spacing: Metrics.u * 0.25;
         Text {
             text: root.title;
@@ -612,8 +609,8 @@ export component App inherits Window {
 
     if root.bars-visible && root.page == 0 && !root.saver: Rectangle {
         y: root.height - self.height;
-        height: Metrics.u * 9;
-        opacity: 0.5;
+        height: Metrics.u * 6;
+        opacity: 0.55;
         for level[i] in root.bars: Rectangle {
             property <length> step: root.width / root.bars.length;
             x: i * self.step + self.step * 0.18;
@@ -679,7 +676,7 @@ export component App inherits Window {
                 font-weight: 800;
                 wrap: word-wrap;
                 overflow: elide;
-                max-height: Metrics.u * 8.6;
+                height: min(self.preferred-height, Metrics.u * 8.6);
             }
             Text {
                 text: root.album != "" ? root.artists + "  ·  " + root.album : root.artists;
@@ -743,6 +740,7 @@ export component App inherits Window {
             x: Metrics.u * 5;
             y: root.height - Metrics.u * 12.2;
             width: root.width * 0.62;
+            height: self.preferred-height;
             spacing: Metrics.u * 0.8;
             Text {
                 text: "Up next";
@@ -853,6 +851,7 @@ export component App inherits Window {
         VerticalLayout {
             x: Metrics.u * 4;
             y: Metrics.u * 6.6;
+            height: self.preferred-height;
             spacing: Metrics.u * 0.2;
             Text {
                 text: root.page-title;
@@ -885,6 +884,7 @@ export component App inherits Window {
             x: Metrics.u * 4;
             y: Metrics.u * 7;
             width: search-page.key-size * 6 + search-page.key-gap * 5;
+            height: self.preferred-height;
             spacing: Metrics.u * 1.2;
             Rectangle {
                 height: Metrics.u * 3.6;
@@ -955,6 +955,7 @@ export component App inherits Window {
             if root.query == "" && root.shelves.length == 0: VerticalLayout {
                 x: Metrics.u * 4;
                 y: Metrics.u * 3;
+                height: self.preferred-height;
                 spacing: Metrics.u * 0.5;
                 Text {
                     text: "Search YouTube Music";
@@ -984,8 +985,9 @@ export component App inherits Window {
         property <length> art: Metrics.u * 19;
         VerticalLayout {
             x: Metrics.u * 5;
-            y: Metrics.u * 8;
+            y: Metrics.u * 7;
             width: parent.art;
+            height: self.preferred-height;
             spacing: Metrics.u * 0.6;
             Rectangle {
                 width: parent.width;
@@ -1017,7 +1019,7 @@ export component App inherits Window {
                 font-weight: 800;
                 wrap: word-wrap;
                 overflow: elide;
-                max-height: Metrics.u * 5.2;
+                height: min(self.preferred-height, Metrics.u * 5.2);
             }
             Text {
                 text: root.col-subtitle;
@@ -1031,7 +1033,7 @@ export component App inherits Window {
                 font-size: Metrics.u * 0.85;
                 wrap: word-wrap;
                 overflow: elide;
-                max-height: Metrics.u * 3.3;
+                height: min(self.preferred-height, Metrics.u * 4.2);
             }
             Rectangle { height: Metrics.u * 0.6; }
             HorizontalLayout {
@@ -1055,7 +1057,7 @@ export component App inherits Window {
             x: Metrics.u * 28;
             y: Metrics.u * 7;
             width: root.width - self.x - Metrics.u * 4;
-            height: root.height - self.y - Metrics.u * 2;
+            height: root.height - self.y - Metrics.u * 3.6;
             rows: root.col-rows;
             top: root.col-top;
         }
@@ -1156,12 +1158,19 @@ export component App inherits Window {
         }
     }
 
-    // HINTS: what the remote does here.
+    // HINTS: what the remote does here, over a scrim so rows behind stay quiet.
+
+    if !root.saver && root.page >= 2: Rectangle {
+        y: root.height - self.height;
+        height: Metrics.u * 5;
+        background: @linear-gradient(180deg, #08070d00 0%, #08070df0 60%, #08070d 100%);
+    }
 
     if !root.saver && !root.menu-open && root.hints.length > 0 && root.page != 0: HorizontalLayout {
         x: Metrics.u * 4;
         y: root.height - Metrics.u * 2.6;
         height: Metrics.u * 1.6;
+        alignment: start;
         spacing: Metrics.u * 1.6;
         for hint in root.hints: Hint {
             key: hint.key;

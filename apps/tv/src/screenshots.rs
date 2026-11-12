@@ -128,6 +128,35 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
         .build()
         .expect("start the async runtime");
 
+    // Something for the visualizer: a chord with a kick, in real time.
+    let feeding = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    {
+        let feeding = feeding.clone();
+        std::thread::spawn(move || {
+            let rate = 44_100.0f32;
+            crate::audio::scope::SCOPE.set_rate(rate as u32);
+            let mut t = 0u64;
+            while feeding.load(std::sync::atomic::Ordering::Relaxed) {
+                let frames: Vec<f32> = (0..441)
+                    .flat_map(|_| {
+                        let time = t as f32 / rate;
+                        t += 1;
+                        let kick = (-(time % 0.5) * 18.0).exp() * (2.0 * std::f32::consts::PI * 55.0 * time).sin();
+                        let chord = [110.0, 220.0, 330.0, 440.0, 660.0, 1320.0, 2640.0, 5280.0]
+                            .iter()
+                            .enumerate()
+                            .map(|(index, hz)| (2.0 * std::f32::consts::PI * hz * time).sin() * 0.25 / (index as f32 + 1.0))
+                            .sum::<f32>();
+                        let sample = 0.6 * kick + chord;
+                        [sample, sample]
+                    })
+                    .collect();
+                crate::audio::scope::SCOPE.write(&frames, 2);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+    }
+
     let (width, height) = (1920, 1080);
     let app = App::new().expect("create the window");
     window.set_size(PhysicalSize::new(width, height));
@@ -179,6 +208,7 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
             }
         }
     }
+    feeding.store(false, std::sync::atomic::Ordering::Relaxed);
     drop(runner.app);
     runtime.shutdown_background();
 }

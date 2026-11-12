@@ -511,12 +511,15 @@ impl Ui {
             });
         }
         if let Some(app) = self.app.upgrade() {
-            app.set_bars_visible(wanted || self.analyzer.is_moving());
+            app.set_bars_visible(self.analyzer.is_moving());
         }
     }
 
     fn frame(&mut self) {
         let levels = *self.analyzer.frame();
+        if let Some(app) = self.app.upgrade() {
+            app.set_bars_visible(self.analyzer.is_moving());
+        }
         for (index, level) in levels.iter().enumerate() {
             if self.models.bars.row_data(index) != Some(*level) {
                 self.models.bars.set_row_data(index, *level);
@@ -974,9 +977,13 @@ impl Ui {
         app.set_col_round(page.kind == CollectionKind::Artist);
         let collection = page.content.loaded().cloned();
         app.set_col_title(collection.as_ref().map(|c| c.title.clone()).unwrap_or_default().into());
-        app.set_col_subtitle(
-            collection.as_ref().map(|c| c.subtitle.clone()).unwrap_or_default().into(),
-        );
+        // "Artist" under the ARTIST label says nothing new.
+        let subtitle = collection
+            .as_ref()
+            .map(|c| c.subtitle.clone())
+            .filter(|subtitle| !subtitle.eq_ignore_ascii_case(page.kind.as_str()))
+            .unwrap_or_default();
+        app.set_col_subtitle(subtitle.into());
         app.set_col_description(
             collection
                 .as_ref()
@@ -997,10 +1004,11 @@ impl Ui {
                 .iter()
                 .enumerate()
                 .map(|(index, button)| {
+                    // Only Play has a label, so all three fit beside the cover.
                     let (icon, label) = match button {
                         CollectionButton::Play => ("play", "Play"),
-                        CollectionButton::Shuffle => ("shuffle", "Shuffle"),
-                        CollectionButton::Queue => ("queue", "Queue"),
+                        CollectionButton::Shuffle => ("shuffle", ""),
+                        CollectionButton::Queue => ("queue", ""),
                     };
                     ButtonData {
                         icon: icon.into(),
