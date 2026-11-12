@@ -240,11 +240,19 @@ export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
   args: {
     entryId: Schema.String,
     videoId: Schema.String,
+    /** YouTube Music's length for the song, which the lock screen shows. */
+    maybeDurationSeconds: Schema.Option(Schema.Number),
     startSeconds: Schema.Number,
     isPlaying: Schema.Boolean,
   },
   messages: [Message.CompletedLoadPhoneAudio],
-  execute: ({ entryId, videoId, startSeconds, isPlaying }) =>
+  execute: ({
+    entryId,
+    videoId,
+    maybeDurationSeconds,
+    startSeconds,
+    isPlaying,
+  }) =>
     PhoneAudioElement.get.pipe(
       Effect.flatMap(audio =>
         Effect.gen(function* () {
@@ -264,7 +272,7 @@ export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
           // it never reads as the system pausing the new one.
           pauseAudio(audio)
           releaseBlobUrl(audio)
-          markEntry(audio, Option.some(entryId))
+          markEntry(audio, Option.some(entryId), maybeDurationSeconds)
           Option.match(maybeBlob, {
             onNone: () => {
               audio.src = Session.audioPath(videoId)
@@ -387,6 +395,11 @@ const clearMediaSession = () => {
   if ('mediaSession' in globalThis.navigator) {
     globalThis.navigator.mediaSession.metadata = null
     globalThis.navigator.mediaSession.playbackState = 'none'
+    try {
+      globalThis.navigator.mediaSession.setPositionState()
+    } catch {
+      // NOTE: older browsers have no position state to clear.
+    }
   }
 }
 

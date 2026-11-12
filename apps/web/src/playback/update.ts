@@ -157,6 +157,7 @@ const loadEntry = (
     LoadPhoneAudio({
       entryId: entry.entryId,
       videoId: entry.track.videoId,
+      maybeDurationSeconds: Option.fromNullishOr(entry.track.durationSeconds),
       startSeconds,
       isPlaying: state.playing,
     }),
