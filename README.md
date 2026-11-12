@@ -34,6 +34,7 @@ Browse YouTube Music on your phone and play it on the phone or on the TV. The ph
 apps/web         Foldkit SPA + foldcn components, installable as a PWA
 apps/tv          Rust Android TV app: Slint UI, Symphonia (AAC), cpal (AAudio)
    │  Effect RPC over HTTP (/rpc, NDJSON)      catalog: search and pages (web only)
+   │  JSON over HTTP (/tv/…)                   the same catalog shaped for the TV (TV only)
    │  WebSocket (/session, JSON)               the shared queue and who plays it
    │  HTTP with byte ranges (/audio/:videoId)  the songs themselves
    │  WebSocket (/now-playing, JSON)           read-only: the song and its cover's colors
@@ -41,9 +42,12 @@ apps/server      Bun + Effect server: youtubei.js for the catalog, yt-dlp for au
                  SQLite (bun:sqlite) for the playlists made in the app
 packages/shared  The RPC contract, the session protocol, and every Schema
 fixtures/session Example session messages that the TypeScript and Rust tests both decode
+fixtures/tv      Example TV catalog responses, decoded the same way
 ```
 
 **The session.** The server holds one queue for every device, and one device at a time plays it (the active device). Each device opens `/session`, says `Hello`, and then receives the whole session state after every change. Commands (play, pause, seek, skip, enqueue, transfer) go to the server, never directly to a player. The active device plays the current song and reports its position about once a second. A player that pauses says where it stopped, so every device agrees on the spot. A player that reconnects says in its `Hello` what it is playing, and the server follows it unless the session jumped meanwhile (a seek, a skip, or another device taking over). The protocol is defined in `packages/shared/src/session.ts` and mirrored in `apps/tv/src/protocol.rs`.
+
+**The TV catalog.** The TV app browses without the phone through plain JSON routes under `/tv/`: home, library, search, albums, playlists, artists, lyrics, and Liked songs. They reshape the same catalog and playlist store the web app reaches through RPC into shelves of cards and lists of queue tracks, and they get songs ready the same way when a page opens. The contract is `packages/shared/src/tv.ts`, mirrored in `apps/tv/src/catalog.rs`; both sides' tests decode the examples in `fixtures/tv/`. The routes are in `apps/server/src/tvCatalog/`.
 
 **Playlists.** The playlists made in the app, and Liked songs, are kept in one SQLite file on the server (`~/.local/share/music/playlists.sqlite`), opened with Bun's built-in `bun:sqlite`. Each entry keeps a copy of the song (title, artists, album, length, artwork), so a playlist opens without asking YouTube anything, and a song stays listed even if YouTube later drops it. A song appears once per playlist. The web app shows a change at once (a heart fills, a removed row leaves) and then takes the server's answer; if the server cannot save it, the app says so and reloads. A playlist plays through the same session commands as an album, so the TV app needs nothing new. `apps/server/src/playlists/store.ts` holds the tables and every change.
 
