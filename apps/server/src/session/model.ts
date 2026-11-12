@@ -16,6 +16,17 @@ export interface Model {
   readonly positionSeconds: number
   readonly positionAt: number
   readonly seekSeq: number
+  /**
+   * The last `seekSeq` from a jump the player did not make itself. A
+   * reconnecting player that followed it may report jumps of its own since.
+   */
+  readonly foreignSeekSeq: number
+  /**
+   * The server paused because the player went away (`playerLost`), and
+   * nothing played or paused since. A player that kept playing meanwhile
+   * resumes the session when it reconnects.
+   */
+  readonly pausedForLostPlayer: boolean
   /** Devices the server asked to wake that have not connected yet. */
   readonly waking: ReadonlyArray<string>
 }
@@ -28,6 +39,8 @@ export const initialModel: Model = {
   positionSeconds: 0,
   positionAt: 0,
   seekSeq: 0,
+  foreignSeekSeq: 0,
+  pausedForLostPlayer: false,
   waking: [],
 }
 
@@ -145,6 +158,22 @@ const toEntries = (
 const isFromPlayer = (model: Model, context: Context, entryId: string) =>
   model.activeDeviceId === context.senderId && model.currentEntryId === entryId
 
+/**
+ * A reconnecting player's report wins when it is still the player, its entry
+ * is still queued, and no other device jumped the session (a seek, a skip, a
+ * transfer) since it last followed it. Its own jumps don't count: the server
+ * may have applied them and lost the answer when the connection dropped.
+ */
+const isFollowedReport = (
+  model: Model,
+  context: Context,
+  report: Session.PlayerReport,
+) =>
+  model.activeDeviceId === context.senderId &&
+  report.seekSeq >= model.foreignSeekSeq &&
+  report.seekSeq <= model.seekSeq &&
+  indexOf(model, report.entryId) !== -1
+
 /** Move past the current entry after it ended or failed on the player. */
 const finishCurrent = (model: Model, now: number): Model => {
   const maybeNext = entryAt(model, indexOf(model, model.currentEntryId) + 1)
@@ -153,7 +182,61 @@ const finishCurrent = (model: Model, now: number): Model => {
     : jumpTo(model, maybeNext, 0, now)
 }
 
+/**
+ * Jumps a player makes on its own before telling the server, so they are
+ * already where it plays. Any other jump (a new queue, a removed or failed
+ * song, a transfer, another device's command) the player only learns from
+ * the server.
+ */
+const PLAYER_OWN_JUMPS: ReadonlySet<Session.ClientMessage['_tag']> = new Set([
+  'Hello',
+  'Seek',
+  'Next',
+  'Previous',
+  'SkipTo',
+  'TrackEnded',
+])
+
+/** Anyone playing, pausing, or taking over ends a pause for a lost player. */
+const forgetLostPlayerPause = (
+  model: Model,
+  message: Session.ClientMessage,
+  outcome: Outcome,
+): Outcome =>
+  outcome.model.pausedForLostPlayer &&
+  (message._tag === 'Pause' ||
+    message._tag === 'Resume' ||
+    outcome.model.playing !== model.playing ||
+    outcome.model.activeDeviceId !== model.activeDeviceId)
+    ? { ...outcome, model: { ...outcome.model, pausedForLostPlayer: false } }
+    : outcome
+
+/** Apply a message, and remember a jump the player did not make itself. */
 export const update = (
+  model: Model,
+  message: Session.ClientMessage,
+  context: Context,
+): Outcome => {
+  const outcome = forgetLostPlayerPause(
+    model,
+    message,
+    transition(model, message, context),
+  )
+  const isForeignJump =
+    outcome.model.seekSeq !== model.seekSeq &&
+    !(
+      PLAYER_OWN_JUMPS.has(message._tag) &&
+      outcome.model.activeDeviceId === context.senderId
+    )
+  return isForeignJump
+    ? {
+        ...outcome,
+        model: { ...outcome.model, foreignSeekSeq: outcome.model.seekSeq },
+      }
+    : outcome
+}
+
+const transition = (
   model: Model,
   message: Session.ClientMessage,
   context: Context,
@@ -162,20 +245,59 @@ export const update = (
   return Match.value(message).pipe(
     Match.withReturnType<Outcome>(),
     Match.tagsExhaustive({
-      Hello: () => {
+      Hello: message => {
         const isWaking = model.waking.includes(context.senderId)
-        return changed({
+        const waking = model.waking.filter(id => id !== context.senderId)
+        const maybeReport = Option.filter(
+          Option.fromNullishOr(message.player),
+          report => isFollowedReport(model, context, report),
+        )
+        if (Option.isSome(maybeReport)) {
+          // The player kept going while it was away: the session follows it.
+          const report = maybeReport.value
+          return changed({
+            ...model,
+            waking,
+            currentEntryId: report.entryId,
+            // NOTE: a play or pause the player made wins. Otherwise the
+            // player only followed the session, and a pause or resume it
+            // missed (from another device) stands, unless the server made
+            // it only because the player was gone.
+            playing:
+              report.playingSetHere || model.pausedForLostPlayer
+                ? report.playing
+                : model.playing,
+            positionSeconds: Math.max(0, report.positionSeconds),
+            positionAt: now,
+            pausedForLostPlayer: false,
+          })
+        }
+        const isPlayer = model.activeDeviceId === context.senderId
+        // NOTE: a player whose report is not followed (the session jumped
+        // without it) still keeps a play or pause it made itself.
+        const maybeOwnPlaying = Option.flatMap(
+          Option.fromNullishOr(message.player),
+          report =>
+            isPlayer && (report.playingSetHere || model.pausedForLostPlayer)
+              ? Option.some(report.playing)
+              : Option.none(),
+        )
+        const reloaded: Model = {
           ...model,
-          waking: model.waking.filter(id => id !== context.senderId),
+          waking,
+          pausedForLostPlayer: isPlayer ? false : model.pausedForLostPlayer,
           // A device that comes back as the player reloads where it left off.
-          seekSeq:
-            isWaking || model.activeDeviceId === context.senderId
-              ? model.seekSeq + 1
-              : model.seekSeq,
-          ...(model.activeDeviceId === context.senderId
+          seekSeq: isWaking || isPlayer ? model.seekSeq + 1 : model.seekSeq,
+          ...(isPlayer
             ? { positionSeconds: currentPosition(model, now), positionAt: now }
             : {}),
-        })
+        }
+        return changed(
+          Option.match(maybeOwnPlaying, {
+            onNone: () => reloaded,
+            onSome: playing => ({ ...reloaded, playing }),
+          }),
+        )
       },
 
       PlayQueue: message => {
@@ -253,9 +375,9 @@ export const update = (
             : model
         const claimed = claimIfIdle(withEntry, context)
         return changed({
-          ...claimed,
+          // Resuming while already playing must not move the position back.
+          ...settle(claimed, now),
           playing: true,
-          positionAt: now,
           // A new player has nothing loaded yet.
           seekSeq:
             claimed.activeDeviceId === model.activeDeviceId
@@ -264,8 +386,23 @@ export const update = (
         })
       },
 
-      Pause: () => {
-        return changed({ ...settle(model, now), playing: false })
+      Pause: message => {
+        const settled = settle(model, now)
+        const maybeAt = Option.filter(
+          Option.fromNullishOr(message.at),
+          at =>
+            model.activeDeviceId === context.senderId &&
+            at.entryId === model.currentEntryId &&
+            at.seekSeq >= model.foreignSeekSeq,
+        )
+        return changed({
+          ...settled,
+          positionSeconds: Option.match(maybeAt, {
+            onNone: () => settled.positionSeconds,
+            onSome: at => Math.max(0, at.positionSeconds),
+          }),
+          playing: false,
+        })
       },
 
       Seek: message => {
@@ -401,7 +538,11 @@ export const playerLost = (
   now: number,
 ): Outcome =>
   model.activeDeviceId === deviceId && model.playing
-    ? changed({ ...settle(model, now), playing: false })
+    ? changed({
+        ...settle(model, now),
+        playing: false,
+        pausedForLostPlayer: true,
+      })
     : quiet(model)
 
 /** A device that was asked to wake never connected. */

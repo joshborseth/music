@@ -8,7 +8,21 @@ import { Session } from '@music/shared'
 
 import { Message } from '../message'
 import { DEVICE_ID_KEY, deviceNameFromUserAgent } from './domain'
-import { PhoneAudioElement, SessionSocket } from './resource'
+import {
+  beginLoad,
+  cancelLoad,
+  changeLoad,
+  finishLoad,
+  followIntent,
+  markEntry,
+  pauseAudio,
+  startAudio,
+} from './element'
+import {
+  PhoneAudioElement,
+  SessionSocket,
+  type SessionSocketService,
+} from './resource'
 import { cachedSong, prefetchSongs, recordPlay } from './songCache'
 
 const RECONNECT_DELAY = Duration.seconds(2)
@@ -58,16 +72,50 @@ export const LoadDeviceIdentity = Command.define('LoadDeviceIdentity', {
   ),
 })
 
+/** How many messages went out on each socket, which the server's `ack` counts too. */
+const sentCounts = new WeakMap<WebSocket, number>()
+
+/**
+ * Send a message, and give its number on this socket. Nothing goes out
+ * before the socket's Hello: the server drops it uncounted, which would put
+ * every later number one ahead of the server's `ack`. What the phone did
+ * meanwhile goes in the Hello's report.
+ */
+const sendMessage = (
+  message: Session.ClientMessage,
+): Effect.Effect<Option.Option<number>, never, SessionSocketService> =>
+  SessionSocket.get.pipe(
+    Effect.map(socket => {
+      const sent = sentCounts.get(socket) ?? 0
+      if (sent === 0 && message._tag !== 'Hello') {
+        return Option.none<number>()
+      }
+      try {
+        socket.send(encodeClientMessage(message))
+      } catch {
+        // NOTE: a socket still connecting throws; it has no Hello either.
+        return Option.none<number>()
+      }
+      sentCounts.set(socket, sent + 1)
+      return Option.some(sent + 1)
+    }),
+    Effect.orElseSucceed(() => Option.none<number>()),
+  )
+
 export const SendToSession = Command.define('SendToSession', {
   args: { message: Session.ClientMessage },
   messages: [Message.CompletedSendToSession],
   execute: ({ message }) =>
-    SessionSocket.get.pipe(
-      Effect.flatMap(socket =>
-        Effect.try(() => socket.send(encodeClientMessage(message))),
-      ),
-      Effect.ignore,
-      Effect.as(Message.CompletedSendToSession()),
+    sendMessage(message).pipe(Effect.as(Message.CompletedSendToSession())),
+})
+
+/** Send a change this phone already made as the player (see `LocalChanges`). */
+export const SendLocalChange = Command.define('SendLocalChange', {
+  args: { message: Session.ClientMessage },
+  messages: [Message.SentLocalChange],
+  execute: ({ message }) =>
+    sendMessage(message).pipe(
+      Effect.map(maybeSeq => Message.SentLocalChange({ maybeSeq })),
     ),
 })
 
@@ -100,15 +148,20 @@ class AudioPlayError extends Data.TaggedError('AudioPlayError')<{
   readonly isNotAllowed: boolean
 }> {}
 
-/** Start playback, reporting whether the browser wants a tap first. */
+/**
+ * Start playback, reporting whether the browser wants a tap first. A refused
+ * start leaves the element paused, and the app no longer means it to play.
+ */
 const play = (audio: HTMLAudioElement) =>
   Effect.tryPromise({
-    try: () => audio.play(),
-    catch: error =>
-      new AudioPlayError({
+    try: () => startAudio(audio),
+    catch: error => {
+      followIntent(audio, !audio.paused)
+      return new AudioPlayError({
         isNotAllowed:
           error instanceof DOMException && error.name === 'NotAllowedError',
-      }),
+      })
+    },
   }).pipe(
     Effect.as(false),
     Effect.catchTag('AudioPlayError', ({ isNotAllowed }) =>
@@ -123,7 +176,9 @@ export const UnlockPhoneAudio = Command.define('UnlockPhoneAudio', {
       audio.src === '' || audio.src === SILENT_AUDIO
         ? Effect.gen(function* () {
             audio.src = SILENT_AUDIO
-            yield* play(audio)
+            // NOTE: not `startAudio`: this clip is no song, so it leaves
+            // what the app means the element to do alone.
+            yield* Effect.tryPromise(() => audio.play()).pipe(Effect.ignore)
             if (audio.src === SILENT_AUDIO) {
               audio.pause()
             }
@@ -146,22 +201,34 @@ const releaseBlobUrl = (audio: HTMLAudioElement) => {
   }
 }
 
-/** Jump to `seconds` now, or as soon as the song's length is known. */
-const seekWhenReady = (audio: HTMLAudioElement, seconds: number) => {
-  if (seconds <= 0) {
-    return
+/** A seek waiting for the song's length to be known. */
+const pendingSeeks = new WeakMap<HTMLAudioElement, () => void>()
+
+const cancelPendingSeek = (audio: HTMLAudioElement) => {
+  const pending = pendingSeeks.get(audio)
+  if (pending !== undefined) {
+    audio.removeEventListener('loadedmetadata', pending)
+    pendingSeeks.delete(audio)
   }
+}
+
+/**
+ * Jump to `seconds` now, or as soon as the song's length is known. A later
+ * seek or load replaces one that is still waiting, so a quick skip never
+ * lands the next song where the previous one was headed.
+ */
+const seekWhenReady = (audio: HTMLAudioElement, seconds: number) => {
+  cancelPendingSeek(audio)
   if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
     audio.currentTime = seconds
-  } else {
-    audio.addEventListener(
-      'loadedmetadata',
-      () => {
-        audio.currentTime = seconds
-      },
-      { once: true },
-    )
+    return
   }
+  const seek = () => {
+    pendingSeeks.delete(audio)
+    audio.currentTime = seconds
+  }
+  pendingSeeks.set(audio, seek)
+  audio.addEventListener('loadedmetadata', seek, { once: true })
 }
 
 /**
@@ -171,17 +238,33 @@ const seekWhenReady = (audio: HTMLAudioElement, seconds: number) => {
  */
 export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
   args: {
+    entryId: Schema.String,
     videoId: Schema.String,
     startSeconds: Schema.Number,
     isPlaying: Schema.Boolean,
   },
   messages: [Message.CompletedLoadPhoneAudio],
-  execute: ({ videoId, startSeconds, isPlaying }) =>
+  execute: ({ entryId, videoId, startSeconds, isPlaying }) =>
     PhoneAudioElement.get.pipe(
       Effect.flatMap(audio =>
         Effect.gen(function* () {
+          const token = beginLoad(audio, { startSeconds, isPlaying })
           const maybeBlob = yield* cachedSong(videoId)
+          // NOTE: loads run side by side, and a cached song takes longer to
+          // read than an uncached one takes to start. A load another load
+          // or a stop replaced while it read the cache leaves the element
+          // alone.
+          const maybePlan = finishLoad(audio, token)
+          if (Option.isNone(maybePlan)) {
+            return false
+          }
+          const plan = maybePlan.value
+          cancelPendingSeek(audio)
+          // NOTE: the song being replaced stops as the app's own pause, so
+          // it never reads as the system pausing the new one.
+          pauseAudio(audio)
           releaseBlobUrl(audio)
+          markEntry(audio, Option.some(entryId))
           Option.match(maybeBlob, {
             onNone: () => {
               audio.src = Session.audioPath(videoId)
@@ -192,32 +275,45 @@ export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
               audio.src = url
             },
           })
-          seekWhenReady(audio, startSeconds)
-          if (isPlaying) {
-            yield* recordPlay(videoId)
+          if (plan.startSeconds > 0) {
+            seekWhenReady(audio, plan.startSeconds)
           }
-          if (!isPlaying) {
-            audio.pause()
+          if (!plan.isPlaying) {
+            pauseAudio(audio)
             return false
           }
-          return yield* play(audio)
+          const isBlocked = yield* play(audio)
+          yield* recordPlay(videoId)
+          return isBlocked
         }),
       ),
-      Effect.map(isBlocked => Message.CompletedLoadPhoneAudio({ isBlocked })),
+      Effect.map(isBlocked =>
+        Message.CompletedLoadPhoneAudio({ entryId, isBlocked }),
+      ),
       Effect.catch(() =>
-        Effect.succeed(Message.CompletedLoadPhoneAudio({ isBlocked: false })),
+        Effect.succeed(
+          Message.CompletedLoadPhoneAudio({ entryId, isBlocked: false }),
+        ),
       ),
     ),
 })
 
-/** Jump within the song already loaded, without loading it again. */
+/**
+ * Jump within the song already loaded, without loading it again. A song
+ * still loading starts there instead.
+ */
 export const SeekPhoneAudio = Command.define('SeekPhoneAudio', {
   args: { seconds: Schema.Number },
   messages: [Message.CompletedSeekPhoneAudio],
   execute: ({ seconds }) =>
     PhoneAudioElement.get.pipe(
       Effect.flatMap(audio =>
-        Effect.sync(() => seekWhenReady(audio, Math.max(0, seconds))),
+        Effect.sync(() => {
+          const target = Math.max(0, seconds)
+          if (!changeLoad(audio, { startSeconds: target })) {
+            seekWhenReady(audio, target)
+          }
+        }),
       ),
       Effect.ignore,
       Effect.as(Message.CompletedSeekPhoneAudio()),
@@ -241,10 +337,18 @@ export const SetPhoneAudioPlaying = Command.define('SetPhoneAudioPlaying', {
   execute: ({ isPlaying }) =>
     PhoneAudioElement.get.pipe(
       Effect.flatMap(audio => {
+        // NOTE: a song still loading plays or not when it starts. The song
+        // it replaces only ever stops: it is on its way out.
+        if (changeLoad(audio, { isPlaying })) {
+          if (!isPlaying) {
+            pauseAudio(audio)
+          }
+          return Effect.succeed(false)
+        }
         if (isPlaying) {
           return play(audio)
         }
-        audio.pause()
+        pauseAudio(audio)
         return Effect.succeed(false)
       }),
       Effect.map(isBlocked =>
@@ -263,10 +367,14 @@ export const StopPhoneAudio = Command.define('StopPhoneAudio', {
   execute: PhoneAudioElement.get.pipe(
     Effect.flatMap(audio =>
       Effect.sync(() => {
-        audio.pause()
+        cancelLoad(audio)
+        cancelPendingSeek(audio)
+        markEntry(audio, Option.none())
+        pauseAudio(audio)
         audio.removeAttribute('src')
         audio.load()
         releaseBlobUrl(audio)
+        clearMediaSession()
       }),
     ),
     Effect.ignore,
@@ -274,23 +382,32 @@ export const StopPhoneAudio = Command.define('StopPhoneAudio', {
   ),
 })
 
-/** What the lock screen and Control Center show for the current song. */
+/** The lock screen forgets the song once this phone stops playing it. */
+const clearMediaSession = () => {
+  if ('mediaSession' in globalThis.navigator) {
+    globalThis.navigator.mediaSession.metadata = null
+    globalThis.navigator.mediaSession.playbackState = 'none'
+  }
+}
+
+/**
+ * What the lock screen and Control Center show for the current song. Whether
+ * it plays follows the audio element itself (see `subscription.ts`).
+ */
 export const UpdateMediaSession = Command.define('UpdateMediaSession', {
   args: {
     title: Schema.String,
     artist: Schema.String,
     album: Schema.String,
     maybeArtworkUrl: Schema.Option(Schema.String),
-    isPlaying: Schema.Boolean,
   },
   messages: [Message.CompletedUpdateMediaSession],
-  execute: ({ title, artist, album, maybeArtworkUrl, isPlaying }) =>
+  execute: ({ title, artist, album, maybeArtworkUrl }) =>
     Effect.sync(() => {
       if (!('mediaSession' in globalThis.navigator)) {
         return
       }
-      const { mediaSession } = globalThis.navigator
-      mediaSession.metadata = new MediaMetadata({
+      globalThis.navigator.mediaSession.metadata = new MediaMetadata({
         title,
         artist,
         album,
@@ -299,6 +416,5 @@ export const UpdateMediaSession = Command.define('UpdateMediaSession', {
           onSome: src => [{ src }],
         }),
       })
-      mediaSession.playbackState = isPlaying ? 'playing' : 'paused'
     }).pipe(Effect.ignore, Effect.as(Message.CompletedUpdateMediaSession())),
 })

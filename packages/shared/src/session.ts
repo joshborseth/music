@@ -72,11 +72,36 @@ export type SessionState = typeof SessionState.Type
 
 // CLIENT → SERVER
 
+/**
+ * What a player is already doing when it reconnects. A phone keeps playing
+ * while its connection is down (a locked screen, a Wi-Fi blip), and may
+ * pause, seek, or move to the next song meanwhile.
+ */
+export const PlayerReport = Schema.Struct({
+  entryId: Schema.String,
+  positionSeconds: Schema.Number,
+  playing: Schema.Boolean,
+  /**
+   * The player played or paused by itself (a tap, the lock screen, a call)
+   * and no state from the server agreed yet. Otherwise it only followed the
+   * session, which may have changed since without it.
+   */
+  playingSetHere: Schema.Boolean,
+  /** The last `seekSeq` this player followed. */
+  seekSeq: Schema.Number,
+})
+export type PlayerReport = typeof PlayerReport.Type
+
 /** The first message on every connection. */
 export const Hello = Schema.TaggedStruct('Hello', {
   deviceId: Schema.String,
   name: Schema.String,
   kind: DeviceKind,
+  /**
+   * Null when nothing is loaded. TV apps built before this field leave it
+   * out, so it may be missing.
+   */
+  player: Schema.optionalKey(Schema.NullOr(PlayerReport)),
 })
 
 /** Replace the queue and start playing it. */
@@ -97,7 +122,23 @@ export const RemoveEntry = Schema.TaggedStruct('RemoveEntry', {
   entryId: Schema.String,
 })
 export const Resume = Schema.TaggedStruct('Resume', {})
-export const Pause = Schema.TaggedStruct('Pause', {})
+/** Where a player stopped, and the session jump it was following. */
+export const StoppedAt = Schema.Struct({
+  entryId: Schema.String,
+  positionSeconds: Schema.Number,
+  seekSeq: Schema.Number,
+})
+export type StoppedAt = typeof StoppedAt.Type
+
+export const Pause = Schema.TaggedStruct('Pause', {
+  /**
+   * Where the player stopped, when the player itself pauses, so every device
+   * and the next resume agree on the spot. It counts only while that entry
+   * is still current and no other device has moved the position since the
+   * player last followed it. Null or missing otherwise.
+   */
+  at: Schema.optionalKey(Schema.NullOr(StoppedAt)),
+})
 export const Seek = Schema.TaggedStruct('Seek', {
   positionSeconds: Schema.Number,
 })
@@ -158,6 +199,12 @@ export const State = Schema.TaggedStruct('State', {
   state: SessionState,
   /** The server clock when this was sent, to correct for clock skew. */
   serverNow: Schema.Number,
+  /**
+   * How many messages from this connection the state includes, counting
+   * `Hello` as the first. A player that changed something itself keeps its
+   * change until this covers the message that carried it.
+   */
+  ack: Schema.Number,
 })
 
 /** Something went wrong that the person should hear about. */

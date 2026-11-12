@@ -7,6 +7,7 @@ import { NavigationModel } from './navigation'
 import {
   Connection,
   DeviceIdentity,
+  LocalChanges,
   PhoneAudio,
   PlayerSheet,
   SessionSnapshot,
@@ -61,6 +62,7 @@ export const Model = Schema.Struct({
   maybeNotice: Schema.Option(Schema.String),
   /** Where the seek bar is being dragged to, before it is let go. */
   maybeScrubSeconds: Schema.Option(Schema.Number),
+  localChanges: LocalChanges,
   swipe: Swipe,
 })
 export type Model = typeof Model.Type

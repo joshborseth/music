@@ -119,7 +119,9 @@ impl Controller {
             Inbound::Message(ServerMessage::Notice { message }) => {
                 self.notice = Some((message, Instant::now()));
             }
-            Inbound::Message(ServerMessage::State { state, server_now }) => {
+            Inbound::Message(ServerMessage::State {
+                state, server_now, ..
+            }) => {
                 self.clock_offset = server_now - local_now_ms();
                 self.state = Some(state);
                 self.reconcile();
@@ -216,7 +218,7 @@ impl Controller {
             UiAction::PlayPause if !self.is_active() => self.send(ClientMessage::Transfer {
                 device_id: self.device_id.clone(),
             }),
-            UiAction::PlayPause if state.playing => self.send(ClientMessage::Pause {}),
+            UiAction::PlayPause if state.playing => self.send(ClientMessage::Pause { at: None }),
             UiAction::PlayPause => self.send(ClientMessage::Resume {}),
             UiAction::SeekBy(delta) => {
                 let duration = state

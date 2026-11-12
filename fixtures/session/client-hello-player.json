@@ -1,0 +1,13 @@
+{
+  "_tag": "Hello",
+  "deviceId": "phone-1",
+  "name": "iPhone",
+  "kind": "Web",
+  "player": {
+    "entryId": "e1",
+    "positionSeconds": 42.5,
+    "playing": true,
+    "playingSetHere": false,
+    "seekSeq": 3
+  }
+}

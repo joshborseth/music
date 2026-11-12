@@ -79,6 +79,27 @@ impl SessionState {
     }
 }
 
+/// What a player is already doing when it reconnects, so the session follows
+/// it. The TV reloads where the session left off instead, so it sends none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerReport {
+    pub entry_id: String,
+    pub position_seconds: f64,
+    pub playing: bool,
+    pub playing_set_here: bool,
+    pub seek_seq: u64,
+}
+
+/// Where a player stopped, and the session jump it was following.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoppedAt {
+    pub entry_id: String,
+    pub position_seconds: f64,
+    pub seek_seq: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Placement {
     Next,
@@ -95,9 +116,16 @@ pub enum ClientMessage {
         device_id: String,
         name: String,
         kind: DeviceKind,
+        #[serde(default)]
+        player: Option<PlayerReport>,
     },
     Resume {},
-    Pause {},
+    #[serde(rename_all = "camelCase")]
+    Pause {
+        /// Where the player stopped. The TV leaves it to the server.
+        #[serde(default)]
+        at: Option<StoppedAt>,
+    },
     #[serde(rename_all = "camelCase")]
     Seek {
         position_seconds: f64,
@@ -137,6 +165,10 @@ pub enum ServerMessage {
         state: SessionState,
         /// Server epoch milliseconds when this was sent.
         server_now: f64,
+        /// Messages from this connection the state includes. The TV waits
+        /// for the server instead, so it does not use it.
+        #[serde(default)]
+        ack: u64,
     },
     Notice {
         message: String,
@@ -155,8 +187,9 @@ mod tests {
 
     #[test]
     fn decodes_server_state() {
-        let ServerMessage::State { state, server_now } =
-            serde_json::from_str(&fixture("server-state.json")).unwrap()
+        let ServerMessage::State {
+            state, server_now, ..
+        } = serde_json::from_str(&fixture("server-state.json")).unwrap()
         else {
             panic!("expected State");
         };
@@ -178,6 +211,43 @@ mod tests {
     }
 
     #[test]
+    fn decodes_a_hello_with_a_player_report() {
+        let message: ClientMessage =
+            serde_json::from_str(&fixture("client-hello-player.json")).unwrap();
+        assert_eq!(
+            message,
+            ClientMessage::Hello {
+                device_id: "phone-1".into(),
+                name: "iPhone".into(),
+                kind: DeviceKind::Web,
+                player: Some(PlayerReport {
+                    entry_id: "e1".into(),
+                    position_seconds: 42.5,
+                    playing: true,
+                    playing_set_here: false,
+                    seek_seq: 3,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_a_pause_with_where_it_stopped() {
+        let message: ClientMessage =
+            serde_json::from_str(&fixture("client-pause-at.json")).unwrap();
+        assert_eq!(
+            message,
+            ClientMessage::Pause {
+                at: Some(StoppedAt {
+                    entry_id: "e0".into(),
+                    position_seconds: 12.5,
+                    seek_seq: 3,
+                }),
+            }
+        );
+    }
+
+    #[test]
     fn encodes_client_messages_like_the_fixtures() {
         let cases = [
             (
@@ -186,6 +256,7 @@ mod tests {
                     device_id: "tv".into(),
                     name: "TV".into(),
                     kind: DeviceKind::Tv,
+                    player: None,
                 },
             ),
             (
@@ -202,7 +273,7 @@ mod tests {
                     from_entry_id: "e0".into(),
                 },
             ),
-            ("client-pause.json", ClientMessage::Pause {}),
+            ("client-pause.json", ClientMessage::Pause { at: None }),
         ];
         for (name, message) in cases {
             let expected: serde_json::Value = serde_json::from_str(&fixture(name)).unwrap();

@@ -72,6 +72,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             device_id: DEVICE_ID.to_owned(),
             name: DEVICE_NAME.to_owned(),
             kind: DeviceKind::Tv,
+            player: None,
         },
         inbound,
     );

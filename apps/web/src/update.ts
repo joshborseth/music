@@ -516,6 +516,20 @@ const currentVideoId = (model: Model): Option.Option<string> =>
     Option.map(({ track }) => track.videoId),
   )
 
+/**
+ * Run a step that may change the current song, then remember the new song
+ * and load its lyrics if they are showing. The phone moves to the next song
+ * itself, so this is not only for the server's state.
+ */
+const followingCurrentSong =
+  (step: UpdateStep): UpdateStep =>
+  model =>
+    Update.combine([
+      step,
+      rememberPlayed(currentVideoId(model)),
+      loadLyricsIfShown,
+    ])(model)
+
 /** Adds the song now playing to Recently Played when it changes. */
 const rememberPlayed =
   (maybePreviousVideoId: Option.Option<string>): UpdateStep =>
@@ -1243,16 +1257,21 @@ export const update = (model: Model, message: Message) =>
     ClosedSessionSocket: () => Playback.loseSessionSocket(model),
     CompletedWaitBeforeReconnect: () =>
       Playback.completeWaitBeforeReconnect(model),
-    ReceivedSessionState: ({ state, serverNow, receivedAt }) =>
-      Update.combine([
-        stepModel =>
-          Playback.receiveSessionState(stepModel, state, serverNow, receivedAt),
-        rememberPlayed(currentVideoId(model)),
-        loadLyricsIfShown,
-      ])(model),
+    ReceivedSessionState: ({ state, serverNow, ack, receivedAt }) =>
+      followingCurrentSong(stepModel =>
+        Playback.receiveSessionState(
+          stepModel,
+          state,
+          serverNow,
+          ack,
+          receivedAt,
+        ),
+      )(model),
     ReceivedSessionNotice: ({ message }) =>
       Playback.receiveNotice(model, message),
     CompletedSendToSession: () => ({ model }),
+    SentLocalChange: ({ maybeSeq }) =>
+      Playback.completeSendLocalChange(model, maybeSeq),
     CompletedWaitBeforeHideNotice: ({ message }) =>
       Playback.completeWaitBeforeHideNotice(model, message),
     ClickedDismissNotice: () => ({
@@ -1266,17 +1285,28 @@ export const update = (model: Model, message: Message) =>
     ReleasedPhoneAudio: () => Playback.releasePhoneAudio(model),
     FailedAcquirePhoneAudio: () => Playback.releasePhoneAudio(model),
     CompletedUnlockPhoneAudio: () => ({ model }),
-    CompletedLoadPhoneAudio: ({ isBlocked }) =>
-      Playback.completeStartPhoneAudio(model, isBlocked),
+    CompletedLoadPhoneAudio: ({ entryId, isBlocked }) =>
+      Playback.completeLoadPhoneAudio(model, entryId, isBlocked),
     CompletedSetPhoneAudioPlaying: ({ isBlocked }) =>
       Playback.completeStartPhoneAudio(model, isBlocked),
     CompletedStopPhoneAudio: () => ({ model }),
     CompletedUpdateMediaSession: () => ({ model }),
-    UpdatedPhoneAudioTime: ({ seconds, at }) =>
-      Playback.updatePhoneAudioTime(model, seconds, at),
-    EndedPhoneAudio: () => Playback.endPhoneAudio(model),
-    FailedPhoneAudio: ({ error }) => Playback.failPhoneAudio(model, error),
-    PressedMediaKey: ({ key }) => Playback.pressMediaKey(model, key),
+    UpdatedPhoneAudioTime: ({ entryId, seconds, at }) =>
+      Playback.updatePhoneAudioTime(model, entryId, seconds, at),
+    EndedPhoneAudio: ({ entryId }) =>
+      followingCurrentSong(stepModel =>
+        Playback.endPhoneAudio(stepModel, entryId),
+      )(model),
+    FailedPhoneAudio: ({ entryId, error }) =>
+      Playback.failPhoneAudio(model, entryId, error),
+    PausedPhoneAudio: ({ entryId }) =>
+      Playback.followPhoneAudio(model, entryId, false),
+    ResumedPhoneAudio: ({ entryId }) =>
+      Playback.followPhoneAudio(model, entryId, true),
+    PressedMediaKey: ({ key }) =>
+      followingCurrentSong(stepModel => Playback.pressMediaKey(stepModel, key))(
+        model,
+      ),
 
     ClickedPlaySongs: ({ songs: songsToPlay, startIndex }) =>
       Playback.clickPlaySongs(model, songsToPlay, startIndex),
@@ -1287,16 +1317,16 @@ export const update = (model: Model, message: Message) =>
           Playback.clickEnqueueSongs(stepModel, songsToEnqueue, placement),
       ])(model),
     ClickedTogglePlayback: () => Playback.clickTogglePlayback(model),
-    ClickedNextTrack: () => Playback.sendCommand(model, { _tag: 'Next' }),
+    ClickedNextTrack: () => followingCurrentSong(Playback.skipToNext)(model),
     ClickedPreviousTrack: () =>
-      Playback.sendCommand(model, { _tag: 'Previous' }),
+      followingCurrentSong(Playback.skipToPrevious)(model),
     ChangedSeekPosition: ({ seconds }) => Playback.seekTo(model, seconds),
     UpdatedScrubPosition: ({ seconds }) => Playback.scrub(model, seconds),
     CancelledScrub: () => Playback.cancelScrub(model),
     CompletedFollowSeekBarDrags: () => ({ model }),
     ClickedSkipBy: ({ seconds }) => Playback.skipBy(model, seconds),
-    ChangedPhoneAudioBuffering: ({ isBuffering }) =>
-      Playback.changePhoneAudioBuffering(model, isBuffering),
+    ChangedPhoneAudioBuffering: ({ entryId, isBuffering }) =>
+      Playback.changePhoneAudioBuffering(model, entryId, isBuffering),
     CompletedSeekPhoneAudio: () => ({ model }),
     CompletedPrefetchSongs: () => ({ model }),
     ClickedDevice: ({ deviceId }) =>
@@ -1305,7 +1335,9 @@ export const update = (model: Model, message: Message) =>
         stepModel => Playback.clickDevice(stepModel, deviceId),
       ])(model),
     ClickedQueueEntry: ({ entryId }) =>
-      Playback.sendCommand(model, { _tag: 'SkipTo', entryId }),
+      followingCurrentSong(stepModel =>
+        Playback.clickQueueEntry(stepModel, entryId),
+      )(model),
     ClickedRemoveQueueEntry: ({ entryId }) =>
       Playback.sendCommand(model, { _tag: 'RemoveEntry', entryId }),
     ClickedOpenPlayer: () => Playback.openPlayer(model),
@@ -1324,7 +1356,9 @@ export const update = (model: Model, message: Message) =>
     MovedSwipePointer: ({ pointerId, clientX, clientY, timeStamp }) =>
       Playback.moveSwipePointer(model, pointerId, clientX, clientY, timeStamp),
     ReleasedSwipePointer: ({ pointerId, timeStamp }) =>
-      Playback.releaseSwipePointer(model, pointerId, timeStamp),
+      followingCurrentSong(stepModel =>
+        Playback.releaseSwipePointer(stepModel, pointerId, timeStamp),
+      )(model),
     CancelledSwipePointer: ({ pointerId }) =>
       Playback.cancelSwipePointer(model, pointerId),
   })
