@@ -114,6 +114,13 @@ export interface YouTubeMusicShape {
     ReadonlyArray<Song>,
     MusicNotFoundError | YouTubeMusicError
   >
+  /**
+   * How long a song is, for songs that came without one (Home's rows give
+   * none). "Up next" lists the song itself with its length.
+   */
+  readonly getDurationSeconds: (
+    videoId: string,
+  ) => Effect.Effect<Option.Option<number>, YouTubeMusicError>
   readonly getArtist: (
     artistId: string,
   ) => Effect.Effect<ArtistDetails, MusicNotFoundError | YouTubeMusicError>
@@ -199,6 +206,18 @@ const make = Effect.gen(function* () {
     const songs = yield* upNextSongs(videoId)
     return Array.filter(songs, ({ videoId: id }) => id !== videoId)
   })
+
+  const getDurationSeconds = Effect.fn('YouTubeMusic.getDurationSeconds')(
+    function* (videoId: string) {
+      const songs = yield* upNextSongs(videoId).pipe(
+        Effect.catchTag('MusicNotFoundError', () => Effect.succeed([])),
+      )
+      return pipe(
+        Array.findFirst(songs, ({ videoId: id }) => id === videoId),
+        Option.flatMap(({ maybeDurationSeconds }) => maybeDurationSeconds),
+      )
+    },
+  )
 
   const getSong = Effect.fn('YouTubeMusic.getSong')(function* (
     videoId: string,
@@ -314,6 +333,7 @@ const make = Effect.gen(function* () {
     searchPlaylists,
     getSong,
     getUpNext,
+    getDurationSeconds,
     getArtist,
     getAlbum,
     getPlaylist,

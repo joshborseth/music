@@ -22,8 +22,10 @@ import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import {
   type Model,
   type Outcome,
+  fillDuration,
   initialModel,
   lookahead,
+  missingDurations,
   playerLost,
   refresh,
   toSessionState,
@@ -48,6 +50,8 @@ const WAKE_TIMEOUT = '60 seconds'
 const MAILBOX_SIZE = 32
 /** Songs from YouTube's "up next" to find links for as the queue runs out. */
 const QUEUE_END_RESOLVES = 3
+/** Song lengths remembered before the memory starts over. */
+const KNOWN_DURATIONS_CAPACITY = 2000
 
 interface Connection {
   readonly deviceId: string
@@ -224,12 +228,66 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         )
       })
 
+    /**
+     * Song lengths looked up so far (`None`: YouTube gave none), and the
+     * lookups still running, so each song is asked for once.
+     */
+    const knownDurations = new Map<string, Option.Option<number>>()
+    const lookingUpDurations = new Set<string>()
+
+    const lookUpDuration = (videoId: string) =>
+      Effect.suspend(() => {
+        const known = knownDurations.get(videoId)
+        if (known !== undefined) return Effect.succeed(known)
+        return youTubeMusic.getDurationSeconds(videoId).pipe(
+          Effect.tap(maybeSeconds =>
+            Effect.sync(() => {
+              if (knownDurations.size >= KNOWN_DURATIONS_CAPACITY) {
+                knownDurations.clear()
+              }
+              knownDurations.set(videoId, maybeSeconds)
+            }),
+          ),
+        )
+      })
+
+    /**
+     * Fill in the length of songs queued without one (Home's rows give none),
+     * so players can show progress and seek. A failed lookup is tried again
+     * with the next change.
+     */
+    const fillMissingDurations = (videoIds: ReadonlyArray<string>) =>
+      Effect.forEach(
+        missingDurations(model, videoIds).filter(
+          videoId => !lookingUpDurations.has(videoId),
+        ),
+        videoId => {
+          lookingUpDurations.add(videoId)
+          return lookUpDuration(videoId).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.void,
+                onSome: seconds =>
+                  apply(current => fillDuration(current, videoId, seconds)),
+              }),
+            ),
+            Effect.ensuring(
+              Effect.sync(() => lookingUpDurations.delete(videoId)),
+            ),
+            Effect.ignore,
+            Effect.forkIn(hubScope),
+          )
+        },
+        { discard: true },
+      )
+
     /** Keep the current song and the next five ready, and look ahead further. */
     const prepareAhead = Effect.suspend(() => {
       const ahead = lookahead(model)
       return Effect.all(
         [
           countPlay,
+          fillMissingDurations(ahead.download),
           audioStore.protect(ahead.download),
           prefetcher.plan('Queue', [
             ...ahead.download.map((videoId, index) => ({

@@ -7,8 +7,10 @@ import {
   type Context,
   type Model,
   currentPosition,
+  fillDuration,
   initialModel,
   lookahead,
+  missingDurations,
   playerLost,
   update,
   wakeTimedOut,
@@ -508,6 +510,39 @@ describe('session model', () => {
     expect(outcome.model.waking).toEqual([])
     expect(outcome.model.playing).toBe(false)
     expect(Option.isSome(outcome.maybeNotice)).toBe(true)
+  })
+
+  test('a song queued without a length gets one, and players do not reload', () => {
+    const model = update(
+      initialModel,
+      {
+        _tag: 'PlayQueue',
+        tracks: [
+          { ...track('a'), durationSeconds: null },
+          track('b'),
+          { ...track('a'), durationSeconds: null },
+        ],
+        startIndex: 0,
+      },
+      makeContext('phone', 1_000),
+    ).model
+    expect(missingDurations(model, ['a', 'b'])).toEqual(['a'])
+
+    const outcome = fillDuration(model, 'a', 245)
+    expect(outcome.broadcast).toBe(true)
+    expect(
+      outcome.model.queue.map(entry => entry.track.durationSeconds),
+    ).toEqual([245, 200, 245])
+    expect(outcome.model.currentEntryId).toBe(model.currentEntryId)
+    expect(outcome.model.seekSeq).toBe(model.seekSeq)
+    expect(missingDurations(outcome.model, ['a', 'b'])).toEqual([])
+  })
+
+  test('a length already known is kept', () => {
+    const model = playing()
+    const outcome = fillDuration(model, 'a', 999)
+    expect(outcome.broadcast).toBe(false)
+    expect(outcome.model).toBe(model)
   })
 })
 
