@@ -15,12 +15,15 @@ import { restoredScrollTop } from '../update'
 // PAGE
 
 /**
- * Wraps a page so it enters at the scroll position it was left at. Each page
- * gets its own element, so moving between pages replaces the DOM and runs
- * the page transition.
+ * Wraps a page in its own fixed scroll box and has it enter at the scroll
+ * position it was left at. The document itself never scrolls: iOS 26 blurs
+ * the top of a Home Screen app whenever the document is scrolled (see
+ * `.page-scroller` in styles.css). Each page gets its own element, so moving
+ * between pages replaces the DOM and runs the page transition.
  */
 export const page = (
   model: Model,
+  className: string,
   content: ReadonlyArray<Html>,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -29,9 +32,18 @@ export const page = (
     [
       h.OnMount(RestoreScroll({ top: restoredScrollTop(model) })),
       h.DataAttribute(PAGE_ATTRIBUTE, ''),
-      h.Class('flex min-h-dvh flex-col'),
+      h.Class('page-scroller'),
     ],
-    content,
+    [
+      h.main(
+        [
+          h.Class(
+            cn('mx-auto flex min-h-full w-full max-w-xl flex-col', className),
+          ),
+        ],
+        content,
+      ),
+    ],
   )
 
 // TOP EDGE

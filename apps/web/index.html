@@ -24,8 +24,8 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="format-detection" content="telephone=no" />
     <!-- No apple-mobile-web-app-status-bar-style: black-translucent puts the
-         page under the status bar, and iOS 26 then always blurs the top of a
-         Home Screen app (see .ios-edge in styles.css). -->
+         page under the status bar, where iOS 26 blurs it. iOS reads this at
+         install, so a change needs the app re-added to the Home Screen. -->
     <meta name="apple-mobile-web-app-title" content="Music" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -34,9 +34,6 @@
   </head>
   <body>
     <div id="root"></div>
-    <!-- Solid color sources for iOS's edge blur; see .ios-edge in styles.css. -->
-    <div class="ios-edge ios-edge-top" aria-hidden="true"></div>
-    <div class="ios-edge ios-edge-bottom" aria-hidden="true"></div>
     <script type="module" src="./src/entry.ts"></script>
   </body>
 </html>

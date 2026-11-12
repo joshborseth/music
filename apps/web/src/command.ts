@@ -7,6 +7,7 @@ import { BrowserKeyValueStore } from '@effect/platform-browser'
 import { PlaylistEdit, Session, Song } from '@music/shared'
 
 import {
+  PAGE_SELECTOR,
   PLAYLIST_TITLE_INPUT_ID,
   RECENT_SEARCHES_KEY,
   SEARCH_BAR_SELECTOR,
@@ -27,6 +28,13 @@ import { MusicClient } from './rpc'
 
 const RecentSearchesJson = Schema.fromJsonString(Schema.Array(Schema.String))
 
+/**
+ * The page on screen. Each page scrolls in its own box; the document never
+ * scrolls (see `page` in view/chrome.ts).
+ */
+const currentPage = (): Element | null =>
+  globalThis.document.querySelector(PAGE_SELECTOR)
+
 /** Opens `url`, noting where the page being left was scrolled to. */
 export const NavigateInternal = Command.define('NavigateInternal', {
   args: { url: Schema.String },
@@ -34,7 +42,7 @@ export const NavigateInternal = Command.define('NavigateInternal', {
   execute: ({ url }) =>
     Effect.gen(function* () {
       const { pathname, search } = globalThis.location
-      const scrollTop = globalThis.scrollY
+      const scrollTop = currentPage()?.scrollTop ?? 0
       yield* pushUrl(url)
       return Message.CompletedNavigateInternal({
         fromUrl: `${pathname}${search}`,
@@ -74,7 +82,7 @@ export const ReplaceSearchUrl = Command.define('ReplaceSearchUrl', {
 export const ScrollToTop = Command.define('ScrollToTop', {
   messages: [Message.CompletedScrollToTop],
   execute: Effect.sync(() =>
-    globalThis.scrollTo({ top: 0, behavior: 'smooth' }),
+    currentPage()?.scrollTo({ top: 0, behavior: 'smooth' }),
   ).pipe(Effect.as(Message.CompletedScrollToTop())),
 })
 
@@ -87,17 +95,18 @@ export const ScrollSearchResultsToTop = Command.define(
   {
     messages: [Message.CompletedScrollSearchResultsToTop],
     execute: Effect.sync(() => {
+      const maybePage = currentPage()
       const maybeBar = globalThis.document.querySelector(SEARCH_BAR_SELECTOR)
       const maybeResults = globalThis.document.querySelector(
         SEARCH_RESULTS_SELECTOR,
       )
-      if (maybeBar !== null && maybeResults !== null) {
+      if (maybePage !== null && maybeBar !== null && maybeResults !== null) {
         const overlap =
           maybeBar.getBoundingClientRect().bottom -
           maybeResults.getBoundingClientRect().top
         if (overlap > 0) {
-          globalThis.scrollTo({
-            top: globalThis.scrollY - overlap,
+          maybePage.scrollTo({
+            top: maybePage.scrollTop - overlap,
             behavior: 'instant',
           })
         }

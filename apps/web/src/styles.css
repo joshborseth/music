@@ -160,7 +160,13 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
   html {
+    overscroll-behavior: none;
     color-scheme: light dark;
     -webkit-tap-highlight-color: transparent;
     -webkit-text-size-adjust: 100%;
@@ -305,7 +311,7 @@
 @supports (animation-timeline: scroll()) {
   .reveal-on-scroll {
     animation: reveal linear both;
-    animation-timeline: scroll(root block);
+    animation-timeline: --page;
     animation-range: var(--reveal-start, 40px) var(--reveal-end, 96px);
   }
 }
@@ -336,45 +342,22 @@
   background-color: var(--background);
 }
 
-/* iOS 26 draws its own blur over the top and bottom ~40pt of a Home Screen
-   web app. WebKit skips it at an edge only when it finds a box there to take
-   a solid color from (LocalFrameView::fixedContainerEdges): it hit-tests 4px
-   in from the middle of the edge, walks up to the first fixed box at least
-   90% of the viewport wide, and takes the first plain background-color on a
-   box taller than 10px. A backdrop-filter on the way means glass, so blur.
-   The hit test first ignores pointer-events, so these bands are found even
-   though taps pass through them. But if it lands on an invisible (opacity 0)
-   box with pointer-events: none, WebKit hit-tests again honoring
-   pointer-events, which skips these bands too and lands on the scrolling
-   page: blur. So nothing invisible may sit above them at an edge; a closed
-   overlay hides with visibility: hidden, which hit tests skip.
-   The top bar is hidden until a page scrolls, so these bands are always
-   there instead. iOS only acts on them where the system bars overlap the
-   page with an obscured inset, so the status bar must not be
-   black-translucent: with it, the page runs under the clock, the inset is
-   0, and the blur stays whatever the page does (WKWebView
-   _updateFixedColorExtensionViews, _shouldHideTopScrollPocket). They live in index.html so they exist from the first frame,
-   and `background-clip: text` paints nothing, because WebKit reads the color
-   from the style. iOS then fills the status bar and home indicator areas
-   with the page color. They sit above the page chrome and below the sheets,
-   so an open sheet supplies its own edge. */
-.ios-edge {
+/* THE PAGE SCROLLS, NOT THE DOCUMENT
+
+   iOS 26 blurs the top of a Home Screen app whenever the document is
+   scrolled: the blur is UIKit's scroll edge effect on WKWebView's own scroll
+   view. The page cannot turn it off, and the solid-color workaround WebKit
+   offers only applies where the status bar overlaps the page. So html and
+   body never scroll, and each page scrolls in this fixed box instead, as the
+   Lights app does. The cost: tapping the status bar no longer scrolls to the
+   top, because iOS only does that for the document. The nav bars that fade
+   in as a page scrolls follow this box through the --page timeline. */
+.page-scroller {
   position: fixed;
-  inset-inline: 0;
-  z-index: 35;
-  height: 12px;
-  pointer-events: none;
-  background-color: var(--background);
-  background-clip: text;
-  -webkit-background-clip: text;
-}
-
-.ios-edge-top {
-  top: 0;
-}
-
-.ios-edge-bottom {
-  bottom: 0;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-timeline: --page block;
 }
 
 /* SHEETS */
@@ -407,8 +390,6 @@
   }
 }
 
-/* visibility, not just opacity: an invisible full-screen layer over the top
-   edge makes iOS blur it (see .ios-edge). */
 .sheet-backdrop[data-state='closed'] {
   opacity: 0;
   visibility: hidden;
