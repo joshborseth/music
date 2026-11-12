@@ -11,7 +11,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::audio::{Command, Engine, Event};
 use crate::protocol::{ClientMessage, Placement, QueueTrack, ServerMessage, SessionState};
 use crate::session::Inbound;
-use crate::view::View;
+use crate::view::{PlayClock, View};
 use crate::volume::Volume;
 
 /// What the remote asks of the session.
@@ -65,6 +65,8 @@ pub struct Controller {
     notice: Option<(String, Instant)>,
     /// When the engine was last told to load, to tell loading from playing.
     load_started: Option<Instant>,
+    /// The exact position, for the screen's timed lyrics.
+    clock: PlayClock,
 }
 
 impl Controller {
@@ -73,6 +75,7 @@ impl Controller {
         engine: Engine,
         outbound: UnboundedSender<ClientMessage>,
         volume: Volume,
+        clock: PlayClock,
     ) -> Self {
         Self {
             device_id,
@@ -87,6 +90,7 @@ impl Controller {
             last_progress: Instant::now(),
             notice: None,
             load_started: None,
+            clock,
         }
     }
 
@@ -354,6 +358,11 @@ impl Controller {
             };
         };
         let current = state.current_index();
+        self.clock.set(
+            state.current_entry_id.as_deref(),
+            self.position().max(0.0),
+            state.playing,
+        );
         let here = self.is_active();
         let player_name = state
             .active_device_id

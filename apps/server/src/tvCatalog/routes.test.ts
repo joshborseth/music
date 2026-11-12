@@ -10,6 +10,7 @@ import {
   YouTubeMusicError,
 } from '@music/shared'
 
+import { TimedLyrics, withLines } from '../lyrics/service.ts'
 import { PlaylistStore, makePlaylistStore } from '../playlists/store.ts'
 import { type PrefetchJob, Prefetcher } from '../prefetch.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
@@ -42,6 +43,7 @@ const youTubeMusic = YouTubeMusic.of({
           maybeLyrics: Option.some({
             text: 'La la',
             maybeSource: Option.some('Source: Musixmatch'),
+            maybeLines: Option.none(),
           }),
           relatedSongs: [],
         }),
@@ -69,6 +71,24 @@ const youTubeMusic = YouTubeMusic.of({
 const { handler, dispose } = HttpRouter.toWebHandler(
   TvCatalogRoutes.pipe(
     Layer.provide(Layer.succeed(YouTubeMusic)(youTubeMusic)),
+    Layer.provide(
+      Layer.succeed(TimedLyrics)(
+        TimedLyrics.of({
+          withTimedLines: details =>
+            Effect.succeed(
+              withLines(
+                details,
+                details.song.videoId === 'timed'
+                  ? Option.some([
+                      { startSeconds: 1.5, text: 'La la', words: [] },
+                    ])
+                  : Option.none(),
+              ),
+            ),
+          warm: () => Effect.void,
+        }),
+      ),
+    ),
     Layer.provide(
       Layer.succeed(PlaylistStore)(
         makePlaylistStore(new Database(':memory:', { strict: true }), {
@@ -145,6 +165,12 @@ describe('TV catalog routes', () => {
     expect(await (await get('/tv/lyrics?videoId=a')).json()).toEqual({
       text: 'La la',
       source: 'Source: Musixmatch',
+      lines: null,
+    })
+    expect(await (await get('/tv/lyrics?videoId=timed')).json()).toEqual({
+      text: 'La la',
+      source: 'LRCLIB',
+      lines: [{ startSeconds: 1.5, text: 'La la', words: [] }],
     })
     expect((await get('/tv/lyrics?videoId=missing')).status).toBe(404)
   })

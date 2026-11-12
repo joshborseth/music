@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::catalog::{Card, Collection, CollectionKind, Shelf};
 use crate::controller::UiAction;
+use crate::lyrics::SongLyrics;
 use crate::protocol::{Placement, QueueTrack};
 use crate::view::View;
 
@@ -517,7 +518,7 @@ pub struct Nav {
     /// Whether the current song is in Liked songs, once known.
     pub liked: Option<(String, bool)>,
     /// Lyrics for the song with this videoId.
-    pub lyrics: Option<(String, Load<Option<String>>)>,
+    pub lyrics: Option<(String, Load<Option<SongLyrics>>)>,
     notice: Option<(String, Instant)>,
     back_pressed: Option<Instant>,
     /// The entry the queue panel last followed, to keep it on the current song.
@@ -746,7 +747,7 @@ impl Nav {
         }
     }
 
-    pub fn on_lyrics(&mut self, video_id: &str, result: Result<Option<String>, String>) {
+    pub fn on_lyrics(&mut self, video_id: &str, result: Result<Option<SongLyrics>, String>) {
         if let Some((current, load)) = &mut self.lyrics
             && current == video_id
         {

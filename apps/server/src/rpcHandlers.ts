@@ -2,6 +2,7 @@ import { Array, Effect } from 'effect'
 
 import { MusicRpcs, type Song } from '@music/shared'
 
+import { TimedLyrics } from './lyrics/service.ts'
 import { ArtworkPalette } from './palette/service.ts'
 import { PlaylistStore } from './playlists/store.ts'
 import { Prefetcher, pageJobs } from './prefetch.ts'
@@ -20,6 +21,7 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
     const prefetcher = yield* Prefetcher
     const playlistStore = yield* PlaylistStore
     const artworkPalette = yield* ArtworkPalette
+    const timedLyrics = yield* TimedLyrics
 
     const prepare = (
       songs: ReadonlyArray<Song>,
@@ -44,9 +46,10 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
       searchAlbums: ({ query }) => youTubeMusic.searchAlbums(query),
       searchPlaylists: ({ query }) => youTubeMusic.searchPlaylists(query),
       getSong: ({ videoId }) =>
-        youTubeMusic
-          .getSong(videoId)
-          .pipe(Effect.tap(details => prepare([details.song], 1, 0))),
+        youTubeMusic.getSong(videoId).pipe(
+          Effect.tap(details => prepare([details.song], 1, 0)),
+          Effect.flatMap(timedLyrics.withTimedLines),
+        ),
       getArtist: ({ artistId }) =>
         youTubeMusic
           .getArtist(artistId)

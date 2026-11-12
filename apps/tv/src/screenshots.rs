@@ -177,11 +177,13 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
     crate::dress(&app, server);
     let (actions, mut action_receiver) = tokio::sync::mpsc::unbounded_channel();
     runtime.spawn(async move { while action_receiver.recv().await.is_some() {} });
+    let clock = crate::view::PlayClock::default();
     ui::Ui::install(
         &app,
         server.to_owned(),
         runtime.handle().clone(),
         actions,
+        clock.clone(),
         ui::Hooks {
             open_update_settings: Box::new(|| {}),
             set_quiet: Box::new(|_| {}),
@@ -199,6 +201,8 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
     for step in steps {
         match step {
             Step::Session(view) => {
+                let entry_id = view.current_entry().map(|entry| entry.entry_id.clone());
+                clock.set(entry_id.as_deref(), view.position_seconds, false);
                 ui::with(|ui| ui.on_session(view));
                 runner.pump(Duration::from_millis(50));
             }

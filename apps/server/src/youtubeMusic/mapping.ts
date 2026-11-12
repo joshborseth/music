@@ -292,6 +292,7 @@ export const toLyrics = (
           : footer,
       ),
     ),
+    maybeLines: Option.none(),
   }))
 
 // ALBUMS

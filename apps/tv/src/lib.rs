@@ -13,6 +13,7 @@ mod controller;
 mod crash_report;
 mod images;
 mod local_time;
+pub mod lyrics;
 pub mod nav;
 pub mod protocol;
 mod qr;
@@ -66,11 +67,13 @@ pub fn run() -> Result<(), slint::PlatformError> {
     });
 
     let (actions, action_receiver) = unbounded_channel();
+    let clock = view::PlayClock::default();
     ui::Ui::install(
         &app,
         SERVER_URL.to_owned(),
         handle.clone(),
         actions,
+        clock.clone(),
         ui::Hooks {
             open_update_settings: Box::new({
                 let updater = updater.clone();
@@ -100,7 +103,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     );
 
     let volume = volume::Volume::spawn(outbound.clone());
-    let controller = Controller::new(DEVICE_ID.to_owned(), engine, outbound, volume);
+    let controller = Controller::new(DEVICE_ID.to_owned(), engine, outbound, volume, clock);
     handle.spawn(
         controller.run(inbound_receiver, event_receiver, action_receiver, |view| {
             let _ = slint::invoke_from_event_loop(move || {

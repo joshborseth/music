@@ -373,10 +373,11 @@ export const artistCollection = (details: ArtistDetails): Tv.TvCollection => ({
 
 export const lyricsOf = (details: SongDetails): Tv.TvLyrics =>
   Option.match(details.maybeLyrics, {
-    onNone: () => ({ text: null, source: null }),
+    onNone: () => ({ text: null, source: null, lines: null }),
     onSome: lyrics => ({
       text: lyrics.text,
       source: Option.getOrNull(lyrics.maybeSource),
+      lines: Option.getOrNull(lyrics.maybeLines),
     }),
   })
 

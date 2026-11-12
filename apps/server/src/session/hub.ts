@@ -18,6 +18,7 @@ import type { Socket } from 'effect/socket'
 import { Session } from '@music/shared'
 
 import { AudioStore } from '../audioStore.ts'
+import { TimedLyrics } from '../lyrics/service.ts'
 import { Prefetcher } from '../prefetch.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import {
@@ -51,6 +52,9 @@ const WAKE_TIMEOUT = '60 seconds'
 const MAILBOX_SIZE = 32
 /** Songs from YouTube's "up next" to find links for as the queue runs out. */
 const QUEUE_END_RESOLVES = 3
+/** Timed lyrics are looked up for the current song and the one after it. */
+const LYRICS_AHEAD = 2
+const MAX_WARMED_LYRICS = 500
 /** Song lengths remembered before the memory starts over. */
 const KNOWN_DURATIONS_CAPACITY = 2000
 
@@ -90,6 +94,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     const audioStore = yield* AudioStore
     const prefetcher = yield* Prefetcher
     const youTubeMusic = yield* YouTubeMusic
+    const timedLyrics = yield* TimedLyrics
     const lock = yield* Semaphore.make(1)
     const timers = yield* FiberMap.make<string>()
     const hubScope = yield* Scope.Scope
@@ -307,6 +312,27 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         { discard: true },
       )
 
+    /** Songs whose timed lyrics were already looked up ahead of time. */
+    const warmedLyrics = new Set<string>()
+
+    /** Look up timed lyrics for the current and next songs before they show. */
+    const warmLyrics = (videoIds: ReadonlyArray<string>) =>
+      Effect.forEach(
+        videoIds
+          .slice(0, LYRICS_AHEAD)
+          .filter(videoId => !warmedLyrics.has(videoId)),
+        videoId => {
+          if (warmedLyrics.size >= MAX_WARMED_LYRICS) warmedLyrics.clear()
+          warmedLyrics.add(videoId)
+          return youTubeMusic.getSong(videoId).pipe(
+            Effect.flatMap(details => timedLyrics.warm(details.song)),
+            Effect.ignore,
+            Effect.forkIn(hubScope),
+          )
+        },
+        { discard: true },
+      )
+
     /** Keep the current song and the next five ready, and look ahead further. */
     const prepareAhead = Effect.suspend(() => {
       const ahead = lookahead(model)
@@ -314,6 +340,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         [
           countPlay,
           fillMissingDurations(ahead.download),
+          warmLyrics(ahead.download),
           audioStore.protect(ahead.download),
           prefetcher.plan('Queue', [
             ...ahead.download.map((videoId, index) => ({

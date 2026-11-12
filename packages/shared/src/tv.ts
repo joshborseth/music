@@ -88,10 +88,29 @@ export const TvCollection = Schema.Struct({
 })
 export type TvCollection = typeof TvCollection.Type
 
-/** A song's lyrics. YouTube Music's are not timed. */
+/** One word of a timed line. */
+export const TvLyricWord = Schema.Struct({
+  startSeconds: Schema.Number,
+  text: Schema.String,
+})
+export type TvLyricWord = typeof TvLyricWord.Type
+
+/**
+ * One timed line, sung until the next line starts. An empty `text` marks an
+ * instrumental break; `words` is empty unless timed word by word.
+ */
+export const TvLyricLine = Schema.Struct({
+  startSeconds: Schema.Number,
+  text: Schema.String,
+  words: Schema.Array(TvLyricWord),
+})
+export type TvLyricLine = typeof TvLyricLine.Type
+
+/** A song's lyrics, and the same lyrics timed line by line when known. */
 export const TvLyrics = Schema.Struct({
   text: Schema.NullOr(Schema.String),
   source: Schema.NullOr(Schema.String),
+  lines: Schema.NullOr(Schema.Array(TvLyricLine)),
 })
 export type TvLyrics = typeof TvLyrics.Type
 

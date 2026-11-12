@@ -1,4 +1,19 @@
 {
   "text": "We're no strangers to love\nYou know the rules and so do I",
-  "source": "Source: Musixmatch"
+  "source": "LRCLIB",
+  "lines": [
+    {
+      "startSeconds": 18.89,
+      "text": "We're no strangers to love",
+      "words": [
+        { "startSeconds": 18.89, "text": "We're " },
+        { "startSeconds": 19.25, "text": "no " },
+        { "startSeconds": 19.53, "text": "strangers " },
+        { "startSeconds": 20.07, "text": "to " },
+        { "startSeconds": 20.33, "text": "love" }
+      ]
+    },
+    { "startSeconds": 22.82, "text": "You know the rules and so do I", "words": [] },
+    { "startSeconds": 26.4, "text": "", "words": [] }
+  ]
 }

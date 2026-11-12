@@ -8,6 +8,7 @@ import { MusicRpcs } from '@music/shared'
 import { ArtworkRoutes } from './artwork.ts'
 import { AudioRoutes, AudioSourceLive } from './audio.ts'
 import { AudioStoreLive } from './audioStore.ts'
+import { TimedLyricsLive } from './lyrics/service.ts'
 import { NowPlayingFeedLive, NowPlayingRoutes } from './nowPlaying.ts'
 import { ArtworkPaletteLive } from './palette/service.ts'
 import { PlaylistStoreLive } from './playlists/store.ts'
@@ -23,6 +24,9 @@ const DEFAULT_PORT = 3001
 const DEFAULT_HOSTNAME = '127.0.0.1'
 
 const STATIC_MIME_TYPES = { webmanifest: 'application/manifest+json' }
+
+/** Timed lyrics, shared by the RPCs, the TV routes, and the session. */
+const LyricsLive = TimedLyricsLive.pipe(Layer.provide(BunServices.layer))
 
 /**
  * Songs on disk, downloaded through yt-dlp, and the prefetcher that gets
@@ -50,6 +54,7 @@ const RpcRoutes = RpcServer.layerHttp({
 const CatalogRoutes = Layer.mergeAll(RpcRoutes, TvCatalogRoutes).pipe(
   Layer.provide(YouTubeMusicLive),
   Layer.provide(ArtworkPaletteLive),
+  Layer.provide(LyricsLive),
   Layer.provide(PlaylistStoreLive.pipe(Layer.provide(BunServices.layer))),
   Layer.provide(AudioLive),
 )
@@ -83,6 +88,7 @@ const PlaybackRoutes = Layer.mergeAll(
   Layer.provide(NowPlayingFeedLive),
   Layer.provide(SessionHubLive),
   Layer.provide(YouTubeMusicLive),
+  Layer.provide(LyricsLive),
   Layer.provide(ArtworkPaletteLive),
   Layer.provide(TvWakerLive),
   Layer.provideMerge(AudioLive),

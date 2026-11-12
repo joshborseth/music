@@ -43,10 +43,33 @@ export const Song = Schema.Struct({
 })
 export type Song = typeof Song.Type
 
-/** Song lyrics and the service that provided them. */
+/** One word of a timed line, for songs timed word by word. */
+export const LyricWord = Schema.Struct({
+  startSeconds: Schema.Number,
+  text: Schema.String,
+})
+export type LyricWord = typeof LyricWord.Type
+
+/**
+ * One line of timed lyrics, sung from `startSeconds` until the next line
+ * starts. An empty `text` marks an instrumental break. `words` is empty
+ * unless the lyrics are timed word by word; each word keeps its own spacing.
+ */
+export const LyricLine = Schema.Struct({
+  startSeconds: Schema.Number,
+  text: Schema.String,
+  words: Schema.Array(LyricWord),
+})
+export type LyricLine = typeof LyricLine.Type
+
+/**
+ * Song lyrics and the service that provided them. `maybeLines` holds the
+ * same lyrics timed line by line, when a timed copy matches the song.
+ */
 export const Lyrics = Schema.Struct({
   text: Schema.String,
   maybeSource: Schema.Option(Schema.String),
+  maybeLines: Schema.Option(Schema.Array(LyricLine)),
 })
 export type Lyrics = typeof Lyrics.Type
 

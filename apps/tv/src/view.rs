@@ -1,7 +1,50 @@
 //! The session as the screen needs it, as plain data. The controller rebuilds
 //! it a few times a second, and the screen only redraws when it changes.
 
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use crate::protocol::QueueEntry;
+
+/// Where playback is, to the millisecond. The controller sets it each time it
+/// rebuilds the view; the screen reads it many times a second to keep timed
+/// lyrics in step without redrawing everything else.
+#[derive(Debug, Clone, Default)]
+pub struct PlayClock(Arc<Mutex<Option<ClockReading>>>);
+
+#[derive(Debug, Clone)]
+struct ClockReading {
+    entry_id: String,
+    seconds: f64,
+    at: Instant,
+    playing: bool,
+}
+
+impl PlayClock {
+    pub fn set(&self, entry_id: Option<&str>, seconds: f64, playing: bool) {
+        let reading = entry_id.map(|entry_id| ClockReading {
+            entry_id: entry_id.to_owned(),
+            seconds,
+            at: Instant::now(),
+            playing,
+        });
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = reading;
+        }
+    }
+
+    /// Seconds into the current entry, or `None` when nothing is loaded.
+    pub fn seconds(&self) -> Option<(String, f64)> {
+        let slot = self.0.lock().ok()?;
+        let reading = slot.as_ref()?;
+        let elapsed = if reading.playing {
+            reading.at.elapsed().as_secs_f64()
+        } else {
+            0.0
+        };
+        Some((reading.entry_id.clone(), reading.seconds + elapsed))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct View {
