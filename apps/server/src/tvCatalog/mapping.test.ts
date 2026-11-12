@@ -266,7 +266,7 @@ describe('lyrics', () => {
         maybeLyrics: Option.none(),
         relatedSongs: [],
       }),
-    ).toEqual({ text: null, source: null })
+    ).toEqual({ text: null, source: null, lines: null })
   })
 })
 
@@ -276,6 +276,7 @@ describe('fixtures shared with the TV app', () => {
     ['shelves.json', Tv.TvShelves],
     ['collection.json', Tv.TvCollection],
     ['lyrics.json', Tv.TvLyrics],
+    ['lyrics-untimed.json', Tv.TvLyrics],
     ['lyrics-none.json', Tv.TvLyrics],
     ['liked.json', Tv.TvLiked],
     ['like-request.json', Tv.TvLikeRequest],

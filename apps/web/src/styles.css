@@ -564,6 +564,146 @@
   background: white;
 }
 
+/* LYRICS */
+
+/*
+ * Timed lyrics in the full player (`src/view/lyrics.ts`). The line being
+ * sung springs to full size and brightness; lines already sung dim further
+ * than the ones to come. Lines timed word by word light up a word at a time,
+ * each word hopping up as it is sung. A rest shows three dots that pop in,
+ * breathe, and light up as the next line nears. The `FollowLyrics` Mount
+ * glides the rows into place and marks the panel `data-browsing` while a
+ * finger reads ahead.
+ */
+
+.lyrics-lines {
+  display: flex;
+  flex-direction: column;
+  padding-top: 1rem;
+  padding-bottom: 55vh;
+}
+
+.lyric-row {
+  padding-block: 0.4rem;
+}
+
+.lyric-line {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-size: 30px;
+  line-height: 1.18;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: oklch(1 0 0 / 0.38);
+  transform: scale(0.94);
+  transform-origin: 0 50%;
+  transition:
+    color 450ms var(--ease-ios),
+    transform 700ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.lyric-row[data-state='past'] .lyric-line {
+  color: oklch(1 0 0 / 0.24);
+}
+
+.lyric-row[data-state='active'] .lyric-line {
+  color: oklch(1 0 0);
+  transform: scale(1);
+}
+
+.lyric-line:active {
+  transform: scale(0.97);
+}
+
+.lyric-word {
+  display: inline-block;
+  white-space: pre-wrap;
+  transition:
+    color 220ms linear,
+    transform 520ms cubic-bezier(0.34, 1.8, 0.64, 1);
+}
+
+.lyric-row[data-state='active'] .lyric-word {
+  color: oklch(1 0 0 / 0.45);
+}
+
+.lyric-row[data-state='active'] .lyric-word[data-sung='true'] {
+  color: oklch(1 0 0);
+  transform: translateY(-3px);
+}
+
+.lyrics[data-browsing] .lyric-row:not([data-state='active']) .lyric-line {
+  color: oklch(1 0 0 / 0.7);
+}
+
+.lyric-break {
+  display: grid;
+  grid-template-rows: 0fr;
+  padding-block: 0;
+  transition:
+    grid-template-rows 520ms var(--ease-ios),
+    padding 520ms var(--ease-ios);
+}
+
+.lyric-break[data-state='active'] {
+  grid-template-rows: 1fr;
+  padding-block: 0.4rem;
+}
+
+.lyric-break-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.lyric-dots {
+  display: flex;
+  gap: 10px;
+  padding: 14px 4px;
+  transform: scale(0);
+  transform-origin: 4px 50%;
+  transition: transform 650ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.lyric-break[data-state='active'] .lyric-dots {
+  transform: scale(1);
+  animation: lyric-breathe 2.4s ease-in-out 650ms infinite;
+}
+
+.lyrics[data-playing='false'] .lyric-dots {
+  animation-play-state: paused;
+}
+
+@keyframes lyric-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.18);
+  }
+}
+
+.lyric-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background-color: oklch(1 0 0 / 0.3);
+  transition:
+    background-color 450ms var(--ease-ios),
+    transform 520ms cubic-bezier(0.34, 1.8, 0.64, 1);
+}
+
+.lyric-dot[data-lit='true'] {
+  background-color: oklch(1 0 0);
+  transform: scale(1.15);
+}
+
+.lyrics-source {
+  padding-top: 1.5rem;
+}
+
 /* SKELETON SHIMMER */
 
 @keyframes shimmer {
@@ -588,12 +728,18 @@
 
 @media (prefers-reduced-motion: reduce) {
   .equalizer-bar,
-  .shimmer {
+  .shimmer,
+  .lyric-break[data-state='active'] .lyric-dots {
     animation: none;
   }
   .sheet,
   .sheet[data-state='closed'],
-  .player-artwork {
+  .player-artwork,
+  .lyric-line,
+  .lyric-word,
+  .lyric-break,
+  .lyric-dots,
+  .lyric-dot {
     transition-duration: 0s;
   }
 }

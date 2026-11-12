@@ -47,6 +47,7 @@ import { SwipeTarget, swipeOn } from '../playback/swipe'
 import { artworkBackdropQuery, songQuery } from '../query'
 import { type PlayerPanel } from '../sheet'
 import { likedVideoIds } from '../update'
+import { timedLyrics } from './lyrics'
 import { formatDuration } from './shared'
 import { onSwipeStart, swipeTransitionClass, swipeableRow } from './swipe'
 
@@ -636,54 +637,77 @@ const compactNowPlaying = (
 const scrollPanelClass =
   'no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(transparent,black_1.5rem,black_calc(100%-1.5rem),transparent)]'
 
+const plainPanel = (content: Html, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.DataAttribute('sheet-scroll', ''), h.Class(scrollPanelClass)],
+    [content],
+  )
+
 const lyricsPanel = (
   model: Model,
+  snapshot: SessionSnapshot,
   entry: Session.QueueEntry,
   h: HtmlBuilder<Message>,
 ): Html => {
   const message = (text: string) =>
-    h.p([h.Class('py-10 text-center text-[17px] text-white/60')], [text])
-  return h.div(
-    [h.DataAttribute('sheet-scroll', ''), h.Class(scrollPanelClass)],
-    [
-      AsyncData.matchData(
-        songQuery.read(model.songs, { videoId: entry.track.videoId }),
-        {
-          onEmpty: () =>
-            h.div(
-              [h.Class('flex justify-center py-10 text-white/60')],
-              [icon(h, LoaderCircle, 'size-6 animate-spin')],
-            ),
-          onFailure: () => message('Lyrics could not be loaded.'),
-          onData: details =>
-            Option.match(details.maybeLyrics, {
-              onNone: () => message('No lyrics for this song.'),
-              onSome: lyrics =>
-                h.div(
-                  [h.Class('flex flex-col gap-6 py-6')],
-                  [
-                    h.p(
-                      [
-                        h.Class(
-                          'text-[26px] leading-snug font-bold tracking-tight whitespace-pre-line text-white/90 select-text',
-                        ),
-                      ],
-                      [lyrics.text],
-                    ),
-                    Option.match(lyrics.maybeSource, {
-                      onNone: () => h.empty,
-                      onSome: source =>
-                        h.p(
-                          [h.Class('text-xs text-white/50')],
-                          [`Lyrics from ${source}`],
-                        ),
-                    }),
-                  ],
+    plainPanel(
+      h.p([h.Class('py-10 text-center text-[17px] text-white/60')], [text]),
+      h,
+    )
+  return AsyncData.matchData(
+    songQuery.read(model.songs, { videoId: entry.track.videoId }),
+    {
+      onEmpty: () =>
+        plainPanel(
+          h.div(
+            [h.Class('flex justify-center py-10 text-white/60')],
+            [icon(h, LoaderCircle, 'size-6 animate-spin')],
+          ),
+          h,
+        ),
+      onFailure: () => message('Lyrics could not be loaded.'),
+      onData: details =>
+        Option.match(details.maybeLyrics, {
+          onNone: () => message('No lyrics for this song.'),
+          onSome: lyrics =>
+            Option.match(lyrics.maybeLines, {
+              onSome: lines =>
+                timedLyrics(
+                  lines,
+                  displayedPosition(model, snapshot),
+                  snapshot.state.playing,
+                  lyrics.maybeSource,
+                  scrollPanelClass,
+                  h,
+                ),
+              onNone: () =>
+                plainPanel(
+                  h.div(
+                    [h.Class('flex flex-col gap-6 py-6')],
+                    [
+                      h.p(
+                        [
+                          h.Class(
+                            'text-[26px] leading-snug font-bold tracking-tight whitespace-pre-line text-white/90 select-text',
+                          ),
+                        ],
+                        [lyrics.text],
+                      ),
+                      Option.match(lyrics.maybeSource, {
+                        onNone: () => h.empty,
+                        onSome: source =>
+                          h.p(
+                            [h.Class('text-xs text-white/50')],
+                            [`Lyrics from ${source}`],
+                          ),
+                      }),
+                    ],
+                  ),
+                  h,
                 ),
             }),
-        },
-      ),
-    ],
+        }),
+    },
   )
 }
 
@@ -973,7 +997,7 @@ const playerSheet = (
           panel === 'Artwork'
             ? artworkPanel(model, snapshot, entry, h)
             : compactNowPlaying(model, entry, h),
-          panel === 'Lyrics' ? lyricsPanel(model, entry, h) : h.empty,
+          panel === 'Lyrics' ? lyricsPanel(model, snapshot, entry, h) : h.empty,
           panel === 'Queue' ? queuePanel(model, snapshot, h) : h.empty,
           h.div(
             [h.Class('flex flex-col gap-3 pt-2')],

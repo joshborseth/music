@@ -31,6 +31,8 @@ import {
 } from './resource'
 
 const CLOCK_TICK = Duration.seconds(1)
+/** Lyrics follow the song closely, so the clock ticks faster under them. */
+const LYRICS_CLOCK_TICK = Duration.millis(200)
 
 const decodeServerMessage = Schema.decodeUnknownOption(
   Session.ServerMessageJson,
@@ -489,17 +491,19 @@ export const subscriptions = Subscription.make<
   ),
 
   clock: entry(
-    { isPlaying: Schema.Boolean },
+    { isPlaying: Schema.Boolean, isShowingLyrics: Schema.Boolean },
     {
       modelToDependencies: model => ({
         isPlaying: Option.exists(
           model.maybeSession,
           ({ state }) => state.playing,
         ),
+        isShowingLyrics:
+          model.playerSheet._tag === 'Open' && model.playerPanel === 'Lyrics',
       }),
-      dependenciesToStream: ({ isPlaying }) =>
+      dependenciesToStream: ({ isPlaying, isShowingLyrics }) =>
         Stream.when(
-          Stream.tick(CLOCK_TICK).pipe(
+          Stream.tick(isShowingLyrics ? LYRICS_CLOCK_TICK : CLOCK_TICK).pipe(
             Stream.mapEffect(() => Clock.currentTimeMillis),
             Stream.map(now => Message.TickedClock({ now })),
           ),

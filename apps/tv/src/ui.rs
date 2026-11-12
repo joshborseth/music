@@ -23,16 +23,18 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::catalog::{self, Card, CardKind, CollectionKind, LikeRequest};
 use crate::controller::UiAction;
 use crate::local_time::LocalTime;
+use crate::lyrics::{self, RowKind};
 use crate::nav::{
     self, COLLECTION_BUTTONS, CONTROLS, CollectionButton, Control, Effect, Focus, IDLE_BUTTONS,
     IdleButton, KEY_COLUMNS, KEYBOARD, Key, Load, Nav, Panel, PlayMode, RowRef, Tab, WIDE_KEYS,
 };
 use crate::protocol::Placement;
 use crate::update::UpdateStatus;
-use crate::view::{View, clock};
+use crate::view::{PlayClock, View, clock};
 use crate::visualizer::{Analyzer, BARS};
 use crate::{
-    App, ButtonData, CardData, HintData, KeyData, MenuItemData, RowData, ShelfData, UpNextData,
+    App, ButtonData, CardData, HintData, KeyData, LyricRowData, MenuItemData, RowData, ShelfData,
+    UpNextData,
 };
 
 /// Image sizes, in pixels, for each place artwork appears.
@@ -100,6 +102,7 @@ struct Models {
     col_rows: Rc<VecModel<RowData>>,
     menu_items: Rc<VecModel<MenuItemData>>,
     hints: Rc<VecModel<HintData>>,
+    lyric_rows: Rc<VecModel<LyricRowData>>,
 }
 
 impl Models {
@@ -119,6 +122,7 @@ impl Models {
             col_rows: Rc::default(),
             menu_items: Rc::default(),
             hints: Rc::default(),
+            lyric_rows: Rc::default(),
         }
     }
 
@@ -135,6 +139,7 @@ impl Models {
         app.set_col_rows(ModelRc::from(self.col_rows.clone()));
         app.set_menu_items(ModelRc::from(self.menu_items.clone()));
         app.set_hints(ModelRc::from(self.hints.clone()));
+        app.set_lyric_rows(ModelRc::from(self.lyric_rows.clone()));
     }
 
     /// Show these shelves, rebuilding only when the set of shelves changes.
@@ -220,6 +225,9 @@ pub struct Ui {
     pending_search: Option<(String, Instant)>,
     shown_clock: String,
     shown_notice: String,
+    /// Where playback is, to the millisecond, for timed lyrics.
+    clock: PlayClock,
+    shown_lyric_rows: Vec<lyrics::Row>,
 }
 
 impl Ui {
@@ -229,6 +237,7 @@ impl Ui {
         server: String,
         runtime: tokio::runtime::Handle,
         actions: UnboundedSender<UiAction>,
+        clock: PlayClock,
         hooks: Hooks,
     ) {
         let models = Models::new();
@@ -268,6 +277,8 @@ impl Ui {
             pending_search: None,
             shown_clock: String::new(),
             shown_notice: String::new(),
+            clock,
+            shown_lyric_rows: Vec::new(),
         };
         ui.tick_timer.start(TimerMode::Repeated, TICK, || {
             with(Ui::tick);
@@ -525,7 +536,55 @@ impl Ui {
         if changed {
             self.render();
         }
+        self.draw_lyric_rows();
         self.update_bars();
+    }
+
+    // LYRICS
+
+    /// The timed lyrics' rows right now, when the lyrics panel shows them.
+    fn timed_lyric_rows(&self) -> Option<Vec<lyrics::Row>> {
+        if self.nav.panel != Panel::Lyrics || self.saver {
+            return None;
+        }
+        let entry = self.nav.session.current_entry()?;
+        let (video_id, load) = self.nav.lyrics.as_ref()?;
+        let Load::Loaded(Some(song)) = load else {
+            return None;
+        };
+        if *video_id != entry.track.video_id || song.lines.is_empty() {
+            return None;
+        }
+        let seconds = match self.clock.seconds() {
+            Some((entry_id, seconds)) if entry_id == entry.entry_id => seconds,
+            _ => self.nav.session.position_seconds,
+        };
+        Some(lyrics::rows(&song.lines, seconds))
+    }
+
+    /// Redraw the timed lyrics only when a row changed.
+    fn draw_lyric_rows(&mut self) {
+        let rows = self.timed_lyric_rows().unwrap_or_default();
+        if rows == self.shown_lyric_rows {
+            return;
+        }
+        sync(
+            &self.models.lyric_rows,
+            rows.iter()
+                .map(|row| LyricRowData {
+                    text: row.text.as_str().into(),
+                    kind: match row.kind {
+                        RowKind::Past => 0,
+                        RowKind::Active => 1,
+                        RowKind::Next => 2,
+                        RowKind::Rest => 3,
+                        RowKind::Break => 4,
+                    },
+                    lit: row.lit as i32,
+                })
+                .collect(),
+        );
+        self.shown_lyric_rows = rows;
     }
 
     fn bars_wanted(&self) -> bool {
@@ -895,17 +954,21 @@ impl Ui {
                 .into(),
             );
         }
-        let (lyrics, note) = match &self.nav.lyrics {
+        let (lyrics, note, timed) = match &self.nav.lyrics {
             Some((id, load)) if Some(id) == track.as_ref().map(|t| &t.video_id) => match load {
-                Load::Loaded(Some(text)) => (text.clone(), String::new()),
-                Load::Loaded(None) => (String::new(), "No lyrics for this song.".to_owned()),
-                Load::Failed(message) => (String::new(), message.clone()),
-                _ => (String::new(), "Loading lyrics…".to_owned()),
+                Load::Loaded(Some(song)) => {
+                    (song.text.clone(), String::new(), !song.lines.is_empty())
+                }
+                Load::Loaded(None) => (String::new(), "No lyrics for this song.".to_owned(), false),
+                Load::Failed(message) => (String::new(), message.clone(), false),
+                _ => (String::new(), "Loading lyrics…".to_owned(), false),
             },
-            _ => (String::new(), "Loading lyrics…".to_owned()),
+            _ => (String::new(), "Loading lyrics…".to_owned(), false),
         };
         app.set_lyrics(lyrics.into());
         app.set_lyrics_note(note.into());
+        app.set_lyrics_timed(timed);
+        self.draw_lyric_rows();
     }
 
     fn draw_idle(&mut self) {

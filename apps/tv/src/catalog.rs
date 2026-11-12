@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::lyrics::SongLyrics;
 use crate::protocol::QueueTrack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +89,26 @@ pub struct Collection {
 pub struct Lyrics {
     pub text: Option<String>,
     pub source: Option<String>,
+    /// The lyrics timed line by line, when a timed copy matched the song.
+    #[serde(default)]
+    pub lines: Option<Vec<LyricLine>>,
+}
+
+/// One timed line, sung until the next starts. Empty `text` marks a break.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LyricLine {
+    pub start_seconds: f64,
+    pub text: String,
+    pub words: Vec<LyricWord>,
+}
+
+/// One word of a line timed word by word.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LyricWord {
+    pub start_seconds: f64,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,12 +183,17 @@ impl Client {
         self.get(&path).await
     }
 
-    pub async fn lyrics(&self, video_id: &str) -> Result<Option<String>, String> {
+    pub async fn lyrics(&self, video_id: &str) -> Result<Option<SongLyrics>, String> {
         let path = format!(
             "/tv/lyrics?videoId={}",
             crate::view::percent_encode(video_id)
         );
-        self.get::<Lyrics>(&path).await.map(|lyrics| lyrics.text)
+        self.get::<Lyrics>(&path).await.map(|lyrics| {
+            lyrics.text.map(|text| SongLyrics {
+                text,
+                lines: lyrics.lines.unwrap_or_default(),
+            })
+        })
     }
 
     pub async fn liked(&self, video_id: &str) -> Result<bool, String> {
@@ -252,6 +278,11 @@ mod tests {
     fn decodes_lyrics_liked_and_version() {
         let lyrics: Lyrics = fixture("lyrics.json");
         assert!(lyrics.text.unwrap().starts_with("We're no strangers"));
+        let lines = lyrics.lines.unwrap();
+        assert_eq!(lines[0].words[1].text, "no ");
+        assert_eq!(lines[2].text, "");
+        let untimed: Lyrics = fixture("lyrics-untimed.json");
+        assert!(untimed.lines.is_none());
         let none: Lyrics = fixture("lyrics-none.json");
         assert_eq!(none.text, None);
         let liked: Liked = fixture("liked.json");

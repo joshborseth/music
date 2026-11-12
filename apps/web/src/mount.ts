@@ -465,3 +465,163 @@ export const FollowVolumeDrags = Mount.defineStream('FollowVolumeDrags', {
       }),
     ),
 })
+
+// LYRICS
+
+/** Where the active line sits, as a fraction of the panel's height. */
+const LYRICS_ANCHOR = 0.3
+
+/** After a finger or wheel moves the lyrics, they stay put this long. */
+const LYRICS_BROWSE_MS = 3500
+
+const LYRIC_GLIDE_MS = 720
+const LYRIC_STAGGER_MS = 45
+const LYRIC_GLIDE_EASING = 'cubic-bezier(0.2, 0.9, 0.25, 1.06)'
+
+const LYRIC_ROW_SELECTOR = '[data-lyric-row]'
+const ACTIVE_LYRIC_SELECTOR = '[data-lyric-row][data-state="active"]'
+
+/**
+ * Keeps the line being sung near the top of the lyrics panel. When it moves
+ * on, the panel jumps to the new line and every row glides from where it
+ * was, the rows above first and the rows below a beat later, so the lines
+ * ripple up like a wave. A finger on the panel pauses this while the lyrics
+ * are read, and marks the panel `data-browsing` so every line brightens.
+ */
+const followLyrics = (scroller: HTMLElement) => {
+  const maybeWindow = scroller.ownerDocument.defaultView
+  const prefersLessMotion =
+    maybeWindow?.matchMedia('(prefers-reduced-motion: reduce)').matches ?? false
+  let isBrowsing = false
+  let maybeActiveRow: Element | null = null
+  let maybeFrame: number | undefined
+  let maybeBrowseTimer: ReturnType<typeof setTimeout> | undefined
+
+  const targetTop = (row: HTMLElement): number => {
+    const scrollerTop = scroller.getBoundingClientRect().top
+    const rowTop = row.getBoundingClientRect().top - scrollerTop
+    const top =
+      scroller.scrollTop + rowTop - scroller.clientHeight * LYRICS_ANCHOR
+    return Math.max(
+      0,
+      Math.min(top, scroller.scrollHeight - scroller.clientHeight),
+    )
+  }
+
+  const glideTo = (row: HTMLElement) => {
+    const rows = Array.from(
+      scroller.querySelectorAll(LYRIC_ROW_SELECTOR),
+    ).filter(element => element instanceof HTMLElement)
+    const before = rows.map(element => element.getBoundingClientRect().top)
+    rows.forEach(element =>
+      element.getAnimations().forEach(animation => animation.cancel()),
+    )
+    scroller.scrollTop = targetTop(row)
+    const viewTop = scroller.getBoundingClientRect().top
+    const viewBottom = viewTop + scroller.clientHeight
+    const firstMoving = rows.findIndex(
+      element => element.getBoundingClientRect().bottom >= viewTop,
+    )
+    rows.forEach((element, index) => {
+      const after = element.getBoundingClientRect().top
+      const offset = (before[index] ?? after) - after
+      const isOnScreen =
+        Math.min(after, before[index] ?? after) < viewBottom &&
+        Math.max(after, before[index] ?? after) + element.offsetHeight > viewTop
+      if (Math.abs(offset) < 1 || !isOnScreen) {
+        return
+      }
+      element.animate(
+        [
+          { transform: `translateY(${offset}px)` },
+          { transform: 'translateY(0)' },
+        ],
+        {
+          duration: LYRIC_GLIDE_MS,
+          delay: Math.max(0, index - firstMoving) * LYRIC_STAGGER_MS,
+          easing: LYRIC_GLIDE_EASING,
+          fill: 'backwards',
+        },
+      )
+    })
+  }
+
+  const follow = (isGliding: boolean) => {
+    const row = scroller.querySelector(ACTIVE_LYRIC_SELECTOR)
+    const isNewRow = row !== maybeActiveRow
+    maybeActiveRow = row
+    if (!(row instanceof HTMLElement) || isBrowsing) {
+      return
+    }
+    if (isGliding && isNewRow && !prefersLessMotion) {
+      glideTo(row)
+    } else {
+      scroller.scrollTop = targetTop(row)
+    }
+  }
+
+  const scheduleFollow = () => {
+    if (maybeFrame !== undefined) {
+      return
+    }
+    maybeFrame = requestAnimationFrame(() => {
+      maybeFrame = undefined
+      follow(true)
+    })
+  }
+
+  const browse = () => {
+    isBrowsing = true
+    scroller.setAttribute('data-browsing', '')
+    clearTimeout(maybeBrowseTimer)
+    maybeBrowseTimer = setTimeout(() => {
+      isBrowsing = false
+      scroller.removeAttribute('data-browsing')
+      maybeActiveRow = null
+      follow(true)
+    }, LYRICS_BROWSE_MS)
+  }
+
+  const observer = new MutationObserver(scheduleFollow)
+  observer.observe(scroller, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['data-state'],
+  })
+  const resizeObserver = new ResizeObserver(() => follow(false))
+  resizeObserver.observe(scroller)
+  scroller.addEventListener('touchstart', browse, { passive: true })
+  scroller.addEventListener('touchmove', browse, { passive: true })
+  scroller.addEventListener('wheel', browse, { passive: true })
+  follow(false)
+
+  return () => {
+    observer.disconnect()
+    resizeObserver.disconnect()
+    scroller.removeEventListener('touchstart', browse)
+    scroller.removeEventListener('touchmove', browse)
+    scroller.removeEventListener('wheel', browse)
+    clearTimeout(maybeBrowseTimer)
+    if (maybeFrame !== undefined) {
+      cancelAnimationFrame(maybeFrame)
+    }
+  }
+}
+
+/** Keeps timed lyrics following the song; see `followLyrics`. */
+export const FollowLyrics = Mount.defineStream('FollowLyrics', {
+  messages: [Message.CompletedFollowLyrics],
+  execute: ({ element }) =>
+    Stream.callback<typeof Message.CompletedFollowLyrics.Type>(queue =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const stopFollowing =
+            element instanceof HTMLElement ? followLyrics(element) : () => {}
+          Queue.offerUnsafe(queue, Message.CompletedFollowLyrics())
+          return stopFollowing
+        }),
+        stopFollowing => Effect.sync(stopFollowing),
+      ).pipe(Effect.flatMap(() => Effect.never)),
+    ),
+})

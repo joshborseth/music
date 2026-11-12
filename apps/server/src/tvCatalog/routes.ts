@@ -11,6 +11,7 @@ import {
   type YouTubeMusicError,
 } from '@music/shared'
 
+import { TimedLyrics } from '../lyrics/service.ts'
 import { PlaylistStore } from '../playlists/store.ts'
 import { Prefetcher, pageJobs } from '../prefetch.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
@@ -116,6 +117,7 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
   Effect.gen(function* () {
     const youTubeMusic = yield* YouTubeMusic
     const playlistStore = yield* PlaylistStore
+    const timedLyrics = yield* TimedLyrics
     const prefetcher = yield* Prefetcher
 
     /** The same page plans the RPCs make, so Play starts at once. */
@@ -226,7 +228,11 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
       const id = yield* videoId
       return yield* youTubeMusic
         .getSong(id)
-        .pipe(Effect.map(lyricsOf), Effect.mapError(toRouteError))
+        .pipe(
+          Effect.flatMap(timedLyrics.withTimedLines),
+          Effect.map(lyricsOf),
+          Effect.mapError(toRouteError),
+        )
     })
 
     const liked = Effect.gen(function* () {

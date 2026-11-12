@@ -156,6 +156,8 @@ export const Message = defineMessageUnion({
     isBuffering: Schema.Boolean,
   },
   CompletedFollowSeekBarDrags: {},
+  CompletedFollowLyrics: {},
+  ClickedLyricLine: { seconds: Schema.Number },
   UpdatedScrubPosition: { seconds: Schema.Number },
   CancelledScrub: {},
   ClickedSkipBy: { seconds: Schema.Number },

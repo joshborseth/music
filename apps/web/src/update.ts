@@ -1339,6 +1339,8 @@ const updateMessage = (model: Model, message: Message) =>
     CancelledVolumeDrag: () => Playback.cancelVolumeDrag(model),
     CompletedWaitBeforeForgetVolumeDraft: ({ percent }) =>
       Playback.forgetVolumeDraft(model, percent),
+    CompletedFollowLyrics: () => ({ model }),
+    ClickedLyricLine: ({ seconds }) => Playback.seekTo(model, seconds),
     ClickedSkipBy: ({ seconds }) => Playback.skipBy(model, seconds),
     ChangedPhoneAudioBuffering: ({ entryId, isBuffering }) =>
       Playback.changePhoneAudioBuffering(model, entryId, isBuffering),
