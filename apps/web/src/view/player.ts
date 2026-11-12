@@ -21,8 +21,6 @@ import {
   Speaker,
   Trash2,
   Tv,
-  Volume,
-  Volume2,
   X,
 } from 'lucide'
 
@@ -33,7 +31,7 @@ import { Session } from '@music/shared'
 import { songFromQueueTrack } from '../library'
 import { Message } from '../message'
 import { Model } from '../model'
-import { DragToDismiss, FollowSeekBarDrags, FollowVolumeDrags } from '../mount'
+import { DragToDismiss, FollowSeekBarDrags } from '../mount'
 import {
   SKIP_SECONDS,
   type SessionSnapshot,
@@ -41,7 +39,6 @@ import {
   currentEntry,
   hasNextEntry,
   loadedEntry,
-  remoteVolumeDevice,
   upcomingEntries,
 } from '../playback/domain'
 import { displayedPosition } from '../playback/position'
@@ -423,73 +420,6 @@ const transportControls = (
         h,
       ),
     ],
-  )
-
-/**
- * The volume of the device playing, when that is another device that can
- * set it (the TV). The phone's own volume belongs to its buttons.
- */
-const volumeSlider = (
-  model: Model,
-  snapshot: SessionSnapshot,
-  h: HtmlBuilder<Message>,
-): Html =>
-  Option.match(
-    remoteVolumeDevice(
-      snapshot.state,
-      Option.map(model.maybeIdentity, ({ deviceId }) => deviceId),
-    ),
-    {
-      onNone: () => h.empty,
-      onSome: device => {
-        const maybeDraft = Option.filter(
-          model.maybeVolumeDraft,
-          draft => draft.deviceId === device.id,
-        )
-        const percent = Option.match(maybeDraft, {
-          onNone: () => Math.round(device.volume * 100),
-          onSome: draft => draft.percent,
-        })
-        const isDragging = Option.exists(maybeDraft, draft => draft.isDragging)
-        return h.div(
-          [
-            h.Class('flex items-center gap-3 text-white/55'),
-            h.DataAttribute('no-drag', ''),
-          ],
-          [
-            icon(h, Volume, 'size-4 shrink-0'),
-            h.div(
-              [
-                h.OnMount(FollowVolumeDrags()),
-                ...(isDragging ? [h.DataAttribute('scrubbing', '')] : []),
-                h.Class(
-                  'seek-area -my-2 flex flex-1 touch-none items-center py-2',
-                ),
-              ],
-              [
-                h.input([
-                  h.Type('range'),
-                  h.AriaLabel(`${device.name} volume`),
-                  h.Min('0'),
-                  h.Max('100'),
-                  h.Step('1'),
-                  h.Value(percent.toString()),
-                  h.OnInput(value =>
-                    Message.UpdatedVolumeDrag({ percent: Number(value) }),
-                  ),
-                  h.OnChange(value =>
-                    Message.ChangedVolume({ percent: Number(value) }),
-                  ),
-                  h.Style({ '--progress': `${percent}%` }),
-                  h.Class('seek-bar'),
-                ]),
-              ],
-            ),
-            icon(h, Volume2, 'size-4 shrink-0'),
-          ],
-        )
-      },
-    },
   )
 
 const blockedAudioPrompt = (model: Model, h: HtmlBuilder<Message>): Html =>
@@ -1089,7 +1019,6 @@ const playerSheet = (
                 : h.empty,
               seekBar(model, snapshot, entry, h),
               transportControls(model, snapshot, h),
-              volumeSlider(model, snapshot, h),
               blockedAudioPrompt(model, h),
               h.div(
                 [h.Class('flex items-center justify-between pt-1')],

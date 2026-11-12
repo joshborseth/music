@@ -78,18 +78,6 @@ export const PhoneAudio = defineTaggedUnion({
 })
 export type PhoneAudio = typeof PhoneAudio.Type
 
-/**
- * Where the volume slider of another device is while a finger moves it, and
- * for a moment after, until that device reports its new volume.
- */
-export const VolumeDraft = Schema.Struct({
-  deviceId: Schema.String,
-  /** Whole percent, 0 to 100. */
-  percent: Schema.Number,
-  isDragging: Schema.Boolean,
-})
-export type VolumeDraft = typeof VolumeDraft.Type
-
 export const PlayerSheet = defineTaggedUnion({
   Closed: {},
   Open: {},
@@ -159,22 +147,6 @@ export const activeDevice = (
 ): Option.Option<Session.Device> =>
   Array.findFirst(state.devices, device => device.id === state.activeDeviceId)
 
-/**
- * The device playing, when it is not this one and its volume can be set
- * from here.
- */
-export const remoteVolumeDevice = (
-  state: Session.SessionState,
-  maybeMyDeviceId: Option.Option<string>,
-): Option.Option<Session.Device & { readonly volume: number }> =>
-  Option.flatMap(activeDevice(state), device =>
-    device.online &&
-    device.volume !== null &&
-    !Option.contains(maybeMyDeviceId, device.id)
-      ? Option.some({ ...device, volume: device.volume })
-      : Option.none(),
-  )
-
 export const isActiveDevice = (
   state: Session.SessionState,
   deviceId: string,
@@ -221,7 +193,6 @@ export const initialPlaybackModel = {
   playerSheet: PlayerSheet.Closed(),
   maybeNotice: Option.none<string>(),
   maybeScrubSeconds: Option.none<number>(),
-  maybeVolumeDraft: Option.none<VolumeDraft>(),
   localChanges: { unsent: 0, untilAck: 0, ownJumps: 0 },
   swipe: Swipe.Idle(),
 }

@@ -11,7 +11,6 @@ import {
   PhoneAudio,
   PlayerSheet,
   SessionSnapshot,
-  VolumeDraft,
 } from './playback/domain'
 import { Swipe } from './playback/swipe'
 import {
@@ -64,8 +63,6 @@ export const Model = Schema.Struct({
   maybeNotice: Schema.Option(Schema.String),
   /** Where the seek bar is being dragged to, before it is let go. */
   maybeScrubSeconds: Schema.Option(Schema.Number),
-  /** Where another device's volume slider is being dragged to. */
-  maybeVolumeDraft: Schema.Option(VolumeDraft),
   localChanges: LocalChanges,
   swipe: Swipe,
 })
