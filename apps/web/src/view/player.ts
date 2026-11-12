@@ -770,16 +770,19 @@ const deviceButton = (
 }
 
 /**
- * A solid color matching the cover, from the server, dark enough for the
- * white controls. Neutral until it arrives, and for songs without artwork.
+ * The cover itself, blurred over the whole player and darkened toward the
+ * bottom so the controls read. The one blur and fade the app keeps. Under it
+ * sits a solid color from the cover (neutral until the server sends it), so
+ * the player is already the cover's color while the image loads.
  */
 const playerBackdrop = (
   model: Model,
   track: Session.QueueTrack,
   h: HtmlBuilder<Message>,
 ): Html => {
+  const maybeArtworkUrl = Option.fromNullishOr(track.artworkUrl)
   const maybeColor = pipe(
-    Option.fromNullishOr(track.artworkUrl),
+    maybeArtworkUrl,
     Option.flatMap(artworkUrl =>
       AsyncData.getData(
         artworkBackdropQuery.read(model.artworkBackdrops, { artworkUrl }),
@@ -787,14 +790,37 @@ const playerBackdrop = (
     ),
     Option.flatMap(Option.fromNullishOr),
   )
-  return h.div([
-    h.AriaHidden(true),
-    h.Class('pointer-events-none absolute inset-0 bg-neutral-900'),
-    ...Option.match(maybeColor, {
-      onNone: () => [],
-      onSome: backgroundColor => [h.Style({ backgroundColor })],
-    }),
-  ])
+  return h.div(
+    [
+      h.AriaHidden(true),
+      h.Class(
+        'pointer-events-none absolute inset-0 overflow-hidden bg-neutral-900',
+      ),
+      ...Option.match(maybeColor, {
+        onNone: () => [],
+        onSome: backgroundColor => [h.Style({ backgroundColor })],
+      }),
+    ],
+    [
+      Option.match(maybeArtworkUrl, {
+        onNone: () => h.empty,
+        onSome: url =>
+          h.img([
+            h.Src(url),
+            h.Alt(''),
+            h.Referrerpolicy('no-referrer'),
+            h.Class(
+              'absolute inset-0 size-full scale-[1.6] object-cover opacity-90 blur-[72px] saturate-[1.8]',
+            ),
+          ]),
+      }),
+      h.div([
+        h.Class(
+          'absolute inset-0 bg-gradient-to-b from-black/25 via-black/40 to-black/70',
+        ),
+      ]),
+    ],
+  )
 }
 
 const playerSheet = (
