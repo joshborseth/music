@@ -57,6 +57,8 @@ pub struct Controller {
     state: Option<SessionState>,
     /// Server clock minus local clock, in ms.
     clock_offset: f64,
+    /// The house's UTC offset, as the server last said.
+    utc_offset_minutes: Option<i32>,
     /// The entry and seek generation the engine was last told to load.
     loaded: Option<(String, u64)>,
     /// Last position the engine reported, and when.
@@ -85,6 +87,7 @@ impl Controller {
             connected: false,
             state: None,
             clock_offset: 0.0,
+            utc_offset_minutes: None,
             loaded: None,
             engine_position: None,
             last_progress: Instant::now(),
@@ -149,9 +152,13 @@ impl Controller {
             }
             Inbound::Message(ServerMessage::SetVolume { level }) => self.volume.set(level),
             Inbound::Message(ServerMessage::State {
-                state, server_now, ..
+                state,
+                server_now,
+                utc_offset_minutes,
+                ..
             }) => {
                 self.clock_offset = server_now - local_now_ms();
+                self.utc_offset_minutes = utc_offset_minutes.or(self.utc_offset_minutes);
                 self.state = Some(state);
                 self.reconcile();
             }
@@ -354,6 +361,7 @@ impl Controller {
             return View {
                 connected: self.connected,
                 notice,
+                utc_offset_minutes: self.utc_offset_minutes,
                 ..View::default()
             };
         };
@@ -397,6 +405,7 @@ impl Controller {
             player_name,
             loading,
             notice,
+            utc_offset_minutes: self.utc_offset_minutes,
         }
     }
 }

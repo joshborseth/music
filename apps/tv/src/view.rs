@@ -64,6 +64,9 @@ pub struct View {
     pub loading: bool,
     /// A message from the server, shown for a few seconds.
     pub notice: String,
+    /// The house's UTC offset in minutes, for the clock. `None` until the
+    /// server says, and then the TV's own time zone is used.
+    pub utc_offset_minutes: Option<i32>,
 }
 
 impl View {

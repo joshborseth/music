@@ -256,6 +256,12 @@ export const State = Schema.TaggedStruct('State', {
   /** The server clock when this was sent, to correct for clock skew. */
   serverNow: Schema.Number,
   /**
+   * The house's UTC offset in minutes (-420 for UTC-7), from the server's
+   * operating system. The TV shows its clock with it, because Android's own
+   * time zone rules can be out of date.
+   */
+  utcOffsetMinutes: Schema.Number,
+  /**
    * How many messages from this connection the state includes, counting
    * `Hello` as the first. A player that changed something itself keeps its
    * change until this covers the message that carried it.

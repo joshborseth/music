@@ -215,6 +215,10 @@ pub enum ServerMessage {
         state: SessionState,
         /// Server epoch milliseconds when this was sent.
         server_now: f64,
+        /// The house's UTC offset in minutes, from the server's operating
+        /// system. Android's own time zone rules can be out of date.
+        #[serde(default)]
+        utc_offset_minutes: Option<i32>,
         /// Messages from this connection the state includes. The TV waits
         /// for the server instead, so it does not use it.
         #[serde(default)]
@@ -242,7 +246,10 @@ mod tests {
     #[test]
     fn decodes_server_state() {
         let ServerMessage::State {
-            state, server_now, ..
+            state,
+            server_now,
+            utc_offset_minutes,
+            ..
         } = serde_json::from_str(&fixture("server-state.json")).unwrap()
         else {
             panic!("expected State");
@@ -262,6 +269,7 @@ mod tests {
         assert!(!state.queue[0].autoplay);
         assert!(state.queue[1].autoplay);
         assert!(server_now > state.position_at);
+        assert_eq!(utc_offset_minutes, Some(-420));
         assert!((state.position_at(state.position_at + 1500.0) - 13.5).abs() < 1e-9);
     }
 
