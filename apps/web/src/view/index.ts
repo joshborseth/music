@@ -3,7 +3,6 @@ import { AsyncData } from 'foldkit'
 import { Document, Html, HtmlBuilder } from 'foldkit/html'
 import { Ellipsis, ListPlus } from 'lucide'
 
-import { cn } from '@/lib/utils'
 import { type Song } from '@music/shared'
 
 import { Message } from '../message'
@@ -211,17 +210,13 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
   body: h.div(
     [h.Class('mx-auto w-full max-w-xl')],
     [
-      h.main(
-        [
-          h.Class(
-            cn(
-              hasMiniPlayer(model)
-                ? 'pb-[calc(var(--tab-bar-space)+var(--mini-player-height)+1.5rem)]'
-                : 'pb-[calc(var(--tab-bar-space)+1rem)]',
-            ),
-          ),
-        ],
-        [page(model, [memoizedPage(model, routeContent, h)], h)],
+      page(
+        model,
+        hasMiniPlayer(model)
+          ? 'pb-[calc(var(--tab-bar-space)+var(--mini-player-height)+1.5rem)]'
+          : 'pb-[calc(var(--tab-bar-space)+1rem)]',
+        [memoizedPage(model, routeContent, h)],
+        h,
       ),
       tabBar(model, h),
       playerView(model, h),

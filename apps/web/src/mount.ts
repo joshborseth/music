@@ -16,7 +16,7 @@ export const RestoreScroll = Mount.define('RestoreScroll', {
   messages: [Message.CompletedRestoreScroll],
   execute: ({ element, top }) =>
     Effect.sync(() => {
-      element.ownerDocument.defaultView?.scrollTo({ top, behavior: 'instant' })
+      element.scrollTo({ top, behavior: 'instant' })
       return Message.CompletedRestoreScroll()
     }),
 })
@@ -38,10 +38,13 @@ export const SyncTitleBarReveal = Mount.defineStream('SyncTitleBarReveal', {
           const maybeWindow = element.ownerDocument.defaultView
 
           const placeReveal = () => {
-            const maybeBar = element
-              .closest(PAGE_SELECTOR)
-              ?.querySelector(TITLE_BAR_SELECTOR)
-            if (maybeWindow === null || !(maybeBar instanceof HTMLElement)) {
+            const maybePage = element.closest(PAGE_SELECTOR)
+            if (maybePage === null) {
+              return
+            }
+
+            const maybeBar = maybePage.querySelector(TITLE_BAR_SELECTOR)
+            if (!(maybeBar instanceof HTMLElement)) {
               return
             }
 
@@ -49,11 +52,11 @@ export const SyncTitleBarReveal = Mount.defineStream('SyncTitleBarReveal', {
             const barHeight = maybeBar.offsetHeight
             const revealEnd = Math.max(
               1,
-              title.bottom + maybeWindow.scrollY - barHeight,
+              title.bottom + maybePage.scrollTop - barHeight,
             )
             const revealStart = Math.min(
               revealEnd - 1,
-              Math.max(0, title.top + maybeWindow.scrollY - barHeight),
+              Math.max(0, title.top + maybePage.scrollTop - barHeight),
             )
 
             maybeBar.style.setProperty('--reveal-start', `${revealStart}px`)
