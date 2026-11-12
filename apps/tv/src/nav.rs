@@ -626,7 +626,10 @@ impl Nav {
     }
 
     fn follow_queue(&mut self) {
-        let current = self.session.current_entry().map(|entry| entry.entry_id.clone());
+        let current = self
+            .session
+            .current_entry()
+            .map(|entry| entry.entry_id.clone());
         if current != self.queue_followed {
             if let Some(index) = self.session.current {
                 self.queue_row = index;
@@ -650,10 +653,7 @@ impl Nav {
     /// Nobody has touched the remote for a while and music is playing: go
     /// back to the now-playing screen, the way a TV app rests.
     pub fn rest(&mut self) {
-        if self.session.playing
-            && self.tab != Tab::NowPlaying
-            && self.menu.is_none()
-        {
+        if self.session.playing && self.tab != Tab::NowPlaying && self.menu.is_none() {
             self.tab = Tab::NowPlaying;
             self.focus = Focus::Content;
             self.panel = Panel::None;
@@ -695,7 +695,9 @@ impl Nav {
         id: &str,
         result: Result<Collection, String>,
     ) {
-        let Some(browse) = self.browse_mut(tab) else { return };
+        let Some(browse) = self.browse_mut(tab) else {
+            return;
+        };
         for page in browse.stack.iter_mut() {
             if page.kind == kind && page.id == id && page.content == Load::Loading {
                 page.content = to_load(result.clone());
@@ -869,7 +871,9 @@ impl Nav {
             Control::Next => effects.push(Effect::Session(UiAction::Next)),
             Control::PlayPause => effects.push(Effect::Session(UiAction::PlayPause)),
             Control::Like => {
-                let Some(entry) = self.session.current_entry() else { return };
+                let Some(entry) = self.session.current_entry() else {
+                    return;
+                };
                 let video_id = entry.track.video_id.clone();
                 let liked = self
                     .liked
@@ -881,7 +885,11 @@ impl Nav {
                 });
                 self.liked = Some((video_id, !liked));
                 self.say(
-                    if liked { "Removed from Liked songs" } else { "Added to Liked songs" },
+                    if liked {
+                        "Removed from Liked songs"
+                    } else {
+                        "Added to Liked songs"
+                    },
                     now,
                 );
             }
@@ -902,9 +910,11 @@ impl Nav {
             return Vec::new();
         };
         let video_id = entry.track.video_id.clone();
-        if self.lyrics.as_ref().is_some_and(|(id, load)| {
-            *id == video_id && !matches!(load, Load::Failed(_))
-        }) {
+        if self
+            .lyrics
+            .as_ref()
+            .is_some_and(|(id, load)| *id == video_id && !matches!(load, Load::Failed(_)))
+        {
             return Vec::new();
         }
         self.lyrics = Some((video_id.clone(), Load::Loading));
@@ -965,7 +975,9 @@ impl Nav {
 
     fn shelves_key(&mut self, key: Key, now: Instant, effects: &mut Vec<Effect>) -> bool {
         let tab = self.tab;
-        let Some(browse) = self.browse_mut(tab) else { return false };
+        let Some(browse) = self.browse_mut(tab) else {
+            return false;
+        };
         match key {
             Key::Up | Key::Down | Key::Left | Key::Right => {
                 if !browse.shelves.step(key, HOME_CARDS_VISIBLE) && key == Key::Up {
@@ -1010,7 +1022,9 @@ impl Nav {
 
     fn open_collection(&mut self, kind: CollectionKind, id: String, effects: &mut Vec<Effect>) {
         let tab = self.tab;
-        let Some(browse) = self.browse_mut(tab) else { return };
+        let Some(browse) = self.browse_mut(tab) else {
+            return;
+        };
         browse.stack.push(CollectionNav::new(kind, id.clone()));
         effects.push(Effect::LoadCollection { tab, kind, id });
     }
@@ -1141,7 +1155,9 @@ impl Nav {
             }
             return true;
         }
-        let Some(page) = self.collection_mut() else { return false };
+        let Some(page) = self.collection_mut() else {
+            return false;
+        };
         let rows = page.rows();
         if !page.in_list {
             match key {
@@ -1162,7 +1178,11 @@ impl Nav {
             Key::Up | Key::Down => {
                 let mut row = page.row;
                 loop {
-                    let next = if key == Key::Up { row.checked_sub(1) } else { Some(row + 1) };
+                    let next = if key == Key::Up {
+                        row.checked_sub(1)
+                    } else {
+                        Some(row + 1)
+                    };
                     match next {
                         Some(next) if next < rows.len() => {
                             row = next;
@@ -1182,7 +1202,9 @@ impl Nav {
             }
             Key::Left => page.in_list = false,
             Key::Ok | Key::Hold => {
-                let Some(collection) = page.content.loaded().cloned() else { return true };
+                let Some(collection) = page.content.loaded().cloned() else {
+                    return true;
+                };
                 match rows.get(page.row).copied() {
                     Some(RowRef::Track(index)) if key == Key::Ok => {
                         effects.push(Effect::Session(UiAction::PlayTracks {
@@ -1415,7 +1437,9 @@ mod tests {
         vec![
             Shelf {
                 title: "Quick picks".into(),
-                cards: (0..10).map(|index| song_card(&format!("s{index}"))).collect(),
+                cards: (0..10)
+                    .map(|index| song_card(&format!("s{index}")))
+                    .collect(),
             },
             Shelf {
                 title: "Albums".into(),
@@ -1495,7 +1519,10 @@ mod tests {
                 shelves: Vec::new(),
             }),
         );
-        let effects = press(&mut nav, &[Key::Right, Key::Right, Key::Right, Key::Down, Key::Ok]);
+        let effects = press(
+            &mut nav,
+            &[Key::Right, Key::Right, Key::Right, Key::Down, Key::Ok],
+        );
         let Effect::Session(UiAction::PlayTracks { start, .. }) = &effects[0] else {
             panic!("expected PlayTracks, got {effects:?}");
         };
@@ -1529,12 +1556,31 @@ mod tests {
         // Down to the wide keys and press Delete.
         let effects = press(
             &mut nav,
-            &[Key::Down, Key::Down, Key::Down, Key::Down, Key::Down, Key::Down, Key::Right, Key::Ok],
+            &[
+                Key::Down,
+                Key::Down,
+                Key::Down,
+                Key::Down,
+                Key::Down,
+                Key::Down,
+                Key::Right,
+                Key::Ok,
+            ],
         );
         assert_eq!(nav.search.query, "a");
         assert_eq!(effects, vec![Effect::Search("a".into())]);
         nav.on_search("a", Ok(shelves()));
-        press(&mut nav, &[Key::Up, Key::Right, Key::Right, Key::Right, Key::Right, Key::Right]);
+        press(
+            &mut nav,
+            &[
+                Key::Up,
+                Key::Right,
+                Key::Right,
+                Key::Right,
+                Key::Right,
+                Key::Right,
+            ],
+        );
         assert!(nav.search.in_results);
     }
 
@@ -1564,13 +1610,19 @@ mod tests {
         press(&mut nav, &[Key::Right, Key::Right, Key::Ok]);
         assert_eq!(nav.panel, Panel::Queue);
         let effects = press(&mut nav, &[Key::Down, Key::Down, Key::Down, Key::Ok]);
-        assert_eq!(effects, vec![Effect::Session(UiAction::SkipTo("e3".into()))]);
+        assert_eq!(
+            effects,
+            vec![Effect::Session(UiAction::SkipTo("e3".into()))]
+        );
         // Hold for the menu, then remove the song.
         press(&mut nav, &[Key::Hold]);
         let menu = nav.menu.clone().unwrap();
         assert_eq!(menu.items[2], MenuAction::RemoveEntry("e3".into()));
         let effects = press(&mut nav, &[Key::Down, Key::Down, Key::Ok]);
-        assert_eq!(effects, vec![Effect::Session(UiAction::Remove("e3".into()))]);
+        assert_eq!(
+            effects,
+            vec![Effect::Session(UiAction::Remove("e3".into()))]
+        );
         assert!(nav.menu.is_none());
         press(&mut nav, &[Key::Back]);
         assert_eq!(nav.panel, Panel::None);

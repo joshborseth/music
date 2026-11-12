@@ -6,15 +6,17 @@ use music_tv::catalog::Client;
 use music_tv::screenshots::{Step, run, sample_view};
 
 fn main() {
-    let server = std::env::var("MUSIC_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:3105".into());
+    let server =
+        std::env::var("MUSIC_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:3105".into());
     let out = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "screens".into()));
     std::fs::create_dir_all(&out).expect("create the output folder");
 
     // Real songs for a made-up queue.
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    // Search results always have songs; the home feed may only have playlists.
     let shelves = runtime
-        .block_on(Client::new(server.clone()).home())
-        .expect("the server's /tv/home answers");
+        .block_on(Client::new(server.clone()).search("daft punk"))
+        .expect("the server's /tv/search answers");
     let tracks: Vec<_> = shelves
         .iter()
         .flat_map(|shelf| shelf.cards.iter().filter_map(|card| card.track.clone()))

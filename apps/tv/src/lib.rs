@@ -18,6 +18,7 @@ mod qr;
 pub mod screenshots;
 mod session;
 mod ui;
+pub mod update;
 pub mod view;
 mod visualizer;
 
@@ -51,6 +52,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let app = App::new()?;
     dress(&app, SERVER_URL);
 
+    let (update_status, mut update_statuses) = unbounded_channel();
+    let updater = update::Updater::spawn(SERVER_URL.to_owned(), &handle, update_status);
+    handle.spawn(async move {
+        while let Some(status) = update_statuses.recv().await {
+            let _ = slint::invoke_from_event_loop(move || {
+                ui::with(|ui| ui.on_update_status(&status));
+            });
+        }
+    });
+
     let (actions, action_receiver) = unbounded_channel();
     ui::Ui::install(
         &app,
@@ -58,7 +69,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
         handle.clone(),
         actions,
         ui::Hooks {
-            open_update_settings: Box::new(|| {}),
+            open_update_settings: Box::new({
+                let updater = updater.clone();
+                move || updater.open_permission_settings()
+            }),
+            set_quiet: Box::new(move |quiet| updater.set_quiet(quiet)),
         },
     );
     app.on_key(|text, pressed, repeat| {
@@ -82,16 +97,13 @@ pub fn run() -> Result<(), slint::PlatformError> {
     );
 
     let controller = Controller::new(DEVICE_ID.to_owned(), engine, outbound);
-    handle.spawn(controller.run(
-        inbound_receiver,
-        event_receiver,
-        action_receiver,
-        |view| {
+    handle.spawn(
+        controller.run(inbound_receiver, event_receiver, action_receiver, |view| {
             let _ = slint::invoke_from_event_loop(move || {
                 ui::with(|ui| ui.on_session(view));
             });
-        },
-    ));
+        }),
+    );
 
     let result = app.run();
     runtime.shutdown_background();
@@ -109,7 +121,12 @@ fn dress(app: &App, server: &str) {
             slint::SharedPixelBuffer::clone_from_slice(&pixels, size, size),
         ));
     }
-    app.set_qr_url(join_url.trim_start_matches("http://").trim_end_matches('/').into());
+    app.set_qr_url(
+        join_url
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .into(),
+    );
 }
 
 /// The logo mark for the top bar and the welcome screen.
@@ -118,7 +135,11 @@ fn logo() -> Option<slint::Image> {
         .ok()?
         .to_rgba8();
     Some(slint::Image::from_rgba8(
-        slint::SharedPixelBuffer::clone_from_slice(decoded.as_raw(), decoded.width(), decoded.height()),
+        slint::SharedPixelBuffer::clone_from_slice(
+            decoded.as_raw(),
+            decoded.width(),
+            decoded.height(),
+        ),
     ))
 }
 

@@ -166,10 +166,15 @@ mod tests {
             .map(|index| 0.8 * (2.0 * PI * 1000.0 * index as f32 / 44_100.0).sin())
             .collect();
         let bars = analyzer.spectrum(44_100.0);
-        let loudest = (0..BARS).max_by(|a, b| bars[*a].total_cmp(&bars[*b])).unwrap();
+        let loudest = (0..BARS)
+            .max_by(|a, b| bars[*a].total_cmp(&bars[*b]))
+            .unwrap();
         let ratio = HIGHEST_HZ / LOWEST_HZ;
         let center = LOWEST_HZ * ratio.powf((loudest as f32 + 0.5) / BARS as f32);
-        assert!((700.0..1400.0).contains(&center), "loudest band centers on {center} Hz");
+        assert!(
+            (700.0..1400.0).contains(&center),
+            "loudest band centers on {center} Hz"
+        );
         assert!(bars[loudest] > 0.8);
         assert!(bars[0] < 0.2);
     }

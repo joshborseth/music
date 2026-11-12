@@ -104,10 +104,19 @@ impl Runner {
         self.window.draw_if_needed(|renderer| {
             renderer.render(&mut buffer, self.width as usize);
         });
-        let bytes: Vec<u8> = buffer.iter().flat_map(|pixel| [pixel.r, pixel.g, pixel.b]).collect();
+        let bytes: Vec<u8> = buffer
+            .iter()
+            .flat_map(|pixel| [pixel.r, pixel.g, pixel.b])
+            .collect();
         let path = self.out.join(format!("{name}.png"));
-        image::save_buffer(&path, &bytes, self.width, self.height, image::ColorType::Rgb8)
-            .expect("write the screenshot");
+        image::save_buffer(
+            &path,
+            &bytes,
+            self.width,
+            self.height,
+            image::ColorType::Rgb8,
+        )
+        .expect("write the screenshot");
         println!("{}", path.display());
     }
 }
@@ -141,11 +150,15 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
                     .flat_map(|_| {
                         let time = t as f32 / rate;
                         t += 1;
-                        let kick = (-(time % 0.5) * 18.0).exp() * (2.0 * std::f32::consts::PI * 55.0 * time).sin();
+                        let kick = (-(time % 0.5) * 18.0).exp()
+                            * (2.0 * std::f32::consts::PI * 55.0 * time).sin();
                         let chord = [110.0, 220.0, 330.0, 440.0, 660.0, 1320.0, 2640.0, 5280.0]
                             .iter()
                             .enumerate()
-                            .map(|(index, hz)| (2.0 * std::f32::consts::PI * hz * time).sin() * 0.25 / (index as f32 + 1.0))
+                            .map(|(index, hz)| {
+                                (2.0 * std::f32::consts::PI * hz * time).sin() * 0.25
+                                    / (index as f32 + 1.0)
+                            })
                             .sum::<f32>();
                         let sample = 0.6 * kick + chord;
                         [sample, sample]
@@ -171,6 +184,7 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
         actions,
         ui::Hooks {
             open_update_settings: Box::new(|| {}),
+            set_quiet: Box::new(|_| {}),
         },
     );
     let runner = Runner {

@@ -15,7 +15,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use slint::platform::Key as SlintKey;
-use slint::{Color, ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{
+    Color, ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::catalog::{self, Card, CardKind, CollectionKind, LikeRequest};
@@ -26,6 +28,7 @@ use crate::nav::{
     IdleButton, KEY_COLUMNS, KEYBOARD, Key, Load, Nav, Panel, PlayMode, RowRef, Tab, WIDE_KEYS,
 };
 use crate::protocol::Placement;
+use crate::update::UpdateStatus;
 use crate::view::{View, clock};
 use crate::visualizer::{Analyzer, BARS};
 use crate::{
@@ -179,6 +182,8 @@ fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
 /// What the screen's updater hooks do; filled in by `lib.rs`.
 pub struct Hooks {
     pub open_update_settings: Box<dyn Fn()>,
+    /// Tells the updater whether it may install: only while nothing plays here.
+    pub set_quiet: Box<dyn Fn(bool)>,
 }
 
 pub struct Ui {
@@ -191,6 +196,7 @@ pub struct Ui {
     actions: UnboundedSender<UiAction>,
     hooks: Hooks,
     update_status: String,
+    asked_update_permission: bool,
     models: Models,
     images: HashMap<(String, u32), Image>,
     image_order: VecDeque<(String, u32)>,
@@ -234,6 +240,7 @@ impl Ui {
             actions,
             hooks,
             update_status: String::new(),
+            asked_update_permission: false,
             models,
             images: HashMap::new(),
             image_order: VecDeque::new(),
@@ -269,7 +276,9 @@ impl Ui {
     /// A key from the window. Returns whether the app used it.
     pub fn key(&mut self, text: &str, pressed: bool, repeat: bool) -> bool {
         let now = Instant::now();
-        let Some(key) = map_key(text) else { return false };
+        let Some(key) = map_key(text) else {
+            return false;
+        };
         if pressed {
             self.last_input = now;
         }
@@ -328,15 +337,26 @@ impl Ui {
     // SESSION AND UPDATES
 
     pub fn on_session(&mut self, view: View) {
+        let playing_here = view.here && view.playing && !view.is_idle();
+        (self.hooks.set_quiet)(!playing_here);
         let effects = self.nav.on_session(view);
         self.run(effects);
         self.render();
     }
 
     /// Show the updater's state in the top bar; ask for permission once.
-    pub fn on_update_status(&mut self, status: String, needs_permission: bool) {
-        self.update_status = status;
-        if needs_permission {
+    pub fn on_update_status(&mut self, status: &UpdateStatus) {
+        self.update_status = match status {
+            UpdateStatus::UpToDate | UpdateStatus::NeedsPermission => String::new(),
+            UpdateStatus::Downloading { percent } => format!("Downloading an update · {percent}%"),
+            UpdateStatus::WaitingForQuiet => {
+                "Update ready: installs when the music stops".to_owned()
+            }
+            UpdateStatus::Installing => "Installing an update…".to_owned(),
+            UpdateStatus::Failed(_) => "Update failed".to_owned(),
+        };
+        if *status == UpdateStatus::NeedsPermission && !self.asked_update_permission {
+            self.asked_update_permission = true;
             self.nav.ask_update_permission();
         }
         self.render();
@@ -405,7 +425,9 @@ impl Ui {
                                     },
                                 });
                             }
-                            Ok(_) => ui.nav.on_failure("There's nothing to play there", Instant::now()),
+                            Ok(_) => ui
+                                .nav
+                                .on_failure("There's nothing to play there", Instant::now()),
                             Err(message) => ui.nav.on_failure(&message, Instant::now()),
                         },
                     );
@@ -552,7 +574,8 @@ impl Ui {
                     ui.image_pending.remove(&key);
                     match result {
                         Ok(decoded) => {
-                            ui.images.insert(key.clone(), Image::from_rgba8(decoded.pixels));
+                            ui.images
+                                .insert(key.clone(), Image::from_rgba8(decoded.pixels));
                             ui.image_order.push_back(key);
                             while ui.image_order.len() > IMAGE_CACHE {
                                 if let Some(old) = ui.image_order.pop_front() {
@@ -617,7 +640,9 @@ impl Ui {
     }
 
     pub fn render(&mut self) {
-        let Some(app) = self.app.upgrade() else { return };
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
         let now = Instant::now();
         let nav = &self.nav;
         let time = LocalTime::now();
@@ -664,9 +689,16 @@ impl Ui {
         let session = self.nav.session.clone();
         let entry = session.current_entry().cloned();
         let track = entry.as_ref().map(|entry| entry.track.clone());
-        self.want_hero(track.as_ref().and_then(|track| track.artwork_url.as_deref()));
+        self.want_hero(
+            track
+                .as_ref()
+                .and_then(|track| track.artwork_url.as_deref()),
+        );
         let hero = self.hero.as_ref().filter(|hero| {
-            track.as_ref().and_then(|track| track.artwork_url.as_deref()) == Some(hero.url.as_str())
+            track
+                .as_ref()
+                .and_then(|track| track.artwork_url.as_deref())
+                == Some(hero.url.as_str())
         });
         app.set_has_artwork(hero.is_some());
         app.set_has_backdrop(hero.is_some_and(|hero| hero.backdrop.is_some()));
@@ -679,9 +711,18 @@ impl Ui {
         } else {
             app.set_tint(Color::from_rgb_u8(0x1b, 0x15, 0x30));
         }
-        let title = track.as_ref().map(|track| track.title.clone()).unwrap_or_default();
+        let title = track
+            .as_ref()
+            .map(|track| track.title.clone())
+            .unwrap_or_default();
         app.set_track_title(title.into());
-        app.set_artists(track.as_ref().map(|t| t.artists.clone()).unwrap_or_default().into());
+        app.set_artists(
+            track
+                .as_ref()
+                .map(|t| t.artists.clone())
+                .unwrap_or_default()
+                .into(),
+        );
         app.set_album(
             track
                 .as_ref()
@@ -710,11 +751,10 @@ impl Ui {
         };
         app.set_where(place.into());
 
-        let liked = self
-            .nav
-            .liked
-            .as_ref()
-            .is_some_and(|(id, liked)| *liked && Some(id) == track.as_ref().map(|t| &t.video_id));
+        let liked =
+            self.nav.liked.as_ref().is_some_and(|(id, liked)| {
+                *liked && Some(id) == track.as_ref().map(|t| &t.video_id)
+            });
         let selectable = self.content_focused()
             && self.nav.tab == Tab::NowPlaying
             && self.nav.panel == Panel::None;
@@ -747,7 +787,15 @@ impl Ui {
 
         let next: Vec<_> = session
             .current
-            .map(|index| session.queue.iter().skip(index + 1).take(UP_NEXT).cloned().collect())
+            .map(|index| {
+                session
+                    .queue
+                    .iter()
+                    .skip(index + 1)
+                    .take(UP_NEXT)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         let up_next = next
             .iter()
@@ -804,7 +852,9 @@ impl Ui {
                 .collect();
             sync(&self.models.queue_rows, rows);
             app.set_queue_top(self.nav.queue_top as i32);
-            let left = session.current.map_or(0, |index| session.queue.len() - index - 1);
+            let left = session
+                .current
+                .map_or(0, |index| session.queue.len() - index - 1);
             app.set_queue_summary(
                 match left {
                     0 => "This is the last song".to_owned(),
@@ -865,7 +915,9 @@ impl Ui {
     /// Fill the shelf models from a tab's shelves, and say if they are
     /// loading or failed.
     fn draw_shelf_models(&mut self, app: &App, tab: Tab, selectable: bool) {
-        let Some(browse) = self.nav.browse(tab) else { return };
+        let Some(browse) = self.nav.browse(tab) else {
+            return;
+        };
         let shelves = browse.shelves.clone();
         app.set_page_loading(shelves.content == Load::Loading);
         app.set_page_message(match &shelves.content {
@@ -885,7 +937,12 @@ impl Ui {
                     // Load artwork for what's on screen and just past it.
                     let near = column + 2 >= offset && column <= offset + 9;
                     let is_selected = selectable && selected == Some((row, column));
-                    if near || self.images.contains_key(&(card.artwork_url.clone().unwrap_or_default(), CARD_PIXELS)) {
+                    if near
+                        || self.images.contains_key(&(
+                            card.artwork_url.clone().unwrap_or_default(),
+                            CARD_PIXELS,
+                        ))
+                    {
                         self.card_data(card, is_selected)
                     } else {
                         CardData {
@@ -904,7 +961,11 @@ impl Ui {
         self.models.sync_shelves(rows);
         sync(
             &self.models.offsets,
-            shelves.offsets.iter().map(|offset| *offset as i32).collect(),
+            shelves
+                .offsets
+                .iter()
+                .map(|offset| *offset as i32)
+                .collect(),
         );
         app.set_shelf_top(shelves.row as i32);
     }
@@ -938,7 +999,11 @@ impl Ui {
             .collect();
         keys.extend(WIDE_KEYS.iter().enumerate().map(|(index, label)| KeyData {
             label: (*label).into(),
-            icon: if *label == "Delete" { "backspace".into() } else { SharedString::default() },
+            icon: if *label == "Delete" {
+                "backspace".into()
+            } else {
+                SharedString::default()
+            },
             span: 2,
             selected: in_keyboard && search.key == KEYBOARD.len() + index,
         }));
@@ -953,7 +1018,9 @@ impl Ui {
     }
 
     fn draw_collection(&mut self, app: &App) {
-        let Some(page) = self.nav.collection().cloned() else { return };
+        let Some(page) = self.nav.collection().cloned() else {
+            return;
+        };
         let focused = self.content_focused();
         let current_video = self
             .nav
@@ -976,7 +1043,13 @@ impl Ui {
         );
         app.set_col_round(page.kind == CollectionKind::Artist);
         let collection = page.content.loaded().cloned();
-        app.set_col_title(collection.as_ref().map(|c| c.title.clone()).unwrap_or_default().into());
+        app.set_col_title(
+            collection
+                .as_ref()
+                .map(|c| c.title.clone())
+                .unwrap_or_default()
+                .into(),
+        );
         // "Artist" under the ARTIST label says nothing new.
         let subtitle = collection
             .as_ref()
@@ -1120,10 +1193,22 @@ impl Ui {
     fn draw_hints(&mut self, page: i32) {
         let search_keyboard = page == 3 && !self.nav.search.in_results;
         let hints: &[(&str, &str)] = match page {
-            2 => &[("OK", "Play or open"), ("Hold OK", "More options"), ("Back", "Menu bar")],
+            2 => &[
+                ("OK", "Play or open"),
+                ("Hold OK", "More options"),
+                ("Back", "Menu bar"),
+            ],
             3 if search_keyboard => &[("OK", "Type"), ("▶", "Results"), ("Back", "Menu bar")],
-            3 => &[("OK", "Play or open"), ("Hold OK", "More options"), ("◀", "Keyboard")],
-            4 => &[("OK", "Play"), ("Hold OK", "More options"), ("Back", "Go back")],
+            3 => &[
+                ("OK", "Play or open"),
+                ("Hold OK", "More options"),
+                ("◀", "Keyboard"),
+            ],
+            4 => &[
+                ("OK", "Play"),
+                ("Hold OK", "More options"),
+                ("Back", "Go back"),
+            ],
             _ => &[],
         };
         sync(

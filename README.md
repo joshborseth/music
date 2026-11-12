@@ -25,6 +25,7 @@ Browse YouTube Music on your phone and play it on the phone or on the TV. The ph
   - **Library:** Liked songs and your playlists.
 
   OK on a song plays its row from there. OK on an album, playlist, or artist opens it, with Play, Shuffle, and Queue buttons. **Hold OK** on anything for more: play next, add to the queue, like, or go to the artist. The queue slides in from the right: OK jumps to a song, and holding OK removes one. Lyrics slide in the same way and scroll with the song. Back steps back, and pressing Back twice on the top level leaves the app.
+
 - **Scan to play:** the TV shows a QR code for the server's address on the home Wi-Fi (`http://192.168.1.67:4310`). Anyone on the Wi-Fi can scan it and use the full app on their phone, without Tailscale.
 - **Screensaver:** after two and a half minutes without a key press, the screen goes black with the cover, the song, and the time drifting slowly, so nothing burns in. Any key brings the app back.
 

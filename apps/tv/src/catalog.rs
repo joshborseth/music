@@ -137,11 +137,15 @@ impl Client {
     }
 
     pub async fn home(&self) -> Result<Vec<Shelf>, String> {
-        self.get::<Shelves>("/tv/home").await.map(|found| found.shelves)
+        self.get::<Shelves>("/tv/home")
+            .await
+            .map(|found| found.shelves)
     }
 
     pub async fn library(&self) -> Result<Vec<Shelf>, String> {
-        self.get::<Shelves>("/tv/library").await.map(|found| found.shelves)
+        self.get::<Shelves>("/tv/library")
+            .await
+            .map(|found| found.shelves)
     }
 
     pub async fn search(&self, query: &str) -> Result<Vec<Shelf>, String> {
@@ -159,12 +163,18 @@ impl Client {
     }
 
     pub async fn lyrics(&self, video_id: &str) -> Result<Option<String>, String> {
-        let path = format!("/tv/lyrics?videoId={}", crate::view::percent_encode(video_id));
+        let path = format!(
+            "/tv/lyrics?videoId={}",
+            crate::view::percent_encode(video_id)
+        );
         self.get::<Lyrics>(&path).await.map(|lyrics| lyrics.text)
     }
 
     pub async fn liked(&self, video_id: &str) -> Result<bool, String> {
-        let path = format!("/tv/liked?videoId={}", crate::view::percent_encode(video_id));
+        let path = format!(
+            "/tv/liked?videoId={}",
+            crate::view::percent_encode(video_id)
+        );
         self.get::<Liked>(&path).await.map(|liked| liked.liked)
     }
 

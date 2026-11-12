@@ -50,8 +50,29 @@ mod tests {
     #[test]
     fn formats_twelve_hour_time() {
         assert_eq!(LocalTime { hour: 0, minute: 5 }.clock(), "12:05 AM");
-        assert_eq!(LocalTime { hour: 12, minute: 0 }.clock(), "12:00 PM");
-        assert_eq!(LocalTime { hour: 21, minute: 41 }.clock(), "9:41 PM");
-        assert_eq!(LocalTime { hour: 19, minute: 0 }.greeting(), "Good evening");
+        assert_eq!(
+            LocalTime {
+                hour: 12,
+                minute: 0
+            }
+            .clock(),
+            "12:00 PM"
+        );
+        assert_eq!(
+            LocalTime {
+                hour: 21,
+                minute: 41
+            }
+            .clock(),
+            "9:41 PM"
+        );
+        assert_eq!(
+            LocalTime {
+                hour: 19,
+                minute: 0
+            }
+            .greeting(),
+            "Good evening"
+        );
     }
 }

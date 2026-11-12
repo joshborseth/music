@@ -335,10 +335,13 @@ impl Controller {
             .filter(|id| *id != self.device_id)
             .and_then(|id| state.devices.iter().find(|device| device.id == id))
             .map(|device| device.name.clone());
-        let has_audio = self.engine_position.as_ref().is_some_and(|(entry_id, _, at)| {
-            state.current_entry_id.as_deref() == Some(entry_id.as_str())
-                && at.elapsed() < LOADING_GRACE
-        });
+        let has_audio = self
+            .engine_position
+            .as_ref()
+            .is_some_and(|(entry_id, _, at)| {
+                state.current_entry_id.as_deref() == Some(entry_id.as_str())
+                    && at.elapsed() < LOADING_GRACE
+            });
         let loading = here
             && state.playing
             && current.is_some()
