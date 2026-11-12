@@ -20,6 +20,9 @@ import {
   YouTubeMusicError,
 } from './domain.ts'
 
+/** A color as `#rrggbb` sRGB. */
+const HexColor = Schema.String.check(Schema.isPattern(/^#[0-9a-f]{6}$/))
+
 const SearchPayload = Schema.Struct({ query: Schema.String })
 
 const LookupError = Schema.Union([MusicNotFoundError, YouTubeMusicError])
@@ -95,6 +98,15 @@ export const editPlaylistsRpc = Rpc.make('editPlaylists', {
 })
 
 /**
+ * The full player's background for a song's artwork: a dark version of the
+ * color the cover reads as. Null when the artwork cannot be read.
+ */
+export const getArtworkBackdropRpc = Rpc.make('getArtworkBackdrop', {
+  payload: Schema.Struct({ artworkUrl: Schema.String }),
+  success: Schema.NullOr(HexColor),
+})
+
+/**
  * Every call the web app makes to the music server: the YouTube Music
  * catalog, and the playlists made in the app.
  */
@@ -111,5 +123,6 @@ export const MusicRpcs = RpcGroup.make(
   getMyLibraryRpc,
   getMyPlaylistRpc,
   editPlaylistsRpc,
+  getArtworkBackdropRpc,
 )
 export type MusicRpcs = typeof MusicRpcs

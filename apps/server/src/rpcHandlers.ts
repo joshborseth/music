@@ -2,6 +2,7 @@ import { Array, Effect } from 'effect'
 
 import { MusicRpcs, type Song } from '@music/shared'
 
+import { ArtworkPalette } from './palette/service.ts'
 import { PlaylistStore } from './playlists/store.ts'
 import { Prefetcher, pageJobs } from './prefetch.ts'
 import { YouTubeMusic } from './youtubeMusic/service.ts'
@@ -18,6 +19,7 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
     const youTubeMusic = yield* YouTubeMusic
     const prefetcher = yield* Prefetcher
     const playlistStore = yield* PlaylistStore
+    const artworkPalette = yield* ArtworkPalette
 
     const prepare = (
       songs: ReadonlyArray<Song>,
@@ -64,6 +66,8 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
           .playlist(playlistId)
           .pipe(Effect.tap(details => prepare(details.songs, 2, 3))),
       editPlaylists: ({ edit }) => playlistStore.edit(edit),
+      getArtworkBackdrop: ({ artworkUrl }) =>
+        artworkPalette.backdropFor(artworkUrl),
     }
   }),
 )

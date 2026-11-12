@@ -41,7 +41,7 @@ import {
 } from '../playback/domain'
 import { displayedPosition } from '../playback/position'
 import { SwipeTarget, swipeOn } from '../playback/swipe'
-import { songQuery } from '../query'
+import { artworkBackdropQuery, songQuery } from '../query'
 import { type PlayerPanel } from '../sheet'
 import { likedVideoIds } from '../update'
 import { formatDuration } from './shared'
@@ -769,11 +769,33 @@ const deviceButton = (
   )
 }
 
-const playerBackdrop = (h: HtmlBuilder<Message>): Html =>
-  h.div([
+/**
+ * A solid color matching the cover, from the server, dark enough for the
+ * white controls. Neutral until it arrives, and for songs without artwork.
+ */
+const playerBackdrop = (
+  model: Model,
+  track: Session.QueueTrack,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const maybeColor = pipe(
+    Option.fromNullishOr(track.artworkUrl),
+    Option.flatMap(artworkUrl =>
+      AsyncData.getData(
+        artworkBackdropQuery.read(model.artworkBackdrops, { artworkUrl }),
+      ),
+    ),
+    Option.flatMap(Option.fromNullishOr),
+  )
+  return h.div([
     h.AriaHidden(true),
     h.Class('pointer-events-none absolute inset-0 bg-neutral-900'),
+    ...Option.match(maybeColor, {
+      onNone: () => [],
+      onSome: backgroundColor => [h.Style({ backgroundColor })],
+    }),
   ])
+}
 
 const playerSheet = (
   model: Model,
@@ -797,7 +819,7 @@ const playerSheet = (
       ),
     ],
     [
-      playerBackdrop(h),
+      playerBackdrop(model, entry.track, h),
       h.div(
         [
           h.Class(

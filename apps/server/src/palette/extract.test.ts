@@ -2,7 +2,12 @@ import { describe, expect, test } from 'bun:test'
 import { Effect } from 'effect'
 import sharp from 'sharp'
 
-import { oklabToRgb, paletteFromPixels, rgbToOklab } from './extract.ts'
+import {
+  backdropFromPixels,
+  oklabToRgb,
+  paletteFromPixels,
+  rgbToOklab,
+} from './extract.ts'
 import { samplePixels } from './service.ts'
 
 type Rgb = readonly [number, number, number]
@@ -91,6 +96,46 @@ describe('paletteFromPixels', () => {
 
   test('an empty image gives no color', () => {
     expect(paletteFromPixels(new Uint8Array())).toEqual([])
+  })
+})
+
+describe('backdropFromPixels', () => {
+  const lab = (hex: string) => rgbToOklab(...channels(hex))
+  const hue = ({ a, b }: { a: number; b: number }) => Math.atan2(b, a)
+
+  test('a bright cover gives a dark color of the same hue', () => {
+    const backdrop = backdropFromPixels(pixels([[250, 200, 30], 2304])) ?? ''
+    const color = lab(backdrop)
+    expect(color.l).toBeLessThanOrEqual(0.365)
+    expect(color.l).toBeGreaterThanOrEqual(0.235)
+    expect(Math.hypot(color.a, color.b)).toBeGreaterThan(0.04)
+    expect(Math.abs(hue(color) - hue(rgbToOklab(250, 200, 30)))).toBeLessThan(
+      0.1,
+    )
+  })
+
+  test('a colored area beats a larger black one', () => {
+    const backdrop =
+      backdropFromPixels(pixels([[0, 0, 0], 1400], [[20, 60, 160], 900])) ?? ''
+    const color = lab(backdrop)
+    expect(Math.abs(hue(color) - hue(rgbToOklab(20, 60, 160)))).toBeLessThan(
+      0.1,
+    )
+  })
+
+  test('a black-and-white cover gives a dark grey', () => {
+    const backdrop =
+      backdropFromPixels(pixels([[255, 255, 255], 1800], [[0, 0, 0], 504])) ??
+      ''
+    const [red, green, blue] = channels(backdrop)
+    expect(
+      Math.max(red, green, blue) - Math.min(red, green, blue),
+    ).toBeLessThan(3)
+    expect(lab(backdrop).l).toBeLessThanOrEqual(0.365)
+  })
+
+  test('an empty image gives no backdrop', () => {
+    expect(backdropFromPixels(new Uint8Array())).toBeNull()
   })
 })
 

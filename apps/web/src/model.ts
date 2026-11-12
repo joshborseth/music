@@ -18,6 +18,7 @@ import {
   albumSearchQuery,
   artistQuery,
   artistSearchQuery,
+  artworkBackdropQuery,
   homeQuery,
   myLibraryQuery,
   myPlaylistQuery,
@@ -47,6 +48,8 @@ export const Model = Schema.Struct({
   playlists: playlistQuery.Model,
   myLibrary: myLibraryQuery.Model,
   myPlaylists: myPlaylistQuery.Model,
+  /** The full player's background color for each song's artwork. */
+  artworkBackdrops: artworkBackdropQuery.Model,
   /** The name being typed for a new or renamed playlist. */
   playlistTitleInput: Schema.String,
   actionSheet: ActionSheet,
