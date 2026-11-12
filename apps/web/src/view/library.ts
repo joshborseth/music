@@ -1,19 +1,22 @@
 import { Array, Match, Option } from 'effect'
+import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
-import { Disc3, ListMusic, User } from 'lucide'
+import { Disc3, ListMusic, Plus, User } from 'lucide'
 
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { type LibraryItem, songFromQueueTrack } from '../library'
 import { Message } from '../message'
+import { myLibraryQuery } from '../query'
 import { largeTitleHeader } from './chrome'
 import { type PageModel } from './page'
 import {
   albumHref,
   artistHref,
-  emptyState,
+  myPlaylistRow,
   playlistHref,
+  requestErrorAlert,
   section,
   songList,
 } from './shared'
@@ -129,55 +132,107 @@ const clearButton = (model: PageModel, h: HtmlBuilder<Message>): Html =>
         ['Clear'],
       )
 
-/** Library: songs played and pages opened on this device, newest first. */
+const newPlaylistRow = (h: HtmlBuilder<Message>): Html =>
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(Message.ClickedNewPlaylist({ songs: [], suggestedTitle: '' })),
+      h.Class(
+        'flex w-full items-center gap-3 px-4 py-2 text-left transition-colors active:bg-muted/70',
+      ),
+    ],
+    [
+      h.span(
+        [
+          h.Class(
+            'bg-muted text-primary flex size-14 shrink-0 items-center justify-center rounded-md',
+          ),
+        ],
+        [icon(h, Plus, 'size-7')],
+      ),
+      h.span(
+        [h.Class('text-primary text-[15px] font-medium')],
+        ['New Playlist…'],
+      ),
+    ],
+  )
+
+const playlistRowSkeleton = (h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.Class('flex items-center gap-3 px-4 py-2'), h.AriaLabel('Loading')],
+    [
+      h.span([h.Class('bg-muted size-14 animate-pulse rounded-md')]),
+      h.span([h.Class('bg-muted h-4 w-32 animate-pulse rounded')]),
+    ],
+  )
+
+/** My playlists, kept on the server so every device sees the same ones. */
+const playlistsSection = (model: PageModel, h: HtmlBuilder<Message>): Html =>
+  section(
+    'Playlists',
+    [
+      h.div(
+        [h.Role('list'), h.Class('flex flex-col')],
+        [
+          newPlaylistRow(h),
+          ...AsyncData.matchData(myLibraryQuery.read(model.myLibrary), {
+            onEmpty: (): ReadonlyArray<Html> => [playlistRowSkeleton(h)],
+            onFailure: (error): ReadonlyArray<Html> => [
+              requestErrorAlert(error, h),
+            ],
+            onData: ({ playlists }): ReadonlyArray<Html> =>
+              Array.map(playlists, playlist =>
+                h.keyed('div')(
+                  playlist.id,
+                  [h.Role('listitem')],
+                  [myPlaylistRow(playlist, h)],
+                ),
+              ),
+          }),
+        ],
+      ),
+    ],
+    h,
+  )
+
+/**
+ * Library: my playlists, then songs played and pages opened on this
+ * device, newest first.
+ */
 export const libraryView = (
   model: PageModel,
   h: HtmlBuilder<Message>,
-): ReadonlyArray<Html> => {
-  const isEmpty =
-    Array.isReadonlyArrayEmpty(model.recentlyPlayed) &&
-    Array.isReadonlyArrayEmpty(model.recentlyViewed)
-  return [
-    ...largeTitleHeader('Library', clearButton(model, h), h),
-    isEmpty
-      ? emptyState(
-          {
-            title: 'Nothing here yet',
-            description:
-              'Songs you play and albums, artists, and playlists you open show up here.',
-            kind: 'Playlist',
-          },
-          h,
-        )
-      : h.div(
-          [h.Class('flex flex-col gap-8 pt-2 pb-6')],
-          [
-            Array.isReadonlyArrayNonEmpty(model.recentlyPlayed)
-              ? section(
-                  'Recently played',
-                  [
-                    songList(
-                      {
-                        songs: Array.map(
-                          Array.take(
-                            model.recentlyPlayed,
-                            RECENTLY_PLAYED_IN_LIBRARY,
-                          ),
-                          songFromQueueTrack,
-                        ),
-                        playing: model.playing,
-                        swipe: model.swipe,
-                        isNumbered: false,
-                        isAlbumHidden: false,
-                      },
-                      h,
+): ReadonlyArray<Html> => [
+  ...largeTitleHeader('Library', clearButton(model, h), h),
+  h.div(
+    [h.Class('flex flex-col gap-8 pt-2 pb-6')],
+    [
+      playlistsSection(model, h),
+      Array.isReadonlyArrayNonEmpty(model.recentlyPlayed)
+        ? section(
+            'Recently played',
+            [
+              songList(
+                {
+                  songs: Array.map(
+                    Array.take(
+                      model.recentlyPlayed,
+                      RECENTLY_PLAYED_IN_LIBRARY,
                     ),
-                  ],
-                  h,
-                )
-              : h.empty,
-            recentlyViewedGrid(model.recentlyViewed, h),
-          ],
-        ),
-  ]
-}
+                    songFromQueueTrack,
+                  ),
+                  playing: model.playing,
+                  swipe: model.swipe,
+                  isNumbered: false,
+                  isAlbumHidden: false,
+                },
+                h,
+              ),
+            ],
+            h,
+          )
+        : h.empty,
+      recentlyViewedGrid(model.recentlyViewed, h),
+    ],
+  ),
+]

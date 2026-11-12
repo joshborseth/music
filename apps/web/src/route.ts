@@ -3,7 +3,12 @@ import { Route, type Url } from 'foldkit'
 import { defineRouteUnion, literal, slash, string } from 'foldkit/route'
 
 /** Which catalog a search looks through. */
-export const SearchKind = Schema.Literals(['Songs', 'Artists', 'Albums'])
+export const SearchKind = Schema.Literals([
+  'Songs',
+  'Artists',
+  'Albums',
+  'Playlists',
+])
 export type SearchKind = typeof SearchKind.Type
 
 export const SEARCH_KINDS: ReadonlyArray<SearchKind> = SearchKind.literals
@@ -35,6 +40,8 @@ export const AppRoute = defineRouteUnion({
   Artist: { artistId: Schema.String },
   Album: { albumId: Schema.String },
   Playlist: { playlistId: Schema.String },
+  /** One of the playlists made in the app. */
+  MyPlaylist: { playlistId: Schema.String },
   NotFound: { path: Schema.String },
 })
 export type AppRoute = typeof AppRoute.Type
@@ -82,7 +89,15 @@ export const playlistRouter = pipe(
   Route.mapTo(AppRoute.Playlist),
 )
 
+export const myPlaylistRouter = pipe(
+  literal('library'),
+  slash(literal('playlist')),
+  slash(string('playlistId')),
+  Route.mapTo(AppRoute.MyPlaylist),
+)
+
 const routeParser = Route.oneOf(
+  myPlaylistRouter,
   songRouter,
   artistRouter,
   albumRouter,
@@ -136,6 +151,7 @@ export const routeTab = (route: AppRoute): Option.Option<Tab> =>
     Artist: () => Option.none(),
     Album: () => Option.none(),
     Playlist: () => Option.none(),
+    MyPlaylist: () => Option.none(),
     NotFound: () => Option.none(),
   })
 
@@ -152,5 +168,6 @@ export const pageKey = (route: AppRoute): string =>
     Artist: ({ artistId }) => `artist/${artistId}`,
     Album: ({ albumId }) => `album/${albumId}`,
     Playlist: ({ playlistId }) => `playlist/${playlistId}`,
+    MyPlaylist: ({ playlistId }) => `my-playlist/${playlistId}`,
     NotFound: ({ path }) => `not-found/${path}`,
   })

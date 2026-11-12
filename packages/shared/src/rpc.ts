@@ -8,7 +8,13 @@ import {
   ArtistSummary,
   HomeFeed,
   MusicNotFoundError,
+  MyLibrary,
+  MyPlaylistDetails,
   PlaylistDetails,
+  PlaylistEdit,
+  PlaylistEditResult,
+  PlaylistStoreError,
+  PlaylistSummary,
   Song,
   SongDetails,
   YouTubeMusicError,
@@ -33,6 +39,12 @@ export const searchArtistsRpc = Rpc.make('searchArtists', {
 export const searchAlbumsRpc = Rpc.make('searchAlbums', {
   payload: SearchPayload,
   success: Schema.Array(AlbumSummary),
+  error: YouTubeMusicError,
+})
+
+export const searchPlaylistsRpc = Rpc.make('searchPlaylists', {
+  payload: SearchPayload,
+  success: Schema.Array(PlaylistSummary),
   error: YouTubeMusicError,
 })
 
@@ -65,15 +77,39 @@ export const getHomeRpc = Rpc.make('getHome', {
   error: YouTubeMusicError,
 })
 
-/** Every read-only call the web app makes to the music server. */
+export const getMyLibraryRpc = Rpc.make('getMyLibrary', {
+  success: MyLibrary,
+  error: PlaylistStoreError,
+})
+
+export const getMyPlaylistRpc = Rpc.make('getMyPlaylist', {
+  payload: Schema.Struct({ playlistId: Schema.String }),
+  success: MyPlaylistDetails,
+  error: Schema.Union([MusicNotFoundError, PlaylistStoreError]),
+})
+
+export const editPlaylistsRpc = Rpc.make('editPlaylists', {
+  payload: Schema.Struct({ edit: PlaylistEdit }),
+  success: PlaylistEditResult,
+  error: Schema.Union([MusicNotFoundError, PlaylistStoreError]),
+})
+
+/**
+ * Every call the web app makes to the music server: the YouTube Music
+ * catalog, and the playlists made in the app.
+ */
 export const MusicRpcs = RpcGroup.make(
   searchSongsRpc,
   searchArtistsRpc,
   searchAlbumsRpc,
+  searchPlaylistsRpc,
   getSongRpc,
   getArtistRpc,
   getAlbumRpc,
   getPlaylistRpc,
   getHomeRpc,
+  getMyLibraryRpc,
+  getMyPlaylistRpc,
+  editPlaylistsRpc,
 )
 export type MusicRpcs = typeof MusicRpcs

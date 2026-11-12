@@ -1,5 +1,11 @@
 import { Array, Context, Duration, Effect, Layer, Option, pipe } from 'effect'
-import { Innertube, Log, type YTMusic, YTNodes } from 'youtubei.js'
+import {
+  type Helpers,
+  Innertube,
+  Log,
+  type YTMusic,
+  YTNodes,
+} from 'youtubei.js'
 
 import {
   type AlbumDetails,
@@ -9,6 +15,7 @@ import {
   type HomeFeed,
   MusicNotFoundError,
   type PlaylistDetails,
+  type PlaylistSummary,
   type Song,
   type SongDetails,
   YouTubeMusicError,
@@ -19,6 +26,7 @@ import {
   artistFromListItem,
   filterSome,
   homeShelfFromCarousel,
+  playlistFromListItem,
   songFromListItem,
   songFromPlaylistPanelVideo,
   toAlbumDetails,
@@ -68,9 +76,17 @@ const orNotFound =
       onSome: Effect.succeed,
     })
 
-type SearchType = 'song' | 'artist' | 'album'
+type SearchType = 'song' | 'artist' | 'album' | 'playlist'
 
 type HomeFeedPage = YTMusic.HomeFeed
+
+type PlaylistPage = YTMusic.Playlist
+
+/**
+ * YouTube sends a playlist about 100 songs at a time. Long ones are read up
+ * to this many, so the page, Play, and Save a copy see the whole list.
+ */
+const MAX_PLAYLIST_SONGS = 500
 
 /** The home feed changes slowly, and fetching it takes three round trips. */
 const HOME_CACHE_TTL = Duration.minutes(15)
@@ -85,6 +101,9 @@ export interface YouTubeMusicShape {
   readonly searchAlbums: (
     query: string,
   ) => Effect.Effect<ReadonlyArray<AlbumSummary>, YouTubeMusicError>
+  readonly searchPlaylists: (
+    query: string,
+  ) => Effect.Effect<ReadonlyArray<PlaylistSummary>, YouTubeMusicError>
   readonly getSong: (
     videoId: string,
   ) => Effect.Effect<SongDetails, MusicNotFoundError | YouTubeMusicError>
@@ -156,6 +175,13 @@ const make = Effect.gen(function* () {
     return filterSome(items, albumFromListItem)
   })
 
+  const searchPlaylists = Effect.fn('YouTubeMusic.searchPlaylists')(function* (
+    query: string,
+  ) {
+    const items = yield* searchShelf(query, 'playlist')
+    return filterSome(items, playlistFromListItem)
+  })
+
   const upNextSongs = (videoId: string) =>
     Effect.map(
       lookUp(videoId, () => music.getUpNext(videoId)),
@@ -221,12 +247,30 @@ const make = Effect.gen(function* () {
     return yield* orNotFound(albumId)(toAlbumDetails(albumId, page))
   })
 
+  /** Reads on until the playlist ends; a page that fails ends it early. */
+  const withLaterPages = (
+    page: PlaylistPage,
+    items: ReadonlyArray<Helpers.YTNode>,
+  ): Effect.Effect<ReadonlyArray<Helpers.YTNode>> =>
+    page.has_continuation && items.length < MAX_PLAYLIST_SONGS
+      ? callYouTube(() => page.getContinuation()).pipe(
+          Effect.matchEffect({
+            onFailure: () => Effect.succeed(items),
+            onSuccess: next => withLaterPages(next, [...items, ...next.items]),
+          }),
+        )
+      : Effect.succeed(items)
+
   const getPlaylist = Effect.fn('YouTubeMusic.getPlaylist')(function* (
     playlistId: string,
   ) {
-    const page = yield* lookUp(playlistId, () => music.getPlaylist(playlistId))
+    const first = yield* lookUp(playlistId, () => music.getPlaylist(playlistId))
+    const items = yield* withLaterPages(first, Array.fromIterable(first.items))
     return yield* orNotFound(playlistId)(
-      toPlaylistDetails(playlistId, { header: page.header, items: page.items }),
+      toPlaylistDetails(playlistId, {
+        header: first.header,
+        items: Array.take(items, MAX_PLAYLIST_SONGS),
+      }),
     )
   })
 
@@ -267,6 +311,7 @@ const make = Effect.gen(function* () {
     searchSongs,
     searchArtists,
     searchAlbums,
+    searchPlaylists,
     getSong,
     getUpNext,
     getArtist,

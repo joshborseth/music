@@ -3,6 +3,8 @@ import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
   ChevronDown,
+  Ellipsis,
+  Heart,
   ListMusic,
   LoaderCircle,
   MessageSquareQuote,
@@ -25,6 +27,7 @@ import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { Session } from '@music/shared'
 
+import { songFromQueueTrack } from '../library'
 import { Message } from '../message'
 import { Model } from '../model'
 import { DragToDismiss, FollowSeekBarDrags } from '../mount'
@@ -40,6 +43,7 @@ import { displayedPosition } from '../playback/position'
 import { SwipeTarget, swipeOn } from '../playback/swipe'
 import { songQuery } from '../query'
 import { type PlayerPanel } from '../sheet'
+import { likedVideoIds } from '../update'
 import { formatDuration } from './shared'
 import { onSwipeStart, swipeTransitionClass, swipeableRow } from './swipe'
 
@@ -460,6 +464,47 @@ const trackTitle = (
     ],
   )
 
+const trackButtonClass =
+  'flex size-10 shrink-0 items-center justify-center rounded-full transition-transform active:scale-90'
+
+/** Like the song, or open everything else that can be done with it. */
+const trackActions = (
+  model: Model,
+  track: Session.QueueTrack,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const song = songFromQueueTrack(track)
+  const isLiked = Array.contains(likedVideoIds(model), track.videoId)
+  return h.div(
+    [h.Class('flex shrink-0 items-center')],
+    [
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedToggleLiked({ song })),
+          h.AriaLabel(
+            isLiked ? 'Remove from Liked Songs' : 'Add to Liked Songs',
+          ),
+          h.AriaPressed(isLiked ? 'true' : 'false'),
+          h.Class(
+            cn(trackButtonClass, isLiked ? 'text-rose-400' : 'text-white/70'),
+          ),
+        ],
+        [icon(h, Heart, cn('size-6', isLiked && 'fill-current'))],
+      ),
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedSongActions({ song })),
+          h.AriaLabel(`More for ${track.title}`),
+          h.Class(cn(trackButtonClass, 'text-white/70')),
+        ],
+        [icon(h, Ellipsis, 'size-6')],
+      ),
+    ],
+  )
+}
+
 /**
  * The big artwork. Swiping it sideways skips; pulling it down closes the
  * player, which the whole sheet follows.
@@ -507,6 +552,7 @@ const artworkPanel = (
 }
 
 const compactNowPlaying = (
+  model: Model,
   entry: Session.QueueEntry,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -515,6 +561,7 @@ const compactNowPlaying = (
     [
       artwork(entry.track, 'size-14 rounded-lg shadow-md', h),
       trackTitle(entry.track, false, h),
+      trackActions(model, entry.track, h),
     ],
   )
 
@@ -809,7 +856,7 @@ const playerSheet = (
           ),
           panel === 'Artwork'
             ? artworkPanel(model, snapshot, entry, h)
-            : compactNowPlaying(entry, h),
+            : compactNowPlaying(model, entry, h),
           panel === 'Lyrics' ? lyricsPanel(model, entry, h) : h.empty,
           panel === 'Queue' ? queuePanel(model, snapshot, h) : h.empty,
           h.div(
@@ -817,8 +864,11 @@ const playerSheet = (
             [
               panel === 'Artwork'
                 ? h.div(
-                    [h.Class('flex items-center')],
-                    [trackTitle(entry.track, true, h)],
+                    [h.Class('flex items-center gap-2')],
+                    [
+                      trackTitle(entry.track, true, h),
+                      trackActions(model, entry.track, h),
+                    ],
                   )
                 : h.empty,
               seekBar(model, snapshot, entry, h),

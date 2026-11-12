@@ -7,6 +7,13 @@ import { Song } from '@music/shared'
 export const SheetContent = defineTaggedUnion({
   SongActions: { song: Song },
   Devices: {},
+  /** Pick one of my playlists to add the songs to, or start a new one. */
+  AddToPlaylist: { songs: Schema.Array(Song), suggestedTitle: Schema.String },
+  /** Name a new playlist holding the songs. */
+  NewPlaylist: { songs: Schema.Array(Song) },
+  PlaylistActions: { playlistId: Schema.String, title: Schema.String },
+  RenamePlaylist: { playlistId: Schema.String },
+  ConfirmDeletePlaylist: { playlistId: Schema.String, title: Schema.String },
 })
 export type SheetContent = typeof SheetContent.Type
 

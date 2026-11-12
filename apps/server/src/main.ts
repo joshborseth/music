@@ -10,6 +10,7 @@ import { AudioRoutes, AudioSourceLive } from './audio.ts'
 import { AudioStoreLive } from './audioStore.ts'
 import { NowPlayingFeedLive, NowPlayingRoutes } from './nowPlaying.ts'
 import { ArtworkPaletteLive } from './palette/service.ts'
+import { PlaylistStoreLive } from './playlists/store.ts'
 import { PrefetcherLive } from './prefetch.ts'
 import { MusicRpcsLive } from './rpcHandlers.ts'
 import { SessionHubLive, SessionRoutes } from './session/hub.ts'
@@ -39,6 +40,7 @@ const RpcRoutes = RpcServer.layerHttp({
 }).pipe(
   Layer.provide(MusicRpcsLive),
   Layer.provide(YouTubeMusicLive),
+  Layer.provide(PlaylistStoreLive.pipe(Layer.provide(BunServices.layer))),
   Layer.provide(AudioLive),
   Layer.provide(RpcSerialization.layerNdjson),
 )

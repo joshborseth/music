@@ -4,9 +4,10 @@ import { Command, Dom } from 'foldkit'
 import { back, load, pushUrl, replaceUrl } from 'foldkit/navigation'
 
 import { BrowserKeyValueStore } from '@effect/platform-browser'
-import { Session, Song } from '@music/shared'
+import { PlaylistEdit, Session, Song } from '@music/shared'
 
 import {
+  PLAYLIST_TITLE_INPUT_ID,
   RECENT_SEARCHES_KEY,
   SEARCH_BAR_SELECTOR,
   SEARCH_DEBOUNCE,
@@ -21,6 +22,8 @@ import {
   RecentlyViewedJson,
 } from './library'
 import { Message } from './message'
+import { withRequestError } from './query'
+import { MusicClient } from './rpc'
 
 const RecentSearchesJson = Schema.fromJsonString(Schema.Array(Schema.String))
 
@@ -156,6 +159,29 @@ export const FocusSearchInput = Command.define('FocusSearchInput', {
     Effect.ignore,
     Effect.as(Message.CompletedFocusSearchInput()),
   ),
+})
+
+export const FocusPlaylistTitleInput = Command.define(
+  'FocusPlaylistTitleInput',
+  {
+    messages: [Message.CompletedFocusPlaylistTitleInput],
+    execute: Dom.focus(`#${PLAYLIST_TITLE_INPUT_ID}`).pipe(
+      Effect.ignore,
+      Effect.as(Message.CompletedFocusPlaylistTitleInput()),
+    ),
+  },
+)
+
+/** Sends one change to my playlists to the server. */
+export const EditPlaylists = Command.define('EditPlaylists', {
+  args: { edit: PlaylistEdit },
+  messages: [Message.CompletedEditPlaylists],
+  execute: ({ edit }) =>
+    MusicClient.use(client => client.editPlaylists({ edit })).pipe(
+      withRequestError,
+      Effect.result,
+      Effect.map(result => Message.CompletedEditPlaylists({ edit, result })),
+    ),
 })
 
 export const WaitBeforeSearch = Command.define('WaitBeforeSearch', {

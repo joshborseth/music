@@ -529,6 +529,26 @@ export const playlistFromTwoRowItem = (
     })),
   )
 
+/** A playlist from a search result row. */
+export const playlistFromListItem = (
+  item: YTNodes.MusicResponsiveListItem,
+): Option.Option<PlaylistSummary> =>
+  Option.all({
+    id: nonEmptyString(item.id),
+    title: nonEmptyString(item.title),
+  }).pipe(
+    Option.map(({ id, title }) => ({
+      id,
+      title,
+      maybeSubtitle: pipe(
+        subtitleSegments(item.flex_columns.at(1)?.title),
+        Array.join(' · '),
+        Option.liftPredicate(String.isNonEmpty),
+      ),
+      artwork: toArtwork(item.thumbnail?.contents),
+    })),
+  )
+
 /**
  * The playlist page. Its header reads like an album's, except the subtitle
  * names the kind and year rather than the artists.

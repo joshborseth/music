@@ -9,7 +9,11 @@ import {
   ArtistSummary,
   HomeFeed,
   type MusicNotFoundError,
+  MyLibrary,
+  MyPlaylistDetails,
   PlaylistDetails,
+  type PlaylistStoreError,
+  PlaylistSummary,
   Song,
   SongDetails,
   type YouTubeMusicError,
@@ -22,11 +26,13 @@ export const RequestError = Schema.Literals([
   'NotFound',
   'YouTubeUnavailable',
   'ServerUnreachable',
+  'PlaylistsUnavailable',
 ])
 export type RequestError = typeof RequestError.Type
 
 type MusicRequestFailure =
   | MusicNotFoundError
+  | PlaylistStoreError
   | YouTubeMusicError
   | RpcClientError.RpcClientError
 
@@ -34,10 +40,11 @@ const toRequestError = (failure: MusicRequestFailure): RequestError =>
   Match.valueTags(failure, {
     MusicNotFoundError: (): RequestError => 'NotFound',
     YouTubeMusicError: (): RequestError => 'YouTubeUnavailable',
+    PlaylistStoreError: (): RequestError => 'PlaylistsUnavailable',
     RpcClientError: (): RequestError => 'ServerUnreachable',
   })
 
-const withRequestError = <A, E extends MusicRequestFailure, R>(
+export const withRequestError = <A, E extends MusicRequestFailure, R>(
   effect: Effect.Effect<A, E, R>,
 ) => Effect.mapError(effect, toRequestError)
 
@@ -72,6 +79,17 @@ export const albumSearchQuery = Query.define({
   error: RequestError,
   execute: ({ query }) =>
     MusicClient.use(client => client.searchAlbums({ query })).pipe(
+      withRequestError,
+    ),
+})
+
+export const playlistSearchQuery = Query.define({
+  name: 'PlaylistSearch',
+  args: SearchArgs,
+  data: Schema.Array(PlaylistSummary),
+  error: RequestError,
+  execute: ({ query }) =>
+    MusicClient.use(client => client.searchPlaylists({ query })).pipe(
       withRequestError,
     ),
 })
@@ -125,4 +143,25 @@ export const homeQuery = Query.define({
   data: HomeFeed,
   error: RequestError,
   execute: MusicClient.use(client => client.getHome()).pipe(withRequestError),
+})
+
+/** Every playlist made in the app, and which songs are liked. */
+export const myLibraryQuery = Query.define({
+  name: 'MyLibrary',
+  data: MyLibrary,
+  error: RequestError,
+  execute: MusicClient.use(client => client.getMyLibrary()).pipe(
+    withRequestError,
+  ),
+})
+
+export const myPlaylistQuery = Query.define({
+  name: 'MyPlaylist',
+  args: { playlistId: Schema.String },
+  data: MyPlaylistDetails,
+  error: RequestError,
+  execute: ({ playlistId }) =>
+    MusicClient.use(client => client.getMyPlaylist({ playlistId })).pipe(
+      withRequestError,
+    ),
 })

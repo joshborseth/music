@@ -3,18 +3,22 @@ import { Url } from 'foldkit'
 import { defineMessageUnion } from 'foldkit/message'
 import { UrlRequest } from 'foldkit/navigation'
 
-import { Session, Song } from '@music/shared'
+import { PlaylistEdit, PlaylistEditResult, Session, Song } from '@music/shared'
 
 import { LibraryItem } from './library'
 import { MediaKey } from './playback/domain'
 import { SwipeTarget } from './playback/swipe'
 import {
+  RequestError,
   albumQuery,
   albumSearchQuery,
   artistQuery,
   artistSearchQuery,
   homeQuery,
+  myLibraryQuery,
+  myPlaylistQuery,
   playlistQuery,
+  playlistSearchQuery,
   songQuery,
   songSearchQuery,
 } from './query'
@@ -72,11 +76,44 @@ export const Message = defineMessageUnion({
   GotSongSearchMessage: { message: songSearchQuery.Message },
   GotArtistSearchMessage: { message: artistSearchQuery.Message },
   GotAlbumSearchMessage: { message: albumSearchQuery.Message },
+  GotPlaylistSearchMessage: { message: playlistSearchQuery.Message },
   GotSongMessage: { message: songQuery.Message },
   GotArtistMessage: { message: artistQuery.Message },
   GotAlbumMessage: { message: albumQuery.Message },
   GotPlaylistMessage: { message: playlistQuery.Message },
   GotHomeMessage: { message: homeQuery.Message },
+  GotMyLibraryMessage: { message: myLibraryQuery.Message },
+  GotMyPlaylistMessage: { message: myPlaylistQuery.Message },
+
+  ClickedAddToPlaylist: {
+    songs: Schema.Array(Song),
+    suggestedTitle: Schema.String,
+  },
+  ClickedNewPlaylist: {
+    songs: Schema.Array(Song),
+    suggestedTitle: Schema.String,
+  },
+  UpdatedPlaylistTitleInput: { value: Schema.String },
+  SubmittedNewPlaylist: { songs: Schema.Array(Song) },
+  ClickedPlaylistOption: {
+    playlistId: Schema.String,
+    songs: Schema.Array(Song),
+  },
+  ClickedToggleLiked: { song: Song },
+  ClickedRemoveFromPlaylist: {
+    playlistId: Schema.String,
+    videoId: Schema.String,
+  },
+  ClickedPlaylistActions: { playlistId: Schema.String, title: Schema.String },
+  ClickedRenamePlaylist: { playlistId: Schema.String, title: Schema.String },
+  SubmittedRenamePlaylist: { playlistId: Schema.String },
+  ClickedDeletePlaylist: { playlistId: Schema.String, title: Schema.String },
+  ConfirmedDeletePlaylist: { playlistId: Schema.String },
+  CompletedFocusPlaylistTitleInput: {},
+  CompletedEditPlaylists: {
+    edit: PlaylistEdit,
+    result: Schema.Result(PlaylistEditResult, RequestError),
+  },
 
   CompletedLoadDeviceIdentity: {
     deviceId: Schema.String,

@@ -1,4 +1,4 @@
-import { Option } from 'effect'
+import { Array, Option } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
 
 import { cn } from '@/lib/utils'
@@ -17,8 +17,11 @@ import {
   songList,
 } from './shared'
 
-const HERO_ARTWORK_WIDTH = 256
+export const HERO_ARTWORK_WIDTH = 256
 const BACKDROP_ARTWORK_WIDTH = 120
+
+export const HERO_ARTWORK_CLASS =
+  'mb-4 aspect-square w-[64vw] max-w-64 shadow-2xl shadow-black/30'
 
 /** The artwork, blurred into a soft glow behind the top of the page. */
 export const artworkGlow = (artwork: Artwork, h: HtmlBuilder<Message>): Html =>
@@ -53,6 +56,8 @@ export const artworkGlow = (artwork: Artwork, h: HtmlBuilder<Message>): Html =>
 export type CollectionHeader = Readonly<{
   title: string
   artwork: Artwork
+  /** Drawn in place of `artwork`, which then only tints the page. */
+  maybeCover?: Option.Option<Html>
   credits: ReadonlyArray<Html | string>
   details: string
   maybeDescription: Option.Option<string>
@@ -81,16 +86,17 @@ export const collectionView = (
           ),
         ],
         [
-          artworkImage(
-            {
-              artwork: header.artwork,
-              displayWidth: HERO_ARTWORK_WIDTH,
-              shape: ArtworkShape.Card,
-              className:
-                'mb-4 aspect-square w-[64vw] max-w-64 shadow-2xl shadow-black/30',
-              isEager: true,
-            },
-            h,
+          Option.getOrElse(header.maybeCover ?? Option.none(), () =>
+            artworkImage(
+              {
+                artwork: header.artwork,
+                displayWidth: HERO_ARTWORK_WIDTH,
+                shape: ArtworkShape.Card,
+                className: HERO_ARTWORK_CLASS,
+                isEager: true,
+              },
+              h,
+            ),
           ),
           h.h1(
             [
@@ -101,10 +107,12 @@ export const collectionView = (
             ],
             [header.title],
           ),
-          h.p(
-            [h.Class('text-primary text-[17px] font-medium')],
-            header.credits,
-          ),
+          Array.isReadonlyArrayEmpty(header.credits)
+            ? h.empty
+            : h.p(
+                [h.Class('text-primary text-[17px] font-medium')],
+                header.credits,
+              ),
           header.details === ''
             ? h.empty
             : h.p(

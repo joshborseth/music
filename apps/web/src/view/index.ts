@@ -1,19 +1,28 @@
-import { Option } from 'effect'
+import { Array, Option } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Document, Html, HtmlBuilder } from 'foldkit/html'
+import { Ellipsis, ListPlus } from 'lucide'
 
 import { cn } from '@/lib/utils'
+import { type Song } from '@music/shared'
 
 import { Message } from '../message'
 import { Model } from '../model'
-import { albumQuery, artistQuery, playlistQuery, songQuery } from '../query'
+import {
+  albumQuery,
+  artistQuery,
+  myPlaylistQuery,
+  playlistQuery,
+  songQuery,
+} from '../query'
 import { AppRoute } from '../route'
 import { routeQuery } from '../update'
 import { albumView } from './album'
 import { artistView } from './artist'
-import { detailNavBar, page, tabBar } from './chrome'
+import { detailNavBar, navBarButton, page, tabBar } from './chrome'
 import { homeView } from './home'
 import { libraryView } from './library'
+import { myPlaylistView } from './myPlaylist'
 import { type PageModel, memoizedPage } from './page'
 import { hasMiniPlayer, playerView } from './player'
 import { playlistView } from './playlist'
@@ -37,6 +46,7 @@ const pageTitle = (model: Model): string =>
     Artist: () => `Artist · ${APP_NAME}`,
     Album: () => `Album · ${APP_NAME}`,
     Playlist: () => `Playlist · ${APP_NAME}`,
+    MyPlaylist: () => `Playlist · ${APP_NAME}`,
     NotFound: () => `Not found · ${APP_NAME}`,
   })
 
@@ -44,13 +54,43 @@ const detailPage = (
   maybeTitle: Option.Option<string>,
   content: Html,
   h: HtmlBuilder<Message>,
+  trailing: Html = h.empty,
 ): ReadonlyArray<Html> => [
   ...detailNavBar(
     Option.getOrElse(maybeTitle, () => ''),
+    trailing,
     h,
   ),
   content,
 ]
+
+/** Opens the sheet to save an album's or playlist's songs to one of mine. */
+const addToPlaylistButton = (
+  maybeCollection: Option.Option<
+    Readonly<{ title: string; songs: ReadonlyArray<Song> }>
+  >,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(
+    Option.filter(maybeCollection, ({ songs }) =>
+      Array.isReadonlyArrayNonEmpty(songs),
+    ),
+    {
+      onNone: () => h.empty,
+      onSome: ({ title, songs }) =>
+        navBarButton(
+          {
+            onClick: Message.ClickedAddToPlaylist({
+              songs,
+              suggestedTitle: title,
+            }),
+            iconNode: ListPlus,
+            label: 'Add to a playlist',
+          },
+          h,
+        ),
+    },
+  )
 
 const routeContent = (model: PageModel, h: HtmlBuilder<Message>): Html =>
   h.div([h.Class('contents')], routeParts(model, h))
@@ -81,26 +121,71 @@ const routeParts = (
         artistView(model, artistId, h),
         h,
       ),
-    Album: ({ albumId }) =>
-      detailPage(
-        Option.map(
-          AsyncData.getData(albumQuery.read(model.albums, { albumId })),
-          ({ album }) => album.title,
-        ),
+    Album: ({ albumId }) => {
+      const maybeAlbum = AsyncData.getData(
+        albumQuery.read(model.albums, { albumId }),
+      )
+      return detailPage(
+        Option.map(maybeAlbum, ({ album }) => album.title),
         albumView(model, albumId, h),
         h,
-      ),
-    Playlist: ({ playlistId }) =>
-      detailPage(
-        Option.map(
-          AsyncData.getData(
-            playlistQuery.read(model.playlists, { playlistId }),
-          ),
-          ({ playlist }) => playlist.title,
+        addToPlaylistButton(
+          Option.map(maybeAlbum, ({ album, tracks }) => ({
+            title: album.title,
+            songs: tracks,
+          })),
+          h,
         ),
+      )
+    },
+    Playlist: ({ playlistId }) => {
+      const maybePlaylist = AsyncData.getData(
+        playlistQuery.read(model.playlists, { playlistId }),
+      )
+      return detailPage(
+        Option.map(maybePlaylist, ({ playlist }) => playlist.title),
         playlistView(model, playlistId, h),
         h,
-      ),
+        addToPlaylistButton(
+          Option.map(maybePlaylist, ({ playlist, tracks }) => ({
+            title: playlist.title,
+            songs: tracks,
+          })),
+          h,
+        ),
+      )
+    },
+    MyPlaylist: ({ playlistId }) => {
+      const maybePlaylist = Option.map(
+        AsyncData.getData(
+          myPlaylistQuery.read(model.myPlaylists, { playlistId }),
+        ),
+        ({ playlist }) => playlist,
+      )
+      return detailPage(
+        Option.map(maybePlaylist, ({ title }) => title),
+        myPlaylistView(model, playlistId, h),
+        h,
+        Option.match(
+          Option.filter(maybePlaylist, ({ isLiked }) => !isLiked),
+          {
+            onNone: () => h.empty,
+            onSome: ({ id, title }) =>
+              navBarButton(
+                {
+                  onClick: Message.ClickedPlaylistActions({
+                    playlistId: id,
+                    title,
+                  }),
+                  iconNode: Ellipsis,
+                  label: 'Playlist options',
+                },
+                h,
+              ),
+          },
+        ),
+      )
+    },
     NotFound: () =>
       detailPage(
         Option.none(),

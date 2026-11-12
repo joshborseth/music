@@ -1,6 +1,6 @@
 import { Array } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
-import { ChevronLeft, House, LibraryBig, Search } from 'lucide'
+import { ChevronLeft, House, type IconNode, LibraryBig, Search } from 'lucide'
 
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -118,14 +118,33 @@ const backButton = (h: HtmlBuilder<Message>): Html =>
     [icon(h, ChevronLeft, 'size-6 -ml-0.5')],
   )
 
+/** A round button for the top right of a detail page, matching Back. */
+export const navBarButton = (
+  config: Readonly<{ onClick: Message; iconNode: IconNode; label: string }>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(config.onClick),
+      h.AriaLabel(config.label),
+      h.Class(
+        'pressable glass pointer-events-auto flex size-10 items-center justify-center rounded-full',
+      ),
+    ],
+    [icon(h, config.iconNode, 'size-[22px]')],
+  )
+
 /**
  * The top of a detail page: a round back button floating over the hero, and
  * the top edge with the page title, which fade in together as the page's own
  * title slides under them. The edge sits inside the title bar so it shares
- * the reveal range that `SyncTitleBarReveal` measures onto it.
+ * the reveal range that `SyncTitleBarReveal` measures onto it. `trailing`
+ * sits opposite the back button.
  */
 export const detailNavBar = (
   title: string,
+  trailing: Html,
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => [
   h.div(
@@ -148,10 +167,10 @@ export const detailNavBar = (
     [
       h.AriaLabel('Page'),
       h.Class(
-        'pointer-events-none fixed inset-x-0 top-0 z-30 flex items-center px-3 pt-[calc(var(--safe-top)+0.25rem)]',
+        'pointer-events-none fixed inset-x-0 top-0 z-30 flex items-center justify-between px-3 pt-[calc(var(--safe-top)+0.25rem)]',
       ),
     ],
-    [backButton(h)],
+    [backButton(h), trailing],
   ),
 ]
 

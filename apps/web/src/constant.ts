@@ -19,3 +19,5 @@ export const PAGE_SELECTOR = `[data-${PAGE_ATTRIBUTE}]`
 
 export const TITLE_BAR_ATTRIBUTE = 'title-bar'
 export const TITLE_BAR_SELECTOR = `[data-${TITLE_BAR_ATTRIBUTE}]`
+
+export const PLAYLIST_TITLE_INPUT_ID = 'playlist-title-input'
