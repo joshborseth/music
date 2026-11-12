@@ -1,5 +1,5 @@
 //! The now-playing screen's visuals: scenes drawn on the GPU that move with
-//! the song, in the cover's colors.
+//! the song, in the cover's color.
 //!
 //! - `music.rs` hears the TV's output and follows the server's analysis of
 //!   the song (beats, bars, sections, drops).

@@ -39,7 +39,7 @@ uniform float uDrop;
 uniform float uIntensity;
 // Different for each scene showing, so a scene never looks the same twice.
 uniform float uSeed;
-// The cover's three most vivid colors.
+// The cover's one strong color: full strength, a little deeper, and deep.
 uniform vec3 uColorA;
 uniform vec3 uColorB;
 uniform vec3 uColorC;
@@ -95,7 +95,7 @@ float fbm(vec2 p) {
   return sum / 0.9375;
 }
 
-// The cover's colors, cycling smoothly as t goes 0 to 1 and on.
+// The cover's color, swinging through its shades as t goes 0 to 1 and on.
 vec3 palette(float t) {
   t = fract(t) * 3.0;
   vec3 a = mix(uColorA, uColorB, smoothstep(0.0, 1.0, t));
