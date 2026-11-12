@@ -2,7 +2,10 @@
 //!
 //! `scripts/build-tv-apk.sh` compiles a build id into the app ([`BUILD`]) and
 //! writes the same id next to the APK, which the server answers at
-//! `GET /tv/version`. When the two differ, the updater downloads
+//! `GET /tv/version`. It asks only when the app starts and when someone
+//! picks "Check for updates" ([`Updater::check_now`]), never on a timer, so
+//! a deploy never closes the app by itself while it runs. A check that fails
+//! tries again until it gets an answer. When the two differ, the updater downloads
 //! `GET /tv.apk` into the app's cache, waits until nothing has played on
 //! this TV for [`QUIET_FOR`], and asks Android to install it. When the app
 //! is on screen, it first tells the server (`POST /tv/updating`), which
@@ -38,8 +41,6 @@ pub const DEV_BUILD: &str = "dev";
 
 /// Nothing must have played for this long before an update installs.
 pub const QUIET_FOR: Duration = Duration::from_secs(30);
-/// How often the server is asked for a new build.
-const CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// How often to look again while "Install unknown apps" is off.
 const PERMISSION_RECHECK: Duration = Duration::from_secs(30);
 /// The first retry after a failure; each further one waits twice as long.
@@ -201,7 +202,6 @@ impl Attempts {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Timing {
-    pub check_interval: Duration,
     pub permission_recheck: Duration,
     pub retry_first: Duration,
     pub retry_max: Duration,
@@ -211,7 +211,6 @@ pub(crate) struct Timing {
 impl Default for Timing {
     fn default() -> Self {
         Self {
-            check_interval: CHECK_INTERVAL,
             permission_recheck: PERMISSION_RECHECK,
             retry_first: RETRY_FIRST,
             retry_max: RETRY_MAX,
@@ -333,7 +332,7 @@ impl Updater {
         }
     }
 
-    /// Check now (also checked at start and every 15 minutes). Also tries
+    /// Check now (the only other check is the one at start). Also tries
     /// again a build that gave up after failing to install.
     pub fn check_now(&self) {
         self.shared.forced.store(true, Ordering::SeqCst);
@@ -429,7 +428,9 @@ impl Reporter {
 
 /// When to look again after one check.
 enum Next {
+    /// Only when someone asks ([`Updater::check_now`]).
     Idle,
+    /// Soon, by itself: the same update is still on its way.
     Soon,
 }
 
@@ -460,19 +461,26 @@ impl Worker {
                 Ok(next) => {
                     failures = 0;
                     match next {
-                        Next::Idle => self.timing.check_interval,
-                        Next::Soon => self.timing.permission_recheck,
+                        Next::Idle => None,
+                        Next::Soon => Some(self.timing.permission_recheck),
                     }
                 }
                 Err(error) => {
                     failures += 1;
                     self.reporter.fail(error);
-                    retry_delay(failures, self.timing.retry_first, self.timing.retry_max)
+                    Some(retry_delay(
+                        failures,
+                        self.timing.retry_first,
+                        self.timing.retry_max,
+                    ))
                 }
             };
-            tokio::select! {
-                _ = tokio::time::sleep(delay) => {}
-                _ = self.shared.check.notified() => {}
+            match delay {
+                Some(delay) => tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = self.shared.check.notified() => {}
+                },
+                None => self.shared.check.notified().await,
             }
         }
     }
