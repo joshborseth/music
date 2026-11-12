@@ -11,11 +11,13 @@ import {
   LoadRecentSearches,
   LockScroll,
   NavigateBack,
+  NavigateBackTo,
   NavigateInternal,
   ReplaceSearchUrl,
   SaveRecentSearches,
   SaveRecentlyPlayed,
   SaveRecentlyViewed,
+  ScrollSearchResultsToTop,
   ScrollToTop,
   ShuffleSongs,
   TakeOverScrollRestoration,
@@ -38,7 +40,9 @@ import {
 import { Message } from './message'
 import { Model } from './model'
 import {
+  type BackStacks,
   type NavigationKind,
+  type NavigationModel,
   type TabUrls,
   initialNavigationModel,
 } from './navigation'
@@ -145,6 +149,113 @@ const withTabUrl = (tabUrls: TabUrls, tab: Tab, url: string): TabUrls =>
     Match.when('Library', () => modifyFields(tabUrls, { Library: () => url })),
     Match.exhaustive,
   )
+
+const withBackStack = (
+  backStacks: BackStacks,
+  tab: Tab,
+  stack: ReadonlyArray<string>,
+): BackStacks =>
+  Match.value(tab).pipe(
+    Match.withReturnType<BackStacks>(),
+    Match.when('Home', () => modifyFields(backStacks, { Home: () => stack })),
+    Match.when('Search', () =>
+      modifyFields(backStacks, { Search: () => stack }),
+    ),
+    Match.when('Library', () =>
+      modifyFields(backStacks, { Library: () => stack }),
+    ),
+    Match.exhaustive,
+  )
+
+type BackHistory = Readonly<{
+  stack: ReadonlyArray<string>
+  historyBackDepth: number
+}>
+
+const EMPTY_BACK_HISTORY: BackHistory = { stack: [], historyBackDepth: 0 }
+
+/**
+ * The pages under the new one in its tab after a navigation, and how many of
+ * them the browser's history holds directly beneath it. A tab's top page has
+ * nothing under it. Pushing stacks the page being left. Going back unstacks
+ * the page returned to; an unrecognized browser step stacks the page left.
+ */
+const nextBackHistory = (
+  navigation: NavigationModel,
+  kind: NavigationKind,
+  activeTab: Tab,
+  isTabRoot: boolean,
+  path: string,
+): BackHistory => {
+  const stack = navigation.backStacks[activeTab]
+  const fromPath = navigation.tabUrls[navigation.activeTab]
+  const historyBackDepth = navigation.historyBackDepth
+
+  if (isTabRoot) {
+    return EMPTY_BACK_HISTORY
+  }
+
+  return Match.value(kind).pipe(
+    Match.withReturnType<BackHistory>(),
+    Match.when('Push', () =>
+      activeTab === navigation.activeTab
+        ? {
+            stack: Array.append(stack, fromPath),
+            historyBackDepth: historyBackDepth + 1,
+          }
+        : EMPTY_BACK_HISTORY,
+    ),
+    Match.when('Pop', () =>
+      Option.match(
+        Array.findLastIndex(stack, url => url === path),
+        {
+          onSome: index => ({
+            stack: Array.take(stack, index),
+            historyBackDepth:
+              index === stack.length - 1
+                ? Math.max(0, historyBackDepth - 1)
+                : 0,
+          }),
+          onNone: () => ({
+            stack: fromPath === path ? stack : Array.append(stack, fromPath),
+            historyBackDepth: 0,
+          }),
+        },
+      ),
+    ),
+    Match.when('SwitchTab', () => ({ stack, historyBackDepth: 0 })),
+    Match.orElse(() => ({ stack, historyBackDepth })),
+  )
+}
+
+/**
+ * Returns to the page under this one in its tab: through the browser's
+ * history when that page is the entry right behind, otherwise by replacing
+ * this entry with it. A page opened directly returns to its tab's top.
+ */
+const goBack: UpdateStep = model => {
+  const { activeTab, backStacks, historyBackDepth } = model.navigation
+  const isAtTabRoot = Option.contains(routeTab(model.route), activeTab)
+  return Option.match(Array.last(backStacks[activeTab]), {
+    onSome: parentUrl =>
+      historyBackDepth > 0
+        ? {
+            model: withPendingNavigation(model, 'Pop'),
+            commands: [NavigateBack()],
+          }
+        : {
+            model: withPendingNavigation(model, 'Pop'),
+            commands: [NavigateBackTo({ url: parentUrl })],
+          },
+    onNone: () =>
+      isAtTabRoot
+        ? { model }
+        : {
+            model: withPendingNavigation(model, 'Pop'),
+            commands: [NavigateBackTo({ url: TAB_ROOT_URLS[activeTab] })],
+          },
+  })
+}
 
 const switchTab =
   (tab: Tab): UpdateStep =>
@@ -255,7 +366,10 @@ const replaceSearch =
   (query: string, kind: SearchKind): UpdateStep =>
   model => ({
     model: withPendingNavigation(model, 'Replace'),
-    commands: [ReplaceSearchUrl({ url: searchUrl(query, kind) })],
+    commands: [
+      ReplaceSearchUrl({ url: searchUrl(query, kind) }),
+      ScrollSearchResultsToTop(),
+    ],
   })
 
 const rememberSearch =
@@ -554,13 +668,24 @@ const changeUrl =
       model.navigation.maybePendingNavigation,
       (): NavigationKind => 'Pop',
     )
+    const maybeRouteTab = routeTab(route)
     const activeTab = Option.getOrElse(
-      routeTab(route),
+      maybeRouteTab,
       () => model.navigation.activeTab,
+    )
+    const backHistory = nextBackHistory(
+      model.navigation,
+      kind,
+      activeTab,
+      Option.isSome(maybeRouteTab),
+      path,
     )
     const navigation = modifyFields(model.navigation, {
       activeTab: () => activeTab,
       tabUrls: tabUrls => withTabUrl(tabUrls, activeTab, path),
+      backStacks: backStacks =>
+        withBackStack(backStacks, activeTab, backHistory.stack),
+      historyBackDepth: () => backHistory.historyBackDepth,
       scrollPositions: positions =>
         kind === 'Push' ? Record.remove(positions, path) : positions,
       maybePendingNavigation: () => Option.none(),
@@ -672,7 +797,7 @@ export const update = (model: Model, message: Message) =>
       commands: [SaveRecentSearches({ recentSearches: [] })],
     }),
 
-    ClickedBack: () => ({ model, commands: [NavigateBack()] }),
+    ClickedBack: () => goBack(model),
 
     ClickedRetry: () => retryRoute(model.route)(model),
 
@@ -733,8 +858,11 @@ export const update = (model: Model, message: Message) =>
 
     CompletedLoadExternal: () => ({ model }),
     CompletedNavigateBack: () => ({ model }),
+    CompletedNavigateBackTo: () => ({ model }),
     CompletedReplaceSearchUrl: () => ({ model }),
     CompletedScrollToTop: () => ({ model }),
+    CompletedScrollSearchResultsToTop: () => ({ model }),
+    CompletedSyncTitleBarReveal: () => ({ model }),
     CompletedRestoreScroll: () => ({ model }),
     CompletedFollowSheetDrags: () => ({ model }),
     CompletedTakeOverScrollRestoration: () => ({ model }),

@@ -5,6 +5,7 @@ import { ChevronLeft, House, LibraryBig, Search } from 'lucide'
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { PAGE_ATTRIBUTE, TITLE_BAR_ATTRIBUTE } from '../constant'
 import { Message } from '../message'
 import { type Model } from '../model'
 import { RestoreScroll } from '../mount'
@@ -27,6 +28,7 @@ export const page = (
     pageKey(model.route),
     [
       h.OnMount(RestoreScroll({ top: restoredScrollTop(model) })),
+      h.DataAttribute(PAGE_ATTRIBUTE, ''),
       h.Class('flex min-h-dvh flex-col'),
     ],
     content,
@@ -114,6 +116,7 @@ export const detailNavBar = (
   h.div(
     [
       h.AriaHidden(true),
+      h.DataAttribute(TITLE_BAR_ATTRIBUTE, ''),
       h.Class(
         'reveal-on-scroll page-glass pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height)+0.5rem)] items-end justify-center border-b px-16 pb-3 [--reveal-end:240px] [--reveal-start:180px]',
       ),

@@ -16,7 +16,12 @@ import { describe, test } from 'vitest'
 
 import { type Song } from '@music/shared'
 
-import { LockScroll, ReplaceSearchUrl, SaveRecentSearches } from './command'
+import {
+  LockScroll,
+  ReplaceSearchUrl,
+  SaveRecentSearches,
+  ScrollSearchResultsToTop,
+} from './command'
 import { Message } from './message'
 import { type Model } from './model'
 import { DragToDismiss, RestoreScroll } from './mount'
@@ -96,10 +101,12 @@ describe('search page', () => {
       click(role('button', { name: 'rumours' })),
       Command.expectExact(
         ReplaceSearchUrl({ url: '/search?q=rumours' }),
+        ScrollSearchResultsToTop(),
         SaveRecentSearches({ recentSearches: ['rumours'] }),
       ),
       Command.resolveAll(
         [ReplaceSearchUrl, Message.CompletedReplaceSearchUrl()],
+        [ScrollSearchResultsToTop, Message.CompletedScrollSearchResultsToTop()],
         [SaveRecentSearches, Message.CompletedSaveRecentSearches()],
       ),
       expect(label('Search music')).toHaveValue('rumours'),

@@ -5,7 +5,11 @@ import { CircleX, History, Search } from 'lucide'
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-import { SEARCH_INPUT_ID } from '../constant'
+import {
+  SEARCH_BAR_ATTRIBUTE,
+  SEARCH_INPUT_ID,
+  SEARCH_RESULTS_ATTRIBUTE,
+} from '../constant'
 import { Message } from '../message'
 import { albumSearchQuery, artistSearchQuery, songSearchQuery } from '../query'
 import { SEARCH_KINDS, type SearchKind } from '../route'
@@ -107,6 +111,7 @@ const stickySearchBar = (
 ): Html =>
   h.div(
     [
+      h.DataAttribute(SEARCH_BAR_ATTRIBUTE, ''),
       h.Class(
         'page-glass sticky top-[var(--safe-top)] z-20 flex flex-col gap-2.5 px-4 pt-1 pb-2.5',
       ),
@@ -291,7 +296,7 @@ export const searchView = (
     largeTitle('Search', h.empty, h),
     stickySearchBar(model, kind, h),
     h.div(
-      [h.Class('pb-6')],
+      [h.DataAttribute(SEARCH_RESULTS_ATTRIBUTE, ''), h.Class('pb-6')],
       [
         Option.match(routeQuery(model.route), {
           onNone: () => recentSearchesView(model, h),

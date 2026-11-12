@@ -9,9 +9,12 @@ import { type Song } from '@music/shared'
 import {
   BlurSearchInput,
   FocusSearchInput,
+  NavigateBack,
+  NavigateBackTo,
   NavigateInternal,
   ReplaceSearchUrl,
   SaveRecentSearches,
+  ScrollSearchResultsToTop,
   ScrollToTop,
   ShuffleSongs,
   WaitBeforeSearch,
@@ -104,8 +107,15 @@ describe('typing a search', () => {
         WaitBeforeSearch,
         Message.CompletedWaitBeforeSearch({ query: 'fleetwood' }),
       ),
-      Command.expectExact(ReplaceSearchUrl({ url: '/search?q=fleetwood' })),
+      Command.expectExact(
+        ReplaceSearchUrl({ url: '/search?q=fleetwood' }),
+        ScrollSearchResultsToTop(),
+      ),
       Command.resolve(ReplaceSearchUrl, Message.CompletedReplaceSearchUrl()),
+      Command.resolve(
+        ScrollSearchResultsToTop,
+        Message.CompletedScrollSearchResultsToTop(),
+      ),
     )
   })
 
@@ -162,10 +172,15 @@ describe('recent searches', () => {
       }),
       Command.expectExact(
         ReplaceSearchUrl({ url: '/search?q=rumours' }),
+        ScrollSearchResultsToTop(),
         SaveRecentSearches({ recentSearches: ['rumours', 'tusk'] }),
         BlurSearchInput(),
       ),
       Command.resolve(ReplaceSearchUrl, Message.CompletedReplaceSearchUrl()),
+      Command.resolve(
+        ScrollSearchResultsToTop,
+        Message.CompletedScrollSearchResultsToTop(),
+      ),
       Command.resolve(
         SaveRecentSearches,
         Message.CompletedSaveRecentSearches(),
@@ -194,6 +209,10 @@ describe('recent searches', () => {
       }),
       Command.resolve(ReplaceSearchUrl, Message.CompletedReplaceSearchUrl()),
       Command.resolve(
+        ScrollSearchResultsToTop,
+        Message.CompletedScrollSearchResultsToTop(),
+      ),
+      Command.resolve(
         SaveRecentSearches,
         Message.CompletedSaveRecentSearches(),
       ),
@@ -211,9 +230,14 @@ describe('recent searches', () => {
       }),
       Command.expectExact(
         ReplaceSearchUrl({ url: '/search' }),
+        ScrollSearchResultsToTop(),
         FocusSearchInput(),
       ),
       Command.resolve(ReplaceSearchUrl, Message.CompletedReplaceSearchUrl()),
+      Command.resolve(
+        ScrollSearchResultsToTop,
+        Message.CompletedScrollSearchResultsToTop(),
+      ),
       Command.resolve(FocusSearchInput, Message.CompletedFocusSearchInput()),
     )
   })
@@ -361,6 +385,80 @@ describe('moving between pages', () => {
         message: Message.ClickedBack(),
       }),
     ).toBe(false)
+  })
+})
+
+describe('back button', () => {
+  const albumUrl = 'http://localhost/album/MPREb_1SbgcDGdrT4'
+
+  const goTo = (from: Model, trigger: Message, url: string): Model =>
+    update(
+      update(from, trigger).model,
+      Message.ChangedUrl({ url: urlOrThrow(url) }),
+    ).model
+
+  const onAlbum = goTo(
+    homeModel,
+    Message.ClickedLink({
+      request: { _tag: 'Internal', url: urlOrThrow(albumUrl) },
+    }),
+    albumUrl,
+  )
+
+  test('right after opening a page, steps back through history', () => {
+    story(
+      update,
+      given(onAlbum),
+      message(Message.ClickedBack()),
+      Command.expectExact(NavigateBack()),
+      Command.resolve(NavigateBack, Message.CompletedNavigateBack()),
+    )
+  })
+
+  test('after visiting another tab, returns to the page under this one', () => {
+    const backOnAlbum = goTo(
+      goTo(
+        onAlbum,
+        Message.ClickedTab({ tab: 'Library' }),
+        'http://localhost/library',
+      ),
+      Message.ClickedTab({ tab: 'Home' }),
+      albumUrl,
+    )
+    story(
+      update,
+      given(backOnAlbum),
+      model(model => {
+        expect(model.navigation.backStacks.Home).toStrictEqual(['/'])
+      }),
+      message(Message.ClickedBack()),
+      Command.expectExact(NavigateBackTo({ url: '/' })),
+      Command.resolve(NavigateBackTo, Message.CompletedNavigateBackTo()),
+      message(Message.ChangedUrl({ url: urlOrThrow('http://localhost/') })),
+      Command.resolve(
+        homeQuery.Fetch,
+        homeQuery.Message.CompletedFetch({
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed({ shelves: [] }),
+        }),
+      ),
+      model(model => {
+        expect(model.route._tag).toBe('Home')
+        expect(model.navigation.activeTab).toBe('Home')
+        expect(model.navigation.lastNavigation).toBe('Pop')
+        expect(model.navigation.backStacks.Home).toStrictEqual([])
+      }),
+    )
+  })
+
+  test('on a page opened directly, returns to the top of its tab', () => {
+    story(
+      update,
+      given(initialModel(AppRoute.Album({ albumId: 'x' }), '/album/x')),
+      message(Message.ClickedBack()),
+      Command.expectExact(NavigateBackTo({ url: '/' })),
+      Command.resolve(NavigateBackTo, Message.CompletedNavigateBackTo()),
+    )
   })
 })
 

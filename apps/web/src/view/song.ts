@@ -4,6 +4,7 @@ import { Html, HtmlBuilder } from 'foldkit/html'
 import { type SongDetails } from '@music/shared'
 
 import { Message } from '../message'
+import { SyncTitleBarReveal } from '../mount'
 import { songQuery } from '../query'
 import { artworkGlow } from './collection'
 import { type PageModel } from './page'
@@ -83,6 +84,7 @@ const songHeader = (details: SongDetails, h: HtmlBuilder<Message>): Html => {
       ),
       h.h1(
         [
+          h.OnMount(SyncTitleBarReveal()),
           h.Class(
             'text-[22px] leading-tight font-bold tracking-tight text-balance',
           ),

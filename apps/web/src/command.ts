@@ -8,8 +8,10 @@ import { Session, Song } from '@music/shared'
 
 import {
   RECENT_SEARCHES_KEY,
+  SEARCH_BAR_SELECTOR,
   SEARCH_DEBOUNCE,
   SEARCH_INPUT_ID,
+  SEARCH_RESULTS_SELECTOR,
 } from './constant'
 import {
   LibraryItem,
@@ -50,6 +52,14 @@ export const NavigateBack = Command.define('NavigateBack', {
   execute: back().pipe(Effect.as(Message.CompletedNavigateBack())),
 })
 
+/** Returns to `url` in place of the current page, leaving history no longer. */
+export const NavigateBackTo = Command.define('NavigateBackTo', {
+  args: { url: Schema.String },
+  messages: [Message.CompletedNavigateBackTo],
+  execute: ({ url }) =>
+    replaceUrl(url).pipe(Effect.as(Message.CompletedNavigateBackTo())),
+})
+
 export const ReplaceSearchUrl = Command.define('ReplaceSearchUrl', {
   args: { url: Schema.String },
   messages: [Message.CompletedReplaceSearchUrl],
@@ -64,6 +74,35 @@ export const ScrollToTop = Command.define('ScrollToTop', {
     globalThis.scrollTo({ top: 0, behavior: 'smooth' }),
   ).pipe(Effect.as(Message.CompletedScrollToTop())),
 })
+
+/**
+ * Brings new search results to the top, just under the search bar, the way a
+ * fresh list appears. A page scrolled less than that stays where it is.
+ */
+export const ScrollSearchResultsToTop = Command.define(
+  'ScrollSearchResultsToTop',
+  {
+    messages: [Message.CompletedScrollSearchResultsToTop],
+    execute: Effect.sync(() => {
+      const maybeBar = globalThis.document.querySelector(SEARCH_BAR_SELECTOR)
+      const maybeResults = globalThis.document.querySelector(
+        SEARCH_RESULTS_SELECTOR,
+      )
+      if (maybeBar !== null && maybeResults !== null) {
+        const overlap =
+          maybeBar.getBoundingClientRect().bottom -
+          maybeResults.getBoundingClientRect().top
+        if (overlap > 0) {
+          globalThis.scrollTo({
+            top: globalThis.scrollY - overlap,
+            behavior: 'instant',
+          })
+        }
+      }
+      return Message.CompletedScrollSearchResultsToTop()
+    }),
+  },
+)
 
 /**
  * The app puts each page back where it was left, so the browser must not
