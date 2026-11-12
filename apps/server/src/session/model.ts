@@ -392,7 +392,8 @@ const transition = (
           Option.fromNullishOr(message.at),
           at =>
             model.activeDeviceId === context.senderId &&
-            at.entryId === model.currentEntryId,
+            at.entryId === model.currentEntryId &&
+            at.seekSeq >= model.foreignSeekSeq,
         )
         return changed({
           ...settled,

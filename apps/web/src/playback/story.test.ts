@@ -330,7 +330,7 @@ describe('controlling playback on this phone', () => {
         SendLocalChange({
           message: {
             _tag: 'Pause',
-            at: { entryId: 'e0', positionSeconds: 40 },
+            at: { entryId: 'e0', positionSeconds: 40, seekSeq: 1 },
           },
         }),
       ),
@@ -1248,7 +1248,7 @@ describe('on the lock screen', () => {
         SendLocalChange({
           message: {
             _tag: 'Pause',
-            at: { entryId: 'e1', positionSeconds: 40 },
+            at: { entryId: 'e1', positionSeconds: 40, seekSeq: 4 },
           },
         }),
       ),
@@ -1286,7 +1286,7 @@ describe('on the lock screen', () => {
         SendLocalChange({
           message: {
             _tag: 'Pause',
-            at: { entryId: 'e1', positionSeconds: 40 },
+            at: { entryId: 'e1', positionSeconds: 40, seekSeq: 4 },
           },
         }),
       ),

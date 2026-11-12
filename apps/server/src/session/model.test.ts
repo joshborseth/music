@@ -344,14 +344,20 @@ describe('session model', () => {
   test('the player pausing says where it stopped; others leave it to the server', () => {
     const paused = update(
       playing(),
-      { _tag: 'Pause', at: { entryId: 'e0', positionSeconds: 12.5 } },
+      {
+        _tag: 'Pause',
+        at: { entryId: 'e0', positionSeconds: 12.5, seekSeq: 1 },
+      },
       makeContext('phone', 15_000),
     ).model
     expect(paused.playing).toBe(false)
     expect(paused.positionSeconds).toBe(12.5)
     const fromRemote = update(
       playing(),
-      { _tag: 'Pause', at: { entryId: 'e0', positionSeconds: 99 } },
+      {
+        _tag: 'Pause',
+        at: { entryId: 'e0', positionSeconds: 99, seekSeq: 1 },
+      },
       makeContext('tv', 15_000),
     ).model
     expect(fromRemote.positionSeconds).toBe(14)
@@ -387,7 +393,10 @@ describe('session model', () => {
     ).model
     const paused = update(
       skipped,
-      { _tag: 'Pause', at: { entryId: 'e0', positionSeconds: 95 } },
+      {
+        _tag: 'Pause',
+        at: { entryId: 'e0', positionSeconds: 95, seekSeq: 1 },
+      },
       makeContext('phone', 6_000),
     ).model
     expect(paused.currentEntryId).toBe('e1')
@@ -415,6 +424,23 @@ describe('session model', () => {
     expect(outcome.seekSeq).toBe(skipped.seekSeq + 1)
     expect(outcome.playing).toBe(true)
     expect(outcome.pausedForLostPlayer).toBe(false)
+  })
+
+  test("a pause position never undoes another device's seek it crossed", () => {
+    const sought = update(
+      playing(),
+      { _tag: 'Seek', positionSeconds: 100 },
+      makeContext('tv', 5_000),
+    ).model
+    const paused = update(
+      sought,
+      {
+        _tag: 'Pause',
+        at: { entryId: 'e0', positionSeconds: 4, seekSeq: playing().seekSeq },
+      },
+      makeContext('phone', 5_500),
+    ).model
+    expect(paused.positionSeconds).toBe(100.5)
   })
 
   test('only the player is followed, and only to a queued entry', () => {

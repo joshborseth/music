@@ -739,7 +739,11 @@ const playingMessage = (
     onNone: () => ({ _tag: 'Pause' }),
     onSome: ({ loaded }) => ({
       _tag: 'Pause',
-      at: { entryId: loaded.entryId, positionSeconds: model.phoneAudioSeconds },
+      at: {
+        entryId: loaded.entryId,
+        positionSeconds: model.phoneAudioSeconds,
+        seekSeq: loaded.seekSeq,
+      },
     }),
   })
 }

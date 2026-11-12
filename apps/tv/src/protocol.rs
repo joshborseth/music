@@ -91,12 +91,13 @@ pub struct PlayerReport {
     pub seek_seq: u64,
 }
 
-/// A spot in a queue entry.
+/// Where a player stopped, and the session jump it was following.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EntryPosition {
+pub struct StoppedAt {
     pub entry_id: String,
     pub position_seconds: f64,
+    pub seek_seq: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +124,7 @@ pub enum ClientMessage {
     Pause {
         /// Where the player stopped. The TV leaves it to the server.
         #[serde(default)]
-        at: Option<EntryPosition>,
+        at: Option<StoppedAt>,
     },
     #[serde(rename_all = "camelCase")]
     Seek {
