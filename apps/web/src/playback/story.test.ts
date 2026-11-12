@@ -21,7 +21,7 @@ import {
   UpdateMediaSession,
   WaitBeforeHideNotice,
 } from './command'
-import { Connection, PhoneAudio, PlayerSheet } from './domain'
+import { Connection, PhoneAudio, PlayerSheet, loadedEntry } from './domain'
 import { toQueueTrack } from './queueTrack'
 import { SwipeTarget } from './swipe'
 
@@ -69,7 +69,6 @@ const mediaSession = UpdateMediaSession({
   artist: entry.track.artists,
   album: '',
   maybeArtworkUrl: Option.none(),
-  isPlaying: true,
 })
 
 describe('playing on this phone', () => {
@@ -89,6 +88,7 @@ describe('playing on this phone', () => {
       }),
       Command.expectExact(
         LoadPhoneAudio({
+          entryId: 'e0',
           videoId: 'dQw4w9WgXcQ',
           startSeconds: 32,
           isPlaying: true,
@@ -106,7 +106,7 @@ describe('playing on this phone', () => {
       ),
       Command.resolve(
         LoadPhoneAudio,
-        Message.CompletedLoadPhoneAudio({ isBlocked: false }),
+        Message.CompletedLoadPhoneAudio({ entryId: 'e0', isBlocked: false }),
       ),
       Command.resolve(
         UpdateMediaSession,
@@ -154,7 +154,7 @@ describe('playing on this phone', () => {
     )
   })
 
-  test('tells the server when the song ends', () => {
+  test('tells the server when the last song ends', () => {
     story(
       update,
       given(
@@ -170,7 +170,7 @@ describe('playing on this phone', () => {
             }),
         }),
       ),
-      message(Message.EndedPhoneAudio()),
+      message(Message.EndedPhoneAudio({ entryId: 'e0' })),
       Command.expectExact(
         SendToSession({ message: { _tag: 'TrackEnded', entryId: 'e0' } }),
       ),
@@ -487,6 +487,322 @@ describe('swiping', () => {
       model(model => {
         expect(model.swipe._tag).toBe('Idle')
       }),
+    )
+  })
+})
+
+describe('on the lock screen', () => {
+  const queued = (index: number): Session.QueueEntry => ({
+    entryId: `e${index}`,
+    track: { ...entry.track, videoId: `song-${index}`, title: `Song ${index}` },
+  })
+  const queue = [queued(0), queued(1), queued(2)]
+
+  /** Playing `entryId` of a three-song queue on this phone, 40s in. */
+  const playingQueue = (entryId: string, isPlaying = true): Model =>
+    modifyFields(connectedModel, {
+      maybeSession: () =>
+        Option.some({
+          state: {
+            ...sessionState(PHONE_ID, 4),
+            queue,
+            currentEntryId: entryId,
+            playing: isPlaying,
+            positionSeconds: 40,
+          },
+          clockOffsetMs: 0,
+        }),
+      phoneAudio: () =>
+        PhoneAudio.Loaded({
+          entry: { entryId, seekSeq: 4, isPlaying, isBuffering: false },
+        }),
+      phoneAudioSeconds: () => 40,
+      now: () => SERVER_NOW,
+    })
+
+  const currentEntryId = (model: Model) =>
+    Option.map(model.maybeSession, ({ state }) => state.currentEntryId)
+
+  const mediaSessionFor = (index: number) =>
+    UpdateMediaSession({
+      title: `Song ${index}`,
+      artist: entry.track.artists,
+      album: '',
+      maybeArtworkUrl: Option.none(),
+    })
+
+  const loads = (index: number, isPlaying = true) =>
+    LoadPhoneAudio({
+      entryId: `e${index}`,
+      videoId: `song-${index}`,
+      startSeconds: 0,
+      isPlaying,
+    })
+
+  const prefetchFrom = (index: number) =>
+    PrefetchSongs({
+      videoIds: queue.slice(index).map(({ track }) => track.videoId),
+    })
+
+  const resolveLoad = (index: number) => [
+    Command.resolve(
+      LoadPhoneAudio,
+      Message.CompletedLoadPhoneAudio({
+        entryId: `e${index}`,
+        isBlocked: false,
+      }),
+    ),
+    Command.resolve(UpdateMediaSession, Message.CompletedUpdateMediaSession()),
+    Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+    Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    Command.resolve(SaveRecentlyPlayed, Message.CompletedSaveRecentlyPlayed()),
+  ]
+
+  test('a song that ends starts the next one without waiting for the server', () => {
+    story(
+      update,
+      given(playingQueue('e0')),
+      message(Message.EndedPhoneAudio({ entryId: 'e0' })),
+      model(model => {
+        expect(currentEntryId(model)).toEqual(Option.some('e1'))
+        expect(model.phoneAudio).toEqual(
+          PhoneAudio.Loaded({
+            entry: {
+              entryId: 'e1',
+              seekSeq: 4,
+              isPlaying: true,
+              isBuffering: true,
+            },
+          }),
+        )
+        expect(model.phoneAudioSeconds).toBe(0)
+        expect(model.recentlyPlayed).toStrictEqual([queue[1]?.track])
+      }),
+      Command.expectExact(
+        loads(1),
+        mediaSessionFor(1),
+        prefetchFrom(1),
+        SendToSession({ message: { _tag: 'Advanced', fromEntryId: 'e0' } }),
+        SaveRecentlyPlayed({ recentlyPlayed: [queue[1]!.track] }),
+      ),
+      ...resolveLoad(1),
+      // The server agrees: nothing reloads.
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 4),
+            queue,
+            currentEntryId: 'e1',
+            positionSeconds: 0,
+          },
+          serverNow: SERVER_NOW,
+          receivedAt: SERVER_NOW,
+        }),
+      ),
+      Command.expectExact(prefetchFrom(1)),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+    )
+  })
+
+  test('an event from a song the phone already left is ignored', () => {
+    story(
+      update,
+      given(playingQueue('e1')),
+      message(Message.EndedPhoneAudio({ entryId: 'e0' })),
+      message(
+        Message.UpdatedPhoneAudioTime({ entryId: 'e0', seconds: 200, at: 1 }),
+      ),
+      message(Message.PausedPhoneAudio({ entryId: 'e0' })),
+      model(model => {
+        expect(model.phoneAudioSeconds).toBe(40)
+        expect(currentEntryId(model)).toEqual(Option.some('e1'))
+      }),
+      Command.expectNone(),
+    )
+  })
+
+  test('next and previous change the song on the phone at once', () => {
+    story(
+      update,
+      given(playingQueue('e1')),
+      message(Message.PressedMediaKey({ key: 'NextTrack' })),
+      model(model => {
+        expect(currentEntryId(model)).toEqual(Option.some('e2'))
+      }),
+      Command.expectExact(
+        loads(2),
+        mediaSessionFor(2),
+        prefetchFrom(2),
+        SendToSession({ message: { _tag: 'Next' } }),
+        SaveRecentlyPlayed({ recentlyPlayed: [queue[2]!.track] }),
+      ),
+      ...resolveLoad(2),
+    )
+  })
+
+  test('previous goes back a song in its first seconds', () => {
+    story(
+      update,
+      given(modifyFields(playingQueue('e1'), { phoneAudioSeconds: () => 2 })),
+      message(Message.PressedMediaKey({ key: 'PreviousTrack' })),
+      model(model => {
+        expect(currentEntryId(model)).toEqual(Option.some('e0'))
+      }),
+      Command.expectExact(
+        loads(0),
+        mediaSessionFor(0),
+        prefetchFrom(0),
+        SendToSession({ message: { _tag: 'SkipTo', entryId: 'e0' } }),
+        SaveRecentlyPlayed({ recentlyPlayed: [queue[0]!.track] }),
+      ),
+      ...resolveLoad(0),
+    )
+  })
+
+  test('previous restarts a song past its first seconds', () => {
+    story(
+      update,
+      given(playingQueue('e1')),
+      message(Message.PressedMediaKey({ key: 'PreviousTrack' })),
+      model(model => {
+        expect(currentEntryId(model)).toEqual(Option.some('e1'))
+        expect(model.phoneAudioSeconds).toBe(0)
+      }),
+      Command.expectExact(
+        SeekPhoneAudio({ seconds: 0 }),
+        SendToSession({ message: { _tag: 'Seek', positionSeconds: 0 } }),
+      ),
+      Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('scrubbing on the lock screen seeks the phone and the session', () => {
+    story(
+      update,
+      given(playingQueue('e1')),
+      message(Message.ChangedSeekPosition({ seconds: 150 })),
+      model(model => {
+        expect(model.phoneAudioSeconds).toBe(150)
+      }),
+      Command.expectExact(
+        SeekPhoneAudio({ seconds: 150 }),
+        SendToSession({ message: { _tag: 'Seek', positionSeconds: 150 } }),
+      ),
+      Command.resolve(SeekPhoneAudio, Message.CompletedSeekPhoneAudio()),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('a pause the system made is followed, so play works afterwards', () => {
+    story(
+      update,
+      given(playingQueue('e1')),
+      message(Message.PausedPhoneAudio({ entryId: 'e1' })),
+      model(model => {
+        expect(
+          Option.exists(model.maybeSession, ({ state }) => !state.playing),
+        ).toBe(true)
+        expect(
+          Option.exists(
+            loadedEntry(model.phoneAudio),
+            loaded => !loaded.isPlaying,
+          ),
+        ).toBe(true)
+      }),
+      Command.expectExact(SendToSession({ message: { _tag: 'Pause' } })),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      message(Message.PressedMediaKey({ key: 'Play' })),
+      model(model => {
+        expect(
+          Option.exists(model.maybeSession, ({ state }) => state.playing),
+        ).toBe(true)
+      }),
+      Command.expectExact(
+        SetPhoneAudioPlaying({ isPlaying: true }),
+        SendToSession({ message: { _tag: 'Resume' } }),
+      ),
+      Command.resolve(
+        SetPhoneAudioPlaying,
+        Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('the lock screen pauses the phone before the server answers', () => {
+    story(
+      update,
+      given(playingQueue('e1')),
+      message(Message.PressedMediaKey({ key: 'Pause' })),
+      model(model => {
+        expect(
+          Option.exists(model.maybeSession, ({ state }) => !state.playing),
+        ).toBe(true)
+      }),
+      Command.expectExact(
+        SetPhoneAudioPlaying({ isPlaying: false }),
+        SendToSession({ message: { _tag: 'Pause' } }),
+      ),
+      Command.resolve(
+        SetPhoneAudioPlaying,
+        Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('reconnecting tells the server what the phone kept playing', () => {
+    story(
+      update,
+      given(
+        modifyFields(playingQueue('e2', false), {
+          connection: () => Connection.Connecting(),
+          phoneAudioSeconds: () => 12.5,
+        }),
+      ),
+      message(Message.AcquiredSessionSocket()),
+      Command.expectExact(
+        SendToSession({
+          message: {
+            _tag: 'Hello',
+            deviceId: PHONE_ID,
+            name: 'iPhone',
+            kind: 'Web',
+            player: {
+              entryId: 'e2',
+              positionSeconds: 12.5,
+              playing: false,
+              seekSeq: 4,
+            },
+          },
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('a phone that is only a remote reports nothing', () => {
+    story(
+      update,
+      given(
+        modifyFields(connectedModel, {
+          connection: () => Connection.Connecting(),
+        }),
+      ),
+      message(Message.AcquiredSessionSocket()),
+      Command.expectExact(
+        SendToSession({
+          message: {
+            _tag: 'Hello',
+            deviceId: PHONE_ID,
+            name: 'iPhone',
+            kind: 'Web',
+            player: null,
+          },
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
     )
   })
 })

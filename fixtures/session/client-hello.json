@@ -1,1 +1,7 @@
-{ "_tag": "Hello", "deviceId": "tv", "name": "TV", "kind": "Tv" }
+{
+  "_tag": "Hello",
+  "deviceId": "tv",
+  "name": "TV",
+  "kind": "Tv",
+  "player": null
+}

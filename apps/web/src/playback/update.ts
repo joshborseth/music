@@ -21,11 +21,13 @@ import {
 } from './command'
 import {
   Connection,
+  type LoadedEntry,
   type MediaKey,
   PREFETCH_COUNT,
   PROGRESS_INTERVAL_MS,
   PhoneAudio,
   PlayerSheet,
+  RESTART_THRESHOLD_SECONDS,
   SEEK_TOLERANCE_SECONDS,
   type SessionSnapshot,
   currentEntry,
@@ -33,7 +35,7 @@ import {
   sessionPosition,
   upcomingEntries,
 } from './domain'
-import { displayedPosition } from './position'
+import { displayedPosition, playbackPosition } from './position'
 import { toQueueTrack } from './queueTrack'
 import type { PlaybackServices } from './resource'
 import {
@@ -70,17 +72,120 @@ const withPhoneAudio = (model: Model, phoneAudio: PhoneAudio): Model =>
   modifyFields(model, { phoneAudio: () => phoneAudio })
 
 /** Keep the lock screen in step with the current song. */
-const updateMediaSession = (
-  entry: Session.QueueEntry,
-  isEntryPlaying: boolean,
-) =>
+const updateMediaSession = (entry: Session.QueueEntry) =>
   UpdateMediaSession({
     title: entry.track.title,
     artist: entry.track.artists,
     album: entry.track.album ?? '',
     maybeArtworkUrl: Option.fromNullishOr(entry.track.artworkUrl),
-    isPlaying: isEntryPlaying,
   })
+
+/** Keep the current song and the next ones cached on the phone. */
+const prefetchFrom = (state: Session.SessionState, entry: Session.QueueEntry) =>
+  PrefetchSongs({
+    videoIds: [
+      entry.track.videoId,
+      ...Array.map(
+        Array.take(upcomingEntries(state), PREFETCH_COUNT),
+        upcoming => upcoming.track.videoId,
+      ),
+    ],
+  })
+
+/**
+ * Load `entry` into the phone's audio element, following `state` for
+ * whether it plays. `seekSeq` is the session jump this load follows.
+ */
+const loadEntry = (
+  model: Model,
+  state: Session.SessionState,
+  entry: Session.QueueEntry,
+  seekSeq: number,
+  startSeconds: number,
+): PlaybackReturn => ({
+  model: modifyFields(model, {
+    phoneAudio: () =>
+      PhoneAudio.Loaded({
+        entry: {
+          entryId: entry.entryId,
+          seekSeq,
+          isPlaying: state.playing,
+          isBuffering: state.playing,
+        },
+      }),
+    phoneAudioSeconds: () => startSeconds,
+  }),
+  commands: [
+    LoadPhoneAudio({
+      entryId: entry.entryId,
+      videoId: entry.track.videoId,
+      startSeconds,
+      isPlaying: state.playing,
+    }),
+    updateMediaSession(entry),
+    prefetchFrom(state, entry),
+  ],
+})
+
+/** This phone is the player and has the session's current entry loaded. */
+interface PlayingHere {
+  readonly snapshot: SessionSnapshot
+  readonly loaded: LoadedEntry
+  readonly index: number
+}
+
+const playingHere = (model: Model): Option.Option<PlayingHere> =>
+  Option.flatMap(model.maybeSession, snapshot =>
+    isThisDevicePlaying(model)
+      ? Option.flatMap(
+          Option.filter(
+            loadedEntry(model.phoneAudio),
+            loaded => loaded.entryId === snapshot.state.currentEntryId,
+          ),
+          loaded =>
+            Option.map(
+              Array.findFirstIndex(
+                snapshot.state.queue,
+                queued => queued.entryId === loaded.entryId,
+              ),
+              index => ({ snapshot, loaded, index }),
+            ),
+        )
+      : Option.none(),
+  )
+
+/**
+ * Start another entry on this phone at once, before the server hears of it.
+ * A locked phone may not get the server's answer quickly, or at all, and iOS
+ * stops a page that goes quiet in the background. The phone's `seekSeq`
+ * stays put: if the server never hears of this, the next `Hello` reports it.
+ */
+const moveHere = (
+  model: Model,
+  { snapshot, loaded }: PlayingHere,
+  entry: Session.QueueEntry,
+  message: Session.ClientMessage,
+): PlaybackReturn => {
+  const state = modifyFields(snapshot.state, {
+    currentEntryId: () => entry.entryId,
+    positionSeconds: () => 0,
+    positionAt: () => model.now + snapshot.clockOffsetMs,
+  })
+  const moved = loadEntry(
+    modifyFields(model, {
+      maybeSession: () => Option.some({ ...snapshot, state }),
+      maybeScrubSeconds: () => Option.none(),
+    }),
+    state,
+    entry,
+    loaded.seekSeq,
+    0,
+  )
+  return {
+    model: moved.model,
+    commands: [...(moved.commands ?? []), send(message)],
+  }
+}
 
 /**
  * Make the phone's audio element match the session: load the current entry
@@ -108,44 +213,14 @@ const reconcilePhoneAudio = (model: Model): PlaybackReturn => {
     onSome: ({ snapshot, entry }) => {
       const { state } = snapshot
       const target = sessionPosition(snapshot, model.now)
-      const prefetch = PrefetchSongs({
-        videoIds: [
-          entry.track.videoId,
-          ...Array.map(
-            Array.take(upcomingEntries(state), PREFETCH_COUNT),
-            upcoming => upcoming.track.videoId,
-          ),
-        ],
-      })
+      const prefetch = prefetchFrom(state, entry)
       const maybeSameEntry = Option.filter(
         maybeLoaded,
         loaded => loaded.entryId === entry.entryId,
       )
 
       return Option.match(maybeSameEntry, {
-        onNone: () => ({
-          model: modifyFields(model, {
-            phoneAudio: () =>
-              PhoneAudio.Loaded({
-                entry: {
-                  entryId: entry.entryId,
-                  seekSeq: state.seekSeq,
-                  isPlaying: state.playing,
-                  isBuffering: state.playing,
-                },
-              }),
-            phoneAudioSeconds: () => target,
-          }),
-          commands: [
-            LoadPhoneAudio({
-              videoId: entry.track.videoId,
-              startSeconds: target,
-              isPlaying: state.playing,
-            }),
-            updateMediaSession(entry, state.playing),
-            prefetch,
-          ],
-        }),
+        onNone: () => loadEntry(model, state, entry, state.seekSeq, target),
         onSome: loaded => {
           const isNewSeek = loaded.seekSeq !== state.seekSeq
           const isPlayingChanged = loaded.isPlaying !== state.playing
@@ -171,10 +246,7 @@ const reconcilePhoneAudio = (model: Model): PlaybackReturn => {
             commands: [
               ...(needsJump ? [SeekPhoneAudio({ seconds: target })] : []),
               ...(isPlayingChanged
-                ? [
-                    SetPhoneAudioPlaying({ isPlaying: state.playing }),
-                    updateMediaSession(entry, state.playing),
-                  ]
+                ? [SetPhoneAudioPlaying({ isPlaying: state.playing })]
                 : []),
               prefetch,
             ],
@@ -198,13 +270,37 @@ export const completeLoadDeviceIdentity = (
   }),
 })
 
+/**
+ * What this phone is playing, for the server to follow when it reconnects.
+ * While the connection was down (a locked screen, a Wi-Fi blip) the phone
+ * kept playing, and may have paused, sought, or moved on.
+ */
+const playerReport = (model: Model): Session.PlayerReport | null =>
+  isThisDevicePlaying(model)
+    ? Option.match(loadedEntry(model.phoneAudio), {
+        onNone: () => null,
+        onSome: loaded => ({
+          entryId: loaded.entryId,
+          positionSeconds: model.phoneAudioSeconds,
+          playing: model.phoneAudio._tag === 'Loaded' && loaded.isPlaying,
+          seekSeq: loaded.seekSeq,
+        }),
+      })
+    : null
+
 export const acquireSessionSocket = (model: Model): PlaybackReturn =>
   Option.match(model.maybeIdentity, {
     onNone: () => ({ model }),
     onSome: ({ deviceId, deviceName }) => ({
       model: modifyFields(model, { connection: () => Connection.Connected() }),
       commands: [
-        send({ _tag: 'Hello', deviceId, name: deviceName, kind: 'Web' }),
+        send({
+          _tag: 'Hello',
+          deviceId,
+          name: deviceName,
+          kind: 'Web',
+          player: playerReport(model),
+        }),
       ],
     }),
   })
@@ -256,6 +352,26 @@ export const releasePhoneAudio = (model: Model): PlaybackReturn => ({
   model: withPhoneAudio(model, PhoneAudio.Unavailable()),
 })
 
+/** The loaded entry, when an audio event or result is about it. */
+const loadedIfCurrent = (
+  model: Model,
+  entryId: string,
+): Option.Option<LoadedEntry> =>
+  Option.filter(
+    loadedEntry(model.phoneAudio),
+    loaded => loaded.entryId === entryId,
+  )
+
+/** A song finished loading: record whether the browser wanted a tap first. */
+export const completeLoadPhoneAudio = (
+  model: Model,
+  entryId: string,
+  isBlocked: boolean,
+): PlaybackReturn =>
+  Option.isSome(loadedIfCurrent(model, entryId))
+    ? completeStartPhoneAudio(model, isBlocked)
+    : { model }
+
 /** Record whether the browser refused to start audio without a tap. */
 export const completeStartPhoneAudio = (
   model: Model,
@@ -275,9 +391,13 @@ export const completeStartPhoneAudio = (
 
 export const updatePhoneAudioTime = (
   model: Model,
+  entryId: string,
   seconds: number,
   at: number,
 ): PlaybackReturn => {
+  if (Option.isNone(loadedIfCurrent(model, entryId))) {
+    return { model }
+  }
   const nextModel = modifyFields(model, {
     phoneAudioSeconds: () => seconds,
     now: () => at,
@@ -302,22 +422,72 @@ export const updatePhoneAudioTime = (
   })
 }
 
-export const endPhoneAudio = (model: Model): PlaybackReturn =>
-  Option.match(loadedEntry(model.phoneAudio), {
-    onNone: () => ({ model }),
-    onSome: ({ entryId }) => ({
+/**
+ * The song ended: start the next one right away and tell the server it
+ * already did. Waiting for the server's answer leaves a locked phone silent,
+ * and iOS soon stops a page that plays nothing.
+ */
+export const endPhoneAudio = (
+  model: Model,
+  entryId: string,
+): PlaybackReturn => {
+  if (Option.isNone(loadedIfCurrent(model, entryId))) {
+    return { model }
+  }
+  const maybeNext = Option.flatMap(playingHere(model), here =>
+    Option.map(Array.get(here.snapshot.state.queue, here.index + 1), next => ({
+      here,
+      next,
+    })),
+  )
+  return Option.match(maybeNext, {
+    onNone: () => ({
       model,
       commands: [send({ _tag: 'TrackEnded', entryId })],
     }),
+    onSome: ({ here, next }) =>
+      moveHere(model, here, next, { _tag: 'Advanced', fromEntryId: entryId }),
   })
+}
 
-export const failPhoneAudio = (model: Model, error: string): PlaybackReturn =>
-  Option.match(loadedEntry(model.phoneAudio), {
+export const failPhoneAudio = (
+  model: Model,
+  entryId: string,
+  error: string,
+): PlaybackReturn =>
+  Option.isSome(loadedIfCurrent(model, entryId))
+    ? {
+        model,
+        commands: [send({ _tag: 'TrackFailed', entryId, message: error })],
+      }
+    : { model }
+
+/**
+ * The system played or paused the song by itself: a call, Siri, unplugged
+ * headphones, or another app's audio. The session follows, so the lock
+ * screen's play button works afterwards and other devices show the truth.
+ */
+export const followPhoneAudio = (
+  model: Model,
+  entryId: string,
+  isNowPlaying: boolean,
+): PlaybackReturn =>
+  Option.match(loadedIfCurrent(model, entryId), {
     onNone: () => ({ model }),
-    onSome: ({ entryId }) => ({
-      model,
-      commands: [send({ _tag: 'TrackFailed', entryId, message: error })],
-    }),
+    onSome: loaded => {
+      const followed = withPhoneAudio(
+        withPlayingSession(model, isNowPlaying),
+        PhoneAudio.Loaded({
+          entry: { ...loaded, isPlaying: isNowPlaying },
+        }),
+      )
+      return {
+        model: followed,
+        commands: isThisDevicePlaying(model)
+          ? [send(isNowPlaying ? { _tag: 'Resume' } : { _tag: 'Pause' })]
+          : [],
+      }
+    },
   })
 
 // REMOTE CONTROL
@@ -340,15 +510,19 @@ const withOptimisticSession = (
     ),
   })
 
-const togglePlayback = (model: Model): PlaybackReturn => {
-  const nextIsPlaying = !isPlaying(model)
-  const optimistic = withOptimisticSession(model, (state, snapshot) =>
+/** The session playing or paused from where it is now, by this phone. */
+const withPlayingSession = (model: Model, nextIsPlaying: boolean): Model =>
+  withOptimisticSession(model, (state, snapshot) =>
     modifyFields(state, {
       playing: () => nextIsPlaying,
-      positionSeconds: () => sessionPosition(snapshot, model.now),
+      positionSeconds: () => playbackPosition(model, snapshot),
       positionAt: () => model.now + snapshot.clockOffsetMs,
     }),
   )
+
+/** Play or pause: on this phone at once when it plays, and on the server. */
+const setPlaying = (model: Model, nextIsPlaying: boolean): PlaybackReturn => {
+  const optimistic = withPlayingSession(model, nextIsPlaying)
   const message: Session.ClientMessage = nextIsPlaying
     ? { _tag: 'Resume' }
     : { _tag: 'Pause' }
@@ -424,31 +598,80 @@ export const cancelScrub = (model: Model): PlaybackReturn => ({
 
 export const changePhoneAudioBuffering = (
   model: Model,
+  entryId: string,
   isBuffering: boolean,
 ): PlaybackReturn =>
   PhoneAudio.match(model.phoneAudio, {
     Unavailable: () => ({ model }),
     Idle: () => ({ model }),
-    Loaded: ({ entry }) => ({
-      model: withPhoneAudio(
-        model,
-        PhoneAudio.Loaded({ entry: { ...entry, isBuffering } }),
-      ),
-    }),
+    Loaded: ({ entry }) =>
+      entry.entryId === entryId
+        ? {
+            model: withPhoneAudio(
+              model,
+              PhoneAudio.Loaded({ entry: { ...entry, isBuffering } }),
+            ),
+          }
+        : { model },
     Blocked: () => ({ model }),
   })
 
-export const clickTogglePlayback = togglePlayback
+export const clickTogglePlayback = (model: Model): PlaybackReturn =>
+  setPlaying(model, !isPlaying(model))
+
+/** Next: on this phone at once when it plays, like the lock screen needs. */
+export const skipToNext = (model: Model): PlaybackReturn =>
+  Option.match(
+    Option.flatMap(playingHere(model), here =>
+      Option.map(
+        Array.get(here.snapshot.state.queue, here.index + 1),
+        next => ({ here, next }),
+      ),
+    ),
+    {
+      onNone: () => sendCommand(model, { _tag: 'Next' }),
+      onSome: ({ here, next }) => moveHere(model, here, next, { _tag: 'Next' }),
+    },
+  )
+
+/**
+ * Previous restarts the song past its first few seconds, otherwise goes back
+ * one, like the server does. On this phone at once when it plays.
+ */
+export const skipToPrevious = (model: Model): PlaybackReturn =>
+  Option.match(playingHere(model), {
+    onNone: () => sendCommand(model, { _tag: 'Previous' }),
+    onSome: here => {
+      const maybePrevious = Array.get(here.snapshot.state.queue, here.index - 1)
+      if (
+        model.phoneAudioSeconds > RESTART_THRESHOLD_SECONDS ||
+        Option.isNone(maybePrevious)
+      ) {
+        return seekTo(model, 0)
+      }
+      const previous = maybePrevious.value
+      // NOTE: SkipTo names the very entry, but it also starts playback, so
+      // a paused session asks for Previous instead.
+      return moveHere(
+        model,
+        here,
+        previous,
+        here.snapshot.state.playing
+          ? { _tag: 'SkipTo', entryId: previous.entryId }
+          : { _tag: 'Previous' },
+      )
+    },
+  })
 
 export const pressMediaKey = (model: Model, key: MediaKey): PlaybackReturn => {
   if (key === 'Play') {
-    return { model, commands: [send({ _tag: 'Resume' })] }
+    return setPlaying(model, true)
   } else if (key === 'Pause') {
-    return { model, commands: [send({ _tag: 'Pause' })] }
+    return setPlaying(model, false)
   } else if (key === 'NextTrack') {
-    return { model, commands: [send({ _tag: 'Next' })] }
+    return skipToNext(model)
   } else {
-    return { model, commands: [send({ _tag: 'Previous' })] }
+    return skipToPrevious(model)
   }
 }
 
@@ -558,8 +781,8 @@ const trackingPointer = (
 
 const runSwipeAction = (model: Model, action: SwipeAction): PlaybackReturn =>
   SwipeAction.match(action, {
-    Next: () => sendCommand(model, { _tag: 'Next' }),
-    Previous: () => sendCommand(model, { _tag: 'Previous' }),
+    Next: () => skipToNext(model),
+    Previous: () => skipToPrevious(model),
     ClosePlayer: () => closePlayer(model),
     PlayNext: ({ song }) => clickEnqueueSongs(model, [song], 'Next'),
     AddToQueue: ({ song }) => clickEnqueueSongs(model, [song], 'Last'),

@@ -145,6 +145,20 @@ const toEntries = (
 const isFromPlayer = (model: Model, context: Context, entryId: string) =>
   model.activeDeviceId === context.senderId && model.currentEntryId === entryId
 
+/**
+ * A reconnecting player's report wins when it is still the player, its entry
+ * is still queued, and nothing jumped the session (a seek, a skip, another
+ * device taking over) since it last followed it.
+ */
+const isFollowedReport = (
+  model: Model,
+  context: Context,
+  report: Session.PlayerReport,
+) =>
+  model.activeDeviceId === context.senderId &&
+  report.seekSeq === model.seekSeq &&
+  indexOf(model, report.entryId) !== -1
+
 /** Move past the current entry after it ended or failed on the player. */
 const finishCurrent = (model: Model, now: number): Model => {
   const maybeNext = entryAt(model, indexOf(model, model.currentEntryId) + 1)
@@ -162,11 +176,28 @@ export const update = (
   return Match.value(message).pipe(
     Match.withReturnType<Outcome>(),
     Match.tagsExhaustive({
-      Hello: () => {
+      Hello: message => {
         const isWaking = model.waking.includes(context.senderId)
+        const waking = model.waking.filter(id => id !== context.senderId)
+        const maybeReport = Option.filter(
+          Option.fromNullishOr(message.player),
+          report => isFollowedReport(model, context, report),
+        )
+        if (Option.isSome(maybeReport)) {
+          // The player kept going while it was away: the session follows it.
+          const report = maybeReport.value
+          return changed({
+            ...model,
+            waking,
+            currentEntryId: report.entryId,
+            playing: report.playing,
+            positionSeconds: Math.max(0, report.positionSeconds),
+            positionAt: now,
+          })
+        }
         return changed({
           ...model,
-          waking: model.waking.filter(id => id !== context.senderId),
+          waking,
           // A device that comes back as the player reloads where it left off.
           seekSeq:
             isWaking || model.activeDeviceId === context.senderId
@@ -253,9 +284,9 @@ export const update = (
             : model
         const claimed = claimIfIdle(withEntry, context)
         return changed({
-          ...claimed,
+          // Resuming while already playing must not move the position back.
+          ...settle(claimed, now),
           playing: true,
-          positionAt: now,
           // A new player has nothing loaded yet.
           seekSeq:
             claimed.activeDeviceId === model.activeDeviceId

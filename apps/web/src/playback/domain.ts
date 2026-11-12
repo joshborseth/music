@@ -81,6 +81,9 @@ export const SKIP_SECONDS = 15
 /** How often the playing device reports its position to the server. */
 export const PROGRESS_INTERVAL_MS = 1000
 
+/** Previous restarts the song when it is past this point, like the server. */
+export const RESTART_THRESHOLD_SECONDS = 3
+
 // HELPERS
 
 export const currentEntry = (

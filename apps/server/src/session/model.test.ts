@@ -177,6 +177,112 @@ describe('session model', () => {
     expect(lost.positionSeconds).toBe(10)
   })
 
+  test('resuming while already playing keeps the position moving', () => {
+    const resumed = update(
+      playing(),
+      { _tag: 'Resume' },
+      makeContext('phone', 21_000),
+    ).model
+    expect(resumed.playing).toBe(true)
+    expect(currentPosition(resumed, 21_000)).toBe(20)
+  })
+
+  const hello = (
+    player: Session.PlayerReport | null,
+    deviceId = 'phone',
+  ): Session.ClientMessage => ({
+    _tag: 'Hello',
+    deviceId,
+    name: deviceId,
+    kind: deviceId === 'tv' ? 'Tv' : 'Web',
+    player,
+  })
+
+  test('a player that reconnects mid-song is followed, without a reload', () => {
+    const lost = playerLost(playing(), 'phone', 16_000).model
+    const advanced = update(
+      lost,
+      hello({
+        entryId: 'e1',
+        positionSeconds: 42,
+        playing: true,
+        seekSeq: lost.seekSeq,
+      }),
+      makeContext('phone', 60_000),
+    ).model
+    expect(advanced.currentEntryId).toBe('e1')
+    expect(advanced.playing).toBe(true)
+    expect(currentPosition(advanced, 61_000)).toBe(43)
+    expect(advanced.seekSeq).toBe(lost.seekSeq)
+
+    const paused = update(
+      playing(),
+      hello({
+        entryId: 'e0',
+        positionSeconds: 12,
+        playing: false,
+        seekSeq: playing().seekSeq,
+      }),
+      makeContext('phone', 60_000),
+    ).model
+    expect(paused.playing).toBe(false)
+    expect(currentPosition(paused, 90_000)).toBe(12)
+  })
+
+  test('a reconnecting player reloads when the session jumped meanwhile', () => {
+    const skipped = update(
+      playing(),
+      { _tag: 'Next' },
+      makeContext('tv', 5_000),
+    ).model
+    const outcome = update(
+      skipped,
+      hello({
+        entryId: 'e0',
+        positionSeconds: 42,
+        playing: true,
+        seekSeq: playing().seekSeq,
+      }),
+      makeContext('phone', 6_000),
+    ).model
+    expect(outcome.currentEntryId).toBe('e1')
+    expect(outcome.seekSeq).toBe(skipped.seekSeq + 1)
+  })
+
+  test('only the player is followed, and only to a queued entry', () => {
+    const model = playing()
+    const report = {
+      entryId: 'e1',
+      positionSeconds: 42,
+      playing: true,
+      seekSeq: model.seekSeq,
+    }
+    const fromTv = update(
+      model,
+      hello(report, 'tv'),
+      makeContext('tv', 6_000),
+    ).model
+    expect(fromTv.currentEntryId).toBe('e0')
+    const unknown = update(
+      model,
+      hello({ ...report, entryId: 'gone' }),
+      makeContext('phone', 6_000),
+    ).model
+    expect(unknown.currentEntryId).toBe('e0')
+    expect(unknown.seekSeq).toBe(model.seekSeq + 1)
+  })
+
+  test('a TV app that sends no report still reloads where it left off', () => {
+    const model = playing('tv')
+    const outcome = update(
+      model,
+      { _tag: 'Hello', deviceId: 'tv', name: 'TV', kind: 'Tv' },
+      makeContext('tv', 11_000),
+    ).model
+    expect(outcome.seekSeq).toBe(model.seekSeq + 1)
+    expect(outcome.positionSeconds).toBe(10)
+  })
+
   test('a TV that never wakes stops playback with a notice', () => {
     const waking = update(
       playing(),
@@ -205,12 +311,20 @@ describe('protocol fixtures shared with the TV app', () => {
 
   test.each([
     'client-hello.json',
+    'client-hello-player.json',
     'client-progress.json',
     'client-advanced.json',
     'client-pause.json',
   ])('%s decodes as a client message', async name => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(
       await read(name),
+    )
+    expect(decoded._tag).toBe('Success')
+  })
+
+  test('a Hello from a TV app built before player reports still decodes', () => {
+    const decoded = Schema.decodeExit(Session.ClientMessageJson)(
+      '{ "_tag": "Hello", "deviceId": "tv", "name": "TV", "kind": "Tv" }',
     )
     expect(decoded._tag).toBe('Success')
   })

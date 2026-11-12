@@ -72,11 +72,30 @@ export type SessionState = typeof SessionState.Type
 
 // CLIENT → SERVER
 
+/**
+ * What a player is already doing when it reconnects. A phone keeps playing
+ * while its connection is down (a locked screen, a Wi-Fi blip), and may
+ * pause, seek, or move to the next song meanwhile.
+ */
+export const PlayerReport = Schema.Struct({
+  entryId: Schema.String,
+  positionSeconds: Schema.Number,
+  playing: Schema.Boolean,
+  /** The last `seekSeq` this player followed. */
+  seekSeq: Schema.Number,
+})
+export type PlayerReport = typeof PlayerReport.Type
+
 /** The first message on every connection. */
 export const Hello = Schema.TaggedStruct('Hello', {
   deviceId: Schema.String,
   name: Schema.String,
   kind: DeviceKind,
+  /**
+   * Null when nothing is loaded. TV apps built before this field leave it
+   * out, so it may be missing.
+   */
+  player: Schema.optionalKey(Schema.NullOr(PlayerReport)),
 })
 
 /** Replace the queue and start playing it. */

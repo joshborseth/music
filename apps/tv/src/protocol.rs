@@ -79,6 +79,17 @@ impl SessionState {
     }
 }
 
+/// What a player is already doing when it reconnects, so the session follows
+/// it. The TV reloads where the session left off instead, so it sends none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerReport {
+    pub entry_id: String,
+    pub position_seconds: f64,
+    pub playing: bool,
+    pub seek_seq: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Placement {
     Next,
@@ -95,6 +106,8 @@ pub enum ClientMessage {
         device_id: String,
         name: String,
         kind: DeviceKind,
+        #[serde(default)]
+        player: Option<PlayerReport>,
     },
     Resume {},
     Pause {},
@@ -178,6 +191,26 @@ mod tests {
     }
 
     #[test]
+    fn decodes_a_hello_with_a_player_report() {
+        let message: ClientMessage =
+            serde_json::from_str(&fixture("client-hello-player.json")).unwrap();
+        assert_eq!(
+            message,
+            ClientMessage::Hello {
+                device_id: "phone-1".into(),
+                name: "iPhone".into(),
+                kind: DeviceKind::Web,
+                player: Some(PlayerReport {
+                    entry_id: "e1".into(),
+                    position_seconds: 42.5,
+                    playing: true,
+                    seek_seq: 3,
+                }),
+            }
+        );
+    }
+
+    #[test]
     fn encodes_client_messages_like_the_fixtures() {
         let cases = [
             (
@@ -186,6 +219,7 @@ mod tests {
                     device_id: "tv".into(),
                     name: "TV".into(),
                     kind: DeviceKind::Tv,
+                    player: None,
                 },
             ),
             (
