@@ -321,8 +321,7 @@ const valueAt = (area: HTMLElement, clientX: number): number | undefined => {
 }
 
 /**
- * Lets a finger land anywhere on a range bar (the seek bar, the volume
- * slider) and drag, jumping the thumb under it. iOS only drags a native
+ * Lets a finger land anywhere on a range bar (the seek bar) and drag, jumping the thumb under it. iOS only drags a native
  * range input by its thumb, so the input itself ignores pointers and keeps
  * keyboard and screen reader use.
  */
@@ -434,34 +433,6 @@ export const FollowSeekBarDrags = Mount.defineStream('FollowSeekBarDrags', {
         moved: seconds => emit(Message.UpdatedScrubPosition({ seconds })),
         released: seconds => emit(Message.ChangedSeekPosition({ seconds })),
         cancelled: () => emit(Message.CancelledScrub()),
-      }),
-    ),
-})
-
-// VOLUME SLIDER
-
-type VolumeSliderMessage =
-  | typeof Message.CompletedFollowVolumeDrags.Type
-  | typeof Message.UpdatedVolumeDrag.Type
-  | typeof Message.ChangedVolume.Type
-  | typeof Message.CancelledVolumeDrag.Type
-
-/** Moves another device's volume from pointer drags on the element. */
-export const FollowVolumeDrags = Mount.defineStream('FollowVolumeDrags', {
-  messages: [
-    Message.CompletedFollowVolumeDrags,
-    Message.UpdatedVolumeDrag,
-    Message.ChangedVolume,
-    Message.CancelledVolumeDrag,
-  ],
-  execute: ({ element }) =>
-    rangeDragStream<VolumeSliderMessage>(
-      element,
-      Message.CompletedFollowVolumeDrags(),
-      emit => ({
-        moved: percent => emit(Message.UpdatedVolumeDrag({ percent })),
-        released: percent => emit(Message.ChangedVolume({ percent })),
-        cancelled: () => emit(Message.CancelledVolumeDrag()),
       }),
     ),
 })

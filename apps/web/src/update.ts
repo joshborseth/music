@@ -1332,12 +1332,6 @@ const updateMessage = (model: Model, message: Message) =>
     UpdatedScrubPosition: ({ seconds }) => Playback.scrub(model, seconds),
     CancelledScrub: () => Playback.cancelScrub(model),
     CompletedFollowSeekBarDrags: () => ({ model }),
-    CompletedFollowVolumeDrags: () => ({ model }),
-    UpdatedVolumeDrag: ({ percent }) => Playback.dragVolume(model, percent),
-    ChangedVolume: ({ percent }) => Playback.changeVolume(model, percent),
-    CancelledVolumeDrag: () => Playback.cancelVolumeDrag(model),
-    CompletedWaitBeforeForgetVolumeDraft: ({ percent }) =>
-      Playback.forgetVolumeDraft(model, percent),
     CompletedFollowLyrics: () => ({ model }),
     ClickedLyricLine: ({ seconds }) => Playback.seekTo(model, seconds),
     ClickedSkipBy: ({ seconds }) => Playback.skipBy(model, seconds),
