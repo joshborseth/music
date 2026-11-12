@@ -42,6 +42,14 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 rtrb = "0.3"
 log = "0.4"
+# Draws the QR code guests scan to open the app on their phone.
+qrcodegen = "1.8"
+# The local time zone for the clock (`localtime_r`); already in the tree.
+libc = "0.2"
+
+[features]
+# Renders the screens to PNG files on a computer: see src/screenshots.rs.
+screenshots = ["slint/renderer-software", "slint/software-renderer-systemfonts"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"

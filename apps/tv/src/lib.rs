@@ -9,14 +9,21 @@ pub mod catalog;
 mod controller;
 #[cfg(target_os = "android")]
 mod crash_report;
+mod images;
+mod local_time;
+pub mod nav;
 pub mod protocol;
-mod screen;
+mod qr;
+#[cfg(feature = "screenshots")]
+pub mod screenshots;
 mod session;
-mod view;
+mod ui;
+pub mod view;
+mod visualizer;
 
 use tokio::sync::mpsc::unbounded_channel;
 
-use controller::{Controller, UiAction};
+use controller::Controller;
 use protocol::{ClientMessage, DeviceKind};
 
 slint::include_modules!();
@@ -42,25 +49,21 @@ pub fn run() -> Result<(), slint::PlatformError> {
     let handle = runtime.handle().clone();
 
     let app = App::new()?;
-    app.set_server(SERVER_URL.trim_start_matches("http://").into());
+    dress(&app, SERVER_URL);
 
     let (actions, action_receiver) = unbounded_channel();
-    let send = move |action: UiAction| {
-        let _ = actions.send(action);
-    };
-    app.on_toggle_play({
-        let send = send.clone();
-        move || send(UiAction::PlayPause)
+    ui::Ui::install(
+        &app,
+        SERVER_URL.to_owned(),
+        handle.clone(),
+        actions,
+        ui::Hooks {
+            open_update_settings: Box::new(|| {}),
+        },
+    );
+    app.on_key(|text, pressed, repeat| {
+        ui::with(|ui| ui.key(&text, pressed, repeat)).unwrap_or(false)
     });
-    app.on_seek_by({
-        let send = send.clone();
-        move |delta| send(UiAction::SeekBy(f64::from(delta)))
-    });
-    app.on_next({
-        let send = send.clone();
-        move || send(UiAction::Next)
-    });
-    app.on_previous(move || send(UiAction::Previous));
 
     let (events, event_receiver) = unbounded_channel();
     let engine = audio::Engine::spawn(SERVER_URL.to_owned(), handle.clone(), events);
@@ -78,18 +81,45 @@ pub fn run() -> Result<(), slint::PlatformError> {
         inbound,
     );
 
-    let screen = screen::Screen::new(SERVER_URL.to_owned(), app.as_weak(), handle.clone());
     let controller = Controller::new(DEVICE_ID.to_owned(), engine, outbound);
     handle.spawn(controller.run(
         inbound_receiver,
         event_receiver,
         action_receiver,
-        move |view| screen.render(view),
+        |view| {
+            let _ = slint::invoke_from_event_loop(move || {
+                ui::with(|ui| ui.on_session(view));
+            });
+        },
     ));
 
     let result = app.run();
     runtime.shutdown_background();
     result
+}
+
+/// Set what never changes: the logo, and the QR code guests scan.
+fn dress(app: &App, server: &str) {
+    if let Some(logo) = logo() {
+        app.set_logo(logo);
+    }
+    let join_url = format!("{server}/");
+    if let Some((size, pixels)) = qr::pixels(&join_url) {
+        app.set_qr(slint::Image::from_rgba8(
+            slint::SharedPixelBuffer::clone_from_slice(&pixels, size, size),
+        ));
+    }
+    app.set_qr_url(join_url.trim_start_matches("http://").trim_end_matches('/').into());
+}
+
+/// The logo mark for the top bar and the welcome screen.
+fn logo() -> Option<slint::Image> {
+    let decoded = image::load_from_memory(include_bytes!("../ui/images/logo-mark.png"))
+        .ok()?
+        .to_rgba8();
+    Some(slint::Image::from_rgba8(
+        slint::SharedPixelBuffer::clone_from_slice(decoded.as_raw(), decoded.width(), decoded.height()),
+    ))
 }
 
 #[cfg(target_os = "android")]

@@ -1,0 +1,101 @@
+//! Saves each TV screen as a PNG. See `src/screenshots.rs`.
+
+use std::time::Duration;
+
+use music_tv::catalog::Client;
+use music_tv::screenshots::{Step, run, sample_view};
+
+fn main() {
+    let server = std::env::var("MUSIC_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:3105".into());
+    let out = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "screens".into()));
+    std::fs::create_dir_all(&out).expect("create the output folder");
+
+    // Real songs for a made-up queue.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let shelves = runtime
+        .block_on(Client::new(server.clone()).home())
+        .expect("the server's /tv/home answers");
+    let tracks: Vec<_> = shelves
+        .iter()
+        .flat_map(|shelf| shelf.cards.iter().filter_map(|card| card.track.clone()))
+        .take(14)
+        .collect();
+    drop(runtime);
+
+    let (up, down, left, right) = ("\u{f700}", "\u{f701}", "\u{f702}", "\u{f703}");
+    let ok = "\n";
+    let back = "\u{1b}";
+    let wait = |ms| Step::Wait(Duration::from_millis(ms));
+    run(
+        &server,
+        &out,
+        vec![
+            Step::Session(music_tv::view::View {
+                connected: true,
+                ..Default::default()
+            }),
+            wait(4000),
+            Step::Shot("01-home"),
+            Step::Key(down),
+            Step::Key(right),
+            Step::Key(right),
+            wait(1500),
+            Step::Shot("02-home-moved"),
+            Step::Hold,
+            Step::Shot("03-menu"),
+            Step::Key(back),
+            Step::Key(up),
+            Step::Key(up),
+            Step::Key(up),
+            Step::Key(left),
+            Step::Key(down),
+            Step::Shot("04-nothing-playing"),
+            Step::Session(sample_view(tracks.clone(), 2, true)),
+            wait(2500),
+            Step::Shot("05-now-playing"),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(ok),
+            wait(1500),
+            Step::Shot("06-queue"),
+            Step::Key(back),
+            Step::Key(right),
+            Step::Key(ok),
+            wait(3000),
+            Step::Shot("07-lyrics"),
+            Step::Key(back),
+            Step::Session(sample_view(tracks.clone(), 3, false)),
+            wait(2500),
+            Step::Shot("08-playing-elsewhere"),
+            Step::Key(up),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(down),
+            Step::Key("d"),
+            Step::Key("a"),
+            Step::Key("f"),
+            Step::Key("t"),
+            wait(5000),
+            Step::Shot("09-search"),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(down),
+            wait(1500),
+            Step::Shot("10-search-results"),
+            Step::Key(ok),
+            wait(4000),
+            Step::Shot("11-collection"),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(down),
+            wait(1500),
+            Step::Shot("12-collection-list"),
+        ],
+    );
+}

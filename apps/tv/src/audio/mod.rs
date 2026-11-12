@@ -7,6 +7,7 @@
 
 mod decode;
 mod output;
+pub mod scope;
 pub mod source;
 
 use std::collections::VecDeque;

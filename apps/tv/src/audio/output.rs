@@ -57,6 +57,7 @@ fn render(consumer: &mut Consumer<f32>, shared: &Shared, out: &mut [f32]) {
         out[first.len()..first.len() + second.len()].copy_from_slice(second);
         chunk.commit_all();
     }
+    super::scope::SCOPE.write(&out[..available], CHANNELS);
     out[available..].fill(0.0);
     shared
         .played_samples
@@ -65,6 +66,7 @@ fn render(consumer: &mut Consumer<f32>, shared: &Shared, out: &mut [f32]) {
 
 impl Output {
     pub fn open(rate: u32) -> Result<Self, String> {
+        super::scope::SCOPE.set_rate(rate);
         let capacity = (f64::from(rate) * RING_SECONDS) as usize * CHANNELS;
         let (producer, consumer) = RingBuffer::new(capacity);
         let shared = Arc::new(Shared::default());
