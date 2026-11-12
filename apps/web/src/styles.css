@@ -336,6 +336,37 @@
   background-color: var(--background);
 }
 
+/* iOS 26 draws its own blur over the top and bottom ~40pt of a Home Screen
+   web app. WebKit skips it at an edge only when it finds a box there to take
+   a solid color from (LocalFrameView::fixedContainerEdges): it hit-tests 4px
+   in from the middle of the edge, walks up to the first fixed box at least
+   90% of the viewport wide, and takes the first plain background-color on a
+   box taller than 10px. A backdrop-filter on the way means glass, so blur.
+   The top bar is hidden until a page scrolls, so these bands are always
+   there instead. They live in index.html so they exist from the first frame,
+   and `background-clip: text` paints nothing, because WebKit reads the color
+   from the style. iOS then fills the status bar and home indicator areas
+   with the page color. They sit above the page chrome and below the sheets,
+   so an open sheet supplies its own edge. */
+.ios-edge {
+  position: fixed;
+  inset-inline: 0;
+  z-index: 35;
+  height: 12px;
+  pointer-events: none;
+  background-color: var(--background);
+  background-clip: text;
+  -webkit-background-clip: text;
+}
+
+.ios-edge-top {
+  top: 0;
+}
+
+.ios-edge-bottom {
+  bottom: 0;
+}
+
 /* SHEETS */
 
 .sheet {
