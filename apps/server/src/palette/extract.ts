@@ -1,14 +1,19 @@
 import type { NowPlaying } from '@music/shared'
 
 /*
- * Finds the colors that define a piece of album art, for lights and tints.
+ * Finds the colors that define a piece of album art: a palette for the
+ * lights, and a dark backdrop for the full player.
  *
  * The pixels are clustered with k-means in OKLab, where distance follows how
- * different two colors look. Clusters that look alike are merged, and grey,
- * near-black, and specks are dropped, because a bulb cannot show them and a
- * tint made from them looks muddy. What is left is ranked by how much of the
- * cover a color fills and how colorful it is, so a cover that is mostly deep
- * blue with a small yellow title leads with the blue.
+ * different two colors look, and clusters that look alike are merged.
+ *
+ * For the palette, grey, near-black, and specks are dropped, because a bulb
+ * cannot show them. What is left is ranked by how much of the cover a color
+ * fills and how colorful it is, so a cover that is mostly deep blue with a
+ * small yellow title leads with the blue.
+ *
+ * The backdrop is the one color the cover reads as, ranked the same way but
+ * keeping greys, so a black-and-white cover gets a dark grey.
  */
 
 const CLUSTERS = 8
@@ -195,26 +200,29 @@ const mergeAlike = (clusters: ReadonlyArray<Cluster>): Array<Cluster> => {
   return merged
 }
 
-/**
- * The cover's colors, best first: at most four, each colorful enough for a
- * bulb to show. Empty for a cover that is black, white, or grey.
- *
- * `rgb` holds packed 8-bit RGB pixels, three bytes each.
- */
-export const paletteFromPixels = (
+/** The cover's colors, clustered and merged, and how many pixels it had. */
+const clusterPixels = (
   rgb: Uint8Array,
-): ReadonlyArray<NowPlaying.Swatch> => {
+): { readonly clusters: ReadonlyArray<Cluster>; readonly total: number } => {
   const pixels: Array<Lab> = []
   for (let offset = 0; offset + 2 < rgb.length; offset += 3) {
     pixels.push(
       rgbToOklab(rgb[offset] ?? 0, rgb[offset + 1] ?? 0, rgb[offset + 2] ?? 0),
     )
   }
-  if (pixels.length === 0) return []
-  return mergeAlike(kMeans(pixels))
+  return pixels.length === 0
+    ? { clusters: [], total: 0 }
+    : { clusters: mergeAlike(kMeans(pixels)), total: pixels.length }
+}
+
+const paletteFromClusters = (
+  clusters: ReadonlyArray<Cluster>,
+  total: number,
+): ReadonlyArray<NowPlaying.Swatch> =>
+  clusters
     .map(({ center, count }) => ({
       center,
-      share: count / pixels.length,
+      share: count / total,
       chroma: chroma(center),
     }))
     .filter(
@@ -229,4 +237,92 @@ export const paletteFromPixels = (
       hex: hex(oklabToRgb(center)),
       share: Math.round(share * 1000) / 1000,
     }))
+
+/** The backdrop is this light at most, so white text on it stays crisp. */
+const BACKDROP_MAX_LIGHTNESS = 0.36
+/** And this light at least, so it still reads as the cover's color. */
+const BACKDROP_MIN_LIGHTNESS = 0.24
+/** Stronger color than this glows too much behind the controls. */
+const BACKDROP_MAX_CHROMA = 0.13
+/**
+ * Added to a color's chroma when ranking, so a cover that is nearly all grey
+ * or black still gets its own grey, while a colored area beats a much larger
+ * dark one.
+ */
+const BACKDROP_CHROMA_FLOOR = 0.03
+
+const inGamut = ({ l, a, b }: Lab): boolean => {
+  const lp = (l + 0.3963377774 * a + 0.2158037573 * b) ** 3
+  const mp = (l - 0.1055613458 * a - 0.0638541728 * b) ** 3
+  const sp = (l - 0.0894841775 * a - 1.291485548 * b) ** 3
+  return [
+    4.0767416621 * lp - 3.3077115913 * mp + 0.2309699292 * sp,
+    -1.2684380046 * lp + 2.6097574011 * mp - 0.3413193965 * sp,
+    -0.0041960863 * lp - 0.7034186147 * mp + 1.707614701 * sp,
+  ].every(channel => channel >= -0.0001 && channel <= 1.0001)
+}
+
+/**
+ * The full player's background: the color the cover reads as, dimmed so
+ * white text sits on it well. Its hue is kept; its chroma is lowered until
+ * sRGB can show it.
+ */
+const backdropFromClusters = (
+  clusters: ReadonlyArray<Cluster>,
+): string | null => {
+  const best = clusters.reduce<Cluster | undefined>((winner, cluster) => {
+    const score = (candidate: Cluster) =>
+      candidate.count * (chroma(candidate.center) + BACKDROP_CHROMA_FLOOR)
+    return winner === undefined || score(cluster) > score(winner)
+      ? cluster
+      : winner
+  }, undefined)
+  if (best === undefined) return null
+  const { center } = best
+  const l = Math.min(
+    BACKDROP_MAX_LIGHTNESS,
+    Math.max(BACKDROP_MIN_LIGHTNESS, center.l),
+  )
+  const hue = Math.atan2(center.b, center.a)
+  let c = Math.min(BACKDROP_MAX_CHROMA, chroma(center))
+  const at = (c: number): Lab => ({
+    l,
+    a: c * Math.cos(hue),
+    b: c * Math.sin(hue),
+  })
+  while (c > 0 && !inGamut(at(c))) c = Math.max(0, c - 0.005)
+  return hex(oklabToRgb(at(c)))
+}
+
+export interface ArtworkColors {
+  /** See `paletteFromPixels`. */
+  readonly palette: ReadonlyArray<NowPlaying.Swatch>
+  /** See `backdropFromPixels`. */
+  readonly backdrop: string | null
+}
+
+/**
+ * The cover's colors, best first: at most four, each colorful enough for a
+ * bulb to show. Empty for a cover that is black, white, or grey.
+ *
+ * `rgb` holds packed 8-bit RGB pixels, three bytes each.
+ */
+export const paletteFromPixels = (
+  rgb: Uint8Array,
+): ReadonlyArray<NowPlaying.Swatch> => colorsFromPixels(rgb).palette
+
+/**
+ * A dark `#rrggbb` in the color the cover reads as, for the full player's
+ * background. Null only when there are no pixels.
+ */
+export const backdropFromPixels = (rgb: Uint8Array): string | null =>
+  colorsFromPixels(rgb).backdrop
+
+/** Both, from one clustering of the pixels. */
+export const colorsFromPixels = (rgb: Uint8Array): ArtworkColors => {
+  const { clusters, total } = clusterPixels(rgb)
+  return {
+    palette: paletteFromClusters(clusters, total),
+    backdrop: backdropFromClusters(clusters),
+  }
 }

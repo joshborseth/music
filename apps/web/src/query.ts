@@ -165,3 +165,15 @@ export const myPlaylistQuery = Query.define({
       withRequestError,
     ),
 })
+
+/** The full player's background for a song's artwork: a solid color. */
+export const artworkBackdropQuery = Query.define({
+  name: 'ArtworkBackdrop',
+  args: { artworkUrl: Schema.String },
+  data: Schema.NullOr(Schema.String),
+  error: RequestError,
+  execute: ({ artworkUrl }) =>
+    MusicClient.use(client => client.getArtworkBackdrop({ artworkUrl })).pipe(
+      withRequestError,
+    ),
+})

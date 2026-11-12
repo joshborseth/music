@@ -40,6 +40,7 @@ const RpcRoutes = RpcServer.layerHttp({
 }).pipe(
   Layer.provide(MusicRpcsLive),
   Layer.provide(YouTubeMusicLive),
+  Layer.provide(ArtworkPaletteLive),
   Layer.provide(PlaylistStoreLive.pipe(Layer.provide(BunServices.layer))),
   Layer.provide(AudioLive),
   Layer.provide(RpcSerialization.layerNdjson),

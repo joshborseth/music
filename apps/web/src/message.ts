@@ -14,6 +14,7 @@ import {
   albumSearchQuery,
   artistQuery,
   artistSearchQuery,
+  artworkBackdropQuery,
   homeQuery,
   myLibraryQuery,
   myPlaylistQuery,
@@ -84,6 +85,7 @@ export const Message = defineMessageUnion({
   GotHomeMessage: { message: homeQuery.Message },
   GotMyLibraryMessage: { message: myLibraryQuery.Message },
   GotMyPlaylistMessage: { message: myPlaylistQuery.Message },
+  GotArtworkBackdropMessage: { message: artworkBackdropQuery.Message },
 
   ClickedAddToPlaylist: {
     songs: Schema.Array(Song),

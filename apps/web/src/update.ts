@@ -76,6 +76,7 @@ import {
   albumSearchQuery,
   artistQuery,
   artistSearchQuery,
+  artworkBackdropQuery,
   homeQuery,
   myLibraryQuery,
   myPlaylistQuery,
@@ -161,6 +162,11 @@ const artists = artistQuery.lift<Model, Message>({
 const albums = albumQuery.lift<Model, Message>({
   parentField: 'albums',
   toParentMessage: message => Message.GotAlbumMessage({ message }),
+})
+
+const artworkBackdrops = artworkBackdropQuery.lift<Model, Message>({
+  parentField: 'artworkBackdrops',
+  toParentMessage: message => Message.GotArtworkBackdropMessage({ message }),
 })
 
 const playlists = playlistQuery.lift<Model, Message>({
@@ -907,6 +913,7 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     playlists: playlistQuery.init(),
     myLibrary: myLibraryQuery.init(),
     myPlaylists: myPlaylistQuery.init(),
+    artworkBackdrops: artworkBackdropQuery.init(),
     playlistTitleInput: '',
     actionSheet: ActionSheet.Hidden(),
     playerPanel: 'Artwork',
@@ -982,7 +989,7 @@ const changeUrl =
     )
   }
 
-export const update = (model: Model, message: Message) =>
+const updateMessage = (model: Model, message: Message) =>
   Message.match<UpdateReturn>(message, {
     ClickedLink: ({ request }) =>
       UrlRequest.match<UpdateReturn>(request, {
@@ -1121,6 +1128,8 @@ export const update = (model: Model, message: Message) =>
     GotArtistSearchMessage: ({ message }) => artistSearch.fold(model, message),
     GotAlbumSearchMessage: ({ message }) => albumSearch.fold(model, message),
     GotSongMessage: ({ message }) => songs.fold(model, message),
+    GotArtworkBackdropMessage: ({ message }) =>
+      artworkBackdrops.fold(model, message),
     GotArtistMessage: ({ message }) =>
       Update.combine([
         stepModel => artists.fold(stepModel, message),
@@ -1362,3 +1371,37 @@ export const update = (model: Model, message: Message) =>
     CancelledSwipePointer: ({ pointerId }) =>
       Playback.cancelSwipePointer(model, pointerId),
   })
+
+// PLAYER BACKDROP
+
+const currentArtworkUrl = (model: Model): string | undefined =>
+  pipe(
+    model.maybeSession,
+    Option.flatMap(({ state }) => currentEntry(state)),
+    Option.flatMap(({ track }) => Option.fromNullishOr(track.artworkUrl)),
+    Option.getOrUndefined,
+  )
+
+/**
+ * Gets the full player's background color for the current song's artwork
+ * when the song changes or the player opens, so it is there as the sheet
+ * slides up. Only then, so a failed load waits for the next chance instead
+ * of retrying at once.
+ */
+const loadArtworkBackdrop =
+  (before: Model): UpdateStep =>
+  model => {
+    const artworkUrl = currentArtworkUrl(model)
+    const playerOpened =
+      model.playerSheet._tag === 'Open' && before.playerSheet._tag !== 'Open'
+    return artworkUrl === undefined ||
+      (artworkUrl === currentArtworkUrl(before) && !playerOpened)
+      ? { model }
+      : artworkBackdrops.loadIfMissing(model, { artworkUrl })
+  }
+
+export const update = (model: Model, message: Message): UpdateReturn =>
+  Update.combine(model, [
+    stepModel => updateMessage(stepModel, message),
+    loadArtworkBackdrop(model),
+  ])
