@@ -20,6 +20,21 @@ export class WakeError extends Schema.TaggedError<WakeError>()('WakeError', {
   message: Schema.String,
 }) {}
 
+/** The part of a Home Assistant entity's state this reads. */
+const EntityState = Schema.Struct({ state: Schema.String })
+const decodeEntityState = Schema.decodeUnknownEffect(EntityState)
+
+/** A remote entity is `on` or `off`; anything else (`unavailable`) is unknown. */
+export const powerFromState = (state: string): Option.Option<boolean> => {
+  if (state === 'on') {
+    return Option.some(true)
+  } else if (state === 'off') {
+    return Option.some(false)
+  } else {
+    return Option.none()
+  }
+}
+
 export interface WakeableDevice {
   readonly id: string
   readonly name: string
@@ -31,6 +46,13 @@ export class TvWaker extends Context.Service<
     /** Devices that can be woken, so they show up even while offline. */
     readonly devices: ReadonlyArray<WakeableDevice>
     readonly wake: (deviceId: string) => Effect.Effect<void, WakeError>
+    /**
+     * Whether the TV itself is on, as Home Assistant sees it. `None` when
+     * Home Assistant can't tell (it lost the TV, or did not answer).
+     */
+    readonly isPoweredOn: (
+      deviceId: string,
+    ) => Effect.Effect<Option.Option<boolean>>
   }
 >()('music/TvWaker') {}
 
@@ -64,10 +86,37 @@ export const TvWakerLive = Layer.effect(TvWaker)(
                 message: 'Waking the TV is not set up on the server.',
               }),
             ),
+          isPoweredOn: () => Effect.succeed(Option.none()),
         }),
       onSome: homeAssistant =>
         TvWaker.of({
           devices: [{ id: deviceId, name }],
+          isPoweredOn: id =>
+            id !== deviceId
+              ? Effect.succeed(Option.none())
+              : Effect.tryPromise(async signal => {
+                  const response = await fetch(
+                    `${homeAssistant.url}/api/states/${encodeURIComponent(homeAssistant.entityId)}`,
+                    {
+                      signal,
+                      headers: {
+                        authorization: `Bearer ${Redacted.value(homeAssistant.token)}`,
+                      },
+                    },
+                  )
+                  if (!response.ok) {
+                    throw new Error(
+                      `Home Assistant answered ${response.status}`,
+                    )
+                  }
+                  const body: unknown = await response.json()
+                  return body
+                }).pipe(
+                  Effect.flatMap(decodeEntityState),
+                  Effect.map(entity => powerFromState(entity.state)),
+                  Effect.timeout('5 seconds'),
+                  Effect.orElseSucceed(() => Option.none<boolean>()),
+                ),
           wake: id =>
             id !== deviceId
               ? Effect.fail(

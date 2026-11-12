@@ -10,6 +10,7 @@
         "kind": "Web",
         "online": true,
         "waking": false,
+        "poweredOn": null,
         "volume": null
       },
       {
@@ -18,6 +19,7 @@
         "kind": "Tv",
         "online": false,
         "waking": true,
+        "poweredOn": false,
         "volume": 0.25
       }
     ],

@@ -6,6 +6,7 @@ import {
   Match,
   Option,
   Queue,
+  Schedule,
   Schema,
   Scope,
   Semaphore,
@@ -57,6 +58,10 @@ const LYRICS_AHEAD = 2
 const MAX_WARMED_LYRICS = 500
 /** Song lengths remembered before the memory starts over. */
 const KNOWN_DURATIONS_CAPACITY = 2000
+/** How often to ask Home Assistant whether the TV is on, while a phone looks. */
+const POWER_POLL_INTERVAL = '20 seconds'
+/** Device names remembered, to show a player that went away. */
+const KNOWN_DEVICES_CAPACITY = 200
 
 /** A volume from a client, kept between 0 and 1. */
 const clampVolume = (level: number): number =>
@@ -106,6 +111,13 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     const connections = new Map<number, Connection>()
     /** Each connection's own volume, as its device last reported it. */
     const volumes = new Map<number, number | null>()
+    /** Every device seen, so a player that went offline keeps its name. */
+    const knownDevices = new Map<
+      string,
+      { readonly name: string; readonly kind: Session.DeviceKind }
+    >()
+    /** Whether each TV is on, as Home Assistant last said. */
+    const poweredOn = new Map<string, boolean>()
     let nextConnectionId = 0
     let nextEntryId = 0
 
@@ -128,6 +140,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
           kind: connection.kind,
           online: true,
           waking: false,
+          poweredOn: poweredOn.get(connection.deviceId) ?? null,
           volume: volumes.get(connectionId) ?? null,
         })
       }
@@ -139,9 +152,34 @@ export const SessionHubLive = Layer.effect(SessionHub)(
             kind: 'Tv',
             online: false,
             waking: model.waking.includes(device.id),
+            poweredOn: poweredOn.get(device.id) ?? null,
             volume: null,
           })
         }
+      }
+      // NOTE: the player stays listed while it is away (a locked phone, a
+      // closed TV app), so every device can say where the session is.
+      const maybeAway = Option.flatMap(
+        Option.fromNullishOr(model.activeDeviceId),
+        id =>
+          byId.has(id)
+            ? Option.none()
+            : Option.map(Option.fromNullishOr(knownDevices.get(id)), known => ({
+                id,
+                ...known,
+              })),
+      )
+      if (Option.isSome(maybeAway)) {
+        const away = maybeAway.value
+        byId.set(away.id, {
+          id: away.id,
+          name: away.name,
+          kind: away.kind,
+          online: false,
+          waking: model.waking.includes(away.id),
+          poweredOn: null,
+          volume: null,
+        })
       }
       return [...byId.values()]
     }
@@ -484,6 +522,17 @@ export const SessionHubLive = Layer.effect(SessionHub)(
               senderId = message.deviceId
               yield* FiberMap.remove(timers, `lost:${message.deviceId}`)
               yield* FiberMap.remove(timers, `wake:${message.deviceId}`)
+              if (knownDevices.size >= KNOWN_DEVICES_CAPACITY) {
+                knownDevices.clear()
+              }
+              knownDevices.set(message.deviceId, {
+                name: message.name,
+                kind: message.kind,
+              })
+              // A phone that opens the app sees fresh TV power at once.
+              if (message.kind === 'Web') {
+                yield* Effect.forkIn(checkPower, hubScope)
+              }
               maybeJoining = Option.some({
                 deviceId: message.deviceId,
                 name: message.name,
@@ -546,6 +595,39 @@ export const SessionHubLive = Layer.effect(SessionHub)(
           }
         }).pipe(Effect.ignore)
       }).pipe(Effect.ignore)
+
+    const hasWebConnection = () => {
+      for (const connection of connections.values()) {
+        if (connection.kind === 'Web') return true
+      }
+      return false
+    }
+
+    /** Ask Home Assistant whether each TV is on, and tell phones when it changes. */
+    const checkPower = Effect.forEach(
+      waker.devices,
+      device =>
+        waker.isPoweredOn(device.id).pipe(
+          Effect.flatMap(maybeOn => {
+            const before = poweredOn.get(device.id)
+            Option.match(maybeOn, {
+              onNone: () => poweredOn.delete(device.id),
+              onSome: on => poweredOn.set(device.id, on),
+            })
+            return before === poweredOn.get(device.id)
+              ? Effect.void
+              : apply(refresh)
+          }),
+        ),
+      { discard: true },
+    )
+
+    yield* Effect.suspend(() =>
+      hasWebConnection() ? checkPower : Effect.void,
+    ).pipe(
+      Effect.repeat(Schedule.spaced(POWER_POLL_INTERVAL)),
+      Effect.forkIn(hubScope),
+    )
 
     return SessionHub.of({
       handle,

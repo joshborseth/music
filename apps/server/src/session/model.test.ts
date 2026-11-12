@@ -507,6 +507,75 @@ describe('session model', () => {
     expect(outcome.positionSeconds).toBe(10)
   })
 
+  test('waking the TV opens it without moving playback', () => {
+    const model = playing()
+    const outcome = update(
+      model,
+      { _tag: 'Wake', deviceId: 'tv' },
+      makeContext('phone', 2_000, ['phone']),
+    )
+    expect(outcome.model.activeDeviceId).toBe('phone')
+    expect(outcome.model.waking).toEqual(['tv'])
+    expect(outcome.model.seekSeq).toBe(model.seekSeq)
+    expect(outcome.maybeWake).toEqual(Option.some('tv'))
+    expect(outcome.broadcast).toBe(true)
+  })
+
+  test('waking a TV that is already open, or one that cannot wake, does nothing', () => {
+    const model = playing()
+    const open = update(
+      model,
+      { _tag: 'Wake', deviceId: 'tv' },
+      makeContext('phone', 2_000),
+    )
+    expect(open.model).toEqual(model)
+    expect(open.maybeWake).toEqual(Option.none())
+    const unknown = update(
+      model,
+      { _tag: 'Wake', deviceId: 'laptop' },
+      makeContext('phone', 2_000, ['phone']),
+    )
+    expect(unknown.maybeWake).toEqual(Option.none())
+    expect(Option.isSome(unknown.maybeNotice)).toBe(true)
+  })
+
+  test('a woken TV that is not the player connects without making the player reload', () => {
+    const woken = update(
+      playing(),
+      { _tag: 'Wake', deviceId: 'tv' },
+      makeContext('phone', 2_000, ['phone']),
+    ).model
+    const connected = update(
+      woken,
+      { _tag: 'Hello', deviceId: 'tv', name: 'TV', kind: 'Tv', player: null },
+      makeContext('tv', 5_000),
+    ).model
+    expect(connected.waking).toEqual([])
+    expect(connected.activeDeviceId).toBe('phone')
+    expect(connected.seekSeq).toBe(woken.seekSeq)
+    expect(connected.foreignSeekSeq).toBe(woken.foreignSeekSeq)
+  })
+
+  test('a TV that was moved away from before it opened does not make the player reload', () => {
+    const toTv = update(
+      playing(),
+      { _tag: 'Transfer', deviceId: 'tv' },
+      makeContext('phone', 2_000, ['phone']),
+    ).model
+    const back = update(
+      toTv,
+      { _tag: 'Transfer', deviceId: 'phone' },
+      makeContext('phone', 3_000, ['phone']),
+    ).model
+    const connected = update(
+      back,
+      { _tag: 'Hello', deviceId: 'tv', name: 'TV', kind: 'Tv', player: null },
+      makeContext('tv', 5_000),
+    ).model
+    expect(connected.activeDeviceId).toBe('phone')
+    expect(connected.seekSeq).toBe(back.seekSeq)
+  })
+
   test('a TV that never wakes stops playback with a notice', () => {
     const waking = update(
       playing(),
@@ -699,6 +768,7 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-skip-to.json',
     'client-remove-entry.json',
     'client-transfer.json',
+    'client-wake.json',
     'client-volume.json',
     'client-volume-fixed.json',
     'client-set-device-volume.json',

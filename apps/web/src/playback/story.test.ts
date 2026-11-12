@@ -61,6 +61,7 @@ const sessionState = (
       kind: 'Web',
       online: true,
       waking: false,
+      poweredOn: null,
       volume: null,
     },
     {
@@ -69,6 +70,7 @@ const sessionState = (
       kind: 'Tv',
       online: true,
       waking: false,
+      poweredOn: null,
       volume: null,
     },
   ],

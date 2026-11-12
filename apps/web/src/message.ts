@@ -181,6 +181,7 @@ export const Message = defineMessageUnion({
   ClickedPreviousTrack: {},
   ChangedSeekPosition: { seconds: Schema.Number },
   ClickedDevice: { deviceId: Schema.String },
+  ClickedWakeDevice: { deviceId: Schema.String },
   ClickedQueueEntry: { entryId: Schema.String },
   ClickedRemoveQueueEntry: { entryId: Schema.String },
   ClickedToggleAutoplay: {},

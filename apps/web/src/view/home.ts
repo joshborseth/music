@@ -1,9 +1,10 @@
 import { Array, Option } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
-import { Play } from 'lucide'
+import { Play, Speaker, Tv } from 'lucide'
 
 import { icon } from '@/lib/icons'
+import { cn } from '@/lib/utils'
 import {
   LIKED_PLAYLIST_ID,
   type MyLibrary,
@@ -20,6 +21,7 @@ import { type PageModel } from './page'
 import {
   ArtworkShape,
   type NowPlaying,
+  type PlayOn,
   artistNames,
   artworkImage,
   emptyState,
@@ -168,12 +170,45 @@ const isNothingYet = (model: PageModel, library: MyLibrary): boolean =>
   Array.isReadonlyArrayEmpty(library.likedVideoIds) &&
   Array.every(library.playlists, playlist => playlist.isLiked)
 
+/**
+ * Where songs play, and the way to the device picker even when nothing
+ * plays: to turn the TV on, or to pick it before choosing a song.
+ */
+const playOnButton = (playOn: PlayOn, h: HtmlBuilder<Message>): Html =>
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(Message.ClickedDevices()),
+      h.AriaLabel(
+        Option.match(playOn.maybeDeviceName, {
+          onNone: () => 'Choose where to play',
+          onSome: name => `Playing on ${name}. Choose where to play`,
+        }),
+      ),
+      h.Class(
+        cn(
+          'mb-1 flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-full px-2 text-[15px] font-semibold active:opacity-50',
+          Option.isSome(playOn.maybeDeviceName)
+            ? 'bg-primary/15 text-primary px-3'
+            : 'text-primary',
+        ),
+      ),
+    ],
+    [
+      icon(h, playOn.isTv ? Tv : Speaker, 'size-[22px] shrink-0'),
+      Option.match(playOn.maybeDeviceName, {
+        onNone: () => h.empty,
+        onSome: name => h.span([h.Class('line-clamp-1 max-w-32')], [name]),
+      }),
+    ],
+  )
+
 /** Home: only my music. What I played lately, my playlists, my likes. */
 export const homeView = (
   model: PageModel,
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => [
-  ...largeTitleHeader('Home', h.empty, h),
+  ...largeTitleHeader('Home', playOnButton(model.playOn, h), h),
   remote(
     myLibraryQuery.read(model.myLibrary),
     {

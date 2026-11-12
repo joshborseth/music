@@ -270,7 +270,6 @@ const transition = (
     Match.withReturnType<Outcome>(),
     Match.tagsExhaustive({
       Hello: message => {
-        const isWaking = model.waking.includes(context.senderId)
         const waking = model.waking.filter(id => id !== context.senderId)
         const maybeReport = Option.filter(
           Option.fromNullishOr(message.player),
@@ -311,7 +310,10 @@ const transition = (
           waking,
           pausedForLostPlayer: isPlayer ? false : model.pausedForLostPlayer,
           // A device that comes back as the player reloads where it left off.
-          seekSeq: isWaking || isPlayer ? model.seekSeq + 1 : model.seekSeq,
+          // NOTE: a TV that was only woken (`Wake`, or a transfer that moved
+          // on before it opened) is not the player; jumping would make the
+          // device that plays reload for nothing.
+          seekSeq: isPlayer ? model.seekSeq + 1 : model.seekSeq,
           ...(isPlayer
             ? { positionSeconds: currentPosition(model, now), positionAt: now }
             : {}),
@@ -507,6 +509,20 @@ const transition = (
         return {
           ...changed(moved),
           maybeWake: online ? Option.none() : Option.some(target),
+        }
+      },
+
+      Wake: message => {
+        const target = message.deviceId
+        if (context.isOnline(target) || model.waking.includes(target)) {
+          return quiet(model)
+        }
+        if (!context.isWakeable(target)) {
+          return notice(model, "That device can't be turned on from here.")
+        }
+        return {
+          ...changed({ ...model, waking: Array.union(model.waking, [target]) }),
+          maybeWake: Option.some(target),
         }
       },
 
