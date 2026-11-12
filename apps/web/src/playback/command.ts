@@ -27,6 +27,11 @@ import { cachedSong, prefetchSongs, recordPlay } from './songCache'
 
 const RECONNECT_DELAY = Duration.seconds(2)
 const NOTICE_DURATION = Duration.seconds(6)
+/**
+ * How long the volume slider stays where it was let go, while the device
+ * sets its volume and reports it back.
+ */
+const VOLUME_DRAFT_HOLD = Duration.millis(1500)
 
 /**
  * A very short silent WAV. Playing it from a tap lets iOS play this audio
@@ -134,6 +139,18 @@ export const WaitBeforeHideNotice = Command.define('WaitBeforeHideNotice', {
       Effect.as(Message.CompletedWaitBeforeHideNotice({ message })),
     ),
 })
+
+export const WaitBeforeForgetVolumeDraft = Command.define(
+  'WaitBeforeForgetVolumeDraft',
+  {
+    args: { percent: Schema.Number },
+    messages: [Message.CompletedWaitBeforeForgetVolumeDraft],
+    execute: ({ percent }) =>
+      Effect.sleep(VOLUME_DRAFT_HOLD).pipe(
+        Effect.as(Message.CompletedWaitBeforeForgetVolumeDraft({ percent })),
+      ),
+  },
+)
 
 export const ReadClock = Command.define('ReadClock', {
   messages: [Message.TickedClock],

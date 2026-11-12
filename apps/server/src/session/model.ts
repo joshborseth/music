@@ -44,6 +44,18 @@ export const initialModel: Model = {
   waking: [],
 }
 
+/**
+ * Messages about a device's own volume. The hub keeps volumes with the
+ * connections, because they belong to devices, not to the session.
+ */
+export type DeviceMessage = Extract<
+  Session.ClientMessage,
+  { readonly _tag: 'Volume' | 'SetDeviceVolume' }
+>
+
+/** Messages that change the session. */
+export type SessionMessage = Exclude<Session.ClientMessage, DeviceMessage>
+
 /** What the hub knows about the world when a message arrives. */
 export interface Context {
   readonly now: number
@@ -200,7 +212,7 @@ const PLAYER_OWN_JUMPS: ReadonlySet<Session.ClientMessage['_tag']> = new Set([
 /** Anyone playing, pausing, or taking over ends a pause for a lost player. */
 const forgetLostPlayerPause = (
   model: Model,
-  message: Session.ClientMessage,
+  message: SessionMessage,
   outcome: Outcome,
 ): Outcome =>
   outcome.model.pausedForLostPlayer &&
@@ -214,7 +226,7 @@ const forgetLostPlayerPause = (
 /** Apply a message, and remember a jump the player did not make itself. */
 export const update = (
   model: Model,
-  message: Session.ClientMessage,
+  message: SessionMessage,
   context: Context,
 ): Outcome => {
   const outcome = forgetLostPlayerPause(
@@ -238,7 +250,7 @@ export const update = (
 
 const transition = (
   model: Model,
-  message: Session.ClientMessage,
+  message: SessionMessage,
   context: Context,
 ): Outcome => {
   const { now } = context

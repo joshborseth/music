@@ -9,14 +9,16 @@
         "name": "iPhone",
         "kind": "Web",
         "online": true,
-        "waking": false
+        "waking": false,
+        "volume": null
       },
       {
         "id": "tv",
         "name": "TV",
         "kind": "Tv",
         "online": false,
-        "waking": true
+        "waking": true,
+        "volume": 0.25
       }
     ],
     "activeDeviceId": "tv",

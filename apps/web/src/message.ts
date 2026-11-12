@@ -159,6 +159,12 @@ export const Message = defineMessageUnion({
   UpdatedScrubPosition: { seconds: Schema.Number },
   CancelledScrub: {},
   ClickedSkipBy: { seconds: Schema.Number },
+  CompletedFollowVolumeDrags: {},
+  /** Volumes are whole percents, 0 to 100. */
+  UpdatedVolumeDrag: { percent: Schema.Number },
+  ChangedVolume: { percent: Schema.Number },
+  CancelledVolumeDrag: {},
+  CompletedWaitBeforeForgetVolumeDraft: { percent: Schema.Number },
   CompletedUpdateMediaSession: {},
   UpdatedPhoneAudioTime: {
     entryId: Schema.String,

@@ -294,66 +294,65 @@ export const DragToDismiss = Mount.defineStream('DragToDismiss', {
     ),
 })
 
-// SEEK BAR
+// RANGE DRAGS
 
-const SEEK_INPUT_SELECTOR = 'input[type="range"]'
+const RANGE_INPUT_SELECTOR = 'input[type="range"]'
 
-type SeekBarMessage =
-  | typeof Message.CompletedFollowSeekBarDrags.Type
-  | typeof Message.UpdatedScrubPosition.Type
-  | typeof Message.ChangedSeekPosition.Type
-  | typeof Message.CancelledScrub.Type
+/** What a drag on a range bar reports, in the input's own whole units. */
+interface RangeDrag {
+  readonly moved: (value: number) => void
+  readonly released: (value: number) => void
+  readonly cancelled: () => void
+}
 
-/** The whole second under `clientX` on the bar's range input, if it has a length. */
-const secondsAt = (area: HTMLElement, clientX: number): number | undefined => {
-  const input = area.querySelector(SEEK_INPUT_SELECTOR)
+/** The whole unit under `clientX` on the bar's range input, if it has a length. */
+const valueAt = (area: HTMLElement, clientX: number): number | undefined => {
+  const input = area.querySelector(RANGE_INPUT_SELECTOR)
   if (!(input instanceof HTMLInputElement)) {
     return undefined
   }
-  const duration = Number(input.max)
+  const max = Number(input.max)
   const rect = input.getBoundingClientRect()
-  if (!(duration > 0) || rect.width <= 0) {
+  if (!(max > 0) || rect.width <= 0) {
     return undefined
   }
   const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
-  return Math.round(fraction * duration)
+  return Math.round(fraction * max)
 }
 
 /**
- * Lets a finger land anywhere on the seek bar and drag, jumping the thumb
- * under it. iOS only drags a native range input by its thumb, so the input
- * itself ignores pointers and keeps keyboard and screen reader use.
+ * Lets a finger land anywhere on a range bar (the seek bar, the volume
+ * slider) and drag, jumping the thumb under it. iOS only drags a native
+ * range input by its thumb, so the input itself ignores pointers and keeps
+ * keyboard and screen reader use.
  */
-const followSeekBar = (
-  area: HTMLElement,
-  emit: (message: SeekBarMessage) => void,
-) => {
+const followRangeDrags = (area: HTMLElement, drag: RangeDrag) => {
   let maybePointerId: number | undefined
-  let seconds = 0
+  let value = 0
 
   const handlePointerDown = (event: PointerEvent) => {
     if (maybePointerId !== undefined || event.button !== 0) {
       return
     }
-    const maybeSeconds = secondsAt(area, event.clientX)
-    if (maybeSeconds === undefined) {
+    const maybeValue = valueAt(area, event.clientX)
+    if (maybeValue === undefined) {
       return
     }
     event.preventDefault()
     area.setPointerCapture(event.pointerId)
     maybePointerId = event.pointerId
-    seconds = maybeSeconds
-    emit(Message.UpdatedScrubPosition({ seconds }))
+    value = maybeValue
+    drag.moved(value)
   }
 
   const handlePointerMove = (event: PointerEvent) => {
     if (event.pointerId !== maybePointerId) {
       return
     }
-    const maybeSeconds = secondsAt(area, event.clientX)
-    if (maybeSeconds !== undefined && maybeSeconds !== seconds) {
-      seconds = maybeSeconds
-      emit(Message.UpdatedScrubPosition({ seconds }))
+    const maybeValue = valueAt(area, event.clientX)
+    if (maybeValue !== undefined && maybeValue !== value) {
+      value = maybeValue
+      drag.moved(value)
     }
   }
 
@@ -362,7 +361,7 @@ const followSeekBar = (
       return
     }
     maybePointerId = undefined
-    emit(Message.ChangedSeekPosition({ seconds }))
+    drag.released(value)
   }
 
   const handlePointerCancel = (event: PointerEvent) => {
@@ -370,7 +369,7 @@ const followSeekBar = (
       return
     }
     maybePointerId = undefined
-    emit(Message.CancelledScrub())
+    drag.cancelled()
   }
 
   area.addEventListener('pointerdown', handlePointerDown)
@@ -388,6 +387,37 @@ const followSeekBar = (
   }
 }
 
+/** Follow range drags on `element` until the Mount ends, after `started`. */
+const rangeDragStream = <M>(
+  element: Element,
+  started: M,
+  toDrag: (emit: (message: M) => void) => RangeDrag,
+) =>
+  Stream.callback<M>(queue =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const stopFollowing =
+          element instanceof HTMLElement
+            ? followRangeDrags(
+                element,
+                toDrag(message => Queue.offerUnsafe(queue, message)),
+              )
+            : () => {}
+        Queue.offerUnsafe(queue, started)
+        return stopFollowing
+      }),
+      stopFollowing => Effect.sync(stopFollowing),
+    ).pipe(Effect.flatMap(() => Effect.never)),
+  )
+
+// SEEK BAR
+
+type SeekBarMessage =
+  | typeof Message.CompletedFollowSeekBarDrags.Type
+  | typeof Message.UpdatedScrubPosition.Type
+  | typeof Message.ChangedSeekPosition.Type
+  | typeof Message.CancelledScrub.Type
+
 /** Scrubs and seeks from pointer drags on the element it is mounted on. */
 export const FollowSeekBarDrags = Mount.defineStream('FollowSeekBarDrags', {
   messages: [
@@ -397,19 +427,41 @@ export const FollowSeekBarDrags = Mount.defineStream('FollowSeekBarDrags', {
     Message.CancelledScrub,
   ],
   execute: ({ element }) =>
-    Stream.callback<SeekBarMessage>(queue =>
-      Effect.acquireRelease(
-        Effect.sync(() => {
-          const stopFollowing =
-            element instanceof HTMLElement
-              ? followSeekBar(element, message =>
-                  Queue.offerUnsafe(queue, message),
-                )
-              : () => {}
-          Queue.offerUnsafe(queue, Message.CompletedFollowSeekBarDrags())
-          return stopFollowing
-        }),
-        stopFollowing => Effect.sync(stopFollowing),
-      ).pipe(Effect.flatMap(() => Effect.never)),
+    rangeDragStream<SeekBarMessage>(
+      element,
+      Message.CompletedFollowSeekBarDrags(),
+      emit => ({
+        moved: seconds => emit(Message.UpdatedScrubPosition({ seconds })),
+        released: seconds => emit(Message.ChangedSeekPosition({ seconds })),
+        cancelled: () => emit(Message.CancelledScrub()),
+      }),
+    ),
+})
+
+// VOLUME SLIDER
+
+type VolumeSliderMessage =
+  | typeof Message.CompletedFollowVolumeDrags.Type
+  | typeof Message.UpdatedVolumeDrag.Type
+  | typeof Message.ChangedVolume.Type
+  | typeof Message.CancelledVolumeDrag.Type
+
+/** Moves another device's volume from pointer drags on the element. */
+export const FollowVolumeDrags = Mount.defineStream('FollowVolumeDrags', {
+  messages: [
+    Message.CompletedFollowVolumeDrags,
+    Message.UpdatedVolumeDrag,
+    Message.ChangedVolume,
+    Message.CancelledVolumeDrag,
+  ],
+  execute: ({ element }) =>
+    rangeDragStream<VolumeSliderMessage>(
+      element,
+      Message.CompletedFollowVolumeDrags(),
+      emit => ({
+        moved: percent => emit(Message.UpdatedVolumeDrag({ percent })),
+        released: percent => emit(Message.ChangedVolume({ percent })),
+        cancelled: () => emit(Message.CancelledVolumeDrag()),
+      }),
     ),
 })

@@ -17,6 +17,7 @@ import {
   StopPhoneAudio,
   UnlockPhoneAudio,
   UpdateMediaSession,
+  WaitBeforeForgetVolumeDraft,
   WaitBeforeHideNotice,
   WaitBeforeReconnect,
 } from './command'
@@ -34,6 +35,7 @@ import {
   type SessionSnapshot,
   currentEntry,
   loadedEntry,
+  remoteVolumeDevice,
   sessionPosition,
   upcomingEntries,
 } from './domain'
@@ -831,6 +833,83 @@ export const scrub = (model: Model, seconds: number): PlaybackReturn => ({
 export const cancelScrub = (model: Model): PlaybackReturn => ({
   model: modifyFields(model, { maybeScrubSeconds: () => Option.none() }),
 })
+
+// VOLUME
+
+/** The device whose volume the slider moves. */
+const volumeTarget = (model: Model): Option.Option<Session.Device> =>
+  Option.flatMap(model.maybeSession, ({ state }) =>
+    remoteVolumeDevice(state, myDeviceId(model)),
+  )
+
+const clampPercent = (percent: number): number =>
+  Number.isFinite(percent) ? Math.min(100, Math.max(0, Math.round(percent))) : 0
+
+/**
+ * Move the slider to `percent`, and ask the device for that volume unless
+ * it was already asked.
+ */
+const moveVolume = (
+  model: Model,
+  percent: number,
+  isDragging: boolean,
+): PlaybackReturn =>
+  Option.match(volumeTarget(model), {
+    onNone: () => ({ model }),
+    onSome: device => {
+      const clamped = clampPercent(percent)
+      const wasAsked = Option.exists(
+        model.maybeVolumeDraft,
+        draft => draft.deviceId === device.id && draft.percent === clamped,
+      )
+      const moved = modifyFields(model, {
+        maybeVolumeDraft: () =>
+          Option.some({ deviceId: device.id, percent: clamped, isDragging }),
+      })
+      return {
+        model: moved,
+        commands: [
+          ...(wasAsked
+            ? []
+            : [
+                send({
+                  _tag: 'SetDeviceVolume',
+                  deviceId: device.id,
+                  level: clamped / 100,
+                }),
+              ]),
+          ...(isDragging
+            ? []
+            : [WaitBeforeForgetVolumeDraft({ percent: clamped })]),
+        ],
+      }
+    },
+  })
+
+/** The volume slider moved under a finger: the device follows as it moves. */
+export const dragVolume = (model: Model, percent: number): PlaybackReturn =>
+  moveVolume(model, percent, true)
+
+/** The volume slider was let go. It stays there until the device reports. */
+export const changeVolume = (model: Model, percent: number): PlaybackReturn =>
+  moveVolume(model, percent, false)
+
+/** A drag was cancelled: show the device's own volume again. */
+export const cancelVolumeDrag = (model: Model): PlaybackReturn => ({
+  model: modifyFields(model, { maybeVolumeDraft: () => Option.none() }),
+})
+
+/** Show the device's own volume, unless the slider moved again since. */
+export const forgetVolumeDraft = (
+  model: Model,
+  percent: number,
+): PlaybackReturn =>
+  Option.exists(
+    model.maybeVolumeDraft,
+    draft => !draft.isDragging && draft.percent === percent,
+  )
+    ? cancelVolumeDrag(model)
+    : { model }
 
 export const changePhoneAudioBuffering = (
   model: Model,
