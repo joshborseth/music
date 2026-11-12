@@ -34,23 +34,34 @@ export const page = (
     content,
   )
 
-// TOP BARS
+// TOP EDGE
+
+/**
+ * The top of the screen. There is no bar: content fades into the page color
+ * and softens as it scrolls under the status bar. Each page fades it in as
+ * its own header scrolls away, so the header shows untouched at the top.
+ */
+const scrollEdge = (className: string, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.AriaHidden(true), h.Class(cn('scroll-edge', className))],
+    [h.span([]), h.span([]), h.span([])],
+  )
 
 /** Covers the status bar so scrolled content never runs under the clock. */
 export const statusBarCover = (h: HtmlBuilder<Message>): Html =>
   h.div([
     h.AriaHidden(true),
     h.Class(
-      'page-glass pointer-events-none fixed inset-x-0 top-0 z-30 h-[var(--safe-top)]',
+      'status-bar-edge pointer-events-none fixed inset-x-0 top-0 z-30 h-[calc(var(--safe-top)+0.75rem)]',
     ),
   ])
 
-const compactTitleBar = (title: string, h: HtmlBuilder<Message>): Html =>
+const compactTitle = (title: string, h: HtmlBuilder<Message>): Html =>
   h.div(
     [
       h.AriaHidden(true),
       h.Class(
-        'reveal-on-scroll page-glass pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height))] items-end justify-center border-b pb-2.5',
+        'reveal-on-scroll pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height))] items-end justify-center pb-2.5',
       ),
     ],
     [h.span([h.Class('text-[17px] font-semibold')], [title])],
@@ -79,15 +90,18 @@ export const largeTitle = (
 
 /**
  * The top of a tab: a large title that scrolls away, replaced by a small
- * centered one in a frosted bar, as iOS does it.
+ * centered one over the top edge, as iOS does it.
  */
 export const largeTitleHeader = (
   title: string,
   maybeTrailing: Html,
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => [
-  statusBarCover(h),
-  compactTitleBar(title, h),
+  scrollEdge(
+    'reveal-on-scroll [--reveal-start:0px] [--reveal-end:var(--nav-bar-height)]',
+    h,
+  ),
+  compactTitle(title, h),
   largeTitle(title, maybeTrailing, h),
 ]
 
@@ -98,16 +112,17 @@ const backButton = (h: HtmlBuilder<Message>): Html =>
       h.OnClick(Message.ClickedBack()),
       h.AriaLabel('Back'),
       h.Class(
-        'pressable chrome pointer-events-auto flex size-10 items-center justify-center rounded-full border border-white/10 shadow-sm',
+        'pressable glass pointer-events-auto flex size-10 items-center justify-center rounded-full',
       ),
     ],
     [icon(h, ChevronLeft, 'size-6 -ml-0.5')],
   )
 
 /**
- * The bar over a detail page: a round back button floating over the hero,
- * and a frosted bar with the page title that fades in once the hero has
- * scrolled away.
+ * The top of a detail page: a round back button floating over the hero, and
+ * the top edge with the page title, which fade in together as the page's own
+ * title slides under them. The edge sits inside the title bar so it shares
+ * the reveal range that `SyncTitleBarReveal` measures onto it.
  */
 export const detailNavBar = (
   title: string,
@@ -118,10 +133,16 @@ export const detailNavBar = (
       h.AriaHidden(true),
       h.DataAttribute(TITLE_BAR_ATTRIBUTE, ''),
       h.Class(
-        'reveal-on-scroll page-glass pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height)+0.5rem)] items-end justify-center border-b px-16 pb-3 [--reveal-end:240px] [--reveal-start:180px]',
+        'reveal-on-scroll pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height)+0.5rem)] items-end justify-center px-16 pb-3 [--reveal-end:240px] [--reveal-start:180px]',
       ),
     ],
-    [h.span([h.Class('line-clamp-1 text-[17px] font-semibold')], [title])],
+    [
+      scrollEdge('', h),
+      h.span(
+        [h.Class('relative z-[31] line-clamp-1 text-[17px] font-semibold')],
+        [title],
+      ),
+    ],
   ),
   h.nav(
     [
@@ -148,8 +169,10 @@ const tabButton = (tab: Tab, activeTab: Tab, h: HtmlBuilder<Message>): Html => {
       h.OnClick(Message.ClickedTab({ tab })),
       h.Class(
         cn(
-          'flex flex-1 flex-col items-center justify-center gap-0.5 pt-1.5 transition-colors active:opacity-60',
-          isActive ? 'text-primary' : 'text-muted-foreground',
+          'flex flex-1 flex-col items-center justify-center gap-0.5 rounded-full transition-colors active:opacity-60',
+          isActive
+            ? 'text-primary bg-foreground/[0.07]'
+            : 'text-muted-foreground',
         ),
       ),
     ],
@@ -160,16 +183,28 @@ const tabButton = (tab: Tab, activeTab: Tab, h: HtmlBuilder<Message>): Html => {
   )
 }
 
-/** The bar along the bottom that switches between Home, Search, and Library. */
+/**
+ * The glass capsule floating along the bottom that switches between Home,
+ * Search, and Library, over a fade that softens the content behind it.
+ */
 export const tabBar = (model: Model, h: HtmlBuilder<Message>): Html =>
-  h.nav(
+  h.div(
     [
-      h.Role('tablist'),
-      h.AriaLabel('Sections'),
-      h.Style({ viewTransitionName: 'tab-bar' }),
       h.Class(
-        'chrome fixed inset-x-0 bottom-0 z-20 flex h-[calc(var(--tab-bar-height)+var(--safe-bottom))] border-t pb-[var(--safe-bottom)]',
+        'tab-bar-dock pointer-events-none fixed inset-x-0 bottom-0 z-20 px-3 pb-[var(--tab-bar-bottom)]',
       ),
     ],
-    Array.map(TABS, tab => tabButton(tab, model.navigation.activeTab, h)),
+    [
+      h.nav(
+        [
+          h.Role('tablist'),
+          h.AriaLabel('Sections'),
+          h.Style({ viewTransitionName: 'tab-bar' }),
+          h.Class(
+            'glass pointer-events-auto mx-auto flex h-[var(--tab-bar-height)] max-w-md rounded-full p-1',
+          ),
+        ],
+        Array.map(TABS, tab => tabButton(tab, model.navigation.activeTab, h)),
+      ),
+    ],
   )

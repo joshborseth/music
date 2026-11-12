@@ -131,8 +131,8 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
           h.Class(
             cn(
               hasMiniPlayer(model)
-                ? 'pb-[calc(var(--tab-bar-height)+var(--safe-bottom)+var(--mini-player-height)+1rem)]'
-                : 'pb-[calc(var(--tab-bar-height)+var(--safe-bottom)+0.5rem)]',
+                ? 'pb-[calc(var(--tab-bar-space)+var(--mini-player-height)+1.5rem)]'
+                : 'pb-[calc(var(--tab-bar-space)+1rem)]',
             ),
           ),
         ],

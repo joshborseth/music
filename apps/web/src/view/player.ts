@@ -191,10 +191,9 @@ const miniPlayer = (
   })
   return h.div(
     [
-      h.Style({ viewTransitionName: 'mini-player' }),
       onSwipeStart(SwipeTarget.MiniPlayer(), h),
       h.Class(
-        'fixed inset-x-2 bottom-[calc(var(--tab-bar-height)+var(--safe-bottom)+0.375rem)] z-20 touch-pan-y select-none',
+        'fixed inset-x-3 bottom-[calc(var(--tab-bar-space)+0.5rem)] z-20 mx-auto max-w-md touch-pan-y select-none',
       ),
     ],
     [
@@ -202,11 +201,14 @@ const miniPlayer = (
         [
           h.Class(
             cn(
-              'bg-card/95 relative flex h-[var(--mini-player-height)] items-center gap-1 overflow-hidden rounded-2xl border pr-1.5 shadow-lg shadow-black/25 backdrop-blur-xl backdrop-saturate-150',
+              'glass relative flex h-[var(--mini-player-height)] items-center gap-1 overflow-hidden rounded-[1.375rem] pr-1.5',
               swipeTransitionClass(maybeSwipe),
             ),
           ),
           h.Style({
+            // On the glass itself: a named ancestor would cut its blur off
+            // from the page behind.
+            viewTransitionName: 'mini-player',
             transform: `translateX(${swipeX * MINI_PLAYER_SWIPE_FOLLOW}px)`,
             opacity: (
               1 -
@@ -274,7 +276,7 @@ const miniPlayer = (
             [icon(h, SkipForward, 'size-6 fill-current stroke-[1.5]')],
           ),
           h.div(
-            [h.Class('absolute inset-x-3 bottom-0 h-[2px] rounded-full')],
+            [h.Class('absolute inset-x-6 bottom-0 h-[2px] rounded-full')],
             [
               h.div([
                 h.Class('bg-foreground/70 h-full rounded-full'),
@@ -847,7 +849,7 @@ const noticeToast = (model: Model, h: HtmlBuilder<Message>): Html =>
       h.div(
         [
           h.Class(
-            'pointer-events-none fixed inset-x-0 bottom-[calc(var(--tab-bar-height)+var(--safe-bottom)+var(--mini-player-height)+1rem)] z-50 flex justify-center px-6',
+            'pointer-events-none fixed inset-x-0 bottom-[calc(var(--tab-bar-space)+var(--mini-player-height)+1.25rem)] z-50 flex justify-center px-6',
           ),
         ],
         [
@@ -857,7 +859,7 @@ const noticeToast = (model: Model, h: HtmlBuilder<Message>): Html =>
               h.Role('status'),
               h.OnClick(Message.ClickedDismissNotice()),
               h.Class(
-                'toast chrome pointer-events-auto rounded-full border px-4 py-2.5 text-[15px] font-medium shadow-xl',
+                'toast glass pointer-events-auto rounded-full px-4 py-2.5 text-[15px] font-medium',
               ),
             ],
             [notice],
