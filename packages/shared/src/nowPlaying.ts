@@ -7,16 +7,11 @@ import { DeviceKind } from './session.ts'
  * lights in the house) that react to the music without joining the session.
  * JSON text frames over the WebSocket at `/now-playing`: the current value
  * on connect, then a new one whenever the song, play state, player, or
- * palette changes. Listeners send nothing and never appear as a device.
+ * cover color changes. Listeners send nothing and never appear as a device.
  */
 
-/** A color taken from the cover, as `#rrggbb` sRGB. */
-export const Swatch = Schema.Struct({
-  hex: Schema.String.check(Schema.isPattern(/^#[0-9a-f]{6}$/)),
-  /** How much of the cover this color fills, from 0 to 1. */
-  share: Schema.Number,
-})
-export type Swatch = typeof Swatch.Type
+/** A color as `#rrggbb` sRGB. */
+export const Hex = Schema.String.check(Schema.isPattern(/^#[0-9a-f]{6}$/))
 
 export const NowPlayingTrack = Schema.Struct({
   videoId: Schema.String,
@@ -40,10 +35,10 @@ export const NowPlaying = Schema.TaggedStruct('NowPlaying', {
   playing: Schema.Boolean,
   device: Schema.NullOr(NowPlayingDevice),
   /**
-   * The cover's colors, best first, each colorful enough for a bulb to show.
-   * Empty for a black, white, or grey cover, or when there is no artwork.
+   * The one color the cover reads as, the same one the full player is tinted
+   * with. Null for a black, white, or grey cover, or when there is no artwork.
    */
-  palette: Schema.Array(Swatch),
+  color: Schema.NullOr(Hex),
 })
 export type NowPlaying = typeof NowPlaying.Type
 

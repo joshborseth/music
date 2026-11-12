@@ -4,8 +4,8 @@ import sharp from 'sharp'
 
 import {
   backdropFromPixels,
+  colorFromPixels,
   oklabToRgb,
-  paletteFromPixels,
   rgbToOklab,
 } from './extract.ts'
 import { samplePixels } from './service.ts'
@@ -35,7 +35,7 @@ const near = (hex: string, [red, green, blue]: Rgb, tolerance = 6) => {
   )
 }
 
-describe('paletteFromPixels', () => {
+describe('colorFromPixels', () => {
   test('round-trips sRGB through OKLab', () => {
     const colors: ReadonlyArray<Rgb> = [
       [255, 0, 0],
@@ -54,35 +54,37 @@ describe('paletteFromPixels', () => {
   })
 
   test('a single-color cover gives that color', () => {
-    const palette = paletteFromPixels(pixels([[139, 206, 0], 2304]))
-    expect(palette).toHaveLength(1)
-    expect(palette[0]?.hex).toBe('#8bce00')
-    expect(palette[0]?.share).toBe(1)
+    expect(colorFromPixels(pixels([[139, 206, 0], 2304]))).toBe('#8bce00')
   })
 
   test('black, white, and grey covers give no color', () => {
     expect(
-      paletteFromPixels(
+      colorFromPixels(
         pixels(
           [[0, 0, 0], 1500],
           [[255, 255, 255], 500],
           [[128, 128, 128], 300],
         ),
       ),
-    ).toEqual([])
+    ).toBeNull()
   })
 
-  test('a large colorful area leads a small brighter one', () => {
-    const palette = paletteFromPixels(
+  test('a large colorful area beats a small brighter one', () => {
+    const color = colorFromPixels(
       pixels([[20, 60, 160], 1600], [[250, 220, 20], 120], [[0, 0, 0], 584]),
     )
-    expect(palette.map(({ hex }) => hex)).toHaveLength(2)
-    expect(near(palette[0]?.hex ?? '', [20, 60, 160])).toBe(true)
-    expect(near(palette[1]?.hex ?? '', [250, 220, 20])).toBe(true)
+    expect(near(color ?? '', [20, 60, 160])).toBe(true)
   })
 
-  test('drops specks and merges shades that look alike', () => {
-    const palette = paletteFromPixels(
+  test('a colored area beats a larger black one', () => {
+    const color = colorFromPixels(
+      pixels([[0, 0, 0], 1400], [[20, 60, 160], 900]),
+    )
+    expect(near(color ?? '', [20, 60, 160])).toBe(true)
+  })
+
+  test('merges shades that look alike', () => {
+    const color = colorFromPixels(
       pixels(
         [[200, 30, 30], 1000],
         [[205, 34, 32], 1000],
@@ -90,12 +92,22 @@ describe('paletteFromPixels', () => {
         [[255, 255, 255], 284],
       ),
     )
-    expect(palette).toHaveLength(1)
-    expect(near(palette[0]?.hex ?? '', [202, 32, 31])).toBe(true)
+    expect(near(color ?? '', [202, 32, 31])).toBe(true)
+  })
+
+  test('the lights and the backdrop share one hue', () => {
+    const rgb = pixels([[250, 200, 30], 1200], [[20, 60, 160], 1100])
+    const color = rgbToOklab(...channels(colorFromPixels(rgb) ?? ''))
+    const backdrop = rgbToOklab(...channels(backdropFromPixels(rgb) ?? ''))
+    expect(
+      Math.abs(
+        Math.atan2(color.b, color.a) - Math.atan2(backdrop.b, backdrop.a),
+      ),
+    ).toBeLessThan(0.1)
   })
 
   test('an empty image gives no color', () => {
-    expect(paletteFromPixels(new Uint8Array())).toEqual([])
+    expect(colorFromPixels(new Uint8Array())).toBeNull()
   })
 })
 
@@ -164,14 +176,17 @@ describe('samplePixels', () => {
       .jpeg()
       .toBuffer()
     const image = new Uint8Array(frame)
-    const trimmed = paletteFromPixels(
-      await Effect.runPromise(samplePixels(image, true)),
-    )
-    expect(trimmed[0]?.hex).toBe('#e03070')
-    expect(trimmed[0]?.share).toBeGreaterThan(0.95)
-    const untrimmed = paletteFromPixels(
-      await Effect.runPromise(samplePixels(image, false)),
-    )
-    expect(untrimmed[0]?.share).toBeLessThan(0.8)
+    const share = (rgb: Uint8Array) => {
+      let matching = 0
+      for (let offset = 0; offset + 2 < rgb.length; offset += 3) {
+        if ((rgb[offset] ?? 0) > 100) matching++
+      }
+      return matching / (rgb.length / 3)
+    }
+    const trimmed = await Effect.runPromise(samplePixels(image, true))
+    expect(colorFromPixels(trimmed)).toBe('#e03070')
+    expect(share(trimmed)).toBeGreaterThan(0.95)
+    const untrimmed = await Effect.runPromise(samplePixels(image, false))
+    expect(share(untrimmed)).toBeLessThan(0.8)
   })
 })

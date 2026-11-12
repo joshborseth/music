@@ -73,15 +73,13 @@ describe('toBase', () => {
   test('encodes to the JSON that listeners decode', () => {
     const value: NowPlaying.NowPlaying = {
       ...toBase(state),
-      palette: [{ hex: '#1281b6', share: 0.82 }],
+      color: '#1281b6',
     }
     const json = Schema.encodeSync(NowPlaying.NowPlayingJson)(value)
     expect(Schema.decodeSync(NowPlaying.NowPlayingJson)(json)).toEqual(value)
   })
 
-  test('rejects a swatch that is not #rrggbb', () => {
-    expect(() =>
-      Schema.decodeSync(NowPlaying.Swatch)({ hex: 'red', share: 1 }),
-    ).toThrow()
+  test('rejects a color that is not #rrggbb', () => {
+    expect(() => Schema.decodeSync(NowPlaying.Hex)('red')).toThrow()
   })
 })

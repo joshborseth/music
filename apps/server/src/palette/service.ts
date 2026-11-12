@@ -1,14 +1,12 @@
 import { Cache, Context, Data, Duration, Effect, Exit, Layer } from 'effect'
 import sharp from 'sharp'
 
-import type { NowPlaying } from '@music/shared'
-
 import { allowedArtworkUrl } from '../artwork.ts'
 import { type ArtworkColors, colorsFromPixels } from './extract.ts'
 
 /*
- * The colors of a song's artwork (the lights' palette and the full player's
- * backdrop), cached by URL. Google's square artwork is
+ * The color of a song's artwork (for the lights, and dimmed as the full
+ * player's backdrop), cached by URL. Google's square artwork is
  * fetched at a small size; anything else is shrunk after download. Video
  * thumbnails (i.ytimg.com) are letterboxed, so their black bars are trimmed
  * first.
@@ -31,10 +29,8 @@ export class ArtworkFetchError extends Data.TaggedError('ArtworkFetchError')<{
 export class ArtworkPalette extends Context.Service<
   ArtworkPalette,
   {
-    /** Never fails: artwork that cannot be read has no colors. */
-    readonly forUrl: (
-      url: string,
-    ) => Effect.Effect<ReadonlyArray<NowPlaying.Swatch>>
+    /** Never fails: artwork that cannot be read has no color. */
+    readonly colorFor: (url: string) => Effect.Effect<string | null>
     /** Never fails: artwork that cannot be read has no backdrop. */
     readonly backdropFor: (url: string) => Effect.Effect<string | null>
   }
@@ -117,12 +113,12 @@ export const ArtworkPaletteLive = Layer.effect(ArtworkPalette)(
           Effect.logWarning('Artwork colors unavailable', error.reason),
         ),
         Effect.orElseSucceed((): ArtworkColors => ({
-          palette: [],
+          color: null,
           backdrop: null,
         })),
       )
     return ArtworkPalette.of({
-      forUrl: url => Effect.map(colorsFor(url), ({ palette }) => palette),
+      colorFor: url => Effect.map(colorsFor(url), ({ color }) => color),
       backdropFor: url =>
         Effect.map(colorsFor(url), ({ backdrop }) => backdrop),
     })
