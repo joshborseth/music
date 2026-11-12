@@ -16,8 +16,22 @@ const track: Session.QueueTrack = {
 
 const state: Session.SessionState = {
   devices: [
-    { id: 'tv', name: 'TV', kind: 'Tv', online: true, waking: false },
-    { id: 'phone', name: 'Phone', kind: 'Web', online: true, waking: false },
+    {
+      id: 'tv',
+      name: 'TV',
+      kind: 'Tv',
+      online: true,
+      waking: false,
+      volume: null,
+    },
+    {
+      id: 'phone',
+      name: 'Phone',
+      kind: 'Web',
+      online: true,
+      waking: false,
+      volume: null,
+    },
   ],
   activeDeviceId: 'tv',
   queue: [

@@ -20,6 +20,7 @@ import {
   StopPhoneAudio,
   UnlockPhoneAudio,
   UpdateMediaSession,
+  WaitBeforeForgetVolumeDraft,
   WaitBeforeHideNotice,
   WaitBeforeReconnect,
 } from './command'
@@ -54,8 +55,22 @@ const sessionState = (
   seekSeq: number,
 ): Session.SessionState => ({
   devices: [
-    { id: PHONE_ID, name: 'iPhone', kind: 'Web', online: true, waking: false },
-    { id: 'tv', name: 'TV', kind: 'Tv', online: true, waking: false },
+    {
+      id: PHONE_ID,
+      name: 'iPhone',
+      kind: 'Web',
+      online: true,
+      waking: false,
+      volume: null,
+    },
+    {
+      id: 'tv',
+      name: 'TV',
+      kind: 'Tv',
+      online: true,
+      waking: false,
+      volume: null,
+    },
   ],
   activeDeviceId,
   queue: [entry],
@@ -1350,6 +1365,102 @@ describe('on the lock screen', () => {
         }),
       ),
       Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+})
+
+describe('the volume of the device playing', () => {
+  const playingOnTvAt = (volume: number | null): Model =>
+    modifyFields(connectedModel, {
+      maybeSession: () =>
+        Option.some({
+          state: {
+            ...sessionState('tv', 1),
+            devices: [
+              {
+                id: PHONE_ID,
+                name: 'iPhone',
+                kind: 'Web',
+                online: true,
+                waking: false,
+                volume: null,
+              },
+              {
+                id: 'tv',
+                name: 'TV',
+                kind: 'Tv',
+                online: true,
+                waking: false,
+                volume,
+              },
+            ],
+          },
+          clockOffsetMs: 0,
+        }),
+    })
+
+  const setTvVolume = (level: number) =>
+    SendToSession({
+      message: { _tag: 'SetDeviceVolume', deviceId: 'tv', level },
+    })
+
+  test('dragging the slider moves the TV as it goes, and holds where it was let go', () => {
+    story(
+      update,
+      given(playingOnTvAt(0.2)),
+      message(Message.UpdatedVolumeDrag({ percent: 35 })),
+      model(model => {
+        expect(model.maybeVolumeDraft).toStrictEqual(
+          Option.some({ deviceId: 'tv', percent: 35, isDragging: true }),
+        )
+      }),
+      Command.expectExact(setTvVolume(0.35)),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      // Let go where the TV was already asked to go: nothing more to send.
+      message(Message.ChangedVolume({ percent: 35 })),
+      Command.expectExact(WaitBeforeForgetVolumeDraft({ percent: 35 })),
+      model(model => {
+        expect(
+          Option.exists(model.maybeVolumeDraft, draft => !draft.isDragging),
+        ).toBe(true)
+      }),
+      Command.resolve(
+        WaitBeforeForgetVolumeDraft,
+        Message.CompletedWaitBeforeForgetVolumeDraft({ percent: 35 }),
+      ),
+      model(model => {
+        expect(model.maybeVolumeDraft).toStrictEqual(Option.none())
+      }),
+    )
+  })
+
+  test('the wait after letting go does not undo a drag that started since', () => {
+    story(
+      update,
+      given(
+        modifyFields(playingOnTvAt(0.5), {
+          maybeVolumeDraft: () =>
+            Option.some({ deviceId: 'tv', percent: 60, isDragging: true }),
+        }),
+      ),
+      message(Message.CompletedWaitBeforeForgetVolumeDraft({ percent: 50 })),
+      model(model => {
+        expect(model.maybeVolumeDraft).toStrictEqual(
+          Option.some({ deviceId: 'tv', percent: 60, isDragging: true }),
+        )
+      }),
+    )
+  })
+
+  test('nothing is sent when the TV fixed its volume', () => {
+    story(
+      update,
+      given(playingOnTvAt(null)),
+      message(Message.ChangedVolume({ percent: 50 })),
+      model(model => {
+        expect(model.maybeVolumeDraft).toStrictEqual(Option.none())
+      }),
+      Command.expectNone(),
     )
   })
 })

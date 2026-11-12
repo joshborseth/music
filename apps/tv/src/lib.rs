@@ -4,6 +4,8 @@
 //! session WebSocket, plays audio when the server makes it the active device,
 //! and shows what is playing either way.
 
+#[cfg(target_os = "android")]
+mod android_jni;
 mod audio;
 pub mod catalog;
 mod controller;
@@ -21,6 +23,7 @@ mod ui;
 pub mod update;
 pub mod view;
 mod visualizer;
+mod volume;
 
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -96,7 +99,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
         inbound,
     );
 
-    let controller = Controller::new(DEVICE_ID.to_owned(), engine, outbound);
+    let volume = volume::Volume::spawn(outbound.clone());
+    let controller = Controller::new(DEVICE_ID.to_owned(), engine, outbound, volume);
     handle.spawn(
         controller.run(inbound_receiver, event_receiver, action_receiver, |view| {
             let _ = slint::invoke_from_event_loop(move || {

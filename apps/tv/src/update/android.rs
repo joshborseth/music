@@ -38,11 +38,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use jni::errors::Error as JniError;
 use jni::objects::{JObject, JString, JValue};
-use jni::{Env, JavaVM, jni_sig, jni_str};
+use jni::{Env, jni_sig, jni_str};
 
 use super::Platform;
+use crate::android_jni::{Failure, Java, sdk_int, take_exception, with_context};
 
 /// How long a committed session may take to replace the app before we
 /// assume it is waiting for a confirmation.
@@ -207,93 +207,7 @@ impl Platform for Android {
     }
 }
 
-// ERRORS
-
-/// A JNI failure, or a message of our own.
-enum Failure {
-    Jni(JniError),
-    Message(String),
-}
-
-impl From<JniError> for Failure {
-    fn from(error: JniError) -> Self {
-        Self::Jni(error)
-    }
-}
-
-type Java<T> = Result<T, Failure>;
-
-/// Clear a pending Java exception, and describe it (or `error`).
-fn take_exception(env: &mut Env<'_>, error: Failure) -> String {
-    if env.exception_check() {
-        // NOTE: exception_catch clears it and keeps its class and message.
-        match env.exception_catch() {
-            Err(JniError::CaughtJavaException {
-                name, msg, stack, ..
-            }) => {
-                log::error!("update: {name}: {msg}\n{stack}");
-                return format!("{name}: {msg}");
-            }
-            Err(other) => log::error!("update: could not read a Java exception: {other}"),
-            Ok(()) => {}
-        }
-        if env.exception_check() {
-            env.exception_describe();
-            env.exception_clear();
-        }
-        return "a Java exception".into();
-    }
-    match error {
-        Failure::Jni(error) => error.to_string(),
-        Failure::Message(message) => message,
-    }
-}
-
-/// Run `work` on this thread, attached to the JavaVM, with the app's
-/// Activity (its Context). Never leaves an exception pending.
-fn with_context<T>(
-    what: &str,
-    work: impl for<'j> FnOnce(&mut Env<'j>, &JObject<'j>) -> Java<T>,
-) -> Result<T, String> {
-    let android = ndk_context::android_context();
-    if android.vm().is_null() || android.context().is_null() {
-        return Err(format!("{what}: Android's context is not ready"));
-    }
-    // SAFETY: android-activity set both from the live VM and its Activity
-    // (a global reference that lasts as long as the app).
-    let vm = unsafe { JavaVM::from_raw(android.vm().cast()) };
-    let outcome =
-        vm.attach_current_thread_for_scope(|env| -> Result<Result<T, String>, JniError> {
-            // SAFETY: see above; this borrows the global reference, never deletes it.
-            let context = unsafe { JObject::from_raw(env, android.context() as jni::sys::jobject) };
-            let result = work(env, &context);
-            let pending = env.exception_check();
-            Ok(match result {
-                Ok(value) if !pending => Ok(value),
-                Ok(_) => Err(take_exception(env, Failure::Message("an exception".into()))),
-                Err(error) => Err(take_exception(env, error)),
-            })
-        });
-    match outcome {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(message)) => Err(format!("{what}: {message}")),
-        Err(error) => Err(format!("{what}: could not attach to Java: {error}")),
-    }
-}
-
 // SMALL CALLS
-
-fn sdk_int() -> Result<i32, String> {
-    with_context("Build.VERSION.SDK_INT", |env, _| {
-        Ok(env
-            .get_static_field(
-                jni_str!("android/os/Build$VERSION"),
-                jni_str!("SDK_INT"),
-                jni_sig!("I"),
-            )?
-            .i()?)
-    })
-}
 
 fn rust_string<'j>(env: &mut Env<'j>, object: JObject<'j>) -> Java<String> {
     if object.is_null() {

@@ -38,6 +38,9 @@ pub struct Device {
     pub kind: DeviceKind,
     pub online: bool,
     pub waking: bool,
+    /// The device's own output volume (0 to 1), or none when it can't be set.
+    #[serde(default)]
+    pub volume: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -173,6 +176,16 @@ pub enum ClientMessage {
         entry_id: String,
         message: String,
     },
+    /// This TV's own volume (0 to 1), or none when the TV fixed it.
+    Volume {
+        level: Option<f64>,
+    },
+    /// Ask another device to change its volume (0 to 1).
+    #[serde(rename_all = "camelCase")]
+    SetDeviceVolume {
+        device_id: String,
+        level: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -190,6 +203,10 @@ pub enum ServerMessage {
     },
     Notice {
         message: String,
+    },
+    /// Change this TV's volume (0 to 1): a phone asked.
+    SetVolume {
+        level: f64,
     },
 }
 
@@ -218,6 +235,8 @@ mod tests {
         );
         assert_eq!(state.next_after_current().unwrap().entry_id, "e1");
         assert_eq!(state.devices[1].kind, DeviceKind::Tv);
+        assert_eq!(state.devices[0].volume, None);
+        assert_eq!(state.devices[1].volume, Some(0.25));
         assert!(server_now > state.position_at);
         assert!((state.position_at(state.position_at + 1500.0) - 13.5).abs() < 1e-9);
     }
@@ -226,6 +245,22 @@ mod tests {
     fn decodes_notice() {
         let message: ServerMessage = serde_json::from_str(&fixture("server-notice.json")).unwrap();
         assert!(matches!(message, ServerMessage::Notice { .. }));
+    }
+
+    #[test]
+    fn decodes_set_volume() {
+        let message: ServerMessage =
+            serde_json::from_str(&fixture("server-set-volume.json")).unwrap();
+        assert_eq!(message, ServerMessage::SetVolume { level: 0.4 });
+    }
+
+    #[test]
+    fn decodes_a_device_from_a_server_before_volume() {
+        let device: Device = serde_json::from_str(
+            r#"{ "id": "tv", "name": "TV", "kind": "Tv", "online": true, "waking": false }"#,
+        )
+        .unwrap();
+        assert_eq!(device.volume, None);
     }
 
     #[test]
@@ -336,6 +371,21 @@ mod tests {
                 "client-transfer.json",
                 ClientMessage::Transfer {
                     device_id: "tv".into(),
+                },
+            ),
+            (
+                "client-volume.json",
+                ClientMessage::Volume { level: Some(0.25) },
+            ),
+            (
+                "client-volume-fixed.json",
+                ClientMessage::Volume { level: None },
+            ),
+            (
+                "client-set-device-volume.json",
+                ClientMessage::SetDeviceVolume {
+                    device_id: "tv".into(),
+                    level: 0.4,
                 },
             ),
         ];

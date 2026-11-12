@@ -44,6 +44,12 @@ export const Device = Schema.Struct({
   online: Schema.Boolean,
   /** The server asked the TV to wake and open the app, and is waiting. */
   waking: Schema.Boolean,
+  /**
+   * The device's own output volume, from 0 to 1, as it last reported it.
+   * Null when it can't be set from another device (the phone, whose
+   * buttons the browser can't reach, and TV apps built before this field).
+   */
+  volume: Schema.NullOr(Schema.Number),
 })
 export type Device = typeof Device.Type
 
@@ -173,6 +179,21 @@ export const TrackFailed = Schema.TaggedStruct('TrackFailed', {
   message: Schema.String,
 })
 
+/**
+ * The sender's own output volume (0 to 1), when it connects and whenever it
+ * changes, however it changed (a remote, `SetVolume`). Null when it can't be
+ * set.
+ */
+export const Volume = Schema.TaggedStruct('Volume', {
+  level: Schema.NullOr(Schema.Number),
+})
+
+/** Ask a device to change its output volume (0 to 1). */
+export const SetDeviceVolume = Schema.TaggedStruct('SetDeviceVolume', {
+  deviceId: Schema.String,
+  level: Schema.Number,
+})
+
 export const ClientMessage = Schema.Union([
   Hello,
   PlayQueue,
@@ -189,6 +210,8 @@ export const ClientMessage = Schema.Union([
   Advanced,
   TrackEnded,
   TrackFailed,
+  Volume,
+  SetDeviceVolume,
 ])
 export type ClientMessage = typeof ClientMessage.Type
 
@@ -212,7 +235,12 @@ export const Notice = Schema.TaggedStruct('Notice', {
   message: Schema.String,
 })
 
-export const ServerMessage = Schema.Union([State, Notice])
+/** Change this device's output volume (0 to 1), as `SetDeviceVolume` asked. */
+export const SetVolume = Schema.TaggedStruct('SetVolume', {
+  level: Schema.Number,
+})
+
+export const ServerMessage = Schema.Union([State, Notice, SetVolume])
 export type ServerMessage = typeof ServerMessage.Type
 
 export const ClientMessageJson = Schema.fromJsonString(ClientMessage)

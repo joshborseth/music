@@ -6,6 +6,7 @@ import { Session } from '@music/shared'
 import {
   type Context,
   type Model,
+  type SessionMessage,
   currentPosition,
   fillDuration,
   initialModel,
@@ -196,7 +197,7 @@ describe('session model', () => {
   const hello = (
     player: Report | null,
     deviceId = 'phone',
-  ): Session.ClientMessage => ({
+  ): SessionMessage => ({
     _tag: 'Hello',
     deviceId,
     name: deviceId,
@@ -549,15 +550,16 @@ describe('session model', () => {
 describe('protocol fixtures shared with the TV app', () => {
   const read = (name: string) => Bun.file(new URL(name, FIXTURES)).text()
 
-  test.each(['server-state.json', 'server-notice.json'])(
-    '%s decodes as a server message',
-    async name => {
-      const decoded = Schema.decodeExit(Session.ServerMessageJson)(
-        await read(name),
-      )
-      expect(decoded._tag).toBe('Success')
-    },
-  )
+  test.each([
+    'server-state.json',
+    'server-notice.json',
+    'server-set-volume.json',
+  ])('%s decodes as a server message', async name => {
+    const decoded = Schema.decodeExit(Session.ServerMessageJson)(
+      await read(name),
+    )
+    expect(decoded._tag).toBe('Success')
+  })
 
   test.each([
     'client-hello.json',
@@ -571,6 +573,9 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-skip-to.json',
     'client-remove-entry.json',
     'client-transfer.json',
+    'client-volume.json',
+    'client-volume-fixed.json',
+    'client-set-device-volume.json',
   ])('%s decodes as a client message', async name => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(
       await read(name),

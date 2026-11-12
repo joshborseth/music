@@ -3,6 +3,7 @@ import {
   Effect,
   FiberMap,
   Layer,
+  Match,
   Option,
   Queue,
   Schema,
@@ -53,6 +54,10 @@ const QUEUE_END_RESOLVES = 3
 /** Song lengths remembered before the memory starts over. */
 const KNOWN_DURATIONS_CAPACITY = 2000
 
+/** A volume from a client, kept between 0 and 1. */
+const clampVolume = (level: number): number =>
+  Number.isFinite(level) ? Math.min(1, Math.max(0, level)) : 0
+
 interface Connection {
   readonly deviceId: string
   readonly name: string
@@ -94,6 +99,8 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       toSessionState(initialModel, []),
     )
     const connections = new Map<number, Connection>()
+    /** Each connection's own volume, as its device last reported it. */
+    const volumes = new Map<number, number | null>()
     let nextConnectionId = 0
     let nextEntryId = 0
 
@@ -109,13 +116,14 @@ export const SessionHubLive = Layer.effect(SessionHub)(
 
     const devices = (): ReadonlyArray<Session.Device> => {
       const byId = new Map<string, Session.Device>()
-      for (const connection of connections.values()) {
+      for (const [connectionId, connection] of connections) {
         byId.set(connection.deviceId, {
           id: connection.deviceId,
           name: connection.name,
           kind: connection.kind,
           online: true,
           waking: false,
+          volume: volumes.get(connectionId) ?? null,
         })
       }
       for (const device of waker.devices) {
@@ -126,6 +134,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
             kind: 'Tv',
             online: false,
             waking: model.waking.includes(device.id),
+            volume: null,
           })
         }
       }
@@ -166,6 +175,23 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         ),
       )
     })
+
+    /** Pass a volume change on to every connection of that device. */
+    const forwardVolume = (deviceId: string, level: number) =>
+      Effect.forEach(
+        connections.values(),
+        connection =>
+          connection.deviceId === deviceId
+            ? Queue.offer(
+                connection.mailbox,
+                encodeServerMessage({
+                  _tag: 'SetVolume',
+                  level: clampVolume(level),
+                }),
+              )
+            : Effect.void,
+        { discard: true },
+      )
 
     /** The state as it is, for one connection waiting on its `ack`. */
     const replyState = (connection: Connection) =>
@@ -396,7 +422,10 @@ export const SessionHubLive = Layer.effect(SessionHub)(
             onSome: deviceId =>
               Effect.gen(function* () {
                 yield* lock.withPermits(1)(
-                  Effect.sync(() => connections.delete(connectionId)),
+                  Effect.sync(() => {
+                    connections.delete(connectionId)
+                    volumes.delete(connectionId)
+                  }),
                 )
                 yield* apply(refresh)
                 if (!isOnline(deviceId)) {
@@ -437,13 +466,17 @@ export const SessionHubLive = Layer.effect(SessionHub)(
             }
             const joining = maybeJoining
             const from = senderId
-            // NOTE: progress comes every second and needs no answer.
+            // NOTE: progress comes every second, and a dragged volume slider
+            // many times a second. Neither needs an answer.
             const maybeReplyTo =
-              message._tag === 'Progress'
+              message._tag === 'Progress' || message._tag === 'SetDeviceVolume'
                 ? Option.none<Connection>()
                 : Option.orElse(joining, () =>
                     Option.fromNullishOr(connections.get(connectionId)),
                   )
+            if (message._tag === 'SetDeviceVolume') {
+              yield* forwardVolume(message.deviceId, message.level)
+            }
             yield* apply(current => {
               // NOTE: a connection joins as its Hello is applied, and each
               // message is counted as it is applied, both under the lock. So
@@ -453,7 +486,21 @@ export const SessionHubLive = Layer.effect(SessionHub)(
                 connections.set(connectionId, joining.value)
               }
               received += 1
-              return update(current, message, contextFor(from))
+              return Match.value(message).pipe(
+                Match.withReturnType<Outcome>(),
+                Match.tag('Volume', ({ level }) => {
+                  volumes.set(
+                    connectionId,
+                    level === null ? null : clampVolume(level),
+                  )
+                  return refresh(current)
+                }),
+                // NOTE: the device answers with `Volume` once it changed.
+                Match.tag('SetDeviceVolume', () => unchanged(current)),
+                Match.orElse(sessionMessage =>
+                  update(current, sessionMessage, contextFor(from)),
+                ),
+              )
             }, maybeReplyTo)
           })
 

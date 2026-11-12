@@ -41,12 +41,28 @@ type SessionSocketMessage =
   | typeof Message.ReceivedSessionNotice.Type
   | typeof Message.ClosedSessionSocket.Type
 
+/**
+ * Server messages for the phone. `SetVolume` goes only to devices that
+ * report a volume, which the phone never does: its own volume is its buttons'.
+ */
+type PhoneServerMessage = Exclude<
+  Session.ServerMessage,
+  { readonly _tag: 'SetVolume' }
+>
+
+const isForPhone = (
+  message: Session.ServerMessage,
+): message is PhoneServerMessage => message._tag !== 'SetVolume'
+
 const streamSessionMessages = (socket: WebSocket) =>
-  Stream.callback<Session.ServerMessage | 'Closed'>(queue =>
+  Stream.callback<PhoneServerMessage | 'Closed'>(queue =>
     Effect.acquireRelease(
       Effect.sync(() => {
         const handleMessage = (event: MessageEvent) => {
-          const maybeMessage = decodeServerMessage(event.data)
+          const maybeMessage = Option.filter(
+            decodeServerMessage(event.data),
+            isForPhone,
+          )
           if (Option.isSome(maybeMessage)) {
             Queue.offerUnsafe(queue, maybeMessage.value)
           }

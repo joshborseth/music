@@ -12,6 +12,7 @@ use crate::audio::{Command, Engine, Event};
 use crate::protocol::{ClientMessage, Placement, QueueTrack, ServerMessage, SessionState};
 use crate::session::Inbound;
 use crate::view::View;
+use crate::volume::Volume;
 
 /// What the remote asks of the session.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +52,7 @@ pub struct Controller {
     device_id: String,
     engine: Engine,
     outbound: UnboundedSender<ClientMessage>,
+    volume: Volume,
     connected: bool,
     state: Option<SessionState>,
     /// Server clock minus local clock, in ms.
@@ -70,11 +72,13 @@ impl Controller {
         device_id: String,
         engine: Engine,
         outbound: UnboundedSender<ClientMessage>,
+        volume: Volume,
     ) -> Self {
         Self {
             device_id,
             engine,
             outbound,
+            volume,
             connected: false,
             state: None,
             clock_offset: 0.0,
@@ -130,12 +134,16 @@ impl Controller {
 
     fn on_inbound(&mut self, message: Inbound) {
         match message {
-            Inbound::Connected => self.connected = true,
+            Inbound::Connected => {
+                self.connected = true;
+                self.volume.report();
+            }
             // Keep playing what is loaded; the server pauses it if we stay away.
             Inbound::Disconnected => self.connected = false,
             Inbound::Message(ServerMessage::Notice { message }) => {
                 self.notice = Some((message, Instant::now()));
             }
+            Inbound::Message(ServerMessage::SetVolume { level }) => self.volume.set(level),
             Inbound::Message(ServerMessage::State {
                 state, server_now, ..
             }) => {
