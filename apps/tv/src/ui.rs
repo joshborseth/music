@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use slint::platform::Key as SlintKey;
@@ -32,6 +33,7 @@ use crate::protocol::Placement;
 use crate::update::UpdateStatus;
 use crate::view::{PlayClock, View, clock};
 use crate::visualizer::{Analyzer, BARS};
+use crate::visuals::{Cover, Visuals};
 use crate::{
     App, ButtonData, CardData, HintData, KeyData, LyricRowData, MenuItemData, RowData, ShelfData,
     UpNextData,
@@ -85,6 +87,7 @@ struct Hero {
     image: Image,
     backdrop: Option<Image>,
     tint: Color,
+    cover: Option<Arc<Cover>>,
 }
 
 struct Models {
@@ -215,6 +218,9 @@ pub struct Ui {
     analyzer: Analyzer,
     bars_timer: Timer,
     tick_timer: Timer,
+    /// The screensaver's visuals, while they run.
+    visuals: Option<Visuals>,
+    visuals_timer: Timer,
     ok_down: Option<Instant>,
     ok_held: bool,
     /// The app let Android have the last Back press, so it lets the release go too.
@@ -268,6 +274,8 @@ impl Ui {
             analyzer: Analyzer::new(),
             bars_timer: Timer::default(),
             tick_timer: Timer::default(),
+            visuals: None,
+            visuals_timer: Timer::default(),
             ok_down: None,
             ok_held: false,
             back_released_to_android: false,
@@ -538,6 +546,7 @@ impl Ui {
         }
         self.draw_lyric_rows();
         self.update_bars();
+        self.update_visuals();
     }
 
     // LYRICS
@@ -625,6 +634,69 @@ impl Ui {
         }
     }
 
+    /// The screensaver paints the music while this TV plays it.
+    fn update_visuals(&mut self) {
+        let session = &self.nav.session;
+        let wanted = self.saver && session.here && session.playing;
+        if !wanted {
+            if self.visuals.take().is_some() {
+                self.visuals_timer.stop();
+                if let Some(app) = self.app.upgrade() {
+                    app.set_saver_visuals(false);
+                    app.set_saver_frame(Image::default());
+                }
+            }
+            return;
+        }
+        let cover = self.current_cover();
+        match &self.visuals {
+            Some(visuals) => visuals.set_cover(cover),
+            None => {
+                self.visuals = Some(Visuals::start(cover));
+                self.visuals_timer.start(TimerMode::Repeated, FRAME, || {
+                    with(Ui::show_visuals);
+                });
+            }
+        }
+    }
+
+    fn show_visuals(&mut self) {
+        let Some(frame) = self.visuals.as_ref().and_then(Visuals::take_frame) else {
+            return;
+        };
+        if let Some(app) = self.app.upgrade() {
+            app.set_saver_frame(Image::from_rgba8(frame));
+            app.set_saver_visuals(true);
+        }
+    }
+
+    /// The decoded cover of the song playing now, if it has arrived.
+    fn current_cover(&self) -> Option<Arc<Cover>> {
+        let url = self
+            .nav
+            .session
+            .current_entry()?
+            .track
+            .artwork_url
+            .as_deref()?;
+        let hero = self.hero.as_ref().filter(|hero| hero.url == url)?;
+        hero.cover.clone()
+    }
+
+    /// Show the screensaver now, and move its visuals to the next scene.
+    #[cfg(feature = "screenshots")]
+    pub fn show_saver(&mut self) {
+        if self.saver {
+            if let Some(visuals) = &self.visuals {
+                visuals.skip();
+            }
+            return;
+        }
+        self.nav.rest();
+        self.saver = true;
+        self.render();
+    }
+
     // IMAGES
 
     /// A decoded image for `url` at `pixels`, loading it if needed.
@@ -708,6 +780,7 @@ impl Ui {
                             image: Image::from_rgba8(decoded.pixels),
                             backdrop: decoded.backdrop.map(Image::from_rgba8),
                             tint: decoded.tint.unwrap_or(Color::from_rgb_u8(0x1b, 0x15, 0x30)),
+                            cover: decoded.cover,
                         });
                     }
                     Err(error) => {
@@ -769,6 +842,7 @@ impl Ui {
         self.draw_menu(&app);
         self.draw_hints(page);
         self.update_bars();
+        self.update_visuals();
     }
 
     fn content_focused(&self) -> bool {

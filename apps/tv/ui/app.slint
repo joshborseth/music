@@ -570,6 +570,9 @@ export component App inherits Window {
     in property <bool> saver;
     in property <float> saver-x: 0.5;
     in property <float> saver-y: 0.5;
+    // The visuals while this TV plays: a small frame stretched over the screen.
+    in property <bool> saver-visuals;
+    in property <image> saver-frame;
 
     /// Every remote key: its text, pressed (or released), and whether it repeats.
     /// Returns whether the app used it; Back that the app does not use leaves the app.
@@ -1426,17 +1429,31 @@ export component App inherits Window {
     }
 
     // SCREENSAVER: the cover drifts slowly over black, so nothing burns in.
+    // While this TV plays, the music's visuals fill the screen behind it.
 
     if root.saver: Rectangle {
         background: black;
+        if root.saver-visuals: Image {
+            width: 100%;
+            height: 100%;
+            source: root.saver-frame;
+            image-fit: fill;
+            image-rendering: smooth;
+        }
         saver-box := Rectangle {
-            property <length> size: Metrics.u * 16;
+            property <length> size: root.saver-visuals ? Metrics.u * 9 : Metrics.u * 16;
+            property <length> pad: root.saver-visuals ? Metrics.u * 1.2 : 0;
             x: (root.width - self.width) * root.saver-x;
             y: (root.height - self.height) * root.saver-y;
-            width: saver-row.preferred-width;
-            height: self.size;
+            width: saver-row.preferred-width + self.pad * 2;
+            height: self.size + self.pad * 2;
+            border-radius: Metrics.u * 2;
+            background: root.saver-visuals ? #000000a8 : transparent;
             animate x, y { duration: 6s; easing: ease-in-out; }
             saver-row := HorizontalLayout {
+                x: saver-box.pad;
+                y: saver-box.pad;
+                height: saver-box.size;
                 spacing: Metrics.u * 2;
                 if root.page == 0: Artwork {
                     width: saver-box.size;

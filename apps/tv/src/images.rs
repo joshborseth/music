@@ -1,16 +1,21 @@
 //! Downloads and decodes artwork off the UI thread. The server relays every
 //! image, so the TV needs no TLS.
 
+use std::sync::Arc;
+
 use slint::{Color, Rgba8Pixel, SharedPixelBuffer};
 
 use crate::view::relayed_artwork_url;
+use crate::visuals::Cover;
 
-/// A decoded image, plus for the now-playing cover a blurred copy and a
-/// dark tint of its average color for the background.
+/// A decoded image, plus for the now-playing cover a blurred copy, a dark
+/// tint of its average color for the background, and what the screensaver's
+/// visuals paint with.
 pub struct Decoded {
     pub pixels: SharedPixelBuffer<Rgba8Pixel>,
     pub backdrop: Option<SharedPixelBuffer<Rgba8Pixel>>,
     pub tint: Option<Color>,
+    pub cover: Option<Arc<Cover>>,
 }
 
 pub async fn load(
@@ -50,6 +55,7 @@ fn decode(bytes: &[u8], pixels: u32, hero: bool) -> Result<Decoded, String> {
             pixels: buffer(&rgba),
             backdrop: None,
             tint: None,
+            cover: None,
         });
     }
     let (mut red, mut green, mut blue, mut count) = (0u64, 0u64, 0u64, 0u64);
@@ -68,5 +74,6 @@ fn decode(bytes: &[u8], pixels: u32, hero: bool) -> Result<Decoded, String> {
         pixels: buffer(&rgba),
         backdrop: Some(buffer(&backdrop)),
         tint: Some(tint),
+        cover: Some(Arc::new(Cover::new(&image))),
     })
 }

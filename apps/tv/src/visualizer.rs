@@ -64,6 +64,11 @@ impl Analyzer {
         &self.levels
     }
 
+    /// The newest samples the last frame analyzed, oldest first.
+    pub fn samples(&self) -> &[f32] {
+        &self.samples
+    }
+
     /// True while any bar is still visible.
     pub fn is_moving(&self) -> bool {
         self.levels.iter().any(|level| *level > 0.005)

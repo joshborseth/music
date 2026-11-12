@@ -24,6 +24,7 @@ mod ui;
 pub mod update;
 pub mod view;
 mod visualizer;
+mod visuals;
 mod volume;
 
 use tokio::sync::mpsc::unbounded_channel;
