@@ -342,6 +342,12 @@
    in from the middle of the edge, walks up to the first fixed box at least
    90% of the viewport wide, and takes the first plain background-color on a
    box taller than 10px. A backdrop-filter on the way means glass, so blur.
+   The hit test first ignores pointer-events, so these bands are found even
+   though taps pass through them. But if it lands on an invisible (opacity 0)
+   box with pointer-events: none, WebKit hit-tests again honoring
+   pointer-events, which skips these bands too and lands on the scrolling
+   page: blur. So nothing invisible may sit above them at an edge; a closed
+   overlay hides with visibility: hidden, which hit tests skip.
    The top bar is hidden until a page scrolls, so these bands are always
    there instead. iOS only acts on them where the system bars overlap the
    page with an obscured inset, so the status bar must not be
@@ -401,9 +407,15 @@
   }
 }
 
+/* visibility, not just opacity: an invisible full-screen layer over the top
+   edge makes iOS blur it (see .ios-edge). */
 .sheet-backdrop[data-state='closed'] {
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
+  transition:
+    opacity 320ms ease,
+    visibility 0s linear 320ms;
 }
 
 /* ARTWORK THAT BREATHES WITH PLAYBACK */
