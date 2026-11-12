@@ -37,9 +37,9 @@ export const page = (
 // TOP EDGE
 
 /**
- * The top of the screen. There is no bar: content fades into the page color
- * as it scrolls under the status bar. Each page fades it in as its own
- * header scrolls away, so the header shows untouched at the top.
+ * A plain bar in the page color across the top of the screen. Each page
+ * fades it in as its own header scrolls away, so the header shows untouched
+ * at the top.
  */
 const scrollEdge = (className: string, h: HtmlBuilder<Message>): Html =>
   h.div([h.AriaHidden(true), h.Class(cn('scroll-edge', className))])
@@ -49,7 +49,7 @@ export const statusBarCover = (h: HtmlBuilder<Message>): Html =>
   h.div([
     h.AriaHidden(true),
     h.Class(
-      'status-bar-edge pointer-events-none fixed inset-x-0 top-0 z-30 h-[calc(var(--safe-top)+0.75rem)]',
+      'status-bar-edge pointer-events-none fixed inset-x-0 top-0 z-30 h-[var(--safe-top)]',
     ),
   ])
 
@@ -109,7 +109,7 @@ const backButton = (h: HtmlBuilder<Message>): Html =>
       h.OnClick(Message.ClickedBack()),
       h.AriaLabel('Back'),
       h.Class(
-        'pressable glass pointer-events-auto flex size-10 items-center justify-center rounded-full',
+        'pressable floating pointer-events-auto flex size-10 items-center justify-center rounded-full',
       ),
     ],
     [icon(h, ChevronLeft, 'size-6 -ml-0.5')],
@@ -126,7 +126,7 @@ export const navBarButton = (
       h.OnClick(config.onClick),
       h.AriaLabel(config.label),
       h.Class(
-        'pressable glass pointer-events-auto flex size-10 items-center justify-center rounded-full',
+        'pressable floating pointer-events-auto flex size-10 items-center justify-center rounded-full',
       ),
     ],
     [icon(h, config.iconNode, 'size-[22px]')],
@@ -200,14 +200,14 @@ const tabButton = (tab: Tab, activeTab: Tab, h: HtmlBuilder<Message>): Html => {
 }
 
 /**
- * The glass capsule floating along the bottom that switches between Home,
- * Search, and Library, over a fade that softens the content behind it.
+ * The capsule floating along the bottom that switches between Home, Search,
+ * and Library.
  */
 export const tabBar = (model: Model, h: HtmlBuilder<Message>): Html =>
   h.div(
     [
       h.Class(
-        'tab-bar-dock pointer-events-none fixed inset-x-0 bottom-0 z-20 px-3 pb-[var(--tab-bar-bottom)]',
+        'pointer-events-none fixed inset-x-0 bottom-0 z-20 px-3 pb-[var(--tab-bar-bottom)]',
       ),
     ],
     [
@@ -217,7 +217,7 @@ export const tabBar = (model: Model, h: HtmlBuilder<Message>): Html =>
           h.AriaLabel('Sections'),
           h.Style({ viewTransitionName: 'tab-bar' }),
           h.Class(
-            'glass pointer-events-auto mx-auto flex h-[var(--tab-bar-height)] max-w-md rounded-full p-1',
+            'floating pointer-events-auto mx-auto flex h-[var(--tab-bar-height)] max-w-md rounded-full p-1',
           ),
         ],
         Array.map(TABS, tab => tabButton(tab, model.navigation.activeTab, h)),

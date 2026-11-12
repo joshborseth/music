@@ -64,7 +64,7 @@ const recentCard = (
               h.span(
                 [
                   h.Class(
-                    'absolute right-2 bottom-2 flex size-8 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur',
+                    'absolute right-2 bottom-2 flex size-8 items-center justify-center rounded-full bg-black/55 text-white',
                   ),
                 ],
                 [

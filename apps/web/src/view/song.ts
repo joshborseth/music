@@ -6,7 +6,6 @@ import { type SongDetails } from '@music/shared'
 import { Message } from '../message'
 import { SyncTitleBarReveal } from '../mount'
 import { songQuery } from '../query'
-import { artworkGlow } from './collection'
 import { type PageModel } from './page'
 import {
   ArtworkShape,
@@ -134,9 +133,8 @@ export const songView = (
       onLoading: () => loadingPage(h),
       onData: details =>
         h.div(
-          [h.Class('relative isolate flex flex-col gap-8 pb-6')],
+          [h.Class('flex flex-col gap-8 pb-6')],
           [
-            artworkGlow(details.song.artwork, h),
             h.div(
               [h.Class('flex flex-col gap-5')],
               [
