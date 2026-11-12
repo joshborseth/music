@@ -21,6 +21,11 @@ export interface Model {
    * reconnecting player that followed it may report jumps of its own since.
    */
   readonly foreignSeekSeq: number
+  /**
+   * Another device paused while the player was offline. The player could not
+   * hear of it, so its report on reconnecting does not undo it.
+   */
+  readonly pausedWhileAway: boolean
   /** Devices the server asked to wake that have not connected yet. */
   readonly waking: ReadonlyArray<string>
 }
@@ -34,6 +39,7 @@ export const initialModel: Model = {
   positionAt: 0,
   seekSeq: 0,
   foreignSeekSeq: 0,
+  pausedWhileAway: false,
   waking: [],
 }
 
@@ -176,9 +182,21 @@ const finishCurrent = (model: Model, now: number): Model => {
 }
 
 /**
- * Apply a message, and remember a jump the player did not make itself. A
- * transfer always counts as foreign: it hands the player a new position.
+ * Jumps a player makes on its own before telling the server, so they are
+ * already where it plays. Any other jump (a new queue, a removed or failed
+ * song, a transfer, another device's command) the player only learns from
+ * the server.
  */
+const PLAYER_OWN_JUMPS: ReadonlySet<Session.ClientMessage['_tag']> = new Set([
+  'Hello',
+  'Seek',
+  'Next',
+  'Previous',
+  'SkipTo',
+  'TrackEnded',
+])
+
+/** Apply a message, and remember a jump the player did not make itself. */
 export const update = (
   model: Model,
   message: Session.ClientMessage,
@@ -187,8 +205,10 @@ export const update = (
   const outcome = transition(model, message, context)
   const isForeignJump =
     outcome.model.seekSeq !== model.seekSeq &&
-    (message._tag === 'Transfer' ||
-      outcome.model.activeDeviceId !== context.senderId)
+    !(
+      PLAYER_OWN_JUMPS.has(message._tag) &&
+      outcome.model.activeDeviceId === context.senderId
+    )
   return isForeignJump
     ? {
         ...outcome,
@@ -220,14 +240,19 @@ const transition = (
             ...model,
             waking,
             currentEntryId: report.entryId,
-            playing: report.playing,
+            playing: model.pausedWhileAway ? false : report.playing,
             positionSeconds: Math.max(0, report.positionSeconds),
             positionAt: now,
+            pausedWhileAway: false,
           })
         }
         return changed({
           ...model,
           waking,
+          pausedWhileAway:
+            model.activeDeviceId === context.senderId
+              ? false
+              : model.pausedWhileAway,
           // A device that comes back as the player reloads where it left off.
           seekSeq:
             isWaking || model.activeDeviceId === context.senderId
@@ -317,6 +342,7 @@ const transition = (
           // Resuming while already playing must not move the position back.
           ...settle(claimed, now),
           playing: true,
+          pausedWhileAway: false,
           // A new player has nothing loaded yet.
           seekSeq:
             claimed.activeDeviceId === model.activeDeviceId
@@ -331,6 +357,10 @@ const transition = (
           Option.fromNullishOr(message.positionSeconds),
           () => model.activeDeviceId === context.senderId,
         )
+        const isPlayerAway =
+          model.activeDeviceId !== null &&
+          model.activeDeviceId !== context.senderId &&
+          !context.isOnline(model.activeDeviceId)
         return changed({
           ...settled,
           positionSeconds: Option.match(maybeAt, {
@@ -338,6 +368,7 @@ const transition = (
             onSome: seconds => Math.max(0, seconds),
           }),
           playing: false,
+          pausedWhileAway: model.pausedWhileAway || isPlayerAway,
         })
       },
 
@@ -397,6 +428,7 @@ const transition = (
         }
         const moved: Model = {
           ...settle(model, now),
+          pausedWhileAway: false,
           activeDeviceId: target,
           seekSeq: model.seekSeq + 1,
           waking: online ? model.waking : Array.union(model.waking, [target]),

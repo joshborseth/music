@@ -1327,7 +1327,9 @@ export const update = (model: Model, message: Message) =>
         stepModel => Playback.clickDevice(stepModel, deviceId),
       ])(model),
     ClickedQueueEntry: ({ entryId }) =>
-      Playback.sendCommand(model, { _tag: 'SkipTo', entryId }),
+      followingCurrentSong(stepModel =>
+        Playback.clickQueueEntry(stepModel, entryId),
+      )(model),
     ClickedRemoveQueueEntry: ({ entryId }) =>
       Playback.sendCommand(model, { _tag: 'RemoveEntry', entryId }),
     ClickedOpenPlayer: () => Playback.openPlayer(model),

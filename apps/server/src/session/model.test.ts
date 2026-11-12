@@ -277,6 +277,47 @@ describe('session model', () => {
     expect(outcome.seekSeq).toBe(skipped.seekSeq)
   })
 
+  test('a failed song moves on even if the player reports it after reconnecting', () => {
+    const model = playing()
+    const failed = update(
+      model,
+      { _tag: 'TrackFailed', entryId: 'e0', message: 'gone' },
+      makeContext('phone', 2_000),
+    ).model
+    const outcome = update(
+      failed,
+      hello({
+        entryId: 'e0',
+        positionSeconds: 1,
+        playing: true,
+        seekSeq: model.seekSeq,
+      }),
+      makeContext('phone', 3_000),
+    ).model
+    expect(outcome.currentEntryId).toBe('e1')
+  })
+
+  test('a pause from another device while the player was away is kept', () => {
+    const paused = update(
+      playing(),
+      { _tag: 'Pause' },
+      makeContext('laptop', 5_000, ['laptop']),
+    ).model
+    const outcome = update(
+      paused,
+      hello({
+        entryId: 'e0',
+        positionSeconds: 30,
+        playing: true,
+        seekSeq: paused.seekSeq,
+      }),
+      makeContext('phone', 30_000),
+    ).model
+    expect(outcome.playing).toBe(false)
+    expect(outcome.positionSeconds).toBe(30)
+    expect(outcome.pausedWhileAway).toBe(false)
+  })
+
   test('the player pausing says where it stopped; others leave it to the server', () => {
     const paused = update(
       playing(),

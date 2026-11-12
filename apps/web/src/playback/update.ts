@@ -21,7 +21,6 @@ import {
 } from './command'
 import {
   Connection,
-  LOCAL_MOVE_GRACE_MS,
   type LoadedEntry,
   type MediaKey,
   PREFETCH_COUNT,
@@ -103,7 +102,7 @@ const loadEntry = (
   entry: Session.QueueEntry,
   seekSeq: number,
   startSeconds: number,
-  maybeMovedAt: Option.Option<number>,
+  maybeLeftEntryId: Option.Option<string>,
 ): PlaybackReturn => ({
   model: modifyFields(model, {
     phoneAudio: () =>
@@ -113,7 +112,7 @@ const loadEntry = (
           seekSeq,
           isPlaying: state.playing,
           isBuffering: state.playing,
-          maybeMovedAt,
+          maybeLeftEntryId,
         },
       }),
     phoneAudioSeconds: () => startSeconds,
@@ -162,15 +161,18 @@ const playingHere = (model: Model): Option.Option<PlayingHere> =>
  * A locked phone may not get the server's answer quickly, or at all, and iOS
  * stops a page that goes quiet in the background. The phone's `seekSeq`
  * stays put: if the server never hears of this, the next `Hello` reports it.
+ * `isPlaying` is whether the message starts playback (SkipTo does).
  */
 const moveHere = (
   model: Model,
   { snapshot, loaded }: PlayingHere,
   entry: Session.QueueEntry,
   message: Session.ClientMessage,
+  isPlaying: boolean = snapshot.state.playing,
 ): PlaybackReturn => {
   const state = modifyFields(snapshot.state, {
     currentEntryId: () => entry.entryId,
+    playing: () => isPlaying,
     positionSeconds: () => 0,
     positionAt: () => model.now + snapshot.clockOffsetMs,
   })
@@ -183,7 +185,9 @@ const moveHere = (
     entry,
     loaded.seekSeq,
     0,
-    Option.some(model.now),
+    // NOTE: moves made one after another all wait for the entry the server
+    // named before the first.
+    Option.orElse(loaded.maybeLeftEntryId, () => Option.some(loaded.entryId)),
   )
   return {
     model: moved.model,
@@ -325,31 +329,37 @@ export const completeWaitBeforeReconnect = (model: Model): PlaybackReturn =>
     : { model }
 
 /**
- * A server state still naming another entry while this phone plays one it
- * just moved to by itself: the server has not heard of the move yet, so the
- * phone keeps its own song and position. Anything else ends the wait.
+ * A server state still naming the entry this phone left, at the same
+ * `seekSeq`, while the phone plays one it moved to by itself: the server has
+ * not heard of the move yet, so the phone keeps its own song and position.
+ * Any other state (the server caught up, or another device jumped) ends the
+ * wait and is followed.
  */
 const keepLocalMove = (
   model: Model,
   state: Session.SessionState,
   serverNow: number,
-  receivedAt: number,
 ): { readonly state: Session.SessionState; readonly phoneAudio: PhoneAudio } =>
   Option.match(loadedEntry(model.phoneAudio), {
     onNone: () => ({ state, phoneAudio: model.phoneAudio }),
     onSome: loaded => {
       const isAwaitingServer =
         Option.exists(
-          loaded.maybeMovedAt,
-          movedAt => receivedAt - movedAt < LOCAL_MOVE_GRACE_MS,
+          loaded.maybeLeftEntryId,
+          leftEntryId =>
+            leftEntryId !== loaded.entryId &&
+            leftEntryId === state.currentEntryId,
         ) &&
-        state.currentEntryId !== loaded.entryId &&
+        state.seekSeq === loaded.seekSeq &&
         Option.contains(myDeviceId(model), state.activeDeviceId ?? '') &&
         Array.some(state.queue, queued => queued.entryId === loaded.entryId)
       return isAwaitingServer
         ? {
+            // NOTE: everything about the song comes from the phone; the
+            // queue and devices are still news.
             state: modifyFields(state, {
               currentEntryId: () => loaded.entryId,
+              playing: () => isPlaying(model),
               positionSeconds: () => model.phoneAudioSeconds,
               positionAt: () => serverNow,
             }),
@@ -359,7 +369,7 @@ const keepLocalMove = (
             state,
             phoneAudio: withLoadedEntry(model.phoneAudio, entry => ({
               ...entry,
-              maybeMovedAt: Option.none(),
+              maybeLeftEntryId: Option.none(),
             })),
           }
     },
@@ -383,7 +393,7 @@ export const receiveSessionState = (
   serverNow: number,
   receivedAt: number,
 ): PlaybackReturn => {
-  const kept = keepLocalMove(model, state, serverNow, receivedAt)
+  const kept = keepLocalMove(model, state, serverNow)
   return reconcilePhoneAudio(
     modifyFields(model, {
       maybeSession: () =>
@@ -774,6 +784,28 @@ export const skipToPrevious = (model: Model): PlaybackReturn =>
       )
     },
   })
+
+/** A tapped queue row plays: on this phone at once when it plays. */
+export const clickQueueEntry = (
+  model: Model,
+  entryId: string,
+): PlaybackReturn =>
+  Option.match(
+    Option.flatMap(playingHere(model), here =>
+      Option.map(
+        Array.findFirst(
+          here.snapshot.state.queue,
+          queued => queued.entryId === entryId,
+        ),
+        target => ({ here, target }),
+      ),
+    ),
+    {
+      onNone: () => sendCommand(model, { _tag: 'SkipTo', entryId }),
+      onSome: ({ here, target }) =>
+        moveHere(model, here, target, { _tag: 'SkipTo', entryId }, true),
+    },
+  )
 
 export const pressMediaKey = (model: Model, key: MediaKey): PlaybackReturn => {
   if (key === 'Play') {

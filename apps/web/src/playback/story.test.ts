@@ -129,7 +129,7 @@ describe('playing on this phone', () => {
                 seekSeq: 1,
                 isPlaying: true,
                 isBuffering: false,
-                maybeMovedAt: Option.none(),
+                maybeLeftEntryId: Option.none(),
               },
             }),
         }),
@@ -168,7 +168,7 @@ describe('playing on this phone', () => {
                 seekSeq: 1,
                 isPlaying: true,
                 isBuffering: false,
-                maybeMovedAt: Option.none(),
+                maybeLeftEntryId: Option.none(),
               },
             }),
         }),
@@ -209,7 +209,7 @@ const playingHere = (seekSeq: number): Model =>
           seekSeq,
           isPlaying: true,
           isBuffering: false,
-          maybeMovedAt: Option.none(),
+          maybeLeftEntryId: Option.none(),
         },
       }),
     phoneAudioSeconds: () => 40,
@@ -544,7 +544,7 @@ describe('on the lock screen', () => {
             seekSeq: 4,
             isPlaying,
             isBuffering: false,
-            maybeMovedAt: Option.none(),
+            maybeLeftEntryId: Option.none(),
           },
         }),
       phoneAudioSeconds: () => 40,
@@ -603,7 +603,7 @@ describe('on the lock screen', () => {
               seekSeq: 4,
               isPlaying: true,
               isBuffering: true,
-              maybeMovedAt: Option.some(SERVER_NOW),
+              maybeLeftEntryId: Option.some('e0'),
             },
           }),
         )
@@ -669,8 +669,8 @@ describe('on the lock screen', () => {
       ),
       model(model => {
         expect(
-          Option.exists(loadedEntry(model.phoneAudio), ({ maybeMovedAt }) =>
-            Option.isNone(maybeMovedAt),
+          Option.exists(loadedEntry(model.phoneAudio), ({ maybeLeftEntryId }) =>
+            Option.isNone(maybeLeftEntryId),
           ),
         ).toBe(true)
       }),
@@ -679,7 +679,7 @@ describe('on the lock screen', () => {
     )
   })
 
-  test('a move the server never confirms gives way to the server', () => {
+  test('another device jumping during a move wins', () => {
     story(
       update,
       given(playingQueue('e0')),
@@ -722,6 +722,28 @@ describe('on the lock screen', () => {
         SaveRecentlyPlayed,
         Message.CompletedSaveRecentlyPlayed(),
       ),
+    )
+  })
+
+  test('a tapped queue row plays on the phone at once', () => {
+    story(
+      update,
+      given(playingQueue('e0', false)),
+      message(Message.ClickedQueueEntry({ entryId: 'e2' })),
+      model(model => {
+        expect(currentEntryId(model)).toEqual(Option.some('e2'))
+        expect(
+          Option.exists(model.maybeSession, ({ state }) => state.playing),
+        ).toBe(true)
+      }),
+      Command.expectExact(
+        loads(2),
+        mediaSessionFor(2),
+        prefetchFrom(2),
+        SendToSession({ message: { _tag: 'SkipTo', entryId: 'e2' } }),
+        SaveRecentlyPlayed({ recentlyPlayed: [queue[2]!.track] }),
+      ),
+      ...resolveLoad(2),
     )
   })
 
