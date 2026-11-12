@@ -57,7 +57,7 @@ The repo has no CI and no branch protection, so the checks in step 3 are the onl
    ./scripts/deploy-main.sh
    ```
 
-   The script fast-forwards the main checkout at `~/.t3/projects/music` (the service runs from there), builds the web app, and restarts `music.service`. It rebuilds `dist/music-tv.apk` when `apps/tv` or the Cargo files changed since the last deploy. Pass `--tv` to rebuild it anyway. It refuses to run when the main checkout is off `main` or has uncommitted changes; report that to Josh instead of discarding the changes.
+   The script fast-forwards the main checkout at `~/.t3/projects/music` (the service runs from there), builds the web app, and restarts `music.service`, so the site and the server always come from the same commit. Then it rebuilds `dist/music-tv.apk` when `apps/tv` or the Cargo files changed since the last deploy. Pass `--tv` to rebuild it anyway. It refuses to run when the main checkout is off `main` or has uncommitted changes; report that to Josh instead of discarding the changes.
 
 8. Tell Josh the PR link, that it merged, and that the deploy finished. The script exits nonzero if the live site does not match the build. If the TV app was rebuilt, tell him to install it on the TV from `http://192.168.1.67:4310/tv.apk`. The phone picks up the new web app the next time the PWA opens.
 
@@ -65,4 +65,5 @@ The repo has no CI and no branch protection, so the checks in step 3 are the onl
 
 - If a check fails and you cannot fix it within the task, stop before merging and report the failure.
 - If the deploy fails after the merge, `main` is ahead of the live site. Do not revert the merge. Fix the problem in a new PR if it is in the code, and report it if it is not.
+- If the TV build fails, the site and server are already live, but the deploy exits nonzero and is not recorded, so the next deploy rebuilds the TV app. Read the error, fix it, and run `./scripts/deploy-main.sh` again. Never report a deploy as finished unless the script printed `Deployed <sha>.`
 - Restarting the service drops whatever is playing for a moment. That is expected.

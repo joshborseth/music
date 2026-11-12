@@ -6,7 +6,8 @@
 #
 # music.service runs from the repository's main checkout, so this script
 # fast-forwards that checkout, builds the web app, and restarts the service.
-# It rebuilds dist/music-tv.apk when the TV app changed since the last deploy.
+# Then it rebuilds dist/music-tv.apk when the TV app changed since the last
+# deploy. If that fails, the deploy is not recorded, so the next one retries it.
 # Deploys run one at a time and fetch after taking the lock, so a slower
 # deploy cannot replace a newer merge with older code.
 set -euo pipefail
@@ -48,6 +49,13 @@ rev="$(git rev-parse HEAD)"
 bun install --frozen-lockfile
 bun run build
 
+# The server serves apps/web/dist, so restart it now: the web app and the
+# server it talks to must come from the same commit. Building the TV app
+# below is slow and can fail; the site must not wait for it.
+systemctl --user restart music.service
+curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 \
+  "http://127.0.0.1:4310/" | cmp - apps/web/dist/index.html
+
 tv_changed=false
 if ! git cat-file -e "$previous_rev^{commit}" 2>/dev/null ||
   ! git diff --quiet "$previous_rev" "$rev" -- apps/tv Cargo.toml Cargo.lock scripts/build-tv-apk.sh; then
@@ -57,10 +65,6 @@ if [ "$force_tv" = true ] || [ "$tv_changed" = true ]; then
   ./scripts/build-tv-apk.sh
   echo "Rebuilt dist/music-tv.apk. The TV app installs it by itself while nothing plays (a TV without the updater needs it by hand once: http://192.168.1.67:4310/tv.apk)."
 fi
-
-systemctl --user restart music.service
-curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 \
-  "http://127.0.0.1:4310/" | cmp - apps/web/dist/index.html
 
 echo "$rev" >"$deployed_rev_file"
 echo "Deployed $(git rev-parse --short HEAD)."
