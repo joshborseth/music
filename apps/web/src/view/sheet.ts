@@ -266,7 +266,7 @@ const deviceRowStatus = (
 }
 
 /**
- * Turn the TV on and open Music, without moving the music: to pick songs on
+ * Turn the TV on and open Joshify, without moving the music: to pick songs on
  * it, or to watch what plays. Only while the app is not open on it.
  */
 const wakeButton = (
@@ -284,8 +284,8 @@ const wakeButton = (
       h.OnClick(Message.ClickedWakeDevice({ deviceId: device.id })),
       h.AriaLabel(
         status === 'Off'
-          ? `Turn on ${device.name} and open Music`
-          : `Open Music on ${device.name}`,
+          ? `Turn on ${device.name} and open Joshify`
+          : `Open Joshify on ${device.name}`,
       ),
       h.Class(
         'bg-muted mr-5 flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold active:opacity-60',
@@ -397,7 +397,7 @@ const devicePicker = (model: Model, h: HtmlBuilder<Message>): Html =>
               h.p(
                 [h.Class('text-muted-foreground px-5 pt-2 text-[13px]')],
                 [
-                  'Tap a device to move the music there. Open and Turn on start Music on the TV without moving the music.',
+                  'Tap a device to move the music there. Open and Turn on start Joshify on the TV without moving the music.',
                 ],
               ),
             ],

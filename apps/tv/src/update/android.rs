@@ -146,7 +146,7 @@ impl Platform for Android {
     }
 
     fn in_foreground(&self) -> Result<bool, String> {
-        with_context("checking whether Music is on screen", |env, context| {
+        with_context("checking whether Joshify is on screen", |env, context| {
             let info = env.new_object(
                 jni_str!("android/app/ActivityManager$RunningAppProcessInfo"),
                 jni_sig!("()V"),

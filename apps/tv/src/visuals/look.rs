@@ -7,8 +7,8 @@ use super::canvas::Rgb;
 
 /// The cover's side, in pixels, as the visuals draw it.
 pub const COVER_SIDE: usize = 96;
-/// The app's own pink, violet, and blue, for a song without a colorful cover.
-const DEFAULT_COLORS: [Rgb; 3] = [[1.0, 0.31, 0.51], [0.76, 0.23, 1.0], [0.36, 0.36, 1.0]];
+/// Joshify's own green, lime, and teal, for a song without a colorful cover.
+const DEFAULT_COLORS: [Rgb; 3] = [[0.13, 0.83, 0.44], [0.72, 0.96, 0.25], [0.05, 0.72, 0.78]];
 const HUES: usize = 24;
 
 /// The now-playing cover, decoded off the UI thread with the artwork.

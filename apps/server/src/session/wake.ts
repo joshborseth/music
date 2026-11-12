@@ -9,7 +9,7 @@ import {
 } from 'effect'
 
 /*
- * Wakes the TV and opens the Music app on it through Home Assistant, which
+ * Wakes the TV and opens the Joshify app on it through Home Assistant, which
  * is already paired with the TV's built-in Android TV Remote service.
  * `remote.turn_on` with an `activity` turns the TV on and opens that deep
  * link; the TV app registers `music://`.

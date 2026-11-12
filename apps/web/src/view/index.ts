@@ -30,7 +30,7 @@ import { emptyState } from './shared'
 import { actionSheetView } from './sheet'
 import { songView } from './song'
 
-const APP_NAME = 'Music'
+const APP_NAME = 'Joshify'
 
 const pageTitle = (model: Model): string =>
   AppRoute.match(model.route, {

@@ -10,7 +10,7 @@
 //! this TV for [`QUIET_FOR`], and asks Android to install it. When the app
 //! is on screen, it first tells the server (`POST /tv/updating`), which
 //! reopens the app afterwards; in the background (TV in standby, another
-//! app open) it installs without that, and Music stays closed.
+//! app open) it installs without that, and Joshify stays closed.
 //!
 //! The scheduling lives here and runs on the host in tests. Installing is
 //! Android only (`android.rs`); elsewhere it fails. Every failure is logged,
@@ -61,7 +61,7 @@ pub enum UpdateStatus {
     },
     WaitingForQuiet,
     Installing,
-    /// "Install unknown apps" is off for Music. Show a button that calls
+    /// "Install unknown apps" is off for Joshify. Show a button that calls
     /// [`Updater::open_permission_settings`].
     NeedsPermission,
     Failed(String),
@@ -72,7 +72,7 @@ pub enum UpdateStatus {
 pub(crate) trait Platform: Send + Sync + 'static {
     /// Where downloads go: the app's cache directory.
     fn cache_dir(&self) -> Result<PathBuf, String>;
-    /// Whether Music may install apps ("Install unknown apps").
+    /// Whether Joshify may install apps ("Install unknown apps").
     fn can_install(&self) -> Result<bool, String>;
     /// Install the APK. Blocks; runs on its own thread. Returns `Ok` when the
     /// install is under way and Android did not end this process (it does
@@ -531,11 +531,11 @@ impl Worker {
         let announced = match on_own_thread(move || platform.in_foreground()).await {
             Ok(true) => self.announce().await,
             Ok(false) => {
-                log::info!("update: installing in the background; Music stays closed after");
+                log::info!("update: installing in the background; Joshify stays closed after");
                 false
             }
             Err(error) => {
-                log::warn!("update: could not tell whether Music is on screen: {error}");
+                log::warn!("update: could not tell whether Joshify is on screen: {error}");
                 false
             }
         };
