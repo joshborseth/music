@@ -6,6 +6,7 @@ import { icon } from '@/lib/icons'
 import { type ArtistDetails } from '@music/shared'
 
 import { Message } from '../message'
+import { SyncTitleBarReveal } from '../mount'
 import { artistQuery } from '../query'
 import { type PageModel } from './page'
 import {
@@ -59,6 +60,7 @@ const artistHero = (details: ArtistDetails, h: HtmlBuilder<Message>): Html =>
       ]),
       h.h1(
         [
+          h.OnMount(SyncTitleBarReveal()),
           h.Class(
             'relative px-4 pb-4 text-[40px] leading-[1.05] font-extrabold tracking-tight text-white drop-shadow-lg text-balance',
           ),

@@ -1,6 +1,7 @@
 import { Effect, Queue, Schema, Stream } from 'effect'
 import { Mount } from 'foldkit'
 
+import { PAGE_SELECTOR, TITLE_BAR_SELECTOR } from './constant'
 import { Message } from './message'
 
 // SCROLL
@@ -18,6 +19,61 @@ export const RestoreScroll = Mount.define('RestoreScroll', {
       element.ownerDocument.defaultView?.scrollTo({ top, behavior: 'instant' })
       return Message.CompletedRestoreScroll()
     }),
+})
+
+// TITLE BAR
+
+/**
+ * Fades a detail page's nav bar title in as the page's own title slides under
+ * the bar, rather than at a fixed scroll distance that suits only some heroes.
+ * Mounted on the title, it measures again whenever the title changes size or
+ * the window does.
+ */
+export const SyncTitleBarReveal = Mount.defineStream('SyncTitleBarReveal', {
+  messages: [Message.CompletedSyncTitleBarReveal],
+  execute: ({ element }) =>
+    Stream.callback<typeof Message.CompletedSyncTitleBarReveal.Type>(queue =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const maybeWindow = element.ownerDocument.defaultView
+
+          const placeReveal = () => {
+            const maybeBar = element
+              .closest(PAGE_SELECTOR)
+              ?.querySelector(TITLE_BAR_SELECTOR)
+            if (maybeWindow === null || !(maybeBar instanceof HTMLElement)) {
+              return
+            }
+
+            const title = element.getBoundingClientRect()
+            const barHeight = maybeBar.offsetHeight
+            const revealEnd = Math.max(
+              1,
+              title.bottom + maybeWindow.scrollY - barHeight,
+            )
+            const revealStart = Math.min(
+              revealEnd - 1,
+              Math.max(0, title.top + maybeWindow.scrollY - barHeight),
+            )
+
+            maybeBar.style.setProperty('--reveal-start', `${revealStart}px`)
+            maybeBar.style.setProperty('--reveal-end', `${revealEnd}px`)
+          }
+
+          placeReveal()
+          const observer = new ResizeObserver(placeReveal)
+          observer.observe(element)
+          maybeWindow?.addEventListener('resize', placeReveal)
+          Queue.offerUnsafe(queue, Message.CompletedSyncTitleBarReveal())
+
+          return () => {
+            observer.disconnect()
+            maybeWindow?.removeEventListener('resize', placeReveal)
+          }
+        }),
+        stopSyncing => Effect.sync(stopSyncing),
+      ).pipe(Effect.flatMap(() => Effect.never)),
+    ),
 })
 
 // DRAG TO DISMISS

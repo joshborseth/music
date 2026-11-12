@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { type Artwork, type Song } from '@music/shared'
 
 import { Message } from '../message'
+import { SyncTitleBarReveal } from '../mount'
 import { type Swipe } from '../playback/swipe'
 import {
   ArtworkShape,
@@ -93,6 +94,7 @@ export const collectionView = (
           ),
           h.h1(
             [
+              h.OnMount(SyncTitleBarReveal()),
               h.Class(
                 'text-[22px] leading-tight font-bold tracking-tight text-balance',
               ),
