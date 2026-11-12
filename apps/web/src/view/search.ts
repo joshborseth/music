@@ -113,7 +113,7 @@ const stickySearchBar = (
     [
       h.DataAttribute(SEARCH_BAR_ATTRIBUTE, ''),
       h.Class(
-        'page-glass sticky top-[var(--safe-top)] z-20 flex flex-col gap-2.5 px-4 pt-1 pb-2.5',
+        'search-bar-edge sticky top-[var(--safe-top)] z-[31] -mb-1.5 flex flex-col gap-2.5 px-4 pt-1 pb-4',
       ),
     ],
     [

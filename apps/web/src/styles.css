@@ -103,8 +103,14 @@
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
     --radius: 0.75rem;
-    --chrome: oklch(0.985 0 0 / 0.86);
+    --glass: oklch(0.995 0 0 / 0.72);
+    --glass-border: oklch(0 0 0 / 0.07);
+    --glass-highlight: oklch(1 0 0 / 0.7);
+    --glass-shadow: 0 8px 28px -8px oklch(0 0 0 / 0.2);
     --tab-bar-height: 3.25rem;
+    /* The tab bar floats inside the home indicator's area, as on iOS 26. */
+    --tab-bar-bottom: max(calc(var(--safe-bottom) - 0.5rem), 0.75rem);
+    --tab-bar-space: calc(var(--tab-bar-height) + var(--tab-bar-bottom));
     --mini-player-height: 3.5rem;
     --nav-bar-height: 2.75rem;
     --safe-top: env(safe-area-inset-top);
@@ -145,7 +151,10 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
-    --chrome: oklch(0.17 0.004 260 / 0.86);
+    --glass: oklch(0.25 0.005 260 / 0.68);
+    --glass-border: oklch(1 0 0 / 0.1);
+    --glass-highlight: oklch(1 0 0 / 0.08);
+    --glass-shadow: 0 10px 30px -8px oklch(0 0 0 / 0.6);
   }
 }
 
@@ -199,18 +208,17 @@
   }
 }
 
-/* The page color, frosted, for bars that sit flush with the page. */
-@utility page-glass {
-  background-color: color-mix(in oklch, var(--background) 86%, transparent);
-  -webkit-backdrop-filter: saturate(180%) blur(24px);
-  backdrop-filter: saturate(180%) blur(24px);
-}
-
-/* Frosted glass for the bars that float over content. */
-@utility chrome {
-  background-color: var(--chrome);
-  -webkit-backdrop-filter: saturate(180%) blur(24px);
-  backdrop-filter: saturate(180%) blur(24px);
+/* Glass for the small controls that float over content: the tab bar, the
+   mini player, the back button, and notices. Bars that span the screen use
+   the scroll edges below instead. */
+@utility glass {
+  background-color: var(--glass);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
 }
 
 /* PAGE TRANSITIONS */
@@ -307,6 +315,91 @@
     animation-timeline: scroll(root block);
     animation-range: var(--reveal-start, 40px) var(--reveal-end, 96px);
   }
+}
+
+/* SCROLL EDGES
+
+   There are no bars along the top or bottom of the screen. Content fades
+   into the page color and softens as it scrolls under the status bar, the
+   tab bar, or the search field, as iOS 26 does it. */
+
+/* The top edge: three blur layers, each stronger and shorter than the last,
+   under a fade to the page color. */
+.scroll-edge {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 30;
+  height: calc(var(--safe-top) + var(--nav-bar-height) + 1.25rem);
+  pointer-events: none;
+}
+
+.scroll-edge > span,
+.scroll-edge::after {
+  position: absolute;
+  inset: 0;
+}
+
+.scroll-edge > span:nth-child(1) {
+  -webkit-backdrop-filter: blur(1px);
+  backdrop-filter: blur(1px);
+  mask-image: linear-gradient(to bottom, #000 50%, transparent);
+}
+
+.scroll-edge > span:nth-child(2) {
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  mask-image: linear-gradient(to bottom, #000 30%, transparent 75%);
+}
+
+.scroll-edge > span:nth-child(3) {
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  mask-image: linear-gradient(to bottom, #000 15%, transparent 50%);
+}
+
+.scroll-edge::after {
+  content: '';
+  background: linear-gradient(
+    to bottom,
+    var(--background),
+    var(--background) var(--safe-top),
+    color-mix(in oklch, var(--background) 86%, transparent)
+      calc(var(--safe-top) + var(--nav-bar-height)),
+    transparent
+  );
+}
+
+/* Above the search field, which brings its own fade once it sticks. */
+.status-bar-edge {
+  background: linear-gradient(
+    to bottom,
+    var(--background) var(--safe-top),
+    transparent
+  );
+}
+
+/* Below the search field, so results soften as they pass under it. */
+.search-bar-edge {
+  background: linear-gradient(
+    to bottom,
+    var(--background) calc(100% - 0.75rem),
+    transparent
+  );
+}
+
+/* Behind the floating tab bar and mini player. */
+.tab-bar-dock::before {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  z-index: -1;
+  height: calc(100% + 2rem);
+  background: linear-gradient(
+    to top,
+    color-mix(in oklch, var(--background) 88%, transparent),
+    transparent
+  );
+  pointer-events: none;
 }
 
 /* SHEETS */
