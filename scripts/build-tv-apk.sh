@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds the signed TV app into dist/music-tv.apk.
+# Builds the signed TV app into dist/music-tv.apk, and its build id into
+# dist/music-tv.build (served at /tv/version, so installed TVs update).
 #
 #   scripts/build-tv-apk.sh            64- and 32-bit ARM in one APK
 #   scripts/build-tv-apk.sh arm64      64-bit ARM only (fast: Skia comes prebuilt)
@@ -29,6 +30,11 @@ fi
 export CARGO_APK_RELEASE_KEYSTORE="$keystore"
 export CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$password"
 
+# The app compares this with the server's /tv/version to update itself.
+# The APK's versionCode stays the same: Android installs an equal one.
+build="$(git -C "$root" rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M)"
+export MUSIC_TV_BUILD="$build"
+
 cd "$root/apps/tv"
 if [[ "${1:-}" == "arm64" ]]; then
   cargo apk build --release --lib --target aarch64-linux-android
@@ -36,5 +42,10 @@ else
   cargo apk build --release --lib
 fi
 mkdir -p "$root/dist"
-cp "$root/target/release/apk/music-tv.apk" "$root/dist/music-tv.apk"
+# Swapped in whole, so a TV never downloads a half-copied APK.
+cp "$root/target/release/apk/music-tv.apk" "$root/dist/music-tv.apk.partial"
+mv -f "$root/dist/music-tv.apk.partial" "$root/dist/music-tv.apk"
+# Written after the APK, so a TV that sees the new build downloads the new APK.
+echo "$build" >"$root/dist/music-tv.build"
+echo "Build $build"
 ls -lh "$root/dist/music-tv.apk"

@@ -9,23 +9,37 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::audio::{Command, Engine, Event};
-use crate::protocol::{ClientMessage, ServerMessage, SessionState};
+use crate::protocol::{ClientMessage, Placement, QueueTrack, ServerMessage, SessionState};
 use crate::session::Inbound;
-use crate::view::{UpNextItem, View};
+use crate::view::View;
 
-/// Remote-control actions from the screen.
-#[derive(Debug, Clone, Copy)]
+/// What the remote asks of the session.
+#[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
     PlayPause,
     SeekBy(f64),
     Next,
     Previous,
+    /// Replace the queue with these and play them on this TV.
+    PlayTracks {
+        tracks: Vec<QueueTrack>,
+        start: usize,
+    },
+    Enqueue {
+        tracks: Vec<QueueTrack>,
+        placement: Placement,
+    },
+    SkipTo(String),
+    Remove(String),
+    /// Move playback from another device to this TV.
+    PlayHere,
 }
 
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 const REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const NOTICE_DURATION: Duration = Duration::from_secs(6);
-const UP_NEXT_COUNT: usize = 4;
+/// How long this TV may play without audio before the screen says it's loading.
+const LOADING_GRACE: Duration = Duration::from_millis(1200);
 
 fn local_now_ms() -> f64 {
     SystemTime::now()
@@ -47,6 +61,8 @@ pub struct Controller {
     engine_position: Option<(String, f64, Instant)>,
     last_progress: Instant,
     notice: Option<(String, Instant)>,
+    /// When the engine was last told to load, to tell loading from playing.
+    load_started: Option<Instant>,
 }
 
 impl Controller {
@@ -66,6 +82,7 @@ impl Controller {
             engine_position: None,
             last_progress: Instant::now(),
             notice: None,
+            load_started: None,
         }
     }
 
@@ -151,6 +168,7 @@ impl Controller {
                 playing: state.playing,
             });
             self.loaded = Some(key);
+            self.load_started = Some(Instant::now());
         }
         let next = state
             .next_after_current()
@@ -210,14 +228,56 @@ impl Controller {
     // REMOTE
 
     fn on_action(&mut self, action: UiAction) {
+        let here = ClientMessage::Transfer {
+            device_id: self.device_id.clone(),
+        };
+        match action {
+            UiAction::PlayTracks { tracks, start } => {
+                if tracks.is_empty() {
+                    return;
+                }
+                self.send(ClientMessage::PlayQueue {
+                    tracks,
+                    start_index: start,
+                });
+                if !self.is_active() {
+                    self.send(here);
+                }
+                return;
+            }
+            UiAction::Enqueue { tracks, placement } => {
+                // With nothing queued, the server starts what was added on
+                // the player; songs picked on the TV should play on the TV.
+                let starts_playing = self
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| state.current_entry_id.is_none());
+                self.send(ClientMessage::Enqueue { tracks, placement });
+                if starts_playing && !self.is_active() {
+                    self.send(here);
+                }
+                return;
+            }
+            UiAction::SkipTo(entry_id) => {
+                self.send(ClientMessage::SkipTo { entry_id });
+                return;
+            }
+            UiAction::Remove(entry_id) => {
+                self.send(ClientMessage::RemoveEntry { entry_id });
+                return;
+            }
+            UiAction::PlayHere => {
+                self.play_here();
+                return;
+            }
+            _ => {}
+        }
         let Some(state) = &self.state else { return };
         if state.current_entry_id.is_none() {
             return;
         }
         match action {
-            UiAction::PlayPause if !self.is_active() => self.send(ClientMessage::Transfer {
-                device_id: self.device_id.clone(),
-            }),
+            UiAction::PlayPause if !self.is_active() => self.play_here(),
             UiAction::PlayPause if state.playing => self.send(ClientMessage::Pause { at: None }),
             UiAction::PlayPause => self.send(ClientMessage::Resume {}),
             UiAction::SeekBy(delta) => {
@@ -232,6 +292,18 @@ impl Controller {
             }
             UiAction::Next => self.send(ClientMessage::Next {}),
             UiAction::Previous => self.send(ClientMessage::Previous {}),
+            _ => {}
+        }
+    }
+
+    /// Take playback from another device, and play even if it was paused.
+    fn play_here(&self) {
+        let paused = self.state.as_ref().is_some_and(|state| !state.playing);
+        self.send(ClientMessage::Transfer {
+            device_id: self.device_id.clone(),
+        });
+        if paused {
+            self.send(ClientMessage::Resume {});
         }
     }
 
@@ -267,39 +339,47 @@ impl Controller {
             .map(|(text, _)| text.clone())
             .unwrap_or_default();
         let Some(state) = &self.state else {
-            return View::idle(self.connected, notice);
+            return View {
+                connected: self.connected,
+                notice,
+                ..View::default()
+            };
         };
-        let Some(index) = state.current_index() else {
-            return View::idle(self.connected, notice);
-        };
-        let track = &state.queue[index].track;
-        let elsewhere = state
+        let current = state.current_index();
+        let here = self.is_active();
+        let player_name = state
             .active_device_id
             .as_deref()
             .filter(|id| *id != self.device_id)
             .and_then(|id| state.devices.iter().find(|device| device.id == id))
-            .map(|device| format!("Playing on {}", device.name))
-            .unwrap_or_default();
+            .map(|device| device.name.clone());
+        let has_audio = self
+            .engine_position
+            .as_ref()
+            .is_some_and(|(entry_id, _, at)| {
+                state.current_entry_id.as_deref() == Some(entry_id.as_str())
+                    && at.elapsed() < LOADING_GRACE
+            });
+        let loading = here
+            && state.playing
+            && current.is_some()
+            && !has_audio
+            && self
+                .load_started
+                .is_some_and(|at| at.elapsed() > Duration::from_millis(300));
         View {
             connected: self.connected,
-            idle: false,
-            title: track.title.clone(),
-            artists: track.artists.clone(),
-            album: track.album.clone().unwrap_or_default(),
-            artwork_url: track.artwork_url.clone(),
-            duration_seconds: track.duration_seconds.unwrap_or(0.0),
-            position_seconds: self.position().max(0.0).floor(),
+            queue: state.queue.clone(),
+            current,
             playing: state.playing,
-            elsewhere,
+            position_seconds: self.position().max(0.0).floor(),
+            duration_seconds: current
+                .and_then(|index| state.queue[index].track.duration_seconds)
+                .unwrap_or(0.0),
+            here,
+            player_name,
+            loading,
             notice,
-            up_next: state.queue[index + 1..]
-                .iter()
-                .take(UP_NEXT_COUNT)
-                .map(|entry| UpNextItem {
-                    title: entry.track.title.clone(),
-                    artists: entry.track.artists.clone(),
-                })
-                .collect(),
         }
     }
 }

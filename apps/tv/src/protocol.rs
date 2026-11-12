@@ -106,8 +106,7 @@ pub enum Placement {
     Last,
 }
 
-/// Messages this app sends. The TV never builds a queue, so the queue editing
-/// commands are left out.
+/// Messages this app sends.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "_tag")]
 pub enum ClientMessage {
@@ -118,6 +117,25 @@ pub enum ClientMessage {
         kind: DeviceKind,
         #[serde(default)]
         player: Option<PlayerReport>,
+    },
+    /// Replace the queue and start playing it.
+    #[serde(rename_all = "camelCase")]
+    PlayQueue {
+        tracks: Vec<QueueTrack>,
+        start_index: usize,
+    },
+    #[serde(rename_all = "camelCase")]
+    Enqueue {
+        tracks: Vec<QueueTrack>,
+        placement: Placement,
+    },
+    #[serde(rename_all = "camelCase")]
+    RemoveEntry {
+        entry_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    SkipTo {
+        entry_id: String,
     },
     Resume {},
     #[serde(rename_all = "camelCase")]
@@ -274,6 +292,52 @@ mod tests {
                 },
             ),
             ("client-pause.json", ClientMessage::Pause { at: None }),
+            (
+                "client-play-queue.json",
+                ClientMessage::PlayQueue {
+                    tracks: vec![QueueTrack {
+                        video_id: "dQw4w9WgXcQ".into(),
+                        title: "Never Gonna Give You Up".into(),
+                        artists: "Rick Astley".into(),
+                        album: Some("Whenever You Need Somebody".into()),
+                        duration_seconds: Some(213.5),
+                        artwork_url: None,
+                    }],
+                    start_index: 0,
+                },
+            ),
+            (
+                "client-enqueue.json",
+                ClientMessage::Enqueue {
+                    tracks: vec![QueueTrack {
+                        video_id: "dQw4w9WgXcQ".into(),
+                        title: "Never Gonna Give You Up".into(),
+                        artists: "Rick Astley".into(),
+                        album: None,
+                        duration_seconds: None,
+                        artwork_url: None,
+                    }],
+                    placement: Placement::Next,
+                },
+            ),
+            (
+                "client-skip-to.json",
+                ClientMessage::SkipTo {
+                    entry_id: "e1".into(),
+                },
+            ),
+            (
+                "client-remove-entry.json",
+                ClientMessage::RemoveEntry {
+                    entry_id: "e1".into(),
+                },
+            ),
+            (
+                "client-transfer.json",
+                ClientMessage::Transfer {
+                    device_id: "tv".into(),
+                },
+            ),
         ];
         for (name, message) in cases {
             let expected: serde_json::Value = serde_json::from_str(&fixture(name)).unwrap();

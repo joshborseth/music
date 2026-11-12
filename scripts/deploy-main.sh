@@ -55,7 +55,7 @@ if ! git cat-file -e "$previous_rev^{commit}" 2>/dev/null ||
 fi
 if [ "$force_tv" = true ] || [ "$tv_changed" = true ]; then
   ./scripts/build-tv-apk.sh
-  echo "Rebuilt dist/music-tv.apk. Install it on the TV from http://192.168.1.67:4310/tv.apk."
+  echo "Rebuilt dist/music-tv.apk. The TV app installs it by itself while nothing plays (a TV without the updater needs it by hand once: http://192.168.1.67:4310/tv.apk)."
 fi
 
 systemctl --user restart music.service

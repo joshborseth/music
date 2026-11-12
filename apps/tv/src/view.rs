@@ -1,46 +1,35 @@
-//! What the screen shows, as plain data. The controller rebuilds it a few
-//! times a second and the screen only redraws when it changes.
+//! The session as the screen needs it, as plain data. The controller rebuilds
+//! it a few times a second, and the screen only redraws when it changes.
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct UpNextItem {
-    pub title: String,
-    pub artists: String,
-}
+use crate::protocol::QueueEntry;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct View {
     pub connected: bool,
-    /// Nothing is queued: show the welcome screen.
-    pub idle: bool,
-    pub title: String,
-    pub artists: String,
-    pub album: String,
-    pub artwork_url: Option<String>,
-    pub duration_seconds: f64,
-    pub position_seconds: f64,
+    pub queue: Vec<QueueEntry>,
+    /// Index of the current entry in `queue`.
+    pub current: Option<usize>,
     pub playing: bool,
-    /// "Playing on iPhone" when another device is the player.
-    pub elsewhere: String,
+    /// Whole seconds, so the view only changes once a second.
+    pub position_seconds: f64,
+    pub duration_seconds: f64,
+    /// This TV is the player.
+    pub here: bool,
+    /// The player's name when another device plays.
+    pub player_name: Option<String>,
+    /// This TV should be playing but has no audio yet.
+    pub loading: bool,
+    /// A message from the server, shown for a few seconds.
     pub notice: String,
-    pub up_next: Vec<UpNextItem>,
 }
 
 impl View {
-    pub fn idle(connected: bool, notice: String) -> Self {
-        Self {
-            connected,
-            idle: true,
-            title: String::new(),
-            artists: String::new(),
-            album: String::new(),
-            artwork_url: None,
-            duration_seconds: 0.0,
-            position_seconds: 0.0,
-            playing: false,
-            elsewhere: String::new(),
-            notice,
-            up_next: Vec::new(),
-        }
+    pub fn current_entry(&self) -> Option<&QueueEntry> {
+        self.current.and_then(|index| self.queue.get(index))
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.current.is_none()
     }
 }
 
@@ -58,7 +47,7 @@ pub fn clock(seconds: f64) -> String {
 /// Ask Google's image CDN for a size that suits a TV instead of a thumbnail.
 fn sized_artwork_url(url: &str, pixels: u32) -> String {
     match url.rfind('=') {
-        Some(index) if url[index..].starts_with("=w") => {
+        Some(index) if url[index..].starts_with("=w") || url[index..].starts_with("=s") => {
             format!("{}=w{pixels}-h{pixels}-l90-rj", &url[..index])
         }
         _ => url.to_owned(),
@@ -74,7 +63,7 @@ pub fn relayed_artwork_url(server: &str, url: &str, pixels: u32) -> String {
 }
 
 /// Encode everything but RFC 3986 unreserved characters.
-fn percent_encode(text: &str) -> String {
+pub fn percent_encode(text: &str) -> String {
     text.bytes()
         .map(|byte| match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
@@ -116,6 +105,10 @@ mod tests {
                 720
             ),
             "https://lh3.googleusercontent.com/abc=w720-h720-l90-rj"
+        );
+        assert_eq!(
+            sized_artwork_url("https://lh3.googleusercontent.com/abc=s120", 300),
+            "https://lh3.googleusercontent.com/abc=w300-h300-l90-rj"
         );
         assert_eq!(
             sized_artwork_url("https://i.ytimg.com/vi/x/hqdefault.jpg", 720),

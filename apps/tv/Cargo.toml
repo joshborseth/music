@@ -42,10 +42,26 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 rtrb = "0.3"
 log = "0.4"
+# Draws the QR code guests scan to open the app on their phone.
+qrcodegen = "1.8"
+# The local time zone for the clock (`localtime_r`); already in the tree.
+libc = "0.2"
+
+[features]
+# Renders the screens to PNG files on a computer: see src/screenshots.rs.
+screenshots = ["slint/renderer-software", "slint/software-renderer-systemfonts"]
+
+[[example]]
+name = "screens"
+required-features = ["screenshots"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 cpal = "0.18.2"
+# Self-updates call Android's installer through JNI. Both are already in the
+# tree (cpal and android-activity use the same versions).
+jni = "0.22.4"
+ndk-context = "0.1.1"
 
 [build-dependencies]
 slint-build = "=1.18.1"
@@ -71,6 +87,13 @@ required = false
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
+
+# Self-updates (src/update): install our own APK, without a prompt on Android 12+.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.REQUEST_INSTALL_PACKAGES"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION"
 
 [package.metadata.android.application]
 label = "Music"

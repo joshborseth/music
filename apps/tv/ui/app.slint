@@ -1,254 +1,1396 @@
-// The TV's only screen: what is playing, from across the room.
-// Everything is sized from the window height so it reads the same on any TV.
+// Music for TV: every screen, drawn from properties the Rust side sets.
+//
+// Rust owns navigation. Each remote key goes to `key()`, Rust moves the
+// selection, and sets the models below; this file only lays them out and
+// animates. Everything is sized in units of 1/54 of the window height
+// (20px at 1080p), so it reads the same on any TV and any density.
 
-export struct UpNextRow {
+import "fonts/Inter-Regular.ttf";
+import "fonts/Inter-Medium.ttf";
+import "fonts/Inter-SemiBold.ttf";
+import "fonts/Inter-Bold.ttf";
+import "fonts/InterDisplay-ExtraBold.ttf";
+
+export global Metrics {
+    in-out property <length> u: 20px;
+}
+
+global Theme {
+    out property <color> bg: #08070d;
+    out property <color> surface: #ffffff12;
+    out property <color> surface-strong: #ffffff24;
+    out property <color> text: #ffffff;
+    out property <color> text-2: #ffffffbf;
+    out property <color> text-3: #ffffff80;
+    out property <color> pink: #ff4f81;
+    out property <color> violet: #c13bff;
+    out property <color> blue: #5b5bff;
+    out property <brush> accent: @linear-gradient(120deg, #ff4f81 0%, #c13bff 55%, #5b5bff 100%);
+    out property <duration> quick: 160ms;
+    out property <duration> smooth: 320ms;
+}
+
+export struct CardData {
+    title: string,
+    subtitle: string,
+    image: image,
+    has-image: bool,
+    /// Artists are round.
+    round: bool,
+    selected: bool,
+    /// Draws a play badge: the card plays a song instead of opening a page.
+    playable: bool,
+}
+
+export struct ShelfData {
+    title: string,
+    cards: [CardData],
+}
+
+export struct RowData {
+    /// "track", "link" (opens a page), or "header" (a section title).
+    kind: string,
+    title: string,
+    subtitle: string,
+    detail: string,
+    number: string,
+    image: image,
+    has-image: bool,
+    round: bool,
+    selected: bool,
+    /// The song playing now.
+    current: bool,
+}
+
+export struct ButtonData {
+    icon: string,
+    label: string,
+    selected: bool,
+    /// Lit up: liked, or the open panel.
+    active: bool,
+    /// The big round play button.
+    primary: bool,
+}
+
+export struct KeyData {
+    label: string,
+    icon: string,
+    /// Columns it spans in the six-column keyboard.
+    span: int,
+    selected: bool,
+}
+
+export struct MenuItemData {
+    icon: string,
+    label: string,
+    selected: bool,
+}
+
+export struct HintData {
+    key: string,
+    label: string,
+}
+
+export struct UpNextData {
     title: string,
     artists: string,
+    image: image,
+    has-image: bool,
+}
+
+// PIECES
+
+component Icon inherits Path {
+    in property <string> name;
+    in property <color> color: white;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    fill: color;
+    fill-rule: evenodd;
+    commands: name == "play" ? "M7 4.2 L20 12 L7 19.8 Z"
+        : name == "pause" ? "M5.5 4.5 H10 V19.5 H5.5 Z M14 4.5 H18.5 V19.5 H14 Z"
+        : name == "next" ? "M4.5 5 L14.5 12 L4.5 19 Z M16 5 H19.5 V19 H16 Z"
+        : name == "previous" ? "M19.5 5 L9.5 12 L19.5 19 Z M4.5 5 H8 V19 H4.5 Z"
+        : name == "heart" ? "M12 20.8 C12 20.8 2.2 14.8 2.2 8.3 C2.2 5.3 4.6 3.2 7.3 3.2 C9.3 3.2 11 4.3 12 6 C13 4.3 14.7 3.2 16.7 3.2 C19.4 3.2 21.8 5.3 21.8 8.3 C21.8 14.8 12 20.8 12 20.8 Z"
+        : name == "heart-outline" ? "M12 20.8 C12 20.8 2.2 14.8 2.2 8.3 C2.2 5.3 4.6 3.2 7.3 3.2 C9.3 3.2 11 4.3 12 6 C13 4.3 14.7 3.2 16.7 3.2 C19.4 3.2 21.8 5.3 21.8 8.3 C21.8 14.8 12 20.8 12 20.8 Z M12 18.3 C12 18.3 19.6 13.5 19.6 8.4 C19.6 6.6 18.2 5.4 16.6 5.4 C14.9 5.4 13.6 6.6 12 8.9 C10.4 6.6 9.1 5.4 7.4 5.4 C5.8 5.4 4.4 6.6 4.4 8.4 C4.4 13.5 12 18.3 12 18.3 Z"
+        : name == "queue" ? "M3 4.5 H16 V7 H3 Z M3 10.5 H16 V13 H3 Z M3 16.5 H11 V19 H3 Z M14 14.2 L21.5 17.9 L14 21.6 Z"
+        : name == "lyrics" ? "M4 3.5 H20 C20.8 3.5 21.5 4.2 21.5 5 V15.5 C21.5 16.3 20.8 17 20 17 H10 L5.5 21 V17 H4 C3.2 17 2.5 16.3 2.5 15.5 V5 C2.5 4.2 3.2 3.5 4 3.5 Z M6 7.5 V9.5 H18 V7.5 Z M6 11.5 V13.5 H14 V11.5 Z"
+        : name == "shuffle" ? "M16 3.5 L21.5 7 L16 10.5 V8.3 H14.6 L8.6 16.8 H2.5 V14.4 H7.4 L13.4 5.9 H16 Z M2.5 6 H8.6 L10.5 8.7 L9 10.8 L7.4 8.4 H2.5 Z M13.1 15.2 L14.6 15.6 H16 V13.5 L21.5 17 L16 20.5 V18 H13.4 L11.7 15.6 L13.1 13.6 Z"
+        : name == "search" ? "M10.5 2.5 C14.9 2.5 18.5 6.1 18.5 10.5 C18.5 12.3 17.9 13.9 16.9 15.2 L21.6 19.9 L19.9 21.6 L15.2 16.9 C13.9 17.9 12.3 18.5 10.5 18.5 C6.1 18.5 2.5 14.9 2.5 10.5 C2.5 6.1 6.1 2.5 10.5 2.5 Z M10.5 5 C7.5 5 5 7.5 5 10.5 C5 13.5 7.5 16 10.5 16 C13.5 16 16 13.5 16 10.5 C16 7.5 13.5 5 10.5 5 Z"
+        : name == "home" ? "M12 2.8 L21.5 10.4 V21 H14.6 V15 H9.4 V21 H2.5 V10.4 Z"
+        : name == "library" ? "M3.5 3 H7 V21 H3.5 Z M9.2 3 H12.7 V21 H9.2 Z M14.4 4.1 L17.8 3.2 L21.9 20 L18.5 20.9 Z"
+        : name == "now" ? "M3.5 9.5 H7 V20.5 H3.5 Z M10.25 3.5 H13.75 V20.5 H10.25 Z M17 12.5 H20.5 V20.5 H17 Z"
+        : name == "backspace" ? "M8.2 4.5 H20 C20.8 4.5 21.5 5.2 21.5 6 V18 C21.5 18.8 20.8 19.5 20 19.5 H8.2 L2 12 Z M11.3 8.4 L10 9.7 L12.3 12 L10 14.3 L11.3 15.6 L13.6 13.3 L15.9 15.6 L17.2 14.3 L14.9 12 L17.2 9.7 L15.9 8.4 L13.6 10.7 Z"
+        : name == "add" ? "M10.7 4 H13.3 V10.7 H20 V13.3 H13.3 V20 H10.7 V13.3 H4 V10.7 H10.7 Z"
+        : name == "play-next" ? "M3 4.5 H14 V7 H3 Z M3 10.5 H14 V13 H3 Z M3 16.5 H9 V19 H3 Z M17.7 12 H20.3 V15.7 H24 V18.3 H20.3 V22 H17.7 V18.3 H14 V15.7 H17.7 Z"
+        : name == "remove" ? "M4 10.7 H20 V13.3 H4 Z"
+        : name == "close" ? "M6.1 4.3 L12 10.2 L17.9 4.3 L19.7 6.1 L13.8 12 L19.7 17.9 L17.9 19.7 L12 13.8 L6.1 19.7 L4.3 17.9 L10.2 12 L4.3 6.1 Z"
+        : name == "settings" ? "M10.2 2.5 H13.8 L14.3 5.2 L16.4 6.4 L19 5.4 L20.8 8.6 L18.7 10.3 V13.7 L20.8 15.4 L19 18.6 L16.4 17.6 L14.3 18.8 L13.8 21.5 H10.2 L9.7 18.8 L7.6 17.6 L5 18.6 L3.2 15.4 L5.3 13.7 V10.3 L3.2 8.6 L5 5.4 L7.6 6.4 L9.7 5.2 Z M12 8.6 C10.1 8.6 8.6 10.1 8.6 12 C8.6 13.9 10.1 15.4 12 15.4 C13.9 15.4 15.4 13.9 15.4 12 C15.4 10.1 13.9 8.6 12 8.6 Z"
+        : name == "artist" ? "M12 3 C14.5 3 16.5 5 16.5 7.5 C16.5 10 14.5 12 12 12 C9.5 12 7.5 10 7.5 7.5 C7.5 5 9.5 3 12 3 Z M3.5 21 C3.5 16.6 7.3 14 12 14 C16.7 14 20.5 16.6 20.5 21 Z"
+        : name == "album" ? "M12 2.5 C17.2 2.5 21.5 6.8 21.5 12 C21.5 17.2 17.2 21.5 12 21.5 C6.8 21.5 2.5 17.2 2.5 12 C2.5 6.8 6.8 2.5 12 2.5 Z M12 9.5 C10.6 9.5 9.5 10.6 9.5 12 C9.5 13.4 10.6 14.5 12 14.5 C13.4 14.5 14.5 13.4 14.5 12 C14.5 10.6 13.4 9.5 12 9.5 Z"
+        : "M12 3 V14.6 C11.4 14.2 10.7 14 10 14 C7.8 14 6 15.8 6 18 C6 20.2 7.8 22 10 22 C12.2 22 14 20.2 14 18 V7 H18 V3 Z";
+}
+
+/// A square of artwork, or a placeholder note when there is none.
+component Artwork inherits Rectangle {
+    in property <image> source;
+    in property <bool> has-source;
+    in property <bool> round;
+    border-radius: round ? self.width / 2 : self.width * 0.06;
+    clip: true;
+    background: @linear-gradient(135deg, #2a2140 0%, #15121f 100%);
+    if !has-source: Icon {
+        name: round ? "artist" : "note";
+        width: parent.width * 0.4;
+        height: self.width;
+        color: #ffffff38;
+    }
+    if has-source: Image {
+        source: root.source;
+        width: 100%;
+        height: 100%;
+        image-fit: cover;
+    }
+}
+
+/// A round button with an icon, and a pill with a label when it has one.
+component RoundButton inherits Rectangle {
+    in property <ButtonData> data;
+    in property <length> size: Metrics.u * 3.6;
+    property <bool> wide: data.label != "" && !data.primary;
+    property <length> icon-size: data.primary ? size * 0.6 : size * 0.46;
+    width: wide ? label-text.preferred-width + size * 1.55 + self.icon-size * 0.5 : (data.primary ? size * 1.4 : size);
+    height: data.primary ? size * 1.4 : size;
+    border-radius: self.height / 2;
+    background: data.selected ? white : (data.primary ? #ffffff2e : Theme.surface);
+    drop-shadow-blur: data.selected ? Metrics.u * 1.4 : 0;
+    drop-shadow-color: #ff4f8170;
+    animate background { duration: Theme.quick; }
+    Icon {
+        name: root.data.icon;
+        x: root.wide ? root.size * 0.42 : (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: root.icon-size;
+        height: self.width;
+        color: root.data.selected ? #120f1c : (root.data.active ? Theme.pink : white);
+    }
+    label-text := Text {
+        x: root.size * 0.42 + root.icon-size + root.size * 0.25;
+        y: (root.height - self.height) / 2;
+        visible: root.wide;
+        text: root.data.label;
+        color: root.data.selected ? #120f1c : white;
+        font-size: root.size * 0.36;
+        font-weight: 600;
+    }
+}
+
+/// One tile on a shelf. The selected one lifts and gets a ring.
+component Card inherits Rectangle {
+    in property <CardData> data;
+    in property <length> size;
+    width: size;
+    height: size + Metrics.u * 4.2;
+    art := Rectangle {
+        y: root.data.selected ? -Metrics.u * 0.5 : 0;
+        width: root.size;
+        height: root.size;
+        border-radius: root.data.round ? self.width / 2 : root.size * 0.06 + Metrics.u * 0.2;
+        border-width: root.data.selected ? Metrics.u * 0.22 : 0;
+        border-color: white;
+        drop-shadow-blur: root.data.selected ? Metrics.u * 2 : Metrics.u * 0.6;
+        drop-shadow-color: root.data.selected ? #c13bff80 : #00000060;
+        drop-shadow-offset-y: Metrics.u * 0.4;
+        animate y, drop-shadow-blur { duration: Theme.quick; easing: ease-out; }
+        Artwork {
+            x: root.data.selected ? Metrics.u * 0.22 : 0;
+            y: self.x;
+            width: parent.width - self.x * 2;
+            height: self.width;
+            source: root.data.image;
+            has-source: root.data.has-image;
+            round: root.data.round;
+        }
+        if root.data.playable && root.data.selected: Rectangle {
+            x: parent.width - self.width - Metrics.u * 0.7;
+            y: parent.height - self.height - Metrics.u * 0.7;
+            width: Metrics.u * 2.6;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: white;
+            drop-shadow-blur: Metrics.u;
+            drop-shadow-color: #00000080;
+            Icon {
+                name: "play";
+                x: parent.width * 0.27;
+                width: parent.width * 0.5;
+                height: self.width;
+                color: #120f1c;
+            }
+        }
+    }
+    Text {
+        y: root.size + Metrics.u * 0.8;
+        width: root.size;
+        text: root.data.title;
+        color: root.data.selected ? white : Theme.text-2;
+        font-size: Metrics.u * 1.0;
+        font-weight: 600;
+        overflow: elide;
+        horizontal-alignment: root.data.round ? center : left;
+    }
+    Text {
+        y: root.size + Metrics.u * 2.3;
+        width: root.size;
+        text: root.data.subtitle;
+        color: Theme.text-3;
+        font-size: Metrics.u * 0.85;
+        overflow: elide;
+        horizontal-alignment: root.data.round ? center : left;
+    }
+}
+
+/// Titled rows of cards, scrolled by the selection.
+component Shelves inherits Rectangle {
+    in property <[ShelfData]> shelves;
+    in property <[int]> offsets;
+    in property <int> top;
+    in property <length> card: Metrics.u * 10.5;
+    property <length> gap: Metrics.u * 1.4;
+    property <length> shelf-height: card + Metrics.u * 8.2;
+    clip: true;
+    Rectangle {
+        y: -root.top * root.shelf-height;
+        animate y { duration: Theme.smooth; easing: ease-in-out; }
+        for shelf[s] in root.shelves: Rectangle {
+            x: 0;
+            y: s * root.shelf-height;
+            width: root.width;
+            height: root.shelf-height;
+            Text {
+                x: Metrics.u * 4;
+                y: Metrics.u * 0.6;
+                text: shelf.title;
+                color: white;
+                font-size: Metrics.u * 1.35;
+                font-weight: 700;
+            }
+            Rectangle {
+                x: Metrics.u * 4 - root.offsets[s] * (root.card + root.gap);
+                y: Metrics.u * 3.6;
+                animate x { duration: Theme.smooth; easing: ease-in-out; }
+                for card[c] in shelf.cards: Card {
+                    x: c * (root.card + root.gap);
+                    y: 0;
+                    data: card;
+                    size: root.card;
+                }
+            }
+        }
+    }
+}
+
+/// One line of a list: a song, a link to a page, or a section title.
+component Row inherits Rectangle {
+    in property <RowData> data;
+    height: data.kind == "header" ? Metrics.u * 4 : Metrics.u * 4.4;
+    border-radius: Metrics.u * 0.7;
+    background: data.selected ? white : (data.current ? #ffffff14 : transparent);
+    animate background { duration: Theme.quick; }
+    if root.data.kind == "header": Text {
+        x: Metrics.u * 0.8;
+        y: parent.height - self.height - Metrics.u * 0.6;
+        text: root.data.title;
+        color: white;
+        font-size: Metrics.u * 1.25;
+        font-weight: 700;
+    }
+    if root.data.kind != "header": HorizontalLayout {
+        padding-left: Metrics.u * 0.8;
+        padding-right: Metrics.u * 1.2;
+        spacing: Metrics.u * 1;
+        if root.data.number != "": Text {
+            width: Metrics.u * 1.6;
+            text: root.data.number;
+            color: root.data.selected ? #120f1caa : Theme.text-3;
+            font-size: Metrics.u * 0.95;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        if root.data.number == "": VerticalLayout {
+            alignment: center;
+            Artwork {
+                width: Metrics.u * 3.2;
+                height: self.width;
+                source: root.data.image;
+                has-source: root.data.has-image;
+                round: root.data.round;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: Metrics.u * 0.15;
+            Text {
+                text: root.data.title;
+                color: root.data.selected ? #120f1c : (root.data.current ? Theme.pink : white);
+                font-size: Metrics.u * 1.05;
+                font-weight: 600;
+                overflow: elide;
+            }
+            if root.data.subtitle != "": Text {
+                text: root.data.subtitle;
+                color: root.data.selected ? #120f1cb0 : Theme.text-3;
+                font-size: Metrics.u * 0.88;
+                overflow: elide;
+            }
+        }
+        if root.data.current: VerticalLayout {
+            alignment: center;
+            Icon {
+                name: "now";
+                width: Metrics.u * 1.3;
+                height: self.width;
+                color: root.data.selected ? #120f1c : Theme.pink;
+            }
+        }
+        Text {
+            text: root.data.detail;
+            color: root.data.selected ? #120f1cb0 : Theme.text-3;
+            font-size: Metrics.u * 0.9;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+        }
+    }
+}
+
+/// A list of rows that keeps `top` as its first visible row.
+component List inherits Rectangle {
+    in property <[RowData]> rows;
+    in property <int> top;
+    property <length> row-height: Metrics.u * 4.4;
+    clip: true;
+    Rectangle {
+        y: -root.top * root.row-height;
+        animate y { duration: Theme.smooth; easing: ease-in-out; }
+        for row[i] in root.rows: Row {
+            x: 0;
+            y: i * root.row-height;
+            width: root.width;
+            data: row;
+        }
+    }
 }
 
 component Hint inherits HorizontalLayout {
     in property <string> key;
     in property <string> label;
-    in property <length> unit;
-    spacing: unit * 0.6;
+    spacing: Metrics.u * 0.5;
     Rectangle {
-        border-radius: unit * 0.5;
+        border-radius: Metrics.u * 0.4;
         border-width: 1px;
         border-color: #ffffff40;
-        width: max(unit * 2.4, key-text.preferred-width + unit * 1.2);
+        width: max(Metrics.u * 2.2, key-text.preferred-width + Metrics.u * 1);
+        height: Metrics.u * 1.6;
         key-text := Text {
-            text: key;
-            color: #ffffffb0;
-            font-size: unit * 0.9;
+            text: root.key;
+            color: Theme.text-2;
+            font-size: Metrics.u * 0.75;
             font-weight: 600;
         }
     }
     Text {
-        text: label;
-        color: #ffffff80;
-        font-size: unit * 0.9;
+        text: root.label;
+        color: Theme.text-3;
+        font-size: Metrics.u * 0.8;
         vertical-alignment: center;
     }
 }
 
+/// The scannable code, on white so every phone camera reads it.
+component QrCard inherits Rectangle {
+    in property <image> code;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <length> size: Metrics.u * 7;
+    in property <bool> vertical;
+    width: vertical ? size + Metrics.u * 2 : size + Metrics.u * 2 + text-column.preferred-width + Metrics.u * 1.2;
+    height: vertical ? size + Metrics.u * 2 + text-column.preferred-height + Metrics.u : size + Metrics.u * 2;
+    border-radius: Metrics.u * 1.2;
+    background: #ffffff10;
+    border-width: 1px;
+    border-color: #ffffff1a;
+    Rectangle {
+        x: Metrics.u;
+        y: Metrics.u;
+        width: root.size;
+        height: root.size;
+        border-radius: Metrics.u * 0.6;
+        background: white;
+        clip: true;
+        Image {
+            x: root.size * 0.06;
+            y: self.x;
+            width: root.size * 0.88;
+            height: self.width;
+            source: root.code;
+            image-rendering: pixelated;
+        }
+    }
+    text-column := VerticalLayout {
+        x: root.vertical ? Metrics.u : root.size + Metrics.u * 2.2;
+        y: root.vertical ? root.size + Metrics.u * 2 : (root.height - self.preferred-height) / 2;
+        width: root.vertical ? root.size : self.preferred-width;
+        height: self.preferred-height;
+        spacing: Metrics.u * 0.25;
+        Text {
+            text: root.title;
+            color: white;
+            font-size: Metrics.u * 1.0;
+            font-weight: 700;
+            horizontal-alignment: root.vertical ? center : left;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.subtitle;
+            color: Theme.text-3;
+            font-size: Metrics.u * 0.8;
+            horizontal-alignment: root.vertical ? center : left;
+            wrap: word-wrap;
+        }
+    }
+}
+
+component Spinner inherits Rectangle {
+    property <float> phase: Math.mod(animation-tick() / 1.2s, 1);
+    width: Metrics.u * 3;
+    height: self.width;
+    for i in 3: Rectangle {
+        x: i * Metrics.u * 1.1;
+        y: (parent.height - self.height) / 2;
+        width: Metrics.u * 0.7;
+        height: Metrics.u * (0.7 + 1.1 * Math.abs(Math.sin((root.phase - i * 0.18) * 360deg)));
+        border-radius: self.width / 2;
+        background: Theme.violet;
+    }
+}
+
+// THE WINDOW
+
 export component App inherits Window {
-    in property <bool> connected;
-    in property <bool> idle: true;
+    // Chrome
+    in property <int> tab;
+    in property <bool> tabs-focused;
+    in property <bool> tabs-visible: true;
+    /// 0 now playing, 1 nothing playing, 2 shelves, 3 search, 4 a collection.
+    in property <int> page;
+    in property <string> clock;
+    in property <string> status;
+    in property <string> notice;
+    in property <image> logo;
+    in property <image> qr;
+    in property <string> qr-url;
+    in property <[HintData]> hints;
+
+    // Now playing
     in property <string> track-title;
     in property <string> artists;
     in property <string> album;
     in property <image> artwork;
     in property <bool> has-artwork;
-    in property <color> tint: #24242e;
+    in property <image> backdrop;
+    in property <bool> has-backdrop;
+    in property <color> tint: #1b1530;
     in property <float> progress;
     in property <string> position-text: "0:00";
     in property <string> duration-text: "0:00";
     in property <bool> playing;
-    in property <string> elsewhere;
-    in property <string> notice;
-    in property <string> server;
-    in property <[UpNextRow]> up-next;
+    in property <bool> loading;
+    in property <string> where;
+    in property <[ButtonData]> controls;
+    in property <[UpNextData]> up-next;
+    in property <[float]> bars;
+    in property <bool> bars-visible;
 
-    callback toggle-play();
-    callback seek-by(float);
-    callback next();
-    callback previous();
+    // Panels over now playing: 0 none, 1 queue, 2 lyrics.
+    in property <int> panel;
+    in property <[RowData]> queue-rows;
+    in property <int> queue-top;
+    in property <string> queue-summary;
+    in property <string> lyrics;
+    in property <string> lyrics-note;
+
+    // Nothing playing
+    in property <[ButtonData]> idle-buttons;
+
+    // Shelves (home, library, search results)
+    in property <string> page-title;
+    in property <string> page-subtitle;
+    in property <[ShelfData]> shelves;
+    in property <[int]> shelf-offsets;
+    in property <int> shelf-top;
+    in property <bool> page-loading;
+    in property <string> page-message;
+
+    // Search
+    in property <string> query;
+    in property <[KeyData]> keys;
+    in property <bool> keyboard-focused;
+
+    // A collection
+    in property <string> col-kind;
+    in property <string> col-title;
+    in property <string> col-subtitle;
+    in property <string> col-description;
+    in property <image> col-artwork;
+    in property <bool> col-has-artwork;
+    in property <bool> col-round;
+    in property <[ButtonData]> col-buttons;
+    in property <[RowData]> col-rows;
+    in property <int> col-top;
+
+    // The options menu
+    in property <bool> menu-open;
+    in property <string> menu-title;
+    in property <string> menu-subtitle;
+    in property <[MenuItemData]> menu-items;
+
+    // Screensaver
+    in property <bool> saver;
+    in property <float> saver-x: 0.5;
+    in property <float> saver-y: 0.5;
+
+    /// Every remote key: its text, pressed (or released), and whether it repeats.
+    /// Returns whether the app used it; Back that the app does not use leaves the app.
+    callback key(string, bool, bool) -> bool;
 
     title: "Music";
-    background: #0a0a0d;
+    background: Theme.bg;
+    default-font-family: "Inter";
     forward-focus: keys;
 
-    // One spacing unit: 1/54 of the height (20px on a 1080p screen).
-    property <length> unit: self.height / 54;
-
-    Rectangle {
-        background: @linear-gradient(140deg, root.tint 0%, #0a0a0d 75%);
+    init => {
+        Metrics.u = self.height / 54;
+    }
+    changed height => {
+        Metrics.u = self.height / 54;
     }
 
     keys := FocusScope {
         key-pressed(event) => {
-            if (event.text == Key.Return || event.text == " ") {
-                root.toggle-play();
-                return accept;
-            }
-            if (event.text == Key.LeftArrow) {
-                root.seek-by(-10);
-                return accept;
-            }
-            if (event.text == Key.RightArrow) {
-                root.seek-by(10);
-                return accept;
-            }
-            if (event.text == Key.UpArrow) {
-                root.previous();
-                return accept;
-            }
-            if (event.text == Key.DownArrow) {
-                root.next();
-                return accept;
-            }
-            reject
+            root.key(event.text, true, event.repeat) ? accept : reject
+        }
+        key-released(event) => {
+            root.key(event.text, false, false) ? accept : reject
         }
     }
 
-    // NOTHING QUEUED
+    // BACKGROUND: the cover's color, its blurred copy, and a vignette.
 
-    if root.idle: VerticalLayout {
-        alignment: center;
-        spacing: root.unit;
-        Text {
-            text: "Music";
-            color: white;
-            font-size: root.unit * 4;
-            font-weight: 700;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: root.connected
-                ? "Open Music on your phone and choose this TV."
-                : "Connecting to " + root.server + "…";
-            color: #ffffff99;
-            font-size: root.unit * 1.4;
-            horizontal-alignment: center;
+    Rectangle {
+        background: @linear-gradient(160deg, root.tint 0%, Theme.bg 70%);
+        animate background { duration: 900ms; }
+    }
+    if root.has-backdrop && (root.page == 0): Image {
+        width: 100%;
+        height: 100%;
+        source: root.backdrop;
+        image-fit: cover;
+        opacity: 0.55;
+    }
+    Rectangle {
+        background: @linear-gradient(90deg, #08070dcc 0%, #08070d55 55%, #08070d99 100%);
+    }
+    Rectangle {
+        background: @linear-gradient(180deg, #08070d00 55%, #08070dee 100%);
+    }
+
+    // VISUALIZER: bars along the bottom while this TV plays.
+
+    if root.bars-visible && root.page == 0 && !root.saver: Rectangle {
+        y: root.height - self.height;
+        height: Metrics.u * 6;
+        opacity: 0.55;
+        for level[i] in root.bars: Rectangle {
+            property <length> step: root.width / root.bars.length;
+            x: i * self.step + self.step * 0.18;
+            width: self.step * 0.64;
+            height: max(Metrics.u * 0.3, parent.height * level);
+            y: parent.height - self.height;
+            border-radius: self.width / 2;
+            background: @linear-gradient(180deg, #ff4f81 0%, #c13bff 60%, #5b5bff00 100%);
         }
     }
 
     // NOW PLAYING
 
-    if !root.idle: HorizontalLayout {
-        padding: root.unit * 4;
-        spacing: root.unit * 4;
-
-        VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: root.height * 0.62;
-                height: self.width;
-                border-radius: root.unit;
-                clip: true;
-                background: #ffffff10;
-                drop-shadow-blur: root.unit * 2;
-                drop-shadow-color: #00000080;
-                Image {
-                    source: root.artwork;
-                    width: 100%;
-                    height: 100%;
-                    image-fit: cover;
-                    visible: root.has-artwork;
-                }
-                Text {
-                    text: "♪";
-                    color: #ffffff30;
-                    font-size: root.unit * 8;
-                    visible: !root.has-artwork;
-                }
+    if root.page == 0: Rectangle {
+        property <length> art: min(root.height * 0.52, root.width * 0.3);
+        // Artwork, left.
+        Rectangle {
+            x: Metrics.u * 5;
+            y: Metrics.u * 9.5;
+            width: parent.art;
+            height: parent.art;
+            border-radius: Metrics.u * 1.2;
+            drop-shadow-blur: Metrics.u * 4;
+            drop-shadow-color: #000000a0;
+            drop-shadow-offset-y: Metrics.u * 1;
+            Artwork {
+                width: 100%;
+                height: 100%;
+                source: root.artwork;
+                has-source: root.has-artwork;
             }
         }
-
+        // Song, progress, and controls, right.
         VerticalLayout {
+            x: Metrics.u * 8 + parent.art;
+            y: Metrics.u * 9.5;
+            width: root.width - self.x - Metrics.u * 5;
+            height: parent.art;
             alignment: center;
-            spacing: root.unit * 0.6;
-
-            Text {
-                text: root.elsewhere != "" ? root.elsewhere : (root.playing ? "Now playing" : "Paused");
-                color: #ffffff80;
-                font-size: root.unit * 1;
-                font-weight: 600;
+            spacing: Metrics.u * 0.5;
+            HorizontalLayout {
+                spacing: Metrics.u * 0.6;
+                alignment: start;
+                if root.playing: Icon {
+                    name: "now";
+                    width: Metrics.u * 1.1;
+                    height: self.width;
+                    color: Theme.pink;
+                }
+                Text {
+                    text: root.where;
+                    color: Theme.text-2;
+                    font-size: Metrics.u * 0.95;
+                    font-weight: 600;
+                    letter-spacing: Metrics.u * 0.08;
+                }
             }
             Text {
                 text: root.track-title;
                 color: white;
-                font-size: root.unit * 3;
-                font-weight: 700;
+                font-family: "Inter Display";
+                font-size: Metrics.u * 3.4;
+                font-weight: 800;
                 wrap: word-wrap;
                 overflow: elide;
-                max-height: root.unit * 7.5;
+                height: min(self.preferred-height, Metrics.u * 8.6);
             }
             Text {
-                text: root.album != "" ? root.artists + " · " + root.album : root.artists;
-                color: #ffffffc0;
-                font-size: root.unit * 1.5;
+                text: root.album != "" ? root.artists + "  ·  " + root.album : root.artists;
+                color: Theme.text-2;
+                font-size: Metrics.u * 1.5;
                 overflow: elide;
             }
-
-            Rectangle { height: root.unit; }
-
+            Rectangle { height: Metrics.u * 1.4; }
             Rectangle {
-                height: root.unit * 0.3;
+                height: Metrics.u * 0.45;
                 border-radius: self.height / 2;
                 background: #ffffff26;
                 Rectangle {
                     x: 0;
                     width: parent.width * clamp(root.progress, 0, 1);
                     border-radius: parent.border-radius;
+                    background: Theme.accent;
+                    animate width { duration: 250ms; }
+                }
+                Rectangle {
+                    x: parent.width * clamp(root.progress, 0, 1) - self.width / 2;
+                    width: Metrics.u * 1.1;
+                    height: self.width;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: self.width / 2;
                     background: white;
+                    animate x { duration: 250ms; }
                 }
             }
             HorizontalLayout {
                 Text {
                     text: root.position-text;
-                    color: #ffffff99;
-                    font-size: root.unit * 0.9;
+                    color: Theme.text-3;
+                    font-size: Metrics.u * 0.9;
+                }
+                if root.loading: Text {
+                    text: "Loading…";
+                    color: Theme.text-3;
+                    font-size: Metrics.u * 0.9;
+                    horizontal-alignment: center;
                 }
                 Text {
                     text: root.duration-text;
-                    color: #ffffff99;
-                    font-size: root.unit * 0.9;
+                    color: Theme.text-3;
+                    font-size: Metrics.u * 0.9;
                     horizontal-alignment: right;
                 }
             }
-
-            Rectangle { height: root.unit; }
-
-            if root.up-next.length > 0: Text {
-                text: "Up next";
-                color: #ffffff80;
-                font-size: root.unit * 1;
-                font-weight: 600;
-            }
-            for row in root.up-next: HorizontalLayout {
-                spacing: root.unit * 0.6;
-                Text {
-                    text: row.title;
-                    color: #ffffffd0;
-                    font-size: root.unit * 1.1;
-                    overflow: elide;
-                    horizontal-stretch: 0;
-                }
-                Text {
-                    text: row.artists;
-                    color: #ffffff70;
-                    font-size: root.unit * 1.1;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                }
-            }
-
-            Rectangle { height: root.unit; }
-
+            Rectangle { height: Metrics.u * 1.2; }
             HorizontalLayout {
-                spacing: root.unit * 1.6;
                 alignment: start;
-                Hint { key: "OK"; label: root.elsewhere != "" ? "Play here" : (root.playing ? "Pause" : "Play"); unit: root.unit; }
-                Hint { key: "◀ ▶"; label: "10 s"; unit: root.unit; }
-                Hint { key: "▲ ▼"; label: "Previous / next"; unit: root.unit; }
+                spacing: Metrics.u * 1.1;
+                for button in root.controls: VerticalLayout {
+                    alignment: center;
+                    RoundButton { data: button; }
+                }
+            }
+        }
+        // Up next, bottom left.
+        if root.up-next.length > 0: VerticalLayout {
+            x: Metrics.u * 5;
+            y: root.height - Metrics.u * 12.2;
+            width: root.width * 0.62;
+            height: self.preferred-height;
+            spacing: Metrics.u * 0.8;
+            Text {
+                text: "Up next";
+                color: Theme.text-3;
+                font-size: Metrics.u * 0.9;
+                font-weight: 700;
+            }
+            HorizontalLayout {
+                spacing: Metrics.u * 1.6;
+                alignment: start;
+                for item in root.up-next: HorizontalLayout {
+                    spacing: Metrics.u * 0.8;
+                    width: Metrics.u * 16;
+                    Artwork {
+                        width: Metrics.u * 3.4;
+                        height: self.width;
+                        source: item.image;
+                        has-source: item.has-image;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text {
+                            text: item.title;
+                            color: white;
+                            font-size: Metrics.u * 0.95;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: item.artists;
+                            color: Theme.text-3;
+                            font-size: Metrics.u * 0.85;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+        // Scan to join, bottom right.
+        QrCard {
+            x: root.width - self.width - Metrics.u * 4;
+            y: root.height - self.height - Metrics.u * 3.2;
+            code: root.qr;
+            size: Metrics.u * 6;
+            title: "Add songs";
+            subtitle: "Scan with your phone\non this Wi-Fi";
+        }
+    }
+
+    // NOTHING PLAYING
+
+    if root.page == 1: Rectangle {
+        Rectangle {
+            x: (parent.width - self.width) / 2 - Metrics.u * 8;
+            y: (parent.height - self.height) / 2;
+            width: Metrics.u * 40;
+            height: Metrics.u * 40;
+            border-radius: self.width / 2;
+            background: @radial-gradient(circle, #c13bff30 0%, #c13bff00 70%);
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: Metrics.u * 6;
+            VerticalLayout {
+                alignment: center;
+                spacing: Metrics.u * 1.2;
+                Image {
+                    source: root.logo;
+                    height: Metrics.u * 6;
+                    width: self.height * 392 / 340;
+                    image-fit: contain;
+                }
+                Text {
+                    text: "What should we play?";
+                    color: white;
+                    font-family: "Inter Display";
+                    font-size: Metrics.u * 3.2;
+                    font-weight: 800;
+                }
+                Text {
+                    text: "Pick something with the remote, or scan the code\nso anyone on this Wi-Fi can play songs from their phone.";
+                    color: Theme.text-2;
+                    font-size: Metrics.u * 1.2;
+                }
+                Rectangle { height: Metrics.u * 0.8; }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Metrics.u * 1.2;
+                    for button in root.idle-buttons: RoundButton { data: button; size: Metrics.u * 3.8; }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                QrCard {
+                    code: root.qr;
+                    size: Metrics.u * 15;
+                    vertical: true;
+                    title: "Scan to play music here";
+                    subtitle: root.qr-url;
+                }
             }
         }
     }
 
-    // STATUS
+    // SHELVES: home, library
 
-    if root.notice != "" || (!root.connected && !root.idle): Rectangle {
-        x: (root.width - self.width) / 2;
-        y: root.height - self.height - root.unit * 1.5;
-        width: status-text.preferred-width + root.unit * 2;
-        height: status-text.preferred-height + root.unit;
-        border-radius: self.height / 2;
+    if root.page == 2: Rectangle {
+        VerticalLayout {
+            x: Metrics.u * 4;
+            y: Metrics.u * 6.6;
+            height: self.preferred-height;
+            spacing: Metrics.u * 0.2;
+            Text {
+                text: root.page-title;
+                color: white;
+                font-family: "Inter Display";
+                font-size: Metrics.u * 2.4;
+                font-weight: 800;
+            }
+            if root.page-subtitle != "": Text {
+                text: root.page-subtitle;
+                color: Theme.text-3;
+                font-size: Metrics.u * 1;
+            }
+        }
+        Shelves {
+            y: Metrics.u * 11;
+            height: root.height - self.y;
+            shelves: root.shelves;
+            offsets: root.shelf-offsets;
+            top: root.shelf-top;
+        }
+    }
+
+    // SEARCH: a keyboard on the left, results on the right
+
+    if root.page == 3: search-page := Rectangle {
+        property <length> key-size: Metrics.u * 3.3;
+        property <length> key-gap: Metrics.u * 0.45;
+        VerticalLayout {
+            x: Metrics.u * 4;
+            y: Metrics.u * 7;
+            width: search-page.key-size * 6 + search-page.key-gap * 5;
+            height: self.preferred-height;
+            spacing: Metrics.u * 1.2;
+            Rectangle {
+                height: Metrics.u * 3.6;
+                border-radius: Metrics.u * 0.9;
+                background: root.keyboard-focused ? #ffffff1f : Theme.surface;
+                HorizontalLayout {
+                    padding-left: Metrics.u * 1;
+                    padding-right: Metrics.u * 1;
+                    spacing: Metrics.u * 0.7;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon { name: "search"; width: Metrics.u * 1.4; height: self.width; color: Theme.text-3; }
+                    }
+                    Text {
+                        text: root.query == "" ? "Songs, artists, albums" : root.query;
+                        color: root.query == "" ? Theme.text-3 : white;
+                        font-size: Metrics.u * 1.3;
+                        font-weight: root.query == "" ? 400 : 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if root.keyboard-focused: Rectangle {
+                        width: 2px;
+                        height: Metrics.u * 1.6;
+                        y: (parent.height - self.height) / 2;
+                        background: Theme.pink;
+                        opacity: Math.mod(animation-tick() / 1s, 1) < 0.5 ? 1 : 0;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+            Rectangle {
+                height: 7 * (search-page.key-size + search-page.key-gap);
+                property <length> size: search-page.key-size;
+                property <length> gap: search-page.key-gap;
+                // Keys flow left to right, six columns; wide keys take more.
+                for key[i] in root.keys: Rectangle {
+                    // Rust lays wide keys out last, in their own row.
+                    property <int> key-col: key.span == 1 ? Math.mod(i, 6) : (i - 36) * 2;
+                    property <int> key-line: key.span == 1 ? floor(i / 6) : 6;
+                    x: self.key-col * (parent.size + parent.gap);
+                    y: self.key-line * (parent.size + parent.gap);
+                    width: parent.size * key.span + parent.gap * (key.span - 1);
+                    height: parent.size;
+                    border-radius: Metrics.u * 0.6;
+                    background: key.selected ? white : Theme.surface;
+                    animate background { duration: Theme.quick; }
+                    if key.icon != "": Icon {
+                        name: key.icon;
+                        width: Metrics.u * 1.5;
+                        height: self.width;
+                        color: key.selected ? #120f1c : white;
+                    }
+                    if key.icon == "": Text {
+                        text: key.label;
+                        color: key.selected ? #120f1c : white;
+                        font-size: key.span == 1 ? Metrics.u * 1.3 : Metrics.u * 0.95;
+                        font-weight: 600;
+                    }
+                }
+            }
+        }
+        Rectangle {
+            x: Metrics.u * 30;
+            y: Metrics.u * 5.4;
+            width: root.width - self.x;
+            height: root.height - self.y;
+            if root.query == "" && root.shelves.length == 0: VerticalLayout {
+                x: Metrics.u * 4;
+                y: Metrics.u * 3;
+                height: self.preferred-height;
+                spacing: Metrics.u * 0.5;
+                Text {
+                    text: "Search YouTube Music";
+                    color: white;
+                    font-family: "Inter Display";
+                    font-size: Metrics.u * 2.4;
+                    font-weight: 800;
+                }
+                Text {
+                    text: "Type with the remote. Results show up as you go.";
+                    color: Theme.text-3;
+                    font-size: Metrics.u * 1.1;
+                }
+            }
+            Shelves {
+                shelves: root.shelves;
+                offsets: root.shelf-offsets;
+                top: root.shelf-top;
+                card: Metrics.u * 9;
+            }
+        }
+    }
+
+    // A COLLECTION: album, playlist, or artist
+
+    if root.page == 4: Rectangle {
+        property <length> art: Metrics.u * 19;
+        VerticalLayout {
+            x: Metrics.u * 5;
+            y: Metrics.u * 7;
+            width: parent.art;
+            height: self.preferred-height;
+            spacing: Metrics.u * 0.6;
+            Rectangle {
+                width: parent.width;
+                height: parent.width;
+                border-radius: root.col-round ? self.width / 2 : Metrics.u;
+                drop-shadow-blur: Metrics.u * 3;
+                drop-shadow-color: #000000a0;
+                Artwork {
+                    width: 100%;
+                    height: 100%;
+                    source: root.col-artwork;
+                    has-source: root.col-has-artwork;
+                    round: root.col-round;
+                }
+            }
+            Rectangle { height: Metrics.u * 0.6; }
+            Text {
+                text: root.col-kind;
+                color: Theme.pink;
+                font-size: Metrics.u * 0.85;
+                font-weight: 700;
+                letter-spacing: Metrics.u * 0.1;
+            }
+            Text {
+                text: root.col-title;
+                color: white;
+                font-family: "Inter Display";
+                font-size: Metrics.u * 2;
+                font-weight: 800;
+                wrap: word-wrap;
+                overflow: elide;
+                height: min(self.preferred-height, Metrics.u * 5.2);
+            }
+            Text {
+                text: root.col-subtitle;
+                color: Theme.text-2;
+                font-size: Metrics.u * 1;
+                wrap: word-wrap;
+            }
+            if root.col-description != "": Text {
+                text: root.col-description;
+                color: Theme.text-3;
+                font-size: Metrics.u * 0.85;
+                wrap: word-wrap;
+                overflow: elide;
+                height: min(self.preferred-height, Metrics.u * 4.2);
+            }
+            Rectangle { height: Metrics.u * 0.6; }
+            HorizontalLayout {
+                alignment: start;
+                spacing: Metrics.u * 0.9;
+                for button in root.col-buttons: RoundButton { data: button; size: Metrics.u * 3.3; }
+            }
+        }
+        if root.page-loading: Spinner {
+            x: Metrics.u * 30 + (root.width - Metrics.u * 34 - self.width) / 2;
+            y: root.height * 0.45;
+        }
+        if !root.page-loading && root.page-message != "": Text {
+            x: Metrics.u * 30;
+            y: Metrics.u * 9;
+            text: root.page-message;
+            color: Theme.text-3;
+            font-size: Metrics.u * 1.2;
+        }
+        List {
+            x: Metrics.u * 28;
+            y: Metrics.u * 7;
+            width: root.width - self.x - Metrics.u * 4;
+            height: root.height - self.y - Metrics.u * 3.6;
+            rows: root.col-rows;
+            top: root.col-top;
+        }
+    }
+
+    // Loading and empty states for shelf pages.
+
+    if (root.page == 2 || (root.page == 3 && root.query != "")) && root.page-loading: Spinner {
+        x: (root.width - self.width) / 2 + (root.page == 3 ? Metrics.u * 15 : 0);
+        y: root.height * 0.45;
+    }
+    if (root.page == 2 || root.page == 3) && !root.page-loading && root.page-message != "": Text {
+        x: root.page == 3 ? Metrics.u * 34 : Metrics.u * 4;
+        y: Metrics.u * 12;
+        text: root.page-message;
+        color: Theme.text-3;
+        font-size: Metrics.u * 1.2;
+    }
+
+    // TOP BAR
+
+    if root.tabs-visible && !root.saver: Rectangle {
+        y: 0;
+        height: Metrics.u * 5.4;
+        HorizontalLayout {
+            padding-left: Metrics.u * 4;
+            padding-right: Metrics.u * 4;
+            padding-top: Metrics.u * 1.4;
+            spacing: Metrics.u * 2.4;
+            HorizontalLayout {
+                spacing: Metrics.u * 0.7;
+                alignment: start;
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: root.logo;
+                        height: Metrics.u * 1.7;
+                        width: self.height * 392 / 340;
+                        image-fit: contain;
+                    }
+                }
+                Text {
+                    text: "Music";
+                    color: white;
+                    font-family: "Inter Display";
+                    font-size: Metrics.u * 1.4;
+                    font-weight: 800;
+                    vertical-alignment: center;
+                }
+            }
+            HorizontalLayout {
+                spacing: Metrics.u * 0.6;
+                alignment: start;
+                for name[i] in ["Now playing", "Home", "Search", "Library"]: tab-pill := Rectangle {
+                    property <bool> current: i == root.tab;
+                    property <bool> focused: self.current && root.tabs-focused;
+                    width: tab-row.preferred-width + Metrics.u * 2.4;
+                    height: Metrics.u * 2.8;
+                    border-radius: self.height / 2;
+                    background: self.focused ? white : (self.current ? #ffffff1f : transparent);
+                    animate background { duration: Theme.quick; }
+                    tab-row := HorizontalLayout {
+                        alignment: center;
+                        spacing: Metrics.u * 0.5;
+                        VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                name: i == 0 ? "now" : i == 1 ? "home" : i == 2 ? "search" : "library";
+                                width: Metrics.u * 1.1;
+                                height: self.width;
+                                color: tab-pill.focused ? #120f1c : (tab-pill.current ? white : Theme.text-3);
+                            }
+                        }
+                        Text {
+                            text: name;
+                            color: tab-pill.focused ? #120f1c : (tab-pill.current ? white : Theme.text-3);
+                            font-size: Metrics.u * 1;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.status != "": Text {
+                text: root.status;
+                color: Theme.text-2;
+                font-size: Metrics.u * 0.9;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.clock;
+                color: white;
+                font-size: Metrics.u * 1.2;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // HINTS: what the remote does here, over a scrim so rows behind stay quiet.
+
+    if !root.saver && root.page >= 2: Rectangle {
+        y: root.height - self.height;
+        height: Metrics.u * 5;
+        background: @linear-gradient(180deg, #08070d00 0%, #08070df0 60%, #08070d 100%);
+    }
+
+    if !root.saver && !root.menu-open && root.hints.length > 0 && root.page != 0: HorizontalLayout {
+        x: Metrics.u * 4;
+        y: root.height - Metrics.u * 2.6;
+        height: Metrics.u * 1.6;
+        alignment: start;
+        spacing: Metrics.u * 1.6;
+        for hint in root.hints: Hint {
+            key: hint.key;
+            label: hint.label;
+        }
+    }
+
+    // PANELS: the queue or the lyrics, sliding in from the right.
+
+    Rectangle {
+        property <bool> open: root.panel != 0 && root.page == 0 && !root.saver;
+        x: self.open ? root.width - self.width : root.width;
+        width: root.panel == 2 ? root.width * 0.5 : root.width * 0.4;
+        height: root.height;
+        background: #0e0c16f2;
+        border-width: 1px;
+        border-color: #ffffff14;
+        animate x { duration: Theme.smooth; easing: ease-out; }
+        if root.panel == 1: VerticalLayout {
+            padding: Metrics.u * 3;
+            padding-top: Metrics.u * 3.4;
+            spacing: Metrics.u * 1.2;
+            VerticalLayout {
+                spacing: Metrics.u * 0.2;
+                Text {
+                    text: "Queue";
+                    color: white;
+                    font-family: "Inter Display";
+                    font-size: Metrics.u * 2.2;
+                    font-weight: 800;
+                }
+                Text {
+                    text: root.queue-summary;
+                    color: Theme.text-3;
+                    font-size: Metrics.u * 0.95;
+                }
+            }
+            List {
+                rows: root.queue-rows;
+                top: root.queue-top;
+            }
+            HorizontalLayout {
+                spacing: Metrics.u * 1.4;
+                alignment: start;
+                Hint { key: "OK"; label: "Play"; }
+                Hint { key: "Hold OK"; label: "More"; }
+                Hint { key: "Back"; label: "Close"; }
+            }
+        }
+        if root.panel == 2: Rectangle {
+            clip: true;
+            property <length> view: self.height - Metrics.u * 8;
+            Text {
+                x: Metrics.u * 3;
+                y: Metrics.u * 3.4;
+                text: "Lyrics";
+                color: Theme.text-3;
+                font-size: Metrics.u * 0.95;
+                font-weight: 700;
+                letter-spacing: Metrics.u * 0.1;
+            }
+            Rectangle {
+                x: Metrics.u * 3;
+                y: Metrics.u * 6;
+                width: parent.width - Metrics.u * 6;
+                height: parent.view;
+                clip: true;
+                lyrics-text := Text {
+                    width: parent.width;
+                    y: -clamp(root.progress, 0, 1) * max(0, self.preferred-height - parent.height + Metrics.u * 6);
+                    animate y { duration: 1200ms; easing: linear; }
+                    text: root.lyrics != "" ? root.lyrics : root.lyrics-note;
+                    color: root.lyrics != "" ? white : Theme.text-3;
+                    font-size: Metrics.u * 1.7;
+                    font-weight: 700;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    // MENU: options for one song, album, or playlist.
+
+    if root.menu-open: Rectangle {
         background: #000000b0;
-        status-text := Text {
-            text: root.notice != "" ? root.notice : "Reconnecting…";
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: Metrics.u * 30;
+            height: menu-column.preferred-height;
+            border-radius: Metrics.u * 1.6;
+            background: #191524;
+            border-width: 1px;
+            border-color: #ffffff1f;
+            drop-shadow-blur: Metrics.u * 4;
+            drop-shadow-color: #000000c0;
+            menu-column := VerticalLayout {
+                padding: Metrics.u * 1.6;
+                spacing: Metrics.u * 0.4;
+                Text {
+                    text: root.menu-title;
+                    color: white;
+                    font-size: Metrics.u * 1.4;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                if root.menu-subtitle != "": Text {
+                    text: root.menu-subtitle;
+                    color: Theme.text-3;
+                    font-size: Metrics.u * 0.95;
+                    overflow: elide;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: Metrics.u * 0.6; }
+                for item in root.menu-items: Rectangle {
+                    height: Metrics.u * 3.4;
+                    border-radius: Metrics.u * 0.8;
+                    background: item.selected ? white : transparent;
+                    animate background { duration: Theme.quick; }
+                    HorizontalLayout {
+                        padding-left: Metrics.u * 1;
+                        spacing: Metrics.u * 1;
+                        VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                name: item.icon;
+                                width: Metrics.u * 1.4;
+                                height: self.width;
+                                color: item.selected ? #120f1c : white;
+                            }
+                        }
+                        Text {
+                            text: item.label;
+                            color: item.selected ? #120f1c : white;
+                            font-size: Metrics.u * 1.15;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // NOTICE
+
+    if root.notice != "": Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - Metrics.u * 2.4;
+        width: notice-text.preferred-width + Metrics.u * 3;
+        height: notice-text.preferred-height + Metrics.u * 1.4;
+        border-radius: self.height / 2;
+        background: #1d1829f5;
+        border-width: 1px;
+        border-color: #ffffff26;
+        drop-shadow-blur: Metrics.u * 2;
+        drop-shadow-color: #00000090;
+        notice-text := Text {
+            text: root.notice;
             color: white;
-            font-size: root.unit * 0.9;
+            font-size: Metrics.u * 1;
+            font-weight: 600;
+        }
+    }
+
+    // SCREENSAVER: the cover drifts slowly over black, so nothing burns in.
+
+    if root.saver: Rectangle {
+        background: black;
+        saver-box := Rectangle {
+            property <length> size: Metrics.u * 16;
+            x: (root.width - self.width) * root.saver-x;
+            y: (root.height - self.height) * root.saver-y;
+            width: saver-row.preferred-width;
+            height: self.size;
+            animate x, y { duration: 6s; easing: ease-in-out; }
+            saver-row := HorizontalLayout {
+                spacing: Metrics.u * 2;
+                if root.page == 0: Artwork {
+                    width: saver-box.size;
+                    height: self.width;
+                    source: root.artwork;
+                    has-source: root.has-artwork;
+                }
+                if root.page != 0: VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: root.logo;
+                        height: Metrics.u * 7;
+                        width: self.height * 392 / 340;
+                        image-fit: contain;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: Metrics.u * 0.4;
+                    Text {
+                        text: root.clock;
+                        color: #ffffffd0;
+                        font-family: "Inter Display";
+                        font-size: Metrics.u * 4;
+                        font-weight: 800;
+                    }
+                    if root.page == 0: Text {
+                        text: root.track-title;
+                        color: #ffffffb0;
+                        font-size: Metrics.u * 1.4;
+                        font-weight: 700;
+                        overflow: elide;
+                        width: Metrics.u * 26;
+                    }
+                    if root.page == 0: Text {
+                        text: root.artists;
+                        color: #ffffff70;
+                        font-size: Metrics.u * 1.1;
+                        overflow: elide;
+                        width: Metrics.u * 26;
+                    }
+                }
+            }
         }
     }
 }

@@ -18,7 +18,16 @@ Browse YouTube Music on your phone and play it on the phone or on the TV. The ph
 - **Album page:** cover, artists, release kind and year, total length, description, and the numbered tracklist.
 - **Playback:** play or shuffle an album, a playlist, or an artist's top songs, or add songs to the queue to play next or last. A mini player floats above the tabs. Tap it for the full player: artwork over a blurred backdrop, a seek bar, lyrics, the queue, and the devices you can play on. Pull it down to close it.
 - **Play on the TV:** pick the TV in the player. If the TV is off, the server turns it on and opens the TV app. Playback moves over at the same position, and the phone stays in control. The phone can then lock or go offline; the TV keeps playing.
-- **TV app:** a now-playing screen with artwork, progress, and what comes next. The remote's center button plays and pauses, left and right skip 10 seconds, and up and down go to the previous or next song.
+- **TV app:** works on its own with the remote, no phone needed. Four tabs along the top:
+  - **Now playing:** the cover over a blurred copy of itself, the song, a progress bar, and buttons for previous, play or pause, next, like, the queue, and the lyrics. Bars along the bottom move with the music while the TV plays.
+  - **Home:** your playlists, then YouTube Music's home feed, as rows of covers.
+  - **Search:** an on-screen keyboard. Results appear as you type.
+  - **Library:** Liked songs and your playlists.
+
+  OK on a song plays its row from there. OK on an album, playlist, or artist opens it, with Play, Shuffle, and Queue buttons. **Hold OK** on anything for more: play next, add to the queue, like, or go to the artist. The queue slides in from the right: OK jumps to a song, and holding OK removes one. Lyrics slide in the same way and scroll with the song. Back steps back, and pressing Back twice on the top level leaves the app.
+
+- **Scan to play:** the TV shows a QR code for the server's address on the home Wi-Fi (`http://192.168.1.67:4310`). Anyone on the Wi-Fi can scan it and use the full app on their phone, without Tailscale.
+- **Screensaver:** after two and a half minutes without a key press, the screen goes black with the cover, the song, and the time drifting slowly, so nothing burns in. Any key brings the app back.
 
 ## How it fits together
 
@@ -26,6 +35,7 @@ Browse YouTube Music on your phone and play it on the phone or on the TV. The ph
 apps/web         Foldkit SPA + foldcn components, installable as a PWA
 apps/tv          Rust Android TV app: Slint UI, Symphonia (AAC), cpal (AAudio)
    │  Effect RPC over HTTP (/rpc, NDJSON)      catalog: search and pages (web only)
+   │  JSON over HTTP (/tv/…)                   the same catalog shaped for the TV (TV only)
    │  WebSocket (/session, JSON)               the shared queue and who plays it
    │  HTTP with byte ranges (/audio/:videoId)  the songs themselves
    │  WebSocket (/now-playing, JSON)           read-only: the song and its cover's colors
@@ -33,9 +43,12 @@ apps/server      Bun + Effect server: youtubei.js for the catalog, yt-dlp for au
                  SQLite (bun:sqlite) for the playlists made in the app
 packages/shared  The RPC contract, the session protocol, and every Schema
 fixtures/session Example session messages that the TypeScript and Rust tests both decode
+fixtures/tv      Example TV catalog responses, decoded the same way
 ```
 
 **The session.** The server holds one queue for every device, and one device at a time plays it (the active device). Each device opens `/session`, says `Hello`, and then receives the whole session state after every change. Commands (play, pause, seek, skip, enqueue, transfer) go to the server, never directly to a player. The active device plays the current song and reports its position about once a second. A player that pauses says where it stopped, so every device agrees on the spot. A player that reconnects says in its `Hello` what it is playing, and the server follows it unless the session jumped meanwhile (a seek, a skip, or another device taking over). The protocol is defined in `packages/shared/src/session.ts` and mirrored in `apps/tv/src/protocol.rs`.
+
+**The TV catalog.** The TV app browses without the phone through plain JSON routes under `/tv/`: home, library, search, albums, playlists, artists, lyrics, and Liked songs. They reshape the same catalog and playlist store the web app reaches through RPC into shelves of cards and lists of queue tracks, and they get songs ready the same way when a page opens. The contract is `packages/shared/src/tv.ts`, mirrored in `apps/tv/src/catalog.rs`; both sides' tests decode the examples in `fixtures/tv/`. The routes are in `apps/server/src/tvCatalog/`.
 
 **Playlists.** The playlists made in the app, and Liked songs, are kept in one SQLite file on the server (`~/.local/share/music/playlists.sqlite`), opened with Bun's built-in `bun:sqlite`. Each entry keeps a copy of the song (title, artists, album, length, artwork), so a playlist opens without asking YouTube anything, and a song stays listed even if YouTube later drops it. A song appears once per playlist. The web app shows a change at once (a heart fills, a removed row leaves) and then takes the server's answer; if the server cannot save it, the app says so and reloads. A playlist plays through the same session commands as an album, so the TV app needs nothing new. `apps/server/src/playlists/store.ts` holds the tables and every change.
 
@@ -59,7 +72,7 @@ Two workers take the most urgent job first, and a new page replaces the previous
 
 **On the lock screen.** A locked phone may hear from the server late or not at all, and iOS stops a page that goes quiet in the background. So while the phone is the player, it does everything it can on its own first and tells the server after. When a song ends, the next one starts at once. Next, previous, play, pause, and the scrubber act on the phone right away; play and pause run inside the lock screen's own handler, where iOS counts them as a tap and lets audio start again. When the system pauses the song (a call, Siri, headphones unplugged), the session pauses too, so the play button works afterwards. Every state the server sends says how many of the phone's messages it includes, and the phone keeps its own changes until one does, so the answer to one press never undoes the next. If the connection dropped meanwhile, the phone reports what it played when it reconnects.
 
-**The TV app.** Rust from top to bottom. The audio engine (`apps/tv/src/audio`) downloads each song into memory, decodes it with Symphonia while it arrives, and writes samples into a lock-free ring buffer that the AAudio callback drains. The next song is downloaded and opened while the current one plays, so it follows without a gap. The screen is a single Slint window drawn by Skia on the GPU, and it only redraws when something on it changes. The app only speaks plain HTTP to the server, so it carries no TLS stack. The server relays album art at `/artwork?url=…`, for Google's image hosts only. If the app crashes, it posts the panic to `/tv-log`, and the report appears in the server's log (`journalctl --user -u music.service`).
+**The TV app.** Rust from top to bottom. The audio engine (`apps/tv/src/audio`) downloads each song into memory, decodes it with Symphonia while it arrives, and writes samples into a lock-free ring buffer that the AAudio callback drains. The next song is downloaded and opened while the current one plays, so it follows without a gap. The screen is a single Slint window drawn by Skia on the GPU, and it only redraws when something on it changes. Navigation lives in Rust (`nav.rs`): each remote key moves a plain state machine, which the tests drive, and `ui.rs` draws that state into Slint models, updating only the rows that changed. `visualizer.rs` runs an FFT over the samples the audio callback just played (`audio/scope.rs`, lock-free) about 30 times a second, only while the TV plays. To browse, the TV reads the server's `/tv/...` routes (`packages/shared/src/tv.ts`, mirrored in `apps/tv/src/catalog.rs`), and it plays through the same session commands as the phone. The font is Inter (SIL Open Font License, `apps/tv/ui/fonts`). The app only speaks plain HTTP to the server, so it carries no TLS stack. The server relays album art at `/artwork?url=…`, for Google's image hosts only. If the app crashes, it posts the panic to `/tv-log`, and the report appears in the server's log (`journalctl --user -u music.service`).
 
 **Waking the TV.** Home Assistant is already paired with the TV's Android TV Remote service. When you pick the TV while it is off, the server calls Home Assistant's `remote.turn_on` with `activity: music://play`. That turns the TV on and opens the app through its deep link. If the TV has not connected within 60 seconds, the phone shows a notice and playback pauses.
 
@@ -93,6 +106,14 @@ The app connects to `http://192.168.1.67:4310`. To point it somewhere else, set 
 
 To install it, open `http://192.168.1.67:4310/tv.apk` in the TV's Downloader app. The server serves the file at `TV_APK_PATH` there. Send Files to TV works too. Music then appears in the TV's app list.
 
+After that first install, the app updates itself. Each build gets an id (`<commit>-<UTC time>`), which the build script compiles into the app and writes to `dist/music-tv.build`; the server answers it at `/tv/version`. The app checks at start and every 15 minutes. When the server has another build, the app downloads it, waits until nothing has played on the TV for 30 seconds, and installs it. If Music was on screen, the server then reopens it through Home Assistant when it doesn't come back by itself within 20 seconds. If the TV was in standby or showing another app, Music stays closed until you open it. Once, the first time, allow "Install unknown apps" for Music when the app asks. After that, updates install by themselves on Android 12 and later while nothing plays. Older Android versions, or a TV that wants a confirmation anyway, show Android's Install prompt instead. Failures show in the app and in `journalctl --user -u music.service`. A build that fails to install three times is left alone until the next one.
+
+To see the screens without a TV, render them to PNG files. This needs a server with the `/tv` routes; it reads the catalog and artwork from it, and makes up its own queue instead of joining the session:
+
+```sh
+MUSIC_SERVER_URL=http://127.0.0.1:3001 cargo run -p music-tv --features screenshots --example screens -- /path/to/folder
+```
+
 Tests run on this machine without a TV:
 
 ```sh
@@ -101,7 +122,9 @@ cargo test -p music-tv
 MUSIC_TEST_SERVER=http://127.0.0.1:3001 cargo test -p music-tv -- --ignored
 ```
 
-What v1 does not do yet: the app has no TV banner image, so the launcher shows its icon instead. If you leave the app, Android can stop the music whenever it likes, because keeping music playing in the background needs a small Java service. The phone's own player has a short gap between songs.
+The logo lives in `branding/` as SVG. After changing it, run `scripts/render-icons.sh` to redraw the web app's icons, the TV launcher icon, and the logo the TV app shows.
+
+What the TV app does not do yet: it has no TV banner image (cargo-apk can't declare one), so the launcher shows its icon instead. If you leave the app, Android can stop the music whenever it likes, because keeping music playing in the background needs a small Java service. The phone's own player has a short gap between songs.
 
 ## Hosting
 
@@ -134,7 +157,8 @@ The unit file lives at `~/.config/systemd/user/music.service`.
 | `bun run format`                       | oxfmt                                                         |
 | `bun run --filter @music/server smoke` | Calls every RPC against a running server                      |
 | `scripts/build-tv-apk.sh`              | Builds the signed TV app into `dist/music-tv.apk`             |
-| `cargo test -p music-tv`               | TV app tests: protocol fixtures, streaming, formatting        |
+| `scripts/render-icons.sh`              | Renders every app icon from the logo in `branding/`           |
+| `cargo test -p music-tv`               | TV app tests: fixtures, navigation, streaming, the visualizer |
 
 ## Caveats
 

@@ -124,23 +124,33 @@ const songUrl = (videoId: string): string =>
 const videoIdFromUrl = (url: string): string =>
   decodeURIComponent(new URL(url).pathname.split('/').at(-1) ?? '')
 
-/** Ask the browser not to clear the cache when the phone runs low on space. */
-const requestPersistence = Effect.promise(async () => {
-  if (
-    !('storage' in globalThis.navigator) ||
-    !('persist' in navigator.storage)
-  ) {
-    return
-  }
-  if (!(await navigator.storage.persisted())) {
-    await navigator.storage.persist()
-  }
+/**
+ * Cache Storage only exists on secure origins (HTTPS or localhost). A guest
+ * who opens the app over plain HTTP on the LAN has none, so their phone
+ * streams every song instead.
+ */
+const hasCacheStorage = (): boolean => 'caches' in globalThis
+
+/**
+ * Ask the browser not to clear the cache when the phone runs low on space.
+ * `navigator.storage` is missing on insecure origins too.
+ */
+const requestPersistence = Effect.tryPromise({
+  try: async () => {
+    const storage: StorageManager | undefined = globalThis.navigator.storage
+    if (storage === undefined || !('persist' in storage)) {
+      return
+    }
+    if (!(await storage.persisted())) {
+      await storage.persist()
+    }
+  },
+  catch: () => new SongCacheError({ message: 'Could not keep the cache' }),
 }).pipe(Effect.ignore)
 
-/** Cache Storage only exists on secure origins (HTTPS or localhost). */
 const openCache = Effect.tryPromise({
   try: () => {
-    if (!('caches' in globalThis)) {
+    if (!hasCacheStorage()) {
       throw new SongCacheError({ message: 'Cache Storage is unavailable' })
     }
     return globalThis.caches.open(CACHE_NAME)
@@ -259,11 +269,15 @@ const cacheSong = (
 
 /**
  * Keep the playing song and the next ones cached, in play order. They are
- * safe from trimming while they are in this list.
+ * safe from trimming while they are in this list. Without Cache Storage
+ * there is nothing to keep, and the songs stream when they play.
  */
 export const prefetchSongs = (
   videoIds: ReadonlyArray<string>,
 ): Effect.Effect<void> => {
+  if (!hasCacheStorage()) {
+    return Effect.void
+  }
   const protectedIds = new Set(videoIds)
   return Effect.andThen(
     requestPersistence,

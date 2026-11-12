@@ -1,0 +1,33 @@
+{
+  "kind": "Artist",
+  "id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+  "title": "Rick Astley",
+  "subtitle": "Artist",
+  "description": "English singer and songwriter.",
+  "artworkUrl": "https://lh3.googleusercontent.com/jkl=w540-h540-l90-rj",
+  "tracks": [
+    {
+      "videoId": "dQw4w9WgXcQ",
+      "title": "Never Gonna Give You Up",
+      "artists": "Rick Astley",
+      "album": null,
+      "durationSeconds": null,
+      "artworkUrl": null
+    }
+  ],
+  "shelves": [
+    {
+      "title": "Albums",
+      "cards": [
+        {
+          "kind": "Album",
+          "id": "MPREb_abc",
+          "title": "Whenever You Need Somebody",
+          "subtitle": "Album · 1987",
+          "artworkUrl": null,
+          "track": null
+        }
+      ]
+    }
+  ]
+}

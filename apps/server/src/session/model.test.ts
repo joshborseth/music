@@ -566,6 +566,11 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-advanced.json',
     'client-pause.json',
     'client-pause-at.json',
+    'client-play-queue.json',
+    'client-enqueue.json',
+    'client-skip-to.json',
+    'client-remove-entry.json',
+    'client-transfer.json',
   ])('%s decodes as a client message', async name => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(
       await read(name),
