@@ -426,6 +426,27 @@ describe('session model', () => {
     expect(outcome.pausedForLostPlayer).toBe(false)
   })
 
+  test('a pause position counts after the player seeked by itself', () => {
+    const sought = update(
+      playing(),
+      { _tag: 'Seek', positionSeconds: 100 },
+      makeContext('phone', 5_000),
+    ).model
+    const paused = update(
+      sought,
+      {
+        _tag: 'Pause',
+        at: {
+          entryId: 'e0',
+          positionSeconds: 100.4,
+          seekSeq: playing().seekSeq,
+        },
+      },
+      makeContext('phone', 5_500),
+    ).model
+    expect(paused.positionSeconds).toBe(100.4)
+  })
+
   test("a pause position never undoes another device's seek it crossed", () => {
     const sought = update(
       playing(),
@@ -509,6 +530,7 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-progress.json',
     'client-advanced.json',
     'client-pause.json',
+    'client-pause-at.json',
   ])('%s decodes as a client message', async name => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(
       await read(name),

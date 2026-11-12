@@ -232,6 +232,22 @@ mod tests {
     }
 
     #[test]
+    fn decodes_a_pause_with_where_it_stopped() {
+        let message: ClientMessage =
+            serde_json::from_str(&fixture("client-pause-at.json")).unwrap();
+        assert_eq!(
+            message,
+            ClientMessage::Pause {
+                at: Some(StoppedAt {
+                    entry_id: "e0".into(),
+                    position_seconds: 12.5,
+                    seek_seq: 3,
+                }),
+            }
+        );
+    }
+
+    #[test]
     fn encodes_client_messages_like_the_fixtures() {
         let cases = [
             (
