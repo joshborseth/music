@@ -502,6 +502,8 @@ pub struct Nav {
     back_pressed: Option<Instant>,
     /// The entry the queue panel last followed, to keep it on the current song.
     queue_followed: Option<String>,
+    /// No session state has arrived yet.
+    first_session: bool,
 }
 
 impl Default for Nav {
@@ -530,6 +532,7 @@ impl Nav {
             notice: None,
             back_pressed: None,
             queue_followed: None,
+            first_session: true,
         }
     }
 
@@ -603,7 +606,14 @@ impl Nav {
                 }
             }
         }
-        // Something started playing from elsewhere: show it.
+        // Opened with music already going (or woken to play): show it.
+        if self.first_session && self.session.connected {
+            self.first_session = false;
+            if !self.session.is_idle() {
+                self.tab = Tab::NowPlaying;
+                self.focus = Focus::Content;
+            }
+        }
         if was_idle && !self.session.is_idle() && self.tab == Tab::NowPlaying {
             self.control = 1;
         }
@@ -635,6 +645,20 @@ impl Nav {
         let count = self.session.queue.len();
         self.queue_row = self.queue_row.min(count.saturating_sub(1));
         self.queue_top = keep_visible(self.queue_top, self.queue_row, QUEUE_ROWS_VISIBLE, count);
+    }
+
+    /// Nobody has touched the remote for a while and music is playing: go
+    /// back to the now-playing screen, the way a TV app rests.
+    pub fn rest(&mut self) {
+        if self.session.playing
+            && self.tab != Tab::NowPlaying
+            && self.menu.is_none()
+        {
+            self.tab = Tab::NowPlaying;
+            self.focus = Focus::Content;
+            self.panel = Panel::None;
+            self.control = 1;
+        }
     }
 
     // CATALOG RESULTS
@@ -1571,6 +1595,23 @@ mod tests {
     }
 
     #[test]
+    fn opens_on_now_playing_when_music_is_going() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        assert_eq!(nav.tab, Tab::NowPlaying);
+        let mut idle = Nav::new();
+        idle.on_session(View {
+            connected: true,
+            ..View::default()
+        });
+        assert_eq!(idle.tab, Tab::Home);
+        idle.on_session(playing_view());
+        assert_eq!(idle.tab, Tab::Home);
+        idle.rest();
+        assert_eq!(idle.tab, Tab::NowPlaying);
+    }
+
+    #[test]
     fn back_twice_leaves() {
         let mut nav = Nav::new();
         nav.tab = Tab::NowPlaying;
@@ -1585,6 +1626,7 @@ mod tests {
     fn back_from_a_tab_goes_to_now_playing() {
         let mut nav = Nav::new();
         nav.on_session(playing_view());
+        nav.tab = Tab::Home;
         nav.on_home(Ok(shelves()));
         press(&mut nav, &[Key::Back, Key::Back]);
         assert_eq!(nav.tab, Tab::NowPlaying);

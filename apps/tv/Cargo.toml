@@ -51,6 +51,10 @@ libc = "0.2"
 # Renders the screens to PNG files on a computer: see src/screenshots.rs.
 screenshots = ["slint/renderer-software", "slint/software-renderer-systemfonts"]
 
+[[example]]
+name = "screens"
+required-features = ["screenshots"]
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 cpal = "0.18.2"

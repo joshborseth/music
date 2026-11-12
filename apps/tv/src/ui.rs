@@ -45,6 +45,8 @@ const SEARCH_DELAY: Duration = Duration::from_millis(380);
 /// No key for this long shows the screensaver.
 const SAVER_AFTER: Duration = Duration::from_secs(150);
 const SAVER_MOVE: Duration = Duration::from_secs(14);
+/// No key for this long while music plays returns to the now-playing screen.
+const REST_AFTER: Duration = Duration::from_secs(60);
 const FRAME: Duration = Duration::from_millis(33);
 const TICK: Duration = Duration::from_millis(100);
 const UP_NEXT: usize = 3;
@@ -465,6 +467,10 @@ impl Ui {
         let saver_due = !self.saver
             && self.nav.menu.is_none()
             && now.duration_since(self.last_input) >= SAVER_AFTER;
+        if now.duration_since(self.last_input) >= REST_AFTER && self.nav.tab != Tab::NowPlaying {
+            self.nav.rest();
+            changed |= self.nav.tab == Tab::NowPlaying;
+        }
         if saver_due {
             self.saver = true;
             self.saver_moved = now - SAVER_MOVE;
@@ -716,7 +722,7 @@ impl Ui {
                 let (icon, label, active) = match control {
                     Control::Previous => ("previous", "", false),
                     Control::PlayPause if !session.here && session.player_name.is_some() => {
-                        ("play", "", false)
+                        ("play", "Play here", false)
                     }
                     Control::PlayPause if session.playing => ("pause", "", false),
                     Control::PlayPause => ("play", "", false),
@@ -730,7 +736,7 @@ impl Ui {
                     label: label.into(),
                     selected: selectable && self.nav.control == index,
                     active,
-                    primary: *control == Control::PlayPause,
+                    primary: *control == Control::PlayPause && label.is_empty(),
                 }
             })
             .collect();
