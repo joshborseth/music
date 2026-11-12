@@ -60,7 +60,8 @@ const CACHE_CAPACITY = 200
 const EXPIRY_MARGIN_MS = 10 * 60 * 1000
 const FAILURE_TTL = Duration.seconds(30)
 const DEFAULT_URL_LIFETIME_MS = 60 * 60 * 1000
-const VIDEO_ID = /^[\w-]{6,20}$/
+/** What a YouTube video id looks like; also keeps ids safe as file names. */
+export const VIDEO_ID = /^[\w-]{6,20}$/
 
 const expiresAtFromUrl = (url: string, now: number): number => {
   const maybeExpire = Number(new URL(url).searchParams.get('expire'))

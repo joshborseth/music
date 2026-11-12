@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { ConfigProvider, Effect, Fiber, Layer, SubscriptionRef } from 'effect'
 import { HttpRouter } from 'effect/http'
 import { TestClock } from 'effect/testing'
+import { readdirSync } from 'node:fs'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +11,7 @@ import { BunServices } from '@effect/platform-bun'
 
 import {
   type AfterUpdate,
+  TvCaptureRoute,
   TvVersionRoute,
   buildPathFor,
   reopenAfterUpdate,
@@ -61,6 +63,64 @@ describe('GET /tv/version', () => {
       status: 200,
       body: { build: null },
     })
+  })
+})
+
+describe('TV screenshots', () => {
+  const frames = join(directory, 'frames')
+  const withCapture = async (
+    run: (
+      call: (
+        method: string,
+        path: string,
+        body?: Uint8Array<ArrayBuffer>,
+      ) => Promise<number>,
+    ) => Promise<void>,
+  ) => {
+    const { handler, dispose } = HttpRouter.toWebHandler(
+      TvCaptureRoute.pipe(
+        Layer.provide(BunServices.layer),
+        Layer.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({ TV_FRAMES_DIR: frames }),
+          ),
+        ),
+      ),
+      { disableLogger: true },
+    )
+    try {
+      await run(async (method, path, body) => {
+        const response = await handler(
+          new Request(`http://tv.test${path}`, {
+            method,
+            body: body ?? null,
+            headers: body === undefined ? {} : { 'content-type': 'image/png' },
+          }),
+        )
+        return response.status
+      })
+    } finally {
+      await dispose()
+    }
+  }
+
+  test('the TV sends as many as were asked for, and they are saved', async () => {
+    await withCapture(async call => {
+      expect(await call('GET', '/tv/capture')).toBe(204)
+      expect(await call('POST', '/tv/frame', new Uint8Array([1]))).toBe(409)
+      expect(await call('POST', '/tv/capture?count=2')).toBe(200)
+      expect(await call('GET', '/tv/capture')).toBe(200)
+      expect(await call('GET', '/tv/capture')).toBe(200)
+      expect(await call('GET', '/tv/capture')).toBe(204)
+      expect(
+        await call('POST', '/tv/frame', new Uint8Array([60, 104, 116, 109])),
+      ).toBe(415)
+      const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0])
+      expect(await call('POST', '/tv/frame', png)).toBe(204)
+    })
+    expect(
+      readdirSync(frames).filter(name => name.endsWith('.png')),
+    ).toHaveLength(1)
   })
 })
 

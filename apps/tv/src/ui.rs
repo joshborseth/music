@@ -21,7 +21,7 @@ use slint::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::catalog::{self, Card, CardKind, CollectionKind, LikeRequest};
+use crate::catalog::{self, Analysis, Card, CardKind, CollectionKind, LikeRequest};
 use crate::controller::UiAction;
 use crate::local_time::LocalTime;
 use crate::lyrics::{self, RowKind};
@@ -32,7 +32,7 @@ use crate::nav::{
 use crate::protocol::Placement;
 use crate::update::{self, UpdateStatus};
 use crate::view::{PlayClock, View, clock};
-use crate::visuals::{Cover, Visuals};
+use crate::visuals::{Cover, Screenshot, Stage, Visuals};
 use crate::{
     App, ButtonData, CardData, HintData, KeyData, LyricRowData, MenuItemData, RowData, ShelfData,
     UpNextData,
@@ -54,7 +54,12 @@ const SEARCH_DELAY: Duration = Duration::from_millis(380);
 const DRIFT_EVERY: Duration = Duration::from_secs(40);
 /// No key for this long with a song up returns to the now-playing screen.
 const REST_AFTER: Duration = Duration::from_secs(60);
-const FRAME: Duration = Duration::from_millis(33);
+/// While the visuals show, the server is asked this often whether it wants
+/// a picture of the screen (to check the visuals on a TV nobody can see).
+const CAPTURE_POLL: Duration = Duration::from_secs(4);
+/// A failed analysis is asked for again after this long, times the tries.
+const ANALYSIS_RETRY: Duration = Duration::from_secs(8);
+const ANALYSIS_TRIES: u32 = 6;
 const TICK: Duration = Duration::from_millis(100);
 const UP_NEXT: usize = 1;
 
@@ -193,6 +198,15 @@ pub struct Hooks {
     pub set_quiet: Box<dyn Fn(bool)>,
 }
 
+/// The analysis of one song: asked for, arrived, or failed for now.
+struct SongAnalysis {
+    video_id: String,
+    analysis: Option<Arc<Analysis>>,
+    tries: u32,
+    next_try: Instant,
+    pending: bool,
+}
+
 pub struct Ui {
     app: slint::Weak<App>,
     nav: Nav,
@@ -217,9 +231,11 @@ pub struct Ui {
     hero_pending: Option<String>,
     hero_failed: Option<(String, Instant)>,
     tick_timer: Timer,
-    /// The now-playing screen's visuals, while they run.
-    visuals: Option<Visuals>,
-    visuals_timer: Timer,
+    /// The now-playing screen's visuals, drawn on the GPU.
+    visuals: Visuals,
+    /// The server's analysis of the song playing now, for the visuals.
+    analysis: Option<SongAnalysis>,
+    capture_timer: Timer,
     ok_down: Option<Instant>,
     ok_held: bool,
     /// The app let Android have the last Back press, so it lets the release go too.
@@ -247,15 +263,25 @@ impl Ui {
         let models = Models::new();
         models.attach(app);
         let now = Instant::now();
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .unwrap_or_default();
+        let visuals = Visuals::install(app, clock.clone(), {
+            let (http, server, runtime) = (http.clone(), server.clone(), runtime.clone());
+            move |line: String| {
+                let request = http.post(format!("{server}/tv-log")).body(line);
+                runtime.spawn(async move {
+                    let _ = request.send().await;
+                });
+            }
+        });
         let mut ui = Ui {
             app: app.as_weak(),
             nav: Nav::new(),
             runtime,
             catalog: catalog::Client::new(server.clone()),
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(20))
-                .build()
-                .unwrap_or_default(),
+            http,
             server,
             actions,
             hooks,
@@ -272,8 +298,9 @@ impl Ui {
             hero_pending: None,
             hero_failed: None,
             tick_timer: Timer::default(),
-            visuals: None,
-            visuals_timer: Timer::default(),
+            visuals,
+            analysis: None,
+            capture_timer: Timer::default(),
             ok_down: None,
             ok_held: false,
             back_released_to_android: false,
@@ -288,6 +315,10 @@ impl Ui {
         ui.tick_timer.start(TimerMode::Repeated, TICK, || {
             with(Ui::tick);
         });
+        ui.capture_timer
+            .start(TimerMode::Repeated, CAPTURE_POLL, || {
+                with(Ui::poll_capture);
+            });
         let effects = ui.nav.start();
         UI.with(|cell| *cell.borrow_mut() = Some(ui));
         with(|ui| {
@@ -653,36 +684,136 @@ impl Ui {
 
     /// The visuals run while the now-playing screen shows.
     fn update_visuals(&mut self) {
-        if !self.on_stage() {
-            if self.visuals.take().is_some() {
-                self.visuals_timer.stop();
-                if let Some(app) = self.app.upgrade() {
-                    app.set_has_visuals(false);
-                    app.set_visuals_frame(Image::default());
-                }
-            }
-            return;
-        }
-        let cover = self.current_cover();
-        match &self.visuals {
-            Some(visuals) => visuals.set_cover(cover),
-            None => {
-                self.visuals = Some(Visuals::start(cover));
-                self.visuals_timer.start(TimerMode::Repeated, FRAME, || {
-                    with(Ui::show_visuals);
-                });
-            }
-        }
-    }
-
-    fn show_visuals(&mut self) {
-        let Some(frame) = self.visuals.as_ref().and_then(Visuals::take_frame) else {
+        let Some(app) = self.app.upgrade() else {
             return;
         };
-        if let Some(app) = self.app.upgrade() {
-            app.set_visuals_frame(Image::from_rgba8(frame));
-            app.set_has_visuals(true);
+        let stage = if self.on_stage() { self.stage() } else { None };
+        self.visuals.set_stage(&app, stage);
+        app.set_has_visuals(self.visuals.drawing());
+    }
+
+    /// What the visuals need about the song playing now.
+    fn stage(&mut self) -> Option<Stage> {
+        let entry = self.nav.session.current_entry()?.clone();
+        let analysis = self.analysis_for(&entry.track.video_id);
+        Some(Stage {
+            entry_id: entry.entry_id,
+            cover: self.current_cover(),
+            analysis,
+            playing: self.nav.session.playing,
+        })
+    }
+
+    /// The server's analysis of `video_id`, asking for it when needed.
+    fn analysis_for(&mut self, video_id: &str) -> Option<Arc<Analysis>> {
+        let now = Instant::now();
+        if self
+            .analysis
+            .as_ref()
+            .is_none_or(|song| song.video_id != video_id)
+        {
+            self.analysis = Some(SongAnalysis {
+                video_id: video_id.to_owned(),
+                analysis: None,
+                tries: 0,
+                next_try: now,
+                pending: false,
+            });
         }
+        let song = self.analysis.as_mut()?;
+        let ask = song.analysis.is_none()
+            && !song.pending
+            && song.tries < ANALYSIS_TRIES
+            && now >= song.next_try;
+        let analysis = song.analysis.clone();
+        if ask {
+            song.pending = true;
+            song.tries += 1;
+            let catalog = self.catalog.clone();
+            let wanted = video_id.to_owned();
+            let video_id = video_id.to_owned();
+            self.spawn(
+                async move { catalog.analysis(&wanted).await },
+                move |ui, result| ui.on_analysis(&video_id, result),
+            );
+        }
+        analysis
+    }
+
+    fn on_analysis(&mut self, video_id: &str, result: Result<Analysis, String>) {
+        let Some(song) = self
+            .analysis
+            .as_mut()
+            .filter(|song| song.video_id == video_id)
+        else {
+            return;
+        };
+        song.pending = false;
+        match result {
+            Ok(analysis) => {
+                log::info!(
+                    "analysis of {video_id}: {:.0} BPM, {} sections, {} drops",
+                    analysis.tempo,
+                    analysis.sections.len(),
+                    analysis.drops.len()
+                );
+                song.analysis = Some(Arc::new(analysis));
+            }
+            Err(message) => {
+                log::info!("no analysis of {video_id} yet: {message}");
+                song.next_try = Instant::now() + ANALYSIS_RETRY * song.tries;
+            }
+        }
+        self.update_visuals();
+    }
+
+    /// Ask the server whether it wants a picture of the screen, and send one.
+    fn poll_capture(&mut self) {
+        if !self.visuals.drawing() {
+            return;
+        }
+        let request = self.http.get(format!("{}/tv/capture", self.server));
+        self.spawn(
+            async move {
+                request
+                    .send()
+                    .await
+                    .is_ok_and(|response| response.status() == reqwest::StatusCode::OK)
+            },
+            |ui, wanted| {
+                if wanted {
+                    ui.send_screenshot();
+                }
+            },
+        );
+    }
+
+    fn send_screenshot(&mut self) {
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
+        let (http, server, runtime) =
+            (self.http.clone(), self.server.clone(), self.runtime.clone());
+        self.visuals.capture(&app, move |screenshot: Screenshot| {
+            runtime.spawn(async move {
+                let Some(png) = tokio::task::spawn_blocking(move || encode_png(screenshot))
+                    .await
+                    .ok()
+                    .flatten()
+                else {
+                    return;
+                };
+                let sent = http
+                    .post(format!("{server}/tv/frame"))
+                    .header("content-type", "image/png")
+                    .body(png)
+                    .send()
+                    .await;
+                if let Err(error) = sent {
+                    log::warn!("could not send the screenshot: {error}");
+                }
+            });
+        });
     }
 
     /// The decoded cover of the song playing now, if it has arrived.
@@ -698,17 +829,12 @@ impl Ui {
         hero.cover.clone()
     }
 
-    /// Rest on the now-playing screen, or once there, move its visuals on
-    /// to their next scene.
+    /// Rest on the now-playing screen.
     #[cfg(feature = "screenshots")]
-    pub fn next_scene(&mut self) {
+    pub fn rest(&mut self) {
         if !self.on_stage() {
             self.nav.rest();
             self.render();
-            return;
-        }
-        if let Some(visuals) = &self.visuals {
-            visuals.skip();
         }
     }
 
@@ -1458,6 +1584,20 @@ fn queue_summary(upcoming: usize, autoplay: usize) -> String {
         count if count == upcoming => format!("{songs}, all from autoplay"),
         count => format!("{songs}, {count} from autoplay"),
     }
+}
+
+/// A screenshot as PNG, at half size: enough to see the visuals.
+fn encode_png(screenshot: Screenshot) -> Option<Vec<u8>> {
+    let image = image::RgbaImage::from_raw(screenshot.width, screenshot.height, screenshot.rgba)?;
+    let half = image::imageops::resize(
+        &image,
+        (screenshot.width / 2).max(1),
+        (screenshot.height / 2).max(1),
+        image::imageops::FilterType::Triangle,
+    );
+    let mut png = std::io::Cursor::new(Vec::new());
+    half.write_to(&mut png, image::ImageFormat::Png).ok()?;
+    Some(png.into_inner())
 }
 
 #[cfg(test)]

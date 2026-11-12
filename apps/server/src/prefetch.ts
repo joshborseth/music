@@ -9,6 +9,7 @@ import {
   Queue,
 } from 'effect'
 
+import { SongAnalysis } from './analysis/service.ts'
 import { AudioSource } from './audio.ts'
 import { AudioStore } from './audioStore.ts'
 
@@ -23,6 +24,9 @@ import { AudioStore } from './audioStore.ts'
  * workers hold at most two of yt-dlp's three slots. Every yt-dlp run here
  * counts against a daily limit, and a run of failures (YouTube pushing
  * back) pauses prefetching for a while.
+ *
+ * A song downloaded whole is also queued for analysis (its beats and
+ * sections, for the TV's visuals), which runs in the background.
  */
 
 export type PlanSource = 'Queue' | 'Page'
@@ -90,6 +94,7 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
   Effect.gen(function* () {
     const store = yield* AudioStore
     const audioSource = yield* AudioSource
+    const analysis = yield* SongAnalysis
     const plans = new Map<PlanSource, Array<PrefetchJob>>()
     const running = new Set<string>()
     const wake = yield* Queue.sliding<void>(WORKERS)
@@ -133,9 +138,15 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
         }
       })
 
+    const analyze = (job: PrefetchJob) =>
+      job.kind === 'Download' ? analysis.warm(job.videoId) : Effect.void
+
     const run = (job: PrefetchJob) =>
       Effect.gen(function* () {
-        if (yield* store.isStored(job.videoId)) return
+        if (yield* store.isStored(job.videoId)) {
+          yield* analyze(job)
+          return
+        }
         const needsYtDlp = !(yield* audioSource.isResolved(job.videoId))
         if (needsYtDlp && !(yield* spendRun)) return
         const exit = yield* Effect.exit(
@@ -144,6 +155,7 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
             : Effect.asVoid(audioSource.resolve(job.videoId)),
         )
         if (needsYtDlp) yield* noteResult(Exit.isSuccess(exit))
+        if (Exit.isSuccess(exit)) yield* analyze(job)
       }).pipe(
         Effect.ensuring(
           Effect.andThen(

@@ -5,6 +5,7 @@ import { RpcSerialization, RpcServer } from 'effect/rpc'
 import { BunHttpServer, BunRuntime, BunServices } from '@effect/platform-bun'
 import { MusicRpcs } from '@music/shared'
 
+import { SongAnalysisLive } from './analysis/service.ts'
 import { ArtworkRoutes } from './artwork.ts'
 import { AudioRoutes, AudioSourceLive } from './audio.ts'
 import { AudioStoreLive } from './audioStore.ts'
@@ -29,10 +30,12 @@ const STATIC_MIME_TYPES = { webmanifest: 'application/manifest+json' }
 const LyricsLive = TimedLyricsLive.pipe(Layer.provide(BunServices.layer))
 
 /**
- * Songs on disk, downloaded through yt-dlp, and the prefetcher that gets
- * them ready early: shared by the RPCs and playback.
+ * Songs on disk, downloaded through yt-dlp, the prefetcher that gets them
+ * ready early, and each song's analysis for the TV's visuals: shared by the
+ * RPCs and playback.
  */
 const AudioLive = PrefetcherLive.pipe(
+  Layer.provideMerge(SongAnalysisLive),
   Layer.provideMerge(AudioStoreLive),
   Layer.provideMerge(AudioSourceLive),
   Layer.provide(BunServices.layer),

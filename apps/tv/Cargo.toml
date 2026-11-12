@@ -46,6 +46,9 @@ log = "0.4"
 qrcodegen = "1.8"
 # The local time zone for the clock (`localtime_r`); already in the tree.
 libc = "0.2"
+# OpenGL calls for the visuals, drawn under Slint's UI (src/visuals/gpu.rs).
+# Already in the tree: Slint's renderers use the same version.
+glow = "0.18"
 
 [features]
 # Renders the screens to PNG files on a computer: see src/screenshots.rs.

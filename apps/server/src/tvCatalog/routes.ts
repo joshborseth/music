@@ -11,6 +11,8 @@ import {
   type YouTubeMusicError,
 } from '@music/shared'
 
+import { type AnalysisError, SongAnalysis } from '../analysis/service.ts'
+import { VIDEO_ID } from '../audio.ts'
 import { TimedLyrics } from '../lyrics/service.ts'
 import { PlaylistStore } from '../playlists/store.ts'
 import { Prefetcher, pageJobs } from '../prefetch.ts'
@@ -52,6 +54,9 @@ const CollectionParams = Schema.Struct({
   id: NonBlank,
 })
 const VideoParams = Schema.Struct({ videoId: NonBlank })
+const SongParams = Schema.Struct({
+  videoId: Schema.String.check(Schema.isPattern(VIDEO_ID)),
+})
 
 // ERRORS
 
@@ -111,6 +116,12 @@ const respond = <A, I, R>(
   )
 }
 
+/** A song that could not be had is YouTube's failure; a broken analysis is ours. */
+const analysisRouteError = (error: AnalysisError): TvRouteError =>
+  error.reason === 'AudioUnavailable'
+    ? new TvRouteError({ status: 502, message: 'The song is unavailable' })
+    : new TvRouteError({ status: 500, message: 'Could not analyze the song' })
+
 // ROUTES
 
 export const TvCatalogRoutes = HttpRouter.use(router =>
@@ -118,6 +129,7 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
     const youTubeMusic = yield* YouTubeMusic
     const playlistStore = yield* PlaylistStore
     const timedLyrics = yield* TimedLyrics
+    const songAnalysis = yield* SongAnalysis
     const prefetcher = yield* Prefetcher
 
     /** The same page plans the RPCs make, so Play starts at once. */
@@ -226,6 +238,19 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
         )
     })
 
+    /** Waits for the song's analysis when it is not ready yet. */
+    const analysis = Effect.gen(function* () {
+      const { videoId: id } = yield* HttpServerRequest.schemaSearchParams(
+        SongParams,
+      ).pipe(Effect.mapError(badRequest('Needs a valid videoId')))
+      return yield* songAnalysis.analysis(id).pipe(
+        Effect.tapError(error =>
+          Effect.logWarning('Analyzing a song failed', id, error.message),
+        ),
+        Effect.mapError(analysisRouteError),
+      )
+    })
+
     const liked = Effect.gen(function* () {
       const id = yield* videoId
       return yield* playlistStore.library().pipe(
@@ -268,6 +293,7 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
       respond(Tv.TvCollection, collection),
     )
     yield* router.add('GET', '/tv/lyrics', respond(Tv.TvLyrics, lyrics))
+    yield* router.add('GET', '/tv/analysis', respond(Tv.TvAnalysis, analysis))
     yield* router.add('GET', '/tv/liked', respond(Tv.TvLiked, liked))
     yield* router.add('POST', '/tv/like', respond(Tv.TvLiked, like))
   }),

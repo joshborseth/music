@@ -521,9 +521,9 @@ export component App inherits Window {
     in property <[UpNextData]> up-next;
     // The controls and tab bar; hidden while nobody uses the remote.
     in property <bool> controls-shown: true;
-    // The music's visuals: a small frame stretched over the screen.
+    // The music's visuals are drawn on the GPU under this window; while they
+    // show, the background stays clear so they show through.
     in property <bool> has-visuals;
-    in property <image> visuals-frame;
     // Beside the song: 0 no lyrics (the song takes the middle), 1 timed
     // lyrics in `lyric-rows`, 2 plain `lyrics` that scroll with the song.
     in property <int> lyrics-mode;
@@ -600,9 +600,9 @@ export component App inherits Window {
     }
 
     // BACKGROUND: the cover's color, its blurred copy, and a vignette.
-    // Now playing paints the music's visuals instead.
+    // Now playing shows the music's visuals instead, drawn under the window.
 
-    Rectangle {
+    if !(root.page == 0 && root.has-visuals): Rectangle {
         background: @linear-gradient(160deg, root.tint 0%, Theme.bg 70%);
         animate background { duration: 900ms; }
     }
@@ -612,13 +612,6 @@ export component App inherits Window {
         source: root.backdrop;
         image-fit: cover;
         opacity: 0.55;
-    }
-    if root.page == 0 && root.has-visuals: Image {
-        width: 100%;
-        height: 100%;
-        source: root.visuals-frame;
-        image-fit: fill;
-        image-rendering: smooth;
     }
     if root.page != 0: Rectangle {
         background: @linear-gradient(90deg, #0b0d12cc 0%, #0b0d1255 55%, #0b0d1299 100%);

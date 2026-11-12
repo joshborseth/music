@@ -10,6 +10,7 @@ import {
   YouTubeMusicError,
 } from '@music/shared'
 
+import { AnalysisError, SongAnalysis } from '../analysis/service.ts'
 import { TimedLyrics, withLines } from '../lyrics/service.ts'
 import { PlaylistStore, makePlaylistStore } from '../playlists/store.ts'
 import { type PrefetchJob, Prefetcher } from '../prefetch.ts'
@@ -66,8 +67,46 @@ const youTubeMusic = YouTubeMusic.of({
   getPlaylist: () => down,
 })
 
+const analysisOf = (videoId: string): Tv.TvAnalysis => ({
+  videoId,
+  durationSeconds: 8.5,
+  tempo: 120,
+  beats: [0.5, 1, 1.5, 2],
+  downbeats: [0.5],
+  sections: [
+    { startSeconds: 0, endSeconds: 8.5, kind: 'Verse', group: 0, energy: 1 },
+  ],
+  drops: [],
+  accents: [1.25],
+  energyStepSeconds: 0.1,
+  energy: [0.5, 1],
+})
+
+const songAnalysis = SongAnalysis.of({
+  analysis: videoId =>
+    videoId.startsWith('gone')
+      ? Effect.fail(
+          new AnalysisError({
+            videoId,
+            reason: 'AudioUnavailable',
+            message: 'yt-dlp failed',
+          }),
+        )
+      : videoId.startsWith('broken')
+        ? Effect.fail(
+            new AnalysisError({
+              videoId,
+              reason: 'Failed',
+              message: 'ffmpeg failed',
+            }),
+          )
+        : Effect.succeed(analysisOf(videoId)),
+  warm: () => Effect.void,
+})
+
 const { handler, dispose } = HttpRouter.toWebHandler(
   TvCatalogRoutes.pipe(
+    Layer.provide(Layer.succeed(SongAnalysis)(songAnalysis)),
     Layer.provide(Layer.succeed(YouTubeMusic)(youTubeMusic)),
     Layer.provide(
       Layer.succeed(TimedLyrics)(
@@ -171,6 +210,19 @@ describe('TV catalog routes', () => {
       lines: [{ startSeconds: 1.5, text: 'La la', words: [] }],
     })
     expect((await get('/tv/lyrics?videoId=missing')).status).toBe(404)
+  })
+
+  test("a song's analysis, and why it is missing", async () => {
+    const response = await get('/tv/analysis?videoId=dQw4w9WgXcQ')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(analysisOf('dQw4w9WgXcQ'))
+
+    const gone = await get('/tv/analysis?videoId=gone12345')
+    expect(gone.status).toBe(502)
+    expect(await gone.text()).toBe('The song is unavailable')
+    expect((await get('/tv/analysis?videoId=broken123')).status).toBe(500)
+    expect((await get('/tv/analysis?videoId=../etc')).status).toBe(400)
+    expect((await get('/tv/analysis')).status).toBe(400)
   })
 
   test('liking and unliking a song', async () => {
