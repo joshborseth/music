@@ -288,6 +288,20 @@ impl ShelvesNav {
     }
 }
 
+/// Music starts fresh or moves to this TV: a new queue (from this TV or any
+/// other device), or playback handed to this TV. Moving to the next song,
+/// pausing, or queueing more does not count.
+fn music_starts(before: &View, after: &View) -> bool {
+    let Some(entry) = after.current_entry() else {
+        return false;
+    };
+    let new_queue = !before
+        .queue
+        .iter()
+        .any(|queued| queued.entry_id == entry.entry_id);
+    new_queue || (after.here && !before.here)
+}
+
 /// Keep `selected` visible in a window of `visible` items starting at `first`,
 /// with one item of context on either side when there is room.
 pub fn keep_visible(first: usize, selected: usize, visible: usize, count: usize) -> usize {
@@ -597,6 +611,7 @@ impl Nav {
             .current_entry()
             .map(|entry| entry.track.video_id.clone());
         let was_idle = self.session.is_idle();
+        let starts_here = !self.first_session && music_starts(&self.session, &view);
         self.session = view;
         let mut effects = Vec::new();
         let current = self
@@ -616,9 +631,13 @@ impl Nav {
         if self.first_session && self.session.connected {
             self.first_session = false;
             if !self.session.is_idle() {
-                self.tab = Tab::NowPlaying;
-                self.focus = Focus::Content;
+                self.show_now_playing();
             }
+        }
+        // New music from any device, or music moved to this TV: show it.
+        // The remote can still leave for another tab afterwards.
+        if starts_here {
+            self.show_now_playing();
         }
         if was_idle && !self.session.is_idle() && self.tab == Tab::NowPlaying {
             self.control = 1;
@@ -660,11 +679,18 @@ impl Nav {
     /// back to the now-playing screen, the way a TV app rests.
     pub fn rest(&mut self) {
         if self.session.playing && self.tab != Tab::NowPlaying && self.menu.is_none() {
-            self.tab = Tab::NowPlaying;
-            self.focus = Focus::Content;
+            self.show_now_playing();
+        }
+    }
+
+    fn show_now_playing(&mut self) {
+        if self.tab != Tab::NowPlaying {
             self.panel = Panel::None;
             self.control = 1;
         }
+        self.tab = Tab::NowPlaying;
+        self.focus = Focus::Content;
+        self.menu = None;
     }
 
     // CATALOG RESULTS
@@ -1664,9 +1690,67 @@ mod tests {
         });
         assert_eq!(idle.tab, Tab::Home);
         idle.on_session(playing_view());
-        assert_eq!(idle.tab, Tab::Home);
-        idle.rest();
         assert_eq!(idle.tab, Tab::NowPlaying);
+    }
+
+    #[test]
+    fn rests_on_now_playing() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        nav.tab = Tab::Home;
+        nav.rest();
+        assert_eq!(nav.tab, Tab::NowPlaying);
+    }
+
+    /// The phone plays a new queue on another device; the TV only watches.
+    fn queue_from_phone(prefix: &str) -> View {
+        let mut view = playing_view();
+        for entry in &mut view.queue {
+            entry.entry_id = format!("{prefix}{}", entry.entry_id);
+        }
+        view.here = false;
+        view.player_name = Some("Phone".into());
+        view
+    }
+
+    #[test]
+    fn shows_now_playing_when_new_music_starts() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        nav.switch_tab(Tab::Library, &mut Vec::new());
+        nav.on_session(queue_from_phone("phone-"));
+        assert_eq!(nav.tab, Tab::NowPlaying);
+        assert_eq!(nav.focus, Focus::Content);
+    }
+
+    #[test]
+    fn shows_now_playing_when_music_moves_to_the_tv() {
+        let mut nav = Nav::new();
+        nav.on_session(queue_from_phone("phone-"));
+        nav.switch_tab(Tab::Search, &mut Vec::new());
+        let mut moved = queue_from_phone("phone-");
+        moved.here = true;
+        moved.player_name = None;
+        nav.on_session(moved);
+        assert_eq!(nav.tab, Tab::NowPlaying);
+    }
+
+    #[test]
+    fn stays_where_the_remote_left_it_as_the_queue_plays_on() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        nav.switch_tab(Tab::Library, &mut Vec::new());
+        let mut next = playing_view();
+        next.current = Some(1);
+        nav.on_session(next.clone());
+        next.playing = false;
+        nav.on_session(next.clone());
+        next.queue.push(QueueEntry {
+            entry_id: "added".into(),
+            track: track("added"),
+        });
+        nav.on_session(next);
+        assert_eq!(nav.tab, Tab::Library);
     }
 
     #[test]
