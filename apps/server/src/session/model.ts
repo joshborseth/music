@@ -16,6 +16,11 @@ export interface Model {
   readonly positionSeconds: number
   readonly positionAt: number
   readonly seekSeq: number
+  /**
+   * The last `seekSeq` from a jump the player did not make itself. A
+   * reconnecting player that followed it may report jumps of its own since.
+   */
+  readonly foreignSeekSeq: number
   /** Devices the server asked to wake that have not connected yet. */
   readonly waking: ReadonlyArray<string>
 }
@@ -28,6 +33,7 @@ export const initialModel: Model = {
   positionSeconds: 0,
   positionAt: 0,
   seekSeq: 0,
+  foreignSeekSeq: 0,
   waking: [],
 }
 
@@ -147,8 +153,9 @@ const isFromPlayer = (model: Model, context: Context, entryId: string) =>
 
 /**
  * A reconnecting player's report wins when it is still the player, its entry
- * is still queued, and nothing jumped the session (a seek, a skip, another
- * device taking over) since it last followed it.
+ * is still queued, and no other device jumped the session (a seek, a skip, a
+ * transfer) since it last followed it. Its own jumps don't count: the server
+ * may have applied them and lost the answer when the connection dropped.
  */
 const isFollowedReport = (
   model: Model,
@@ -156,7 +163,8 @@ const isFollowedReport = (
   report: Session.PlayerReport,
 ) =>
   model.activeDeviceId === context.senderId &&
-  report.seekSeq === model.seekSeq &&
+  report.seekSeq >= model.foreignSeekSeq &&
+  report.seekSeq <= model.seekSeq &&
   indexOf(model, report.entryId) !== -1
 
 /** Move past the current entry after it ended or failed on the player. */
@@ -167,7 +175,29 @@ const finishCurrent = (model: Model, now: number): Model => {
     : jumpTo(model, maybeNext, 0, now)
 }
 
+/**
+ * Apply a message, and remember a jump the player did not make itself. A
+ * transfer always counts as foreign: it hands the player a new position.
+ */
 export const update = (
+  model: Model,
+  message: Session.ClientMessage,
+  context: Context,
+): Outcome => {
+  const outcome = transition(model, message, context)
+  const isForeignJump =
+    outcome.model.seekSeq !== model.seekSeq &&
+    (message._tag === 'Transfer' ||
+      outcome.model.activeDeviceId !== context.senderId)
+  return isForeignJump
+    ? {
+        ...outcome,
+        model: { ...outcome.model, foreignSeekSeq: outcome.model.seekSeq },
+      }
+    : outcome
+}
+
+const transition = (
   model: Model,
   message: Session.ClientMessage,
   context: Context,
@@ -295,8 +325,20 @@ export const update = (
         })
       },
 
-      Pause: () => {
-        return changed({ ...settle(model, now), playing: false })
+      Pause: message => {
+        const settled = settle(model, now)
+        const maybeAt = Option.filter(
+          Option.fromNullishOr(message.positionSeconds),
+          () => model.activeDeviceId === context.senderId,
+        )
+        return changed({
+          ...settled,
+          positionSeconds: Option.match(maybeAt, {
+            onNone: () => settled.positionSeconds,
+            onSome: seconds => Math.max(0, seconds),
+          }),
+          playing: false,
+        })
       },
 
       Seek: message => {

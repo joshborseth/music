@@ -249,6 +249,50 @@ describe('session model', () => {
     expect(outcome.seekSeq).toBe(skipped.seekSeq + 1)
   })
 
+  test('a reconnecting player is followed after jumps it made itself', () => {
+    const model = playing()
+    // The phone sought and skipped, but the answers were lost with the
+    // connection, so it still knows the first seekSeq.
+    const sought = update(
+      model,
+      { _tag: 'Seek', positionSeconds: 100 },
+      makeContext('phone', 2_000),
+    ).model
+    const skipped = update(
+      sought,
+      { _tag: 'Next' },
+      makeContext('phone', 3_000),
+    ).model
+    const outcome = update(
+      skipped,
+      hello({
+        entryId: 'e2',
+        positionSeconds: 5,
+        playing: true,
+        seekSeq: model.seekSeq,
+      }),
+      makeContext('phone', 10_000),
+    ).model
+    expect(outcome.currentEntryId).toBe('e2')
+    expect(outcome.seekSeq).toBe(skipped.seekSeq)
+  })
+
+  test('the player pausing says where it stopped; others leave it to the server', () => {
+    const paused = update(
+      playing(),
+      { _tag: 'Pause', positionSeconds: 12.5 },
+      makeContext('phone', 15_000),
+    ).model
+    expect(paused.playing).toBe(false)
+    expect(paused.positionSeconds).toBe(12.5)
+    const fromRemote = update(
+      playing(),
+      { _tag: 'Pause', positionSeconds: 99 },
+      makeContext('tv', 15_000),
+    ).model
+    expect(fromRemote.positionSeconds).toBe(14)
+  })
+
   test('only the player is followed, and only to a queued entry', () => {
     const model = playing()
     const report = {
@@ -322,10 +366,11 @@ describe('protocol fixtures shared with the TV app', () => {
     expect(decoded._tag).toBe('Success')
   })
 
-  test('a Hello from a TV app built before player reports still decodes', () => {
-    const decoded = Schema.decodeExit(Session.ClientMessageJson)(
-      '{ "_tag": "Hello", "deviceId": "tv", "name": "TV", "kind": "Tv" }',
-    )
+  test.each([
+    '{ "_tag": "Hello", "deviceId": "tv", "name": "TV", "kind": "Tv" }',
+    '{ "_tag": "Pause" }',
+  ])('%s from a TV app built before the optional fields decodes', text => {
+    const decoded = Schema.decodeExit(Session.ClientMessageJson)(text)
     expect(decoded._tag).toBe('Success')
   })
 })

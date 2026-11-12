@@ -110,7 +110,12 @@ pub enum ClientMessage {
         player: Option<PlayerReport>,
     },
     Resume {},
-    Pause {},
+    #[serde(rename_all = "camelCase")]
+    Pause {
+        /// Where the player stopped. The TV leaves it to the server.
+        #[serde(default)]
+        position_seconds: Option<f64>,
+    },
     #[serde(rename_all = "camelCase")]
     Seek {
         position_seconds: f64,
@@ -236,7 +241,12 @@ mod tests {
                     from_entry_id: "e0".into(),
                 },
             ),
-            ("client-pause.json", ClientMessage::Pause {}),
+            (
+                "client-pause.json",
+                ClientMessage::Pause {
+                    position_seconds: None,
+                },
+            ),
         ];
         for (name, message) in cases {
             let expected: serde_json::Value = serde_json::from_str(&fixture(name)).unwrap();

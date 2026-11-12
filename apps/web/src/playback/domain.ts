@@ -37,6 +37,12 @@ export const LoadedEntry = Schema.Struct({
   isPlaying: Schema.Boolean,
   /** Waiting for audio data: show that it is loading. */
   isBuffering: Schema.Boolean,
+  /**
+   * When this phone moved to the entry by itself (a song ended, next, or
+   * previous), until the server names it too. A server state sent before
+   * the server heard of the move must not undo it.
+   */
+  maybeMovedAt: Schema.Option(Schema.Number),
 })
 export type LoadedEntry = typeof LoadedEntry.Type
 
@@ -83,6 +89,9 @@ export const PROGRESS_INTERVAL_MS = 1000
 
 /** Previous restarts the song when it is past this point, like the server. */
 export const RESTART_THRESHOLD_SECONDS = 3
+
+/** How long a move this phone made waits for the server to name it. */
+export const LOCAL_MOVE_GRACE_MS = 5000
 
 // HELPERS
 

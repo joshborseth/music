@@ -116,7 +116,13 @@ export const RemoveEntry = Schema.TaggedStruct('RemoveEntry', {
   entryId: Schema.String,
 })
 export const Resume = Schema.TaggedStruct('Resume', {})
-export const Pause = Schema.TaggedStruct('Pause', {})
+export const Pause = Schema.TaggedStruct('Pause', {
+  /**
+   * Where the player stopped, when the player itself pauses, so every device
+   * and the next resume agree on the spot. Null or missing otherwise.
+   */
+  positionSeconds: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+})
 export const Seek = Schema.TaggedStruct('Seek', {
   positionSeconds: Schema.Number,
 })

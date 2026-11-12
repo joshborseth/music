@@ -19,6 +19,7 @@ import type { MediaKey } from './domain'
 import {
   entryIdOf,
   followIntent,
+  isLoading,
   isMeantToPlay,
   pauseAudio,
   startAudio,
@@ -283,7 +284,11 @@ const applyMediaKeyNow = (audio: HTMLAudioElement, key: MediaKey) => {
     return
   }
   if (key === 'Play') {
-    startAudio(audio).catch(() => undefined)
+    // NOTE: a song still loading starts once it has loaded; the one it
+    // replaces must not come back meanwhile.
+    if (!isLoading(audio)) {
+      startAudio(audio).catch(() => followIntent(audio, !audio.paused))
+    }
   } else if (key === 'Pause') {
     pauseAudio(audio)
   }

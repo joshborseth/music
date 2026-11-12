@@ -8,7 +8,16 @@ import { Session } from '@music/shared'
 
 import { Message } from '../message'
 import { DEVICE_ID_KEY, deviceNameFromUserAgent } from './domain'
-import { followIntent, markEntry, pauseAudio, startAudio } from './element'
+import {
+  beginLoad,
+  cancelLoad,
+  changeLoad,
+  finishLoad,
+  followIntent,
+  markEntry,
+  pauseAudio,
+  startAudio,
+} from './element'
 import { PhoneAudioElement, SessionSocket } from './resource'
 import { cachedSong, prefetchSongs, recordPlay } from './songCache'
 
@@ -201,7 +210,17 @@ export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
     PhoneAudioElement.get.pipe(
       Effect.flatMap(audio =>
         Effect.gen(function* () {
+          const token = beginLoad(audio, { startSeconds, isPlaying })
           const maybeBlob = yield* cachedSong(videoId)
+          // NOTE: loads run side by side, and a cached song takes longer to
+          // read than an uncached one takes to start. A load another load
+          // or a stop replaced while it read the cache leaves the element
+          // alone.
+          const maybePlan = finishLoad(audio, token)
+          if (Option.isNone(maybePlan)) {
+            return false
+          }
+          const plan = maybePlan.value
           cancelPendingSeek(audio)
           // NOTE: the song being replaced stops as the app's own pause, so
           // it never reads as the system pausing the new one.
@@ -218,10 +237,10 @@ export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
               audio.src = url
             },
           })
-          if (startSeconds > 0) {
-            seekWhenReady(audio, startSeconds)
+          if (plan.startSeconds > 0) {
+            seekWhenReady(audio, plan.startSeconds)
           }
-          if (!isPlaying) {
+          if (!plan.isPlaying) {
             pauseAudio(audio)
             return false
           }
@@ -241,14 +260,22 @@ export const LoadPhoneAudio = Command.define('LoadPhoneAudio', {
     ),
 })
 
-/** Jump within the song already loaded, without loading it again. */
+/**
+ * Jump within the song already loaded, without loading it again. A song
+ * still loading starts there instead.
+ */
 export const SeekPhoneAudio = Command.define('SeekPhoneAudio', {
   args: { seconds: Schema.Number },
   messages: [Message.CompletedSeekPhoneAudio],
   execute: ({ seconds }) =>
     PhoneAudioElement.get.pipe(
       Effect.flatMap(audio =>
-        Effect.sync(() => seekWhenReady(audio, Math.max(0, seconds))),
+        Effect.sync(() => {
+          const target = Math.max(0, seconds)
+          if (!changeLoad(audio, { startSeconds: target })) {
+            seekWhenReady(audio, target)
+          }
+        }),
       ),
       Effect.ignore,
       Effect.as(Message.CompletedSeekPhoneAudio()),
@@ -272,6 +299,14 @@ export const SetPhoneAudioPlaying = Command.define('SetPhoneAudioPlaying', {
   execute: ({ isPlaying }) =>
     PhoneAudioElement.get.pipe(
       Effect.flatMap(audio => {
+        // NOTE: a song still loading plays or not when it starts. The song
+        // it replaces only ever stops: it is on its way out.
+        if (changeLoad(audio, { isPlaying })) {
+          if (!isPlaying) {
+            pauseAudio(audio)
+          }
+          return Effect.succeed(false)
+        }
         if (isPlaying) {
           return play(audio)
         }
@@ -294,6 +329,7 @@ export const StopPhoneAudio = Command.define('StopPhoneAudio', {
   execute: PhoneAudioElement.get.pipe(
     Effect.flatMap(audio =>
       Effect.sync(() => {
+        cancelLoad(audio)
         cancelPendingSeek(audio)
         markEntry(audio, Option.none())
         pauseAudio(audio)
