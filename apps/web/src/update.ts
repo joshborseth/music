@@ -1356,6 +1356,15 @@ const updateMessage = (model: Model, message: Message) =>
       )(model),
     ClickedRemoveQueueEntry: ({ entryId }) =>
       Playback.sendCommand(model, { _tag: 'RemoveEntry', entryId }),
+    ClickedToggleAutoplay: () =>
+      Option.match(model.maybeSession, {
+        onNone: () => ({ model }),
+        onSome: ({ state }) =>
+          Playback.sendCommand(model, {
+            _tag: 'SetAutoplay',
+            enabled: !state.autoplay,
+          }),
+      }),
     ClickedOpenPlayer: () => Playback.openPlayer(model),
     ClickedClosePlayer: () => closePlayer(model),
     ClickedStartBlockedAudio: () => Playback.startBlockedAudio(model),

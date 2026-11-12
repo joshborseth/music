@@ -5,6 +5,7 @@ import {
   ChevronDown,
   Ellipsis,
   Heart,
+  Infinity as InfinityIcon,
   ListMusic,
   LoaderCircle,
   MessageSquareQuote,
@@ -716,57 +717,127 @@ const lyricsPanel = (
   )
 }
 
+/**
+ * The songs to come: first the ones someone queued, then the similar songs
+ * autoplay added, under a switch that turns autoplay on or off.
+ */
 const queuePanel = (
   model: Model,
   snapshot: SessionSnapshot,
   h: HtmlBuilder<Message>,
-): Html =>
-  h.div(
+): Html => {
+  const upcoming = upcomingEntries(snapshot.state)
+  const queued = Array.filter(upcoming, entry => !entry.autoplay)
+  const autoplayed = Array.filter(upcoming, entry => entry.autoplay)
+  const isAutoplayOn = snapshot.state.autoplay
+  return h.div(
     [h.DataAttribute('sheet-scroll', ''), h.Class(scrollPanelClass)],
     [
-      h.h3([h.Class('pt-4 pb-2 text-[17px] font-bold')], ['Playing next']),
-      Array.match(upcomingEntries(snapshot.state), {
-        onEmpty: () =>
-          h.p(
-            [h.Class('py-6 text-[15px] text-white/60')],
-            ['Nothing else is queued. Playback stops after this song.'],
-          ),
+      Array.match(queued, {
+        onEmpty: () => h.empty,
         onNonEmpty: entries =>
-          h.ul(
-            [h.Class('-mx-2 flex flex-col pb-4')],
-            Array.map(entries, entry =>
-              h.keyed('li')(
-                entry.entryId,
-                [],
+          h.section(
+            [],
+            [
+              h.h3(
+                [h.Class('pt-4 pb-2 text-[17px] font-bold')],
+                ['Playing next'],
+              ),
+              queueList(model, entries, h),
+            ],
+          ),
+      }),
+      h.section(
+        [],
+        [
+          h.div(
+            [h.Class('flex items-center gap-3 pt-4 pb-2')],
+            [
+              h.div(
+                [h.Class('flex min-w-0 flex-1 flex-col')],
                 [
-                  swipeableRow(
-                    {
-                      target: SwipeTarget.QueueEntry({
-                        entryId: entry.entryId,
-                      }),
-                      maybeSwipe: swipeOn(
-                        model.swipe,
-                        target =>
-                          target._tag === 'QueueEntry' &&
-                          target.entryId === entry.entryId,
-                      ),
-                      maybeRightReveal: Option.none(),
-                      maybeLeftReveal: Option.some({
-                        label: 'Remove',
-                        icon: Trash2,
-                        isDestructive: true,
-                      }),
-                      surfaceClass: 'bg-neutral-800',
-                    },
-                    queueRow(entry, h),
-                    h,
+                  h.h3([h.Class('text-[17px] font-bold')], ['Autoplay']),
+                  h.p(
+                    [h.Class('text-[13px] text-white/60')],
+                    [
+                      isAutoplayOn
+                        ? 'Similar music keeps playing after your queue.'
+                        : Array.isReadonlyArrayEmpty(queued)
+                          ? 'Nothing else is queued. Playback stops after this song.'
+                          : 'Playback stops after your queue.',
+                    ],
                   ),
                 ],
               ),
-            ),
+              h.button(
+                [
+                  h.Type('button'),
+                  h.OnClick(Message.ClickedToggleAutoplay()),
+                  h.AriaLabel('Autoplay'),
+                  h.AriaPressed(isAutoplayOn ? 'true' : 'false'),
+                  h.Class(
+                    cn(
+                      'flex size-10 shrink-0 items-center justify-center rounded-full transition-colors active:scale-90',
+                      isAutoplayOn
+                        ? 'bg-white text-neutral-900'
+                        : 'bg-white/10 text-white/70',
+                    ),
+                  ),
+                ],
+                [icon(h, InfinityIcon, 'size-5')],
+              ),
+            ],
           ),
-      }),
+          isAutoplayOn
+            ? Array.match(autoplayed, {
+                onEmpty: () => h.empty,
+                onNonEmpty: entries => queueList(model, entries, h),
+              })
+            : h.empty,
+        ],
+      ),
     ],
+  )
+}
+
+/** Upcoming songs: tap one to jump to it, swipe one away to remove it. */
+const queueList = (
+  model: Model,
+  entries: ReadonlyArray<Session.QueueEntry>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.ul(
+    [h.Class('-mx-2 flex flex-col pb-4')],
+    Array.map(entries, entry =>
+      h.keyed('li')(
+        entry.entryId,
+        [],
+        [
+          swipeableRow(
+            {
+              target: SwipeTarget.QueueEntry({
+                entryId: entry.entryId,
+              }),
+              maybeSwipe: swipeOn(
+                model.swipe,
+                target =>
+                  target._tag === 'QueueEntry' &&
+                  target.entryId === entry.entryId,
+              ),
+              maybeRightReveal: Option.none(),
+              maybeLeftReveal: Option.some({
+                label: 'Remove',
+                icon: Trash2,
+                isDestructive: true,
+              }),
+              surfaceClass: 'bg-neutral-800',
+            },
+            queueRow(entry, h),
+            h,
+          ),
+        ],
+      ),
+    ),
   )
 
 /** One upcoming song: tap to jump to it, or remove it. */

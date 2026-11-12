@@ -32,6 +32,8 @@ The session protocol is defined twice: Effect Schemas in `packages/shared/src/se
 
 Volume is per device, not session state: `hub.ts` keeps each connection's `Volume` report in the device list and forwards `SetDeviceVolume` to that device as `SetVolume`; `model.ts` never sees either. The TV reads and sets Android's music volume in `apps/tv/src/volume/`.
 
+Autoplay lives on the server too. When two or fewer songs are left, `hub.ts` (`prepareQueueEnd`) asks YouTube Music for the last song's "up next" and `model.ts` (`appendAutoplay`) adds them with `autoplay: true`, unless the queue changed meanwhile. Players only show them: the phone under its own heading in the queue, the TV in the queue's summary line. Songs someone enqueues go before them, and `SetAutoplay` turns it on or off.
+
 The server owns the session. Players follow `State` and report `Progress`, `Advanced`, `TrackEnded`, and `TrackFailed`. A player reloads when `currentEntryId` or `seekSeq` changes.
 
 The phone is the exception, because a locked phone may hear from the server late or never. While it plays, it acts on its own controls and the lock screen first (next song, next, previous, queue taps, seeks, play, pause) and sends the change after (`SendLocalChange`). Each `State` carries `ack`, how many of that connection's messages it includes; the phone keeps its own changes over any `State` whose `ack` does not cover them yet (`LocalChanges` in `apps/web/src/playback/domain.ts`). On reconnect, `Hello.player` reports what the phone did offline, and the server's `model.ts` decides what to follow. Test both sides when changing any of this: `apps/web/src/playback/story.test.ts` and `apps/server/src/session/model.test.ts`.

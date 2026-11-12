@@ -1488,6 +1488,7 @@ mod tests {
                 .map(|index| QueueEntry {
                     entry_id: format!("e{index}"),
                     track: track(&format!("q{index}")),
+                    autoplay: false,
                 })
                 .collect(),
             current: Some(0),
@@ -1749,6 +1750,7 @@ mod tests {
         next.queue.push(QueueEntry {
             entry_id: "added".into(),
             track: track("added"),
+            autoplay: false,
         });
         nav.on_session(next);
         assert_eq!(nav.tab, Tab::Library);

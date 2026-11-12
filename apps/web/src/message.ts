@@ -189,6 +189,7 @@ export const Message = defineMessageUnion({
   ClickedDevice: { deviceId: Schema.String },
   ClickedQueueEntry: { entryId: Schema.String },
   ClickedRemoveQueueEntry: { entryId: Schema.String },
+  ClickedToggleAutoplay: {},
   ClickedOpenPlayer: {},
   ClickedClosePlayer: {},
   ClickedStartBlockedAudio: {},

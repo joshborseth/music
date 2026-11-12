@@ -251,6 +251,7 @@ pub fn sample_view(tracks: Vec<QueueTrack>, current: usize, here: bool) -> View 
             .map(|(index, track)| QueueEntry {
                 entry_id: format!("e{index}"),
                 track,
+                autoplay: false,
             })
             .collect(),
         current: Some(current),

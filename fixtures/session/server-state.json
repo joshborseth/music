@@ -32,7 +32,8 @@
           "album": "Whenever You Need Somebody",
           "durationSeconds": 213,
           "artworkUrl": "https://lh3.googleusercontent.com/example=w544-h544-l90-rj"
-        }
+        },
+        "autoplay": false
       },
       {
         "entryId": "e1",
@@ -43,13 +44,15 @@
           "album": null,
           "durationSeconds": null,
           "artworkUrl": null
-        }
+        },
+        "autoplay": true
       }
     ],
     "currentEntryId": "e0",
     "playing": true,
     "positionSeconds": 12,
     "positionAt": 1794426000000,
-    "seekSeq": 3
+    "seekSeq": 3,
+    "autoplay": true
   }
 }

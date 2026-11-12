@@ -16,6 +16,8 @@ export interface Model {
   readonly positionSeconds: number
   readonly positionAt: number
   readonly seekSeq: number
+  /** Add similar songs as the queue runs out. */
+  readonly autoplay: boolean
   /**
    * The last `seekSeq` from a jump the player did not make itself. A
    * reconnecting player that followed it may report jumps of its own since.
@@ -39,6 +41,7 @@ export const initialModel: Model = {
   positionSeconds: 0,
   positionAt: 0,
   seekSeq: 0,
+  autoplay: true,
   foreignSeekSeq: 0,
   pausedForLostPlayer: false,
   waking: [],
@@ -113,6 +116,7 @@ export const toSessionState = (
   positionSeconds: model.positionSeconds,
   positionAt: model.positionAt,
   seekSeq: model.seekSeq,
+  autoplay: model.autoplay,
 })
 
 export const currentPosition = (model: Model, now: number): number =>
@@ -162,9 +166,17 @@ const claimIfIdle = (model: Model, context: Context): Model =>
 
 const toEntries = (
   tracks: ReadonlyArray<Session.QueueTrack>,
-  context: Context,
+  makeEntryId: () => string,
+  autoplay = false,
 ): ReadonlyArray<Session.QueueEntry> =>
-  tracks.map(track => ({ entryId: context.makeEntryId(), track }))
+  tracks.map(track => ({ entryId: makeEntryId(), track, autoplay }))
+
+/** Where the autoplay songs still to come start, or the queue's end. */
+const autoplayStart = (model: Model): number => {
+  const after = indexOf(model, model.currentEntryId) + 1
+  const offset = model.queue.slice(after).findIndex(entry => entry.autoplay)
+  return offset === -1 ? model.queue.length : after + offset
+}
 
 /** Only the active device may report playback, and only for the current entry. */
 const isFromPlayer = (model: Model, context: Context, entryId: string) =>
@@ -313,7 +325,7 @@ const transition = (
       },
 
       PlayQueue: message => {
-        const queue = toEntries(message.tracks, context)
+        const queue = toEntries(message.tracks, context.makeEntryId)
         const start = Math.min(
           Math.max(0, Math.trunc(message.startIndex)),
           queue.length - 1,
@@ -335,7 +347,7 @@ const transition = (
       },
 
       Enqueue: message => {
-        const entries = toEntries(message.tracks, context)
+        const entries = toEntries(message.tracks, context.makeEntryId)
         if (entries.length === 0) return quiet(model)
         if (model.currentEntryId === null) {
           return update(
@@ -351,10 +363,11 @@ const transition = (
             context,
           )
         }
+        // NOTE: songs someone queues go before the autoplay songs.
         const insertAt =
           message.placement === 'Next'
             ? indexOf(model, model.currentEntryId) + 1
-            : model.queue.length
+            : autoplayStart(model)
         return changed({
           ...model,
           queue: [
@@ -462,6 +475,20 @@ const transition = (
             now,
           ),
         )
+      },
+
+      SetAutoplay: message => {
+        if (message.enabled === model.autoplay) return quiet(model)
+        if (message.enabled) return changed({ ...model, autoplay: true })
+        // The songs autoplay added that have not played yet go too.
+        const after = indexOf(model, model.currentEntryId) + 1
+        return changed({
+          ...model,
+          autoplay: false,
+          queue: model.queue.filter(
+            (entry, index) => index < after || !entry.autoplay,
+          ),
+        })
       },
 
       Transfer: message => {
@@ -581,27 +608,36 @@ export const wakeTimedOut = (
 export const DOWNLOAD_AHEAD = 5
 /** Songs after those whose links are found ahead, so they start in about a second. */
 export const RESOLVE_AHEAD = 5
+/** With autoplay on and this few songs left after the current one, add more. */
+export const AUTOPLAY_THRESHOLD = 2
 
 export interface Lookahead {
   /** The current song and the next `DOWNLOAD_AHEAD`. */
   readonly download: ReadonlyArray<string>
   /** The `RESOLVE_AHEAD` songs after those. */
   readonly resolve: ReadonlyArray<string>
+  /** The last queued song, when autoplay should add songs after it. */
+  readonly maybeAutoplayAfter: Option.Option<string>
 }
 
 /** What to get ready ahead of time. Nothing once the queue has finished. */
 export const lookahead = (model: Model): Lookahead => {
   const index = indexOf(model, model.currentEntryId)
   if (index < 0) {
-    return { download: [], resolve: [] }
+    return { download: [], resolve: [], maybeAutoplayAfter: Option.none() }
   }
   const videoIds = model.queue.map(entry => entry.track.videoId)
+  const remaining = videoIds.length - index - 1
   return {
     download: videoIds.slice(index, index + 1 + DOWNLOAD_AHEAD),
     resolve: videoIds.slice(
       index + 1 + DOWNLOAD_AHEAD,
       index + 1 + DOWNLOAD_AHEAD + RESOLVE_AHEAD,
     ),
+    maybeAutoplayAfter:
+      model.autoplay && remaining <= AUTOPLAY_THRESHOLD
+        ? Option.fromNullishOr(videoIds.at(-1))
+        : Option.none(),
   }
 }
 
@@ -638,4 +674,42 @@ export const fillDuration = (
         : entry,
     ),
   })
+}
+
+/** Similar songs autoplay adds at a time. */
+export const AUTOPLAY_BATCH = 10
+
+/**
+ * Add similar songs to the end of the queue as it runs out. `afterVideoId` is
+ * the last queued song they were found for; if the queue changed since, they
+ * no longer fit and are dropped. Songs already queued are skipped, so the
+ * radio does not loop back. Players do not reload.
+ */
+export const appendAutoplay = (
+  model: Model,
+  afterVideoId: string,
+  tracks: ReadonlyArray<Session.QueueTrack>,
+  makeEntryId: () => string,
+): Outcome => {
+  if (
+    !model.autoplay ||
+    model.currentEntryId === null ||
+    model.queue.at(-1)?.track.videoId !== afterVideoId
+  ) {
+    return unchanged(model)
+  }
+  const queued = new Set(model.queue.map(entry => entry.track.videoId))
+  const fresh = tracks
+    .filter(track => {
+      if (queued.has(track.videoId)) return false
+      queued.add(track.videoId)
+      return true
+    })
+    .slice(0, AUTOPLAY_BATCH)
+  return fresh.length === 0
+    ? unchanged(model)
+    : changed({
+        ...model,
+        queue: [...model.queue, ...toEntries(fresh, makeEntryId, true)],
+      })
 }
