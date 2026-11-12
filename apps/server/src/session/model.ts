@@ -601,3 +601,38 @@ export const lookahead = (model: Model): Lookahead => {
         : Option.none(),
   }
 }
+
+/** The songs among `videoIds` that are queued without a length. */
+export const missingDurations = (
+  model: Model,
+  videoIds: ReadonlyArray<string>,
+): ReadonlyArray<string> =>
+  videoIds.filter(videoId =>
+    model.queue.some(
+      entry =>
+        entry.track.videoId === videoId && entry.track.durationSeconds === null,
+    ),
+  )
+
+/**
+ * Fill in a song's length where the queue has none. Without it players can
+ * show no progress and the seek bar has no end. Players do not reload: the
+ * current entry and `seekSeq` stay as they are.
+ */
+export const fillDuration = (
+  model: Model,
+  videoId: string,
+  durationSeconds: number,
+): Outcome => {
+  if (missingDurations(model, [videoId]).length === 0) {
+    return unchanged(model)
+  }
+  return changed({
+    ...model,
+    queue: model.queue.map(entry =>
+      entry.track.videoId === videoId && entry.track.durationSeconds === null
+        ? { ...entry, track: { ...entry.track, durationSeconds } }
+        : entry,
+    ),
+  })
+}
