@@ -249,7 +249,6 @@ impl Platform for FakeAndroid {
 
 fn fast() -> Timing {
     Timing {
-        check_interval: Duration::from_secs(3600),
         permission_recheck: Duration::from_millis(50),
         retry_first: Duration::from_millis(20),
         retry_max: Duration::from_millis(20),
@@ -410,6 +409,24 @@ async fn a_check_by_hand_reports_itself() {
         [UpdateStatus::Checking, UpdateStatus::UpToDate]
     );
     assert_eq!(server.requests(), ["GET /tv/version", "GET /tv/version"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_later_deploy_waits_for_a_restart_or_a_check_by_hand() {
+    let server = FakeServer::start(Some("same-1"), APK);
+    let android = FakeAndroid::new("later", false);
+    let (updater, mut statuses) = start(&server, "same-1", &android);
+    updater.set_quiet(true);
+    until(&mut statuses, &UpdateStatus::UpToDate).await;
+    // A deploy while the app runs: nothing happens by itself.
+    *server.version.lock().unwrap() = serde_json::json!({ "build": "new-2" }).to_string();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(server.requests(), ["GET /tv/version"]);
+    assert_eq!(android.install_calls.load(Ordering::SeqCst), 0);
+    // Asked by hand, it installs.
+    updater.check_now();
+    until(&mut statuses, &UpdateStatus::Installing).await;
+    installed(&android, 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
