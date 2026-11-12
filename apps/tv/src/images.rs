@@ -9,7 +9,7 @@ use crate::view::relayed_artwork_url;
 use crate::visuals::Cover;
 
 /// A decoded image, plus for the now-playing cover a blurred copy, a dark
-/// tint of its average color for the background, and what the screensaver's
+/// tint of its average color for the background, and what the now-playing
 /// visuals paint with.
 pub struct Decoded {
     pub pixels: SharedPixelBuffer<Rgba8Pixel>,

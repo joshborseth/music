@@ -23,12 +23,13 @@ const TONE_STEPS: usize = 1024;
 
 /// A pixel's place in canvas units: the center is 0, y runs from -1 at the
 /// top to 1 at the bottom, and x from -`ASPECT` to `ASPECT`. `r` is its
-/// distance from the center.
+/// distance from the center and `a` its angle, from -π to π.
 #[derive(Clone, Copy)]
 pub struct Point {
     pub x: f32,
     pub y: f32,
     pub r: f32,
+    pub a: f32,
 }
 
 pub struct Canvas {
@@ -54,6 +55,7 @@ impl Canvas {
                     x,
                     y,
                     r: x.hypot(y),
+                    a: y.atan2(x),
                 }
             })
             .collect();
@@ -289,8 +291,9 @@ fn sample(pixels: &[Rgb], column: f32, row: f32) -> Rgb {
     )
 }
 
+/// A square picture between pixel centers, `u` and `v` in pixels.
 #[inline]
-fn sample_square(pixels: &[Rgb], side: usize, u: f32, v: f32) -> Rgb {
+pub fn sample_square(pixels: &[Rgb], side: usize, u: f32, v: f32) -> Rgb {
     let (left, top) = ((u as usize).min(side - 2), (v as usize).min(side - 2));
     blend4(
         pixels,

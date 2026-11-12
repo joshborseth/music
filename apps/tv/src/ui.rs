@@ -32,7 +32,6 @@ use crate::nav::{
 use crate::protocol::Placement;
 use crate::update::UpdateStatus;
 use crate::view::{PlayClock, View, clock};
-use crate::visualizer::{Analyzer, BARS};
 use crate::visuals::{Cover, Visuals};
 use crate::{
     App, ButtonData, CardData, HintData, KeyData, LyricRowData, MenuItemData, RowData, ShelfData,
@@ -51,14 +50,13 @@ const IMAGE_RETRY: Duration = Duration::from_secs(30);
 /// OK held this long opens the options menu.
 const HOLD: Duration = Duration::from_millis(450);
 const SEARCH_DELAY: Duration = Duration::from_millis(380);
-/// No key for this long shows the screensaver.
-const SAVER_AFTER: Duration = Duration::from_secs(150);
-const SAVER_MOVE: Duration = Duration::from_secs(14);
-/// No key for this long while music plays returns to the now-playing screen.
+/// The resting screens shift a little this often, so nothing burns in.
+const DRIFT_EVERY: Duration = Duration::from_secs(40);
+/// No key for this long with a song up returns to the now-playing screen.
 const REST_AFTER: Duration = Duration::from_secs(60);
 const FRAME: Duration = Duration::from_millis(33);
 const TICK: Duration = Duration::from_millis(100);
-const UP_NEXT: usize = 3;
+const UP_NEXT: usize = 1;
 
 thread_local! {
     static UI: RefCell<Option<Ui>> = const { RefCell::new(None) };
@@ -93,7 +91,6 @@ struct Hero {
 struct Models {
     controls: Rc<VecModel<ButtonData>>,
     up_next: Rc<VecModel<UpNextData>>,
-    bars: Rc<VecModel<f32>>,
     queue_rows: Rc<VecModel<RowData>>,
     idle_buttons: Rc<VecModel<ButtonData>>,
     shelves: Rc<VecModel<ShelfData>>,
@@ -113,7 +110,6 @@ impl Models {
         Self {
             controls: Rc::default(),
             up_next: Rc::default(),
-            bars: Rc::new(VecModel::from(vec![0.0; BARS])),
             queue_rows: Rc::default(),
             idle_buttons: Rc::default(),
             shelves: Rc::default(),
@@ -132,7 +128,6 @@ impl Models {
     fn attach(&self, app: &App) {
         app.set_controls(ModelRc::from(self.controls.clone()));
         app.set_up_next(ModelRc::from(self.up_next.clone()));
-        app.set_bars(ModelRc::from(self.bars.clone()));
         app.set_queue_rows(ModelRc::from(self.queue_rows.clone()));
         app.set_idle_buttons(ModelRc::from(self.idle_buttons.clone()));
         app.set_shelves(ModelRc::from(self.shelves.clone()));
@@ -215,10 +210,8 @@ pub struct Ui {
     hero: Option<Hero>,
     hero_pending: Option<String>,
     hero_failed: Option<(String, Instant)>,
-    analyzer: Analyzer,
-    bars_timer: Timer,
     tick_timer: Timer,
-    /// The screensaver's visuals, while they run.
+    /// The now-playing screen's visuals, while they run.
     visuals: Option<Visuals>,
     visuals_timer: Timer,
     ok_down: Option<Instant>,
@@ -226,8 +219,7 @@ pub struct Ui {
     /// The app let Android have the last Back press, so it lets the release go too.
     back_released_to_android: bool,
     last_input: Instant,
-    saver: bool,
-    saver_moved: Instant,
+    drifted: Instant,
     pending_search: Option<(String, Instant)>,
     shown_clock: String,
     shown_notice: String,
@@ -271,8 +263,6 @@ impl Ui {
             hero: None,
             hero_pending: None,
             hero_failed: None,
-            analyzer: Analyzer::new(),
-            bars_timer: Timer::default(),
             tick_timer: Timer::default(),
             visuals: None,
             visuals_timer: Timer::default(),
@@ -280,8 +270,7 @@ impl Ui {
             ok_held: false,
             back_released_to_android: false,
             last_input: now,
-            saver: false,
-            saver_moved: now,
+            drifted: now,
             pending_search: None,
             shown_clock: String::new(),
             shown_notice: String::new(),
@@ -309,15 +298,6 @@ impl Ui {
         };
         if pressed {
             self.last_input = now;
-        }
-        if self.saver {
-            if pressed && !repeat {
-                self.saver = false;
-                self.ok_down = None;
-                self.back_released_to_android = false;
-                self.render();
-            }
-            return true;
         }
         if key == Key::Ok {
             match (pressed, repeat) {
@@ -516,24 +496,17 @@ impl Ui {
                 move |ui, result| ui.nav.on_search(&query, result),
             );
         }
-        let saver_due = !self.saver
-            && self.nav.menu.is_none()
-            && now.duration_since(self.last_input) >= SAVER_AFTER;
         if now.duration_since(self.last_input) >= REST_AFTER && self.nav.tab != Tab::NowPlaying {
             self.nav.rest();
             changed |= self.nav.tab == Tab::NowPlaying;
         }
-        if saver_due {
-            self.saver = true;
-            self.saver_moved = now - SAVER_MOVE;
-            changed = true;
-        }
-        if self.saver && now.duration_since(self.saver_moved) >= SAVER_MOVE {
-            self.saver_moved = now;
-            let (x, y) = wander(now);
+        changed |= self.nav.settle(now);
+        if now.duration_since(self.drifted) >= DRIFT_EVERY {
+            self.drifted = now;
+            let (x, y) = drift();
             if let Some(app) = self.app.upgrade() {
-                app.set_saver_x(x);
-                app.set_saver_y(y);
+                app.set_drift_x(x);
+                app.set_drift_y(y);
             }
         }
         let clock = LocalTime::now().clock();
@@ -545,15 +518,19 @@ impl Ui {
             self.render();
         }
         self.draw_lyric_rows();
-        self.update_bars();
         self.update_visuals();
+    }
+
+    /// Whether the screen shows the song playing now.
+    fn on_stage(&self) -> bool {
+        self.nav.tab == Tab::NowPlaying && !self.nav.session.is_idle()
     }
 
     // LYRICS
 
-    /// The timed lyrics' rows right now, when the lyrics panel shows them.
+    /// The timed lyrics' rows right now, while the now-playing screen shows them.
     fn timed_lyric_rows(&self) -> Option<Vec<lyrics::Row>> {
-        if self.nav.panel != Panel::Lyrics || self.saver {
+        if !self.on_stage() || !self.nav.show_lyrics {
             return None;
         }
         let entry = self.nav.session.current_entry()?;
@@ -596,54 +573,14 @@ impl Ui {
         self.shown_lyric_rows = rows;
     }
 
-    fn bars_wanted(&self) -> bool {
-        self.nav.tab == Tab::NowPlaying
-            && self.nav.session.here
-            && self.nav.session.playing
-            && !self.saver
-    }
-
-    /// Run the visualizer only while it can show something.
-    fn update_bars(&mut self) {
-        let wanted = self.bars_wanted();
-        if (wanted || self.analyzer.is_moving()) && !self.bars_timer.running() {
-            self.bars_timer.start(TimerMode::Repeated, FRAME, || {
-                with(Ui::frame);
-            });
-        }
-        if let Some(app) = self.app.upgrade() {
-            app.set_bars_visible(self.analyzer.is_moving());
-        }
-    }
-
-    fn frame(&mut self) {
-        let levels = *self.analyzer.frame();
-        if let Some(app) = self.app.upgrade() {
-            app.set_bars_visible(self.analyzer.is_moving());
-        }
-        for (index, level) in levels.iter().enumerate() {
-            if self.models.bars.row_data(index) != Some(*level) {
-                self.models.bars.set_row_data(index, *level);
-            }
-        }
-        if !self.bars_wanted() && !self.analyzer.is_moving() {
-            self.bars_timer.stop();
-            if let Some(app) = self.app.upgrade() {
-                app.set_bars_visible(false);
-            }
-        }
-    }
-
-    /// The screensaver paints the music while this TV plays it.
+    /// The visuals run while the now-playing screen shows.
     fn update_visuals(&mut self) {
-        let session = &self.nav.session;
-        let wanted = self.saver && session.here && session.playing;
-        if !wanted {
+        if !self.on_stage() {
             if self.visuals.take().is_some() {
                 self.visuals_timer.stop();
                 if let Some(app) = self.app.upgrade() {
-                    app.set_saver_visuals(false);
-                    app.set_saver_frame(Image::default());
+                    app.set_has_visuals(false);
+                    app.set_visuals_frame(Image::default());
                 }
             }
             return;
@@ -665,8 +602,8 @@ impl Ui {
             return;
         };
         if let Some(app) = self.app.upgrade() {
-            app.set_saver_frame(Image::from_rgba8(frame));
-            app.set_saver_visuals(true);
+            app.set_visuals_frame(Image::from_rgba8(frame));
+            app.set_has_visuals(true);
         }
     }
 
@@ -683,18 +620,18 @@ impl Ui {
         hero.cover.clone()
     }
 
-    /// Show the screensaver now, and move its visuals to the next scene.
+    /// Rest on the now-playing screen, or once there, move its visuals on
+    /// to their next scene.
     #[cfg(feature = "screenshots")]
-    pub fn show_saver(&mut self) {
-        if self.saver {
-            if let Some(visuals) = &self.visuals {
-                visuals.skip();
-            }
+    pub fn next_scene(&mut self) {
+        if !self.on_stage() {
+            self.nav.rest();
+            self.render();
             return;
         }
-        self.nav.rest();
-        self.saver = true;
-        self.render();
+        if let Some(visuals) = &self.visuals {
+            visuals.skip();
+        }
     }
 
     // IMAGES
@@ -813,7 +750,7 @@ impl Ui {
         self.shown_notice = self.notice_text(now);
         app.set_clock(self.shown_clock.clone().into());
         app.set_notice(self.shown_notice.clone().into());
-        app.set_saver(self.saver);
+        app.set_controls_shown(nav.controls_shown());
         app.set_tab(nav.tab.index() as i32);
         app.set_tabs_focused(nav.focus == Focus::Tabs && nav.menu.is_none());
         let status = if nav.session.connected {
@@ -841,7 +778,6 @@ impl Ui {
         }
         self.draw_menu(&app);
         self.draw_hints(page);
-        self.update_bars();
         self.update_visuals();
     }
 
@@ -936,7 +872,7 @@ impl Ui {
                     Control::Next => ("next", "", false),
                     Control::Like => (if liked { "heart" } else { "heart-outline" }, "", liked),
                     Control::Queue => ("queue", "Queue", self.nav.panel == Panel::Queue),
-                    Control::Lyrics => ("lyrics", "Lyrics", self.nav.panel == Panel::Lyrics),
+                    Control::Lyrics => ("lyrics", "Lyrics", self.nav.show_lyrics),
                 };
                 ButtonData {
                     icon: icon.into(),
@@ -979,7 +915,6 @@ impl Ui {
         app.set_panel(match self.nav.panel {
             Panel::None => 0,
             Panel::Queue => 1,
-            Panel::Lyrics => 2,
         });
         if self.nav.panel == Panel::Queue {
             let selectable = self.nav.focus == Focus::Content && self.nav.menu.is_none();
@@ -1021,20 +956,28 @@ impl Ui {
             let autoplay = upcoming.iter().filter(|entry| entry.autoplay).count();
             app.set_queue_summary(queue_summary(upcoming.len(), autoplay).into());
         }
-        let (lyrics, note, timed) = match &self.nav.lyrics {
-            Some((id, load)) if Some(id) == track.as_ref().map(|t| &t.video_id) => match load {
-                Load::Loaded(Some(song)) => {
-                    (song.text.clone(), String::new(), !song.lines.is_empty())
-                }
-                Load::Loaded(None) => (String::new(), "No lyrics for this song.".to_owned(), false),
-                Load::Failed(message) => (String::new(), message.clone(), false),
-                _ => (String::new(), "Loading lyrics…".to_owned(), false),
-            },
-            _ => (String::new(), "Loading lyrics…".to_owned(), false),
+        // The lyrics beside the song: none (the song takes the middle), timed,
+        // or plain text that scrolls with the song.
+        let song = match &self.nav.lyrics {
+            Some((id, Load::Loaded(Some(song))))
+                if self.nav.show_lyrics
+                    && Some(id) == track.as_ref().map(|t| &t.video_id)
+                    && !song.text.trim().is_empty() =>
+            {
+                Some(song)
+            }
+            _ => None,
         };
-        app.set_lyrics(lyrics.into());
-        app.set_lyrics_note(note.into());
-        app.set_lyrics_timed(timed);
+        app.set_lyrics_mode(match song {
+            None => 0,
+            Some(song) if !song.lines.is_empty() => 1,
+            Some(_) => 2,
+        });
+        app.set_lyrics(
+            song.map(|song| song.text.clone())
+                .unwrap_or_default()
+                .into(),
+        );
         self.draw_lyric_rows();
     }
 
@@ -1413,15 +1356,14 @@ fn map_key(text: &str) -> Option<Key> {
     }
 }
 
-/// Somewhere new for the screensaver, from the clock.
-fn wander(now: Instant) -> (f32, f32) {
+/// A new small offset for the resting screens, each -1 to 1, from the clock.
+fn drift() -> (f32, f32) {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-        ^ now.elapsed().as_nanos() as u64;
-    let x = (seed % 1000) as f32 / 1000.0;
-    let y = ((seed / 1000) % 1000) as f32 / 1000.0;
-    (0.08 + x * 0.84, 0.1 + y * 0.8)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    let x = (seed % 1000) as f32 / 500.0 - 1.0;
+    let y = ((seed / 1000) % 1000) as f32 / 500.0 - 1.0;
+    (x, y)
 }
 
 /// The line over the queue: how many songs follow, and how many of those
