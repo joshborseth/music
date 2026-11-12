@@ -362,33 +362,38 @@ export const SessionHubLive = Layer.effect(SessionHub)(
 
         const receive = (message: Session.ClientMessage) =>
           Effect.gen(function* () {
+            let maybeJoining = Option.none<Connection>()
             if (Option.isNone(maybeDeviceId)) {
               if (message._tag !== 'Hello') return
               maybeDeviceId = Option.some(message.deviceId)
               senderId = message.deviceId
               yield* FiberMap.remove(timers, `lost:${message.deviceId}`)
               yield* FiberMap.remove(timers, `wake:${message.deviceId}`)
-              yield* lock.withPermits(1)(
-                Effect.sync(() =>
-                  connections.set(connectionId, {
-                    deviceId: message.deviceId,
-                    name: message.name,
-                    kind: message.kind,
-                    mailbox,
-                    acked: () => received,
-                  }),
-                ),
-              )
+              maybeJoining = Option.some({
+                deviceId: message.deviceId,
+                name: message.name,
+                kind: message.kind,
+                mailbox,
+                acked: () => received,
+              })
             }
+            const joining = maybeJoining
             const from = senderId
             // NOTE: progress comes every second and needs no answer.
             const maybeReplyTo =
               message._tag === 'Progress'
                 ? Option.none<Connection>()
-                : Option.fromNullishOr(connections.get(connectionId))
+                : Option.orElse(joining, () =>
+                    Option.fromNullishOr(connections.get(connectionId)),
+                  )
             yield* apply(current => {
-              // NOTE: counted under the lock as it is applied, so no state
-              // claims a message that is still waiting for the lock.
+              // NOTE: a connection joins as its Hello is applied, and each
+              // message is counted as it is applied, both under the lock. So
+              // no state reaches a connection before it includes the Hello,
+              // and none claims a message still waiting for the lock.
+              if (Option.isSome(joining)) {
+                connections.set(connectionId, joining.value)
+              }
               received += 1
               return update(current, message, contextFor(from))
             }, maybeReplyTo)

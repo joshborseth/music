@@ -18,7 +18,11 @@ import {
   pauseAudio,
   startAudio,
 } from './element'
-import { PhoneAudioElement, SessionSocket } from './resource'
+import {
+  PhoneAudioElement,
+  SessionSocket,
+  type SessionSocketService,
+} from './resource'
 import { cachedSong, prefetchSongs, recordPlay } from './songCache'
 
 const RECONNECT_DELAY = Duration.seconds(2)
@@ -71,18 +75,31 @@ export const LoadDeviceIdentity = Command.define('LoadDeviceIdentity', {
 /** How many messages went out on each socket, which the server's `ack` counts too. */
 const sentCounts = new WeakMap<WebSocket, number>()
 
-/** Send a message, and give its number on this socket. */
-const sendMessage = (message: Session.ClientMessage) =>
+/**
+ * Send a message, and give its number on this socket. Nothing goes out
+ * before the socket's Hello: the server drops it uncounted, which would put
+ * every later number one ahead of the server's `ack`. What the phone did
+ * meanwhile goes in the Hello's report.
+ */
+const sendMessage = (
+  message: Session.ClientMessage,
+): Effect.Effect<Option.Option<number>, never, SessionSocketService> =>
   SessionSocket.get.pipe(
-    Effect.flatMap(socket =>
-      Effect.try(() => {
+    Effect.map(socket => {
+      const sent = sentCounts.get(socket) ?? 0
+      if (sent === 0 && message._tag !== 'Hello') {
+        return Option.none<number>()
+      }
+      try {
         socket.send(encodeClientMessage(message))
-        const seq = (sentCounts.get(socket) ?? 0) + 1
-        sentCounts.set(socket, seq)
-        return seq
-      }),
-    ),
-    Effect.option,
+      } catch {
+        // NOTE: a socket still connecting throws; it has no Hello either.
+        return Option.none<number>()
+      }
+      sentCounts.set(socket, sent + 1)
+      return Option.some(sent + 1)
+    }),
+    Effect.orElseSucceed(() => Option.none<number>()),
   )
 
 export const SendToSession = Command.define('SendToSession', {
