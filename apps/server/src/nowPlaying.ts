@@ -1,4 +1,12 @@
-import { Context, Effect, Layer, Schema, Stream, SubscriptionRef } from 'effect'
+import {
+  Context,
+  Effect,
+  Layer,
+  Option,
+  Schema,
+  Stream,
+  SubscriptionRef,
+} from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
 import { NowPlaying, type Session } from '@music/shared'
@@ -7,12 +15,13 @@ import { ArtworkPalette } from './palette/service.ts'
 import { SessionHub } from './session/hub.ts'
 
 /*
- * `GET /now-playing`: a read-only WebSocket for things outside the app, such
- * as the house lights. It follows the session and adds the cover's color.
- * Listeners never join the session, so they never show up as a device.
+ * `GET /now-playing`: a WebSocket for things outside the app, such as the
+ * house lights. It follows the session and adds the cover's color and the
+ * hub's cues. Listeners only say what they follow (`Follow`); they never join
+ * the session, so they never show up as a device.
  */
 
-type Base = Omit<NowPlaying.NowPlaying, 'color'>
+type Base = Omit<NowPlaying.NowPlaying, 'color' | 'cue'>
 
 const nothingPlaying: NowPlaying.NowPlaying = {
   _tag: 'NowPlaying',
@@ -20,6 +29,7 @@ const nothingPlaying: NowPlaying.NowPlaying = {
   playing: false,
   device: null,
   color: null,
+  cue: null,
 }
 
 export const toBase = (state: Session.SessionState): Base => {
@@ -47,8 +57,10 @@ export const toBase = (state: Session.SessionState): Base => {
 
 const encode = Schema.encodeSync(NowPlaying.NowPlayingJson)
 
-const sameJson = <A extends NowPlaying.NowPlaying | Base>(x: A, y: A) =>
-  JSON.stringify(x) === JSON.stringify(y)
+const decodeFollow = Schema.decodeUnknownOption(NowPlaying.FollowJson)
+const textDecoder = new TextDecoder()
+
+const sameJson = <A>(x: A, y: A) => JSON.stringify(x) === JSON.stringify(y)
 
 export class NowPlayingFeed extends Context.Service<
   NowPlayingFeed,
@@ -64,7 +76,7 @@ export const NowPlayingFeedLive = Layer.effect(NowPlayingFeed)(
     const artwork = yield* ArtworkPalette
     const latest = yield* SubscriptionRef.make(nothingPlaying)
 
-    yield* hub.states.pipe(
+    const withColors = hub.states.pipe(
       Stream.map(toBase),
       Stream.changesWith(sameJson),
       Stream.switchMap(base =>
@@ -74,6 +86,10 @@ export const NowPlayingFeedLive = Layer.effect(NowPlayingFeed)(
             : artwork.colorFor(base.track.artworkUrl),
         ).pipe(Stream.map(color => ({ ...base, color }))),
       ),
+    )
+
+    yield* Stream.zipLatest(withColors, hub.cues).pipe(
+      Stream.map(([base, cue]): NowPlaying.NowPlaying => ({ ...base, cue })),
       Stream.changesWith(sameJson),
       Stream.runForEach(value => SubscriptionRef.set(latest, value)),
       Effect.forkScoped,
@@ -91,6 +107,7 @@ export const NowPlayingFeedLive = Layer.effect(NowPlayingFeed)(
 export const NowPlayingRoutes = HttpRouter.use(router =>
   Effect.gen(function* () {
     const feed = yield* NowPlayingFeed
+    const hub = yield* SessionHub
     yield* router.add(
       'GET',
       NowPlaying.NOW_PLAYING_PATH,
@@ -99,12 +116,32 @@ export const NowPlayingRoutes = HttpRouter.use(router =>
         const socket = yield* Effect.orDie(request.upgrade)
         const writer = yield* socket.writer
         const reader = yield* socket.reader
+        const follow = yield* hub.followLights
         const send = feed.frames.pipe(
           Stream.runForEach(frame => writer.write(frame)),
         )
-        // NOTE: listeners send nothing; reading only notices the close.
-        const untilClosed = reader.pull.pipe(Effect.forever)
-        yield* Effect.raceFirst(send, untilClosed).pipe(Effect.ignore)
+        const receive = reader.pull.pipe(
+          Effect.flatMap(frames =>
+            Effect.forEach(
+              frames,
+              frame =>
+                Option.match(
+                  decodeFollow(
+                    typeof frame === 'string'
+                      ? frame
+                      : textDecoder.decode(frame),
+                  ),
+                  {
+                    onNone: () => Effect.void,
+                    onSome: ({ kinds }) => follow(kinds),
+                  },
+                ),
+              { discard: true },
+            ),
+          ),
+          Effect.forever,
+        )
+        yield* Effect.raceFirst(send, receive).pipe(Effect.ignore)
         return HttpServerResponse.empty()
       }).pipe(Effect.scoped),
     )

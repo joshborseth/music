@@ -15,6 +15,7 @@ import {
   lookahead,
   missingDurations,
   playerLost,
+  startHeld,
   toSessionState,
   update,
   wakeTimedOut,
@@ -35,6 +36,7 @@ const makeContext = (
   senderId: string,
   now: number,
   online: ReadonlyArray<string> = ['phone', 'tv'],
+  lightsFollow: ReadonlyArray<string> = [],
 ): Context => {
   let counter = 0
   return {
@@ -43,6 +45,7 @@ const makeContext = (
     isOnline: id => online.includes(id),
     isWakeable: id => id === 'tv',
     makeEntryId: () => `e${counter++}`,
+    holdsForLights: id => lightsFollow.includes(id),
   }
 }
 
@@ -742,6 +745,147 @@ describe('autoplay', () => {
   })
 })
 
+describe('holding songs for the lights', () => {
+  const lights = (sender: string, now: number) =>
+    makeContext(sender, now, ['phone', 'tv'], ['tv'])
+
+  /** The TV plays the queue's first song; the lights follow the TV. */
+  const onTv = (): Model => ({ ...playing('tv'), positionAt: 1_000 })
+
+  const next = (model: Model, now = 5_000, sender = 'phone') =>
+    update(model, { _tag: 'Next' }, lights(sender, now))
+
+  test('a song the TV jumps to waits at its start, and starts when told', () => {
+    const held = next(onTv())
+    expect(held.broadcast).toBe(true)
+    expect(held.model).toMatchObject({
+      currentEntryId: 'e1',
+      playing: false,
+      waitingToStart: true,
+      positionSeconds: 0,
+    })
+    expect(toSessionState(held.model, []).waitingToStart).toBe(true)
+
+    const started = startHeld(held.model, 'e1', held.model.seekSeq, 5_400)
+    expect(started.broadcast).toBe(true)
+    expect(started.model).toMatchObject({
+      currentEntryId: 'e1',
+      playing: true,
+      waitingToStart: false,
+      positionSeconds: 0,
+      positionAt: 5_400,
+    })
+  })
+
+  test('starting an older hold changes nothing', () => {
+    const held = next(onTv())
+    const stale = startHeld(held.model, 'e1', held.model.seekSeq - 1, 5_400)
+    expect(stale.broadcast).toBe(false)
+    expect(stale.model.waitingToStart).toBe(true)
+  })
+
+  test('a skip while held holds the next song instead', () => {
+    const first = next(onTv())
+    const second = next(first.model, 5_200)
+    expect(second.model).toMatchObject({
+      currentEntryId: 'e2',
+      playing: false,
+      waitingToStart: true,
+    })
+    expect(second.model.seekSeq).toBe(first.model.seekSeq + 1)
+  })
+
+  test('pausing while held cancels the start', () => {
+    const held = next(onTv())
+    const paused = update(held.model, { _tag: 'Pause' }, lights('phone', 5_300))
+    expect(paused.model).toMatchObject({
+      playing: false,
+      waitingToStart: false,
+      positionSeconds: 0,
+    })
+  })
+
+  test('messages that leave the song alone keep holding it, without moving it', () => {
+    const held = next(onTv())
+    const progress = update(
+      held.model,
+      { _tag: 'Progress', entryId: 'e1', positionSeconds: 0, playing: false },
+      lights('tv', 5_500),
+    )
+    expect(progress.model).toMatchObject({
+      waitingToStart: true,
+      playing: false,
+      positionSeconds: 0,
+    })
+    const enqueued = update(
+      progress.model,
+      { _tag: 'Enqueue', tracks: [track('d')], placement: 'Last' },
+      lights('phone', 6_000),
+    )
+    expect(enqueued.model).toMatchObject({
+      waitingToStart: true,
+      playing: false,
+      positionSeconds: 0,
+    })
+  })
+
+  test('a hold ends with a broadcast once the lights stop following', () => {
+    const held = next(onTv())
+    const progress = update(
+      held.model,
+      { _tag: 'Progress', entryId: 'e1', positionSeconds: 0, playing: false },
+      makeContext('tv', 5_500),
+    )
+    expect(progress.broadcast).toBe(true)
+    expect(progress.model).toMatchObject({
+      waitingToStart: false,
+      playing: true,
+    })
+  })
+
+  test('a song that follows the last with no gap is never held', () => {
+    const advanced = update(
+      onTv(),
+      { _tag: 'Advanced', fromEntryId: 'e0' },
+      lights('tv', 200_000),
+    )
+    expect(advanced.model).toMatchObject({
+      currentEntryId: 'e1',
+      playing: true,
+      waitingToStart: false,
+    })
+  })
+
+  test('a paused session jumps without holding', () => {
+    const paused = update(onTv(), { _tag: 'Pause' }, lights('phone', 2_000))
+    const moved = next(paused.model)
+    expect(moved.model).toMatchObject({
+      currentEntryId: 'e1',
+      playing: false,
+      waitingToStart: false,
+    })
+  })
+
+  test('a phone that plays never holds', () => {
+    const moved = update(
+      playing('phone'),
+      { _tag: 'Next' },
+      makeContext('phone', 5_000, ['phone', 'tv'], ['tv']),
+    )
+    expect(moved.model).toMatchObject({ playing: true, waitingToStart: false })
+  })
+
+  test('a held player that goes away stops', () => {
+    const held = next(onTv())
+    const lost = playerLost(held.model, 'tv', 20_000)
+    expect(lost.model).toMatchObject({
+      playing: false,
+      waitingToStart: false,
+      pausedForLostPlayer: true,
+    })
+  })
+})
+
 describe('protocol fixtures shared with the TV app', () => {
   const read = (name: string) => Bun.file(new URL(name, FIXTURES)).text()
 
@@ -773,6 +917,8 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-volume-fixed.json',
     'client-set-device-volume.json',
     'client-set-autoplay.json',
+    'client-loaded.json',
+    'client-advancing.json',
   ])('%s decodes as a client message', async name => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(
       await read(name),

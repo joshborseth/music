@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils'
 import {
   MAX_PLAYLIST_TITLE_LENGTH,
   type MyPlaylistSummary,
-  type Session,
+  Session,
   type Song,
 } from '@music/shared'
 
@@ -259,7 +259,7 @@ const deviceRowStatus = (
   if (!isThisOne) {
     return deviceStatusText(device, status)
   } else if (isOutput && state.currentEntryId !== null) {
-    return state.playing ? 'Playing' : 'Paused'
+    return Session.isPlayingOrStarting(state) ? 'Playing' : 'Paused'
   } else {
     return 'You are here'
   }

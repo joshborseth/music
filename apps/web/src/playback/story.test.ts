@@ -82,6 +82,7 @@ const sessionState = (
   autoplay: true,
   positionAt: SERVER_NOW,
   seekSeq,
+  waitingToStart: false,
 })
 
 /** The local change's message went out as this connection's `seq`th. */
