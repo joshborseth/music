@@ -11,16 +11,15 @@ void main() {
   float punch = 1.0 - 0.06 * uBeatPulse * (0.3 + uEnergy) - 0.05 * uDrop;
   p *= punch;
   float r = length(p);
-  float a = atan(p.y, p.x) + beatSteps() * wedge * 0.5 + uDrive * 0.02;
+  highp float turned = atan(p.y, p.x) + beatSteps() * wedge * 0.5 + uDrive * 0.02;
 
   // Fold the angle into one mirrored wedge.
-  a = mod(a, wedge);
-  a = abs(a - wedge * 0.5);
+  float a = abs(mod(turned, wedge) - wedge * 0.5);
   vec2 k = vec2(cos(a), sin(a)) * r;
 
   // Stream outward: the picture comes from the middle.
-  float flow = uDrive * 0.09;
-  vec2 uv = k * (1.7 - 0.35 * uBands.x) + vec2(-flow, flow * 0.37) + uSeed;
+  highp float flow = uDrive * 0.09;
+  highp vec2 uv = k * (1.7 - 0.35 * uBands.x) + vec2(-flow, flow * 0.37) + uSeed;
   vec3 color = uHasCover > 0.5 ? cover(uv) : palette(fbm(uv * 3.0) + uv.x);
   color = saturate3(color, 1.25);
 

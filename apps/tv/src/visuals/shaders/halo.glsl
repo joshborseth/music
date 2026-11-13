@@ -4,13 +4,19 @@
 
 void main() {
   vec2 p = centered();
-  vec2 uv = gl_FragCoord.xy / uRes;
+  // Where to read the last frame is kept highp: in mediump it would land
+  // up to half a pixel off, and the echo would smear a little more each
+  // frame.
+  highp vec2 uv = gl_FragCoord.xy / uRes;
 
-  // The echo: last frame, pushed out and turned a little.
-  vec2 c = (uv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
+  // The echo: last frame, pushed out and turned a little. The turn is
+  // under a hundredth of a radian, so its sine is the angle itself.
+  highp vec2 c = (uv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
   c *= 0.975 - 0.02 * uBands.x;
-  c = rot(0.006 + 0.012 * uBands.y) * c;
-  vec2 back = c / vec2(uRes.x / uRes.y, 1.0) + 0.5;
+  highp float turn = 0.006 + 0.012 * uBands.y;
+  highp float straight = 1.0 - 0.5 * turn * turn;
+  c = mat2(straight, turn, -turn, straight) * c;
+  highp vec2 back = c / vec2(uRes.x / uRes.y, 1.0) + 0.5;
   vec3 color = texture(uPrev, back).rgb * (0.9 - 0.04 * uDrop);
   color = max(color - 1.0 / 255.0, 0.0);
 

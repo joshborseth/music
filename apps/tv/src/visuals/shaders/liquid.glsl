@@ -1,10 +1,15 @@
 // LIQUID: the cover melted into slow, deep currents of its own colors.
 // The currents swell with the bass and glint on sharp hits. For quiet
 // stretches: intros, breakdowns, ballads.
+//
+// Each `fbm` is one read of noise worked out ahead (`uFbm`), so the five
+// here cost five reads, not twenty.
 
 void main() {
-  vec2 p = centered();
-  float t = uDrive * 0.06 + uSeed * 17.0;
+  // Kept highp: the noise is read at sums of p and the warps, up to about
+  // 6, where mediump would only find every other pixel.
+  highp vec2 p = centered();
+  highp float t = uDrive * 0.06 + uSeed * 17.0;
 
   // Warp the plane twice over (domain warping) for folds within folds.
   vec2 q = vec2(fbm(p * 1.2 + vec2(0.0, t)), fbm(p * 1.2 + vec2(5.2, 1.3 - t * 0.8)));

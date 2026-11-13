@@ -2,7 +2,8 @@
 // trails. The grains are drawn on top by particles.vert.
 
 void main() {
-  vec2 uv = gl_FragCoord.xy / uRes;
+  // Kept highp so each pixel reads exactly its own last value.
+  highp vec2 uv = gl_FragCoord.xy / uRes;
   vec3 last = texture(uPrev, uv).rgb;
   float keep = 0.6 + 0.25 * uDrop + 0.1 * uTension;
   vec3 color = max(last * keep - 1.0 / 255.0, 0.0);

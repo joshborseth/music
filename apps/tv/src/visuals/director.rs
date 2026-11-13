@@ -73,6 +73,9 @@ const BUSY_BARS: u32 = 16;
 /// before a kick will.
 const LIVE_MIN: f32 = 14.0;
 const LIVE_MAX: f32 = 40.0;
+/// The longest a dissolve from one scene to the next lasts (a long section
+/// moving on takes half as long again).
+const MOST_FADE: f32 = 1.2;
 
 /// A scene showing, and the look it was given.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -212,7 +215,9 @@ impl Director {
             self.bars_here += 1;
         }
 
-        let fade = (music.beat_seconds * 2.0).clamp(0.4, 2.0);
+        // Dissolves last two beats, at most 1.2 seconds: while one runs, both
+        // scenes are drawn, taking turns.
+        let fade = (music.beat_seconds * 2.0).clamp(0.4, MOST_FADE);
         if song != self.song.as_deref() {
             self.song = song.map(str::to_owned);
             self.by_group.clear();
@@ -220,7 +225,7 @@ impl Director {
             if song.is_some() {
                 let scene = self.pick(music.intensity.max(0.3), has_cover);
                 let seed = self.unit();
-                self.change(scene, seed, 1.5);
+                self.change(scene, seed, MOST_FADE);
             }
         } else if music.drop_landed {
             let (scene, seed) = match music.section {
@@ -244,7 +249,7 @@ impl Director {
             if music.on_downbeat && self.bars_here >= limit {
                 let scene = self.pick(music.intensity, has_cover);
                 let seed = self.unit();
-                self.change(scene, seed, fade * 2.0);
+                self.change(scene, seed, fade * 1.5);
             }
         } else {
             let age = self.current.age;

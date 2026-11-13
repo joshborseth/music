@@ -6,7 +6,9 @@
 //! - `director.rs` picks the scene for each part of the song.
 //! - `gpu.rs` draws it with OpenGL ES, under the app's UI, every frame the
 //!   screen shows. The scenes themselves are shaders in `shaders/`, which
-//!   also run in the browser lab (`apps/tv/visuals-lab`).
+//!   also run in the browser lab (`apps/tv/visuals-lab`). `motion.rs` works
+//!   out once a frame what they would otherwise work out at every pixel,
+//!   and `sizing.rs` picks each scene's size so frames come on time.
 //!
 //! Everything here runs on the UI thread, inside Slint's rendering
 //! notifier. While the visuals show, each frame asks for the next.
@@ -14,7 +16,9 @@
 mod director;
 mod gpu;
 mod look;
+mod motion;
 mod music;
+mod sizing;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -95,11 +99,16 @@ struct Pace {
 impl Pace {
     /// Count a frame that took `dt` seconds. Returns a line for the server
     /// when one is due.
-    fn frame(&mut self, dt: f32, size: (u32, u32), scale: f32) -> Option<String> {
+    fn frame(
+        &mut self,
+        dt: f32,
+        size: (u32, u32),
+        sizes: impl FnOnce() -> String,
+    ) -> Option<String> {
         let now = Instant::now();
         let since = *self.since.get_or_insert(now);
         self.frames += 1;
-        if dt > 1.5 / 60.0 {
+        if dt > sizing::LATE {
             self.late += 1;
         }
         self.worst = self.worst.max(dt);
@@ -113,13 +122,13 @@ impl Pace {
             return None;
         }
         let line = format!(
-            "visuals: {}×{} screen, scenes at {:.0}%, {:.1} fps, {:.1}% of frames late, worst {:.0} ms",
+            "visuals: {}×{} screen, {:.1} fps, {:.1}% of frames late, worst {:.0} ms; scenes at {}",
             size.0,
             size.1,
-            scale * 100.0,
             f64::from(self.frames) / elapsed.as_secs_f64(),
             f64::from(self.late) * 100.0 / f64::from(self.frames.max(1)),
             self.worst * 1000.0,
+            sizes(),
         );
         *self = Self {
             reports: self.reports + 1,
@@ -318,7 +327,9 @@ impl State {
         let dt = took.unwrap_or(1.0 / 60.0).clamp(0.001, 0.1);
         self.last_frame = Some(now);
         self.fade = (self.fade + dt / FADE_IN).min(1.0);
-        renderer.pace(dt);
+        if took.is_some() {
+            renderer.pace(dt);
+        }
 
         if self.song.as_deref() != Some(stage.entry_id.as_str()) {
             self.song = Some(stage.entry_id.clone());
@@ -387,7 +398,7 @@ impl State {
         );
 
         if let Some(took) = took
-            && let Some(line) = self.pace.frame(took, size, renderer.scale())
+            && let Some(line) = self.pace.frame(took, size, || renderer.sizes())
         {
             log::info!("{line}");
             (self.report)(line);

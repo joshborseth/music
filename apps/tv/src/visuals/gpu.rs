@@ -8,6 +8,8 @@
 //! The passes, each a fragment shader from `shaders/`:
 //! 1. Each scene showing draws into its own pair of textures at a reduced
 //!    size, reading its last frame from the other (trails, ink, echoes).
+//!    While one scene dissolves into the next, the two take turns, one a
+//!    frame, so a change of scene costs no more than one scene.
 //! 2. The bright parts are cut out at a quarter size and blurred (bloom).
 //! 3. `final.glsl` dissolves one scene into the next and adds the glow and
 //!    the camera tricks, into a picture the scenes' size.
@@ -16,21 +18,23 @@
 //!    reads one pixel for each it draws: a full-size pass costs as much as
 //!    a whole scene on a small TV GPU.
 //!
-//! The size of the scenes follows the TV: when frames come late, they get
-//! smaller; when there is room again, they grow back.
+//! Each scene's size follows the TV (`sizing.rs`): it shrinks when its
+//! frames come late, and settles on the largest size it can hold.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use glow::HasContext;
 
-use super::director::{Shot, Showing};
+use super::director::{SCENES, Shot, Showing};
 use super::look::{COVER_SIDE, Cover, DEFAULT_COLORS};
+use super::motion::{Motion, hash, unit};
 use super::music::{BANDS, HISTORY_ROWS, LEVELS, Listener, Music, WAVE};
+use super::sizing::{Change, Sizing};
 
 const COMMON: &str = include_str!("shaders/common.glsl");
 const FRAGMENT: &str = include_str!("shaders/fragment.glsl");
+const HELPERS: &str = include_str!("shaders/helpers.glsl");
 const FULLSCREEN: &str = include_str!("shaders/fullscreen.vert");
 
 /// Each scene's shader, in the order of `director::SCENES`.
@@ -51,14 +55,9 @@ const GRID: i32 = 160;
 
 /// The scenes' height at full size; the screen's own if it is smaller.
 const BASE_HEIGHT: u32 = 720;
-/// Sizes to step through when frames come late, from full down.
-const SCALES: [f32; 6] = [1.0, 0.85, 0.72, 0.6, 0.5, 0.4];
-/// Frames slower than this, on average, mean the TV is struggling.
-const SLOW_FRAME: f32 = 1.0 / 50.0;
-/// Frames faster than this mean there is room to grow.
-const FAST_FRAME: f32 = 1.0 / 58.0;
-const SHRINK_AFTER: Duration = Duration::from_secs(2);
-const GROW_AFTER: Duration = Duration::from_secs(12);
+/// Frames a scene must show alone before its frames are counted: the
+/// first ones after a change of scene still carry the change's cost.
+const STEADY_AFTER: u32 = 3;
 
 type Gl = glow::Context;
 
@@ -81,6 +80,8 @@ struct Slot {
     scene: Option<usize>,
     seed: f32,
     targets: [Target; 2],
+    /// False until the scene has drawn into it since it was cleared.
+    drawn: bool,
 }
 
 /// How much of each shade the app's words need shows, 0 to 1: see
@@ -111,21 +112,26 @@ pub struct Renderer {
     slots: [Slot; 2],
     /// The finished picture, the scenes' size, before `present` stretches it.
     picture: Target,
+    /// False until `final` has drawn into the picture since it was resized.
+    picture_drawn: bool,
     bloom: [Target; 2],
     spectrum: glow::Texture,
     history: glow::Texture,
     wave: glow::Texture,
     noise: glow::Texture,
+    fbm: glow::Texture,
     cover: glow::Texture,
     /// The cover uploaded, held so its identity can't be reused.
     cover_shown: Option<Arc<Cover>>,
     colors: [[f32; 3]; 3],
     has_cover: bool,
-    scale: usize,
-    screen_height: u32,
-    frame_time: f32,
-    slow_since: Option<Instant>,
-    fast_since: Option<Instant>,
+    /// Each scene's size, in the order of `SCENES`.
+    sizing: [Sizing; SCENES.len()],
+    /// Frames drawn, for taking turns.
+    frame: u64,
+    /// The scene the last frame drew alone, and how many frames in a row.
+    alone: Option<usize>,
+    steady: u32,
 }
 
 impl Renderer {
@@ -153,8 +159,9 @@ impl Renderer {
 
     unsafe fn build(gl: &Gl, errors: &mut Vec<String>) -> Option<Self> {
         unsafe {
-            let fragment =
-                |body: &str| format!("#version 300 es\n{COMMON}\n{FRAGMENT}\n#line 1\n{body}");
+            let fragment = |body: &str| {
+                format!("#version 300 es\n{COMMON}\n{FRAGMENT}\n{HELPERS}\n#line 1\n{body}")
+            };
             let vertex = format!("#version 300 es\n{FULLSCREEN}");
             let mut compile = |name: &str, vertex: &str, fragment: &str| {
                 program(gl, vertex, fragment)
@@ -168,7 +175,7 @@ impl Renderer {
             let points = compile(
                 "particles.vert",
                 &format!(
-                    "#version 300 es\n{COMMON}\n#line 1\n{}",
+                    "#version 300 es\n{COMMON}\n{HELPERS}\n#line 1\n{}",
                     include_str!("shaders/particles.vert")
                 ),
                 &format!(
@@ -208,20 +215,20 @@ impl Renderer {
             let wave = data_texture(gl, WAVE as i32, 1, glow::R8, false)?;
             let noise = data_texture(gl, 256, 256, glow::RGBA8, true)?;
             upload(gl, noise, 256, 256, glow::RGBA, &noise_pixels());
+            let side = FBM_SIDE as i32;
+            let fbm = data_texture(gl, side, side, glow::RGBA8, true)?;
+            upload(gl, fbm, side, side, glow::RGBA, &fbm_pixels());
             let cover = data_texture(gl, COVER_SIDE as i32, COVER_SIDE as i32, glow::RGBA8, false)?;
             let (width, height) = (16, 16);
-            let slots = [
-                Slot {
+            let slot = || -> Option<Slot> {
+                Some(Slot {
                     scene: None,
                     seed: 0.0,
                     targets: [target(gl, width, height)?, target(gl, width, height)?],
-                },
-                Slot {
-                    scene: None,
-                    seed: 0.0,
-                    targets: [target(gl, width, height)?, target(gl, width, height)?],
-                },
-            ];
+                    drawn: false,
+                })
+            };
+            let slots = [slot()?, slot()?];
             let bloom = [target(gl, 4, 4)?, target(gl, 4, 4)?];
             let picture = target(gl, width, height)?;
             Some(Self {
@@ -234,20 +241,21 @@ impl Renderer {
                 present,
                 slots,
                 picture,
+                picture_drawn: false,
                 bloom,
                 spectrum,
                 history,
                 wave,
                 noise,
+                fbm,
                 cover,
                 cover_shown: None,
                 colors: DEFAULT_COLORS,
                 has_cover: false,
-                scale: 1,
-                screen_height: 0,
-                frame_time: 1.0 / 60.0,
-                slow_since: None,
-                fast_since: None,
+                sizing: Default::default(),
+                frame: 0,
+                alone: None,
+                steady: 0,
             })
         }
     }
@@ -258,8 +266,24 @@ impl Renderer {
             && (scene != PARTICLES || self.points.is_some())
     }
 
-    pub fn scale(&self) -> f32 {
-        SCALES[self.scale]
+    /// Each scene shown so far and its size, for the server's log:
+    /// "Liquid 100%, Chrome 60%, Terrain 35% at 30 fps".
+    pub fn sizes(&self) -> String {
+        let sizes: Vec<String> = self
+            .sizing
+            .iter()
+            .zip(SCENES.iter())
+            .filter(|(sizing, _)| sizing.shown())
+            .map(|(sizing, spec)| {
+                let rate = if sizing.half_rate() { " at 30 fps" } else { "" };
+                format!("{} {:.0}%{rate}", spec.name, sizing.scale() * 100.0)
+            })
+            .collect();
+        if sizes.is_empty() {
+            "none shown yet".to_owned()
+        } else {
+            sizes.join(", ")
+        }
     }
 
     /// Show `cover` (or none) from now on.
@@ -295,32 +319,35 @@ impl Renderer {
         self.has_cover
     }
 
-    /// Keep the scenes' size in step with how fast frames come.
+    /// The last frame took `dt` seconds: keep the size of the scene it drew
+    /// in step. Only frames that drew one scene alone, a few in a row,
+    /// count, so a change of scene never sizes either one.
     pub fn pace(&mut self, dt: f32) {
-        self.frame_time += (dt - self.frame_time) * 0.05;
-        let now = Instant::now();
-        if self.frame_time > SLOW_FRAME {
-            self.fast_since = None;
-            let since = *self.slow_since.get_or_insert(now);
-            if now - since > SHRINK_AFTER && self.scale + 1 < SCALES.len() {
-                self.scale += 1;
-                self.slow_since = None;
+        let Some(scene) = self.alone else {
+            return;
+        };
+        if self.steady < STEADY_AFTER {
+            return;
+        }
+        let sizing = &mut self.sizing[scene];
+        let name = SCENES[scene].name;
+        match sizing.frame(dt) {
+            Some(Change::Shrank) if sizing.half_rate() => {
+                log::info!("visuals: {name} frames are slow, drawing it at 30 fps");
+            }
+            Some(Change::Shrank) => {
                 log::info!(
-                    "visuals: frames are slow, drawing at {}",
-                    SCALES[self.scale]
+                    "visuals: {name} frames are slow, drawing it at {}",
+                    sizing.scale()
                 );
             }
-        } else if self.frame_time < FAST_FRAME {
-            self.slow_since = None;
-            let since = *self.fast_since.get_or_insert(now);
-            if now - since > GROW_AFTER && self.scale > 0 {
-                self.scale -= 1;
-                self.fast_since = None;
-                log::info!("visuals: room to grow, drawing at {}", SCALES[self.scale]);
+            Some(Change::Grew) => {
+                log::info!(
+                    "visuals: {name} has room to grow, drawing it at {}",
+                    sizing.scale()
+                );
             }
-        } else {
-            self.slow_since = None;
-            self.fast_since = None;
+            None => {}
         }
     }
 
@@ -339,10 +366,9 @@ impl Renderer {
         if width == 0 || height == 0 {
             return;
         }
-        self.screen_height = height;
+        self.frame = self.frame.wrapping_add(1);
         let saved = Saved::save(gl);
         unsafe {
-            self.prepare(gl, width, height);
             gl.bind_vertex_array(Some(self.vao));
             gl.disable(glow::BLEND);
             gl.disable(glow::SCISSOR_TEST);
@@ -378,15 +404,90 @@ impl Renderer {
                 );
             }
 
+            let screen = (width, height);
             let next = shot.next.map(|(next, _)| next.scene);
-            let a = self.ensure_slot(gl, shot.current, next);
+            let a = self.ensure_slot(gl, shot.current, next, screen);
             let b = shot
                 .next
-                .map(|(next, _)| self.ensure_slot(gl, next, Some(shot.current.scene)));
+                .map(|(next, _)| self.ensure_slot(gl, next, Some(shot.current.scene), screen));
             let mix = shot.next.map_or(0.0, |(_, progress)| progress);
-            self.draw_scene(gl, a, shot.current, music, listener);
-            if let (Some(b), Some((next, _))) = (b, shot.next) {
+
+            // Which scenes move this frame.
+            let even = self.frame.is_multiple_of(2);
+            let (draw_a, draw_b) = match b {
+                // During a change of scene the two take turns, so each moves
+                // at 30 a second for that moment and the frame costs no more
+                // than one scene. A scene draws first as soon as it comes in.
+                Some(b) if !self.slots[b].drawn => (false, true),
+                Some(_) if !self.slots[a].drawn => (true, false),
+                Some(_) => (even, !even),
+                // A scene too heavy for this TV even at its smallest moves
+                // every other frame; the screen still shows every frame.
+                None => (
+                    !self.sizing[shot.current.scene].half_rate()
+                        || even
+                        || !self.slots[a].drawn
+                        || !self.picture_drawn,
+                    false,
+                ),
+            };
+            let alone = b.is_none().then_some(shot.current.scene);
+            self.steady = if alone.is_some() && alone == self.alone {
+                self.steady.saturating_add(1)
+            } else {
+                0
+            };
+            self.alone = alone;
+
+            if draw_a {
+                self.draw_scene(gl, a, shot.current, music, listener);
+            }
+            if draw_b && let (Some(b), Some((next, _))) = (b, shot.next) {
                 self.draw_scene(gl, b, next, music, listener);
+            }
+            if draw_a || draw_b {
+                self.compose(gl, a, b, shot.current, mix, fade, music, listener);
+            }
+
+            // The screen.
+            gl.bind_framebuffer(glow::FRAMEBUFFER, saved.framebuffer);
+            gl.viewport(0, 0, width as i32, height as i32);
+            gl.use_program(Some(self.present.program));
+            set_vec2(gl, &self.present, "uRes", width as f32, height as f32);
+            set_f32(gl, &self.present, "uTime", music.time);
+            set_f32(gl, &self.present, "uSide", shade.side);
+            set_f32(gl, &self.present, "uCentre", shade.centre);
+            bind_texture(gl, &self.present, "uPicture", 0, self.picture.texture);
+            fullscreen(gl);
+        }
+        saved.restore(gl);
+    }
+
+    /// Bloom, then the picture: the scenes in slots `a` and `b` (if any)
+    /// put together at the larger one's size.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn compose(
+        &mut self,
+        gl: &Gl,
+        a: usize,
+        b: Option<usize>,
+        current: Showing,
+        mix: f32,
+        fade: f32,
+        music: &Music,
+        listener: &Listener,
+    ) {
+        unsafe {
+            let out_a = &self.slots[a].targets[0];
+            let out_b = &self.slots[b.unwrap_or(a)].targets[0];
+            let wide = out_a.width.max(out_b.width);
+            let tall = out_a.height.max(out_b.height);
+            if (self.picture.width, self.picture.height) != (wide, tall) {
+                resize(gl, &mut self.picture, wide, tall);
+                for target in &mut self.bloom {
+                    resize(gl, target, (wide / 4).max(1), (tall / 4).max(1));
+                }
+                self.picture_drawn = false;
             }
             let out_a = &self.slots[a].targets[0];
             let out_b = &self.slots[b.unwrap_or(a)].targets[0];
@@ -430,13 +531,12 @@ impl Renderer {
             // The picture, the scenes' size.
             bind_target(gl, &self.picture);
             gl.use_program(Some(self.final_pass.program));
-            let showing = Some(shot.current);
             self.set_music(
                 gl,
                 &self.final_pass,
                 music,
                 (self.picture.width, self.picture.height),
-                showing,
+                Some(current),
                 listener,
             );
             bind_texture(gl, &self.final_pass, "uSceneA", 0, out_a.texture);
@@ -446,74 +546,58 @@ impl Renderer {
             set_f32(gl, &self.final_pass, "uMix", mix);
             set_f32(gl, &self.final_pass, "uFade", fade);
             fullscreen(gl);
-
-            // The screen.
-            gl.bind_framebuffer(glow::FRAMEBUFFER, saved.framebuffer);
-            gl.viewport(0, 0, width as i32, height as i32);
-            gl.use_program(Some(self.present.program));
-            set_vec2(gl, &self.present, "uRes", width as f32, height as f32);
-            set_f32(gl, &self.present, "uTime", music.time);
-            set_f32(gl, &self.present, "uSide", shade.side);
-            set_f32(gl, &self.present, "uCentre", shade.centre);
-            bind_texture(gl, &self.present, "uPicture", 0, self.picture.texture);
-            fullscreen(gl);
-        }
-        saved.restore(gl);
-    }
-
-    /// Size the scenes' textures for the screen and the current scale.
-    unsafe fn prepare(&mut self, gl: &Gl, width: u32, height: u32) {
-        unsafe {
-            let tall = (BASE_HEIGHT.min(height) as f32 * SCALES[self.scale])
-                .round()
-                .max(90.0);
-            let wide = (tall * width as f32 / height as f32).round();
-            let (wide, tall) = (wide as i32, tall as i32);
-            let resized =
-                self.slots[0].targets[0].width != wide || self.slots[0].targets[0].height != tall;
-            if !resized {
-                return;
-            }
-            for slot in &mut self.slots {
-                for target in &mut slot.targets {
-                    resize(gl, target, wide, tall);
-                }
-                // The scene starts over from black at the new size.
-                slot.scene = None;
-            }
-            for target in &mut self.bloom {
-                resize(gl, target, (wide / 4).max(1), (tall / 4).max(1));
-            }
-            resize(gl, &mut self.picture, wide, tall);
+            self.picture_drawn = true;
         }
     }
 
-    /// The slot holding `showing`, giving it one (cleared) if it has none,
-    /// never the one holding `keep`.
-    unsafe fn ensure_slot(&mut self, gl: &Gl, showing: Showing, keep: Option<usize>) -> usize {
+    /// The size `scene` draws at on a `width` × `height` screen.
+    fn scene_size(&self, scene: usize, (width, height): (u32, u32)) -> (i32, i32) {
+        let tall = (BASE_HEIGHT.min(height) as f32 * self.sizing[scene].scale())
+            .round()
+            .max(90.0);
+        let wide = (tall * width as f32 / height as f32).round();
+        (wide as i32, tall as i32)
+    }
+
+    /// The slot holding `showing`, at its size, giving it one (cleared) if
+    /// it has none, never the one holding `keep`.
+    unsafe fn ensure_slot(
+        &mut self,
+        gl: &Gl,
+        showing: Showing,
+        keep: Option<usize>,
+        screen: (u32, u32),
+    ) -> usize {
         unsafe {
-            if let Some(index) = self
+            let (wide, tall) = self.scene_size(showing.scene, screen);
+            let held = self
                 .slots
                 .iter()
-                .position(|slot| slot.scene == Some(showing.scene))
-            {
-                self.slots[index].seed = showing.seed;
+                .position(|slot| slot.scene == Some(showing.scene));
+            let index = held.unwrap_or_else(|| {
+                // Take a slot no scene on screen is using.
+                self.slots
+                    .iter()
+                    .position(|slot| slot.scene.is_none())
+                    .unwrap_or_else(|| usize::from(keep.is_some() && self.slots[0].scene == keep))
+            });
+            let slot = &mut self.slots[index];
+            slot.seed = showing.seed;
+            let sized = slot.targets[0].width == wide && slot.targets[0].height == tall;
+            if held.is_some() && sized {
                 return index;
             }
-            // Take a slot no scene on screen is using.
-            let index = self
-                .slots
-                .iter()
-                .position(|slot| slot.scene.is_none())
-                .unwrap_or_else(|| usize::from(keep.is_some() && self.slots[0].scene == keep));
-            let slot = &mut self.slots[index];
+            // A new scene, or a new size: it starts over from black.
             slot.scene = Some(showing.scene);
-            slot.seed = showing.seed;
-            for target in &slot.targets {
-                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.framebuffer));
-                gl.viewport(0, 0, target.width, target.height);
-                gl.clear_color(0.0, 0.0, 0.0, 1.0);
-                gl.clear(glow::COLOR_BUFFER_BIT);
+            slot.drawn = false;
+            for target in &mut slot.targets {
+                if sized {
+                    bind_target(gl, target);
+                    gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                    gl.clear(glow::COLOR_BUFFER_BIT);
+                } else {
+                    resize(gl, target, wide, tall);
+                }
             }
             index
         }
@@ -577,7 +661,9 @@ impl Renderer {
                 gl.draw_arrays(glow::POINTS, 0, GRID * GRID);
                 gl.disable(glow::BLEND);
             }
-            self.slots[slot].targets.swap(0, 1);
+            let slot = &mut self.slots[slot];
+            slot.targets.swap(0, 1);
+            slot.drawn = true;
         }
     }
 
@@ -591,6 +677,7 @@ impl Renderer {
                 bind_texture(gl, program, "uPrev", 4, prev);
             }
             bind_texture(gl, program, "uNoise", 5, self.noise);
+            bind_texture(gl, program, "uFbm", 6, self.fbm);
         }
     }
 
@@ -605,6 +692,7 @@ impl Renderer {
     ) {
         unsafe {
             let f = |name: &str, value: f32| set_f32(gl, program, name, value);
+            let seed = showing.map_or(0.0, |showing| showing.seed);
             set_vec2(gl, program, "uRes", width as f32, height as f32);
             f("uTime", music.time);
             f("uSceneTime", showing.map_or(0.0, |showing| showing.age));
@@ -619,9 +707,10 @@ impl Renderer {
             f("uTension", music.tension);
             f("uDrop", music.drop);
             f("uIntensity", music.intensity);
-            f("uSeed", showing.map_or(0.0, |showing| showing.seed));
+            f("uSeed", seed);
             f("uHasCover", if self.has_cover { 1.0 } else { 0.0 });
             f("uHistoryAge", listener.history_age);
+            f("uHistoryPeak", listener.history_peak);
             if let Some(at) = program.uniforms.get("uBands") {
                 let [bass, mid, treble, level] = music.bands;
                 gl.uniform_4_f32(Some(at), bass, mid, treble, level);
@@ -635,6 +724,26 @@ impl Renderer {
                     gl.uniform_3_f32(Some(at), color[0], color[1], color[2]);
                 }
             }
+
+            let motion = Motion::new(music, seed);
+            f("uMelt", motion.melt);
+            f("uMargin", motion.margin);
+            if let Some(at) = program.uniforms.get("uBlobs") {
+                gl.uniform_4_f32_slice(Some(at), motion.blobs.as_flattened());
+            }
+            if let Some(at) = program.uniforms.get("uCamera") {
+                gl.uniform_3_f32_slice(Some(at), motion.camera.as_flattened());
+            }
+            if let Some(at) = program.uniforms.get("uPour") {
+                gl.uniform_4_f32_slice(Some(at), motion.pour.as_flattened());
+            }
+            for (name, [x, y, z, w]) in [("uTurn", motion.turn), ("uFlight", motion.flight)] {
+                if let Some(at) = program.uniforms.get(name) {
+                    gl.uniform_4_f32(Some(at), x, y, z, w);
+                }
+            }
+            let [x, y] = motion.shake;
+            set_vec2(gl, program, "uShake", x, y);
         }
     }
 
@@ -693,6 +802,7 @@ impl Renderer {
                 self.history,
                 self.wave,
                 self.noise,
+                self.fbm,
                 self.cover,
             ] {
                 gl.delete_texture(texture);
@@ -1051,10 +1161,89 @@ pub fn noise_pixels() -> Vec<u8> {
     pixels
 }
 
+/// The side of the fractal noise texture (`uFbm`), and the units it spans.
+/// Its first octave has a random value at each whole unit.
+const FBM_SIDE: usize = 256;
+const FBM_UNITS: usize = 8;
+
+/// Fractal noise worked out ahead, so a scene reads in one go what took it
+/// four reads and a loop: red is the value (0 to 1), green and blue its
+/// slope across and up (0.5 is flat, ±8 at the ends). Four octaves of
+/// smooth noise, each finer and turned from the last, as `fbm` used to
+/// make them at every pixel: 2.24 times finer and 26.6° round, then twice
+/// as fine and a quarter turn, twice. The turns have whole numbers in them,
+/// so every octave still repeats with the texture and it tiles without
+/// seams. The same numbers as the lab's `fbmPixels`.
+pub fn fbm_pixels() -> Vec<u8> {
+    // Each octave's turn from the first, as rows: (2 −1; 1 2), then
+    // (0 −2; 2 0) times the one before, twice.
+    const TURNS: [[[f64; 2]; 2]; 4] = [
+        [[1.0, 0.0], [0.0, 1.0]],
+        [[2.0, -1.0], [1.0, 2.0]],
+        [[-2.0, -4.0], [4.0, -2.0]],
+        [[-8.0, 4.0], [-4.0, -8.0]],
+    ];
+    const TOTAL: f64 = 0.5 + 0.25 + 0.125 + 0.0625;
+    let per_unit = (FBM_SIDE / FBM_UNITS) as f64;
+    let byte = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut pixels = vec![0u8; FBM_SIDE * FBM_SIDE * 4];
+    for row in 0..FBM_SIDE {
+        for column in 0..FBM_SIDE {
+            let x = (column as f64 + 0.5) / per_unit;
+            let y = (row as f64 + 0.5) / per_unit;
+            let (mut value, mut across, mut up) = (0.0, 0.0, 0.0);
+            let mut amplitude = 0.5;
+            for (octave, [[a, b], [c, d]]) in TURNS.into_iter().enumerate() {
+                // A different offset each octave, so their grids don't line up.
+                let shift = octave as f64 * 0.37;
+                let (n, nx, ny) = smooth_noise(
+                    octave as u32,
+                    a * x + b * y + shift,
+                    c * x + d * y + shift * 1.7,
+                );
+                value += amplitude * n;
+                across += amplitude * (a * nx + c * ny);
+                up += amplitude * (b * nx + d * ny);
+                amplitude *= 0.5;
+            }
+            let at = (row * FBM_SIDE + column) * 4;
+            pixels[at] = byte(value / TOTAL);
+            pixels[at + 1] = byte(0.5 + across / TOTAL / 8.0);
+            pixels[at + 2] = byte(0.5 + up / TOTAL / 8.0);
+            pixels[at + 3] = 255;
+        }
+    }
+    pixels
+}
+
+/// Smooth value noise for `fbm_pixels`, repeating every `FBM_UNITS`: the
+/// value at (x, y) and its slope across and up.
+fn smooth_noise(octave: u32, x: f64, y: f64) -> (f64, f64, f64) {
+    let cells = FBM_UNITS as i64;
+    let lattice = |cx: f64, cy: f64| {
+        let cx = (cx as i64).rem_euclid(cells) as u32;
+        let cy = (cy as i64).rem_euclid(cells) as u32;
+        unit(hash(hash(octave).wrapping_add(cy)).wrapping_add(cx))
+    };
+    let (ix, iy) = (x.floor(), y.floor());
+    let (fx, fy) = (x - ix, y - iy);
+    let (ux, uy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let (dx, dy) = (6.0 * fx * (1.0 - fx), 6.0 * fy * (1.0 - fy));
+    let a = lattice(ix, iy);
+    let b = lattice(ix + 1.0, iy);
+    let c = lattice(ix, iy + 1.0);
+    let d = lattice(ix + 1.0, iy + 1.0);
+    let twist = a - b - c + d;
+    (
+        a + (b - a) * ux + (c - a) * uy + twist * ux * uy,
+        dx * ((b - a) + twist * uy),
+        dy * ((c - a) + twist * ux),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::visuals::director::SCENES;
 
     #[test]
     fn every_scene_has_a_shader() {
@@ -1075,5 +1264,52 @@ mod tests {
         assert_eq!(pixels.len(), 256 * 256 * 4);
         assert_eq!(pixels[3], 255);
         assert_eq!(pixels[1], pixels[(17 * 256 + 37) * 4]);
+    }
+
+    #[test]
+    fn the_fractal_noise_matches_the_lab() {
+        let pixels = fbm_pixels();
+        assert_eq!(pixels.len(), FBM_SIDE * FBM_SIDE * 4);
+        // Spot values the lab's `fbmPixels` gives.
+        assert_eq!(&pixels[..4], &[56, 147, 119, 255]);
+        let middle = (128 * FBM_SIDE + 77) * 4;
+        assert_eq!(&pixels[middle..middle + 4], &[182, 104, 150, 255]);
+    }
+
+    #[test]
+    fn the_fractal_noise_tiles_and_its_slope_is_right() {
+        let pixels = fbm_pixels();
+        let value = |column: usize, row: usize| f32::from(pixels[(row * FBM_SIDE + column) * 4]);
+        // Across the seam the values run on as smoothly as anywhere else.
+        let mut steepest_inside: f32 = 0.0;
+        let mut steepest_seam: f32 = 0.0;
+        for row in 0..FBM_SIDE {
+            for column in 0..FBM_SIDE - 1 {
+                steepest_inside =
+                    steepest_inside.max((value(column + 1, row) - value(column, row)).abs());
+            }
+            steepest_seam = steepest_seam.max((value(0, row) - value(FBM_SIDE - 1, row)).abs());
+        }
+        assert!(
+            steepest_seam <= steepest_inside,
+            "{steepest_seam} > {steepest_inside}"
+        );
+        // The stored slope agrees with how the value changes, everywhere.
+        let texel = 1.0 / (FBM_SIDE / FBM_UNITS) as f32;
+        let mut worst: f32 = 0.0;
+        for row in (8..FBM_SIDE - 8).step_by(7) {
+            for column in (8..FBM_SIDE - 8).step_by(5) {
+                let stored = |channel: usize| {
+                    (f32::from(pixels[(row * FBM_SIDE + column) * 4 + channel]) / 255.0 - 0.5) * 8.0
+                };
+                let across =
+                    (value(column + 1, row) - value(column - 1, row)) / 255.0 / (2.0 * texel);
+                let up = (value(column, row + 1) - value(column, row - 1)) / 255.0 / (2.0 * texel);
+                worst = worst
+                    .max((across - stored(1)).abs())
+                    .max((up - stored(2)).abs());
+            }
+        }
+        assert!(worst < 0.6, "slopes off by {worst}");
     }
 }

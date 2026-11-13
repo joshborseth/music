@@ -1,10 +1,17 @@
 // Shared by every shader. The engine puts `#version 300 es` before this
-// file, then `fragment.glsl` for fragment shaders, then the shader itself.
-// The same files run in the browser lab (apps/tv/visuals-lab), so keep to
-// GLSL ES 3.00.
+// file, then `fragment.glsl` for fragment shaders, then `helpers.glsl`, then
+// the shader itself. The same files run in the browser lab
+// (apps/tv/visuals-lab), so keep to GLSL ES 3.00.
+//
+// Every uniform is highp: clocks like `uTime` and `uDrive` grow all
+// evening, and in mediump a clock at 1000 seconds only counts half seconds.
+// Math on a highp uniform runs in highp, but storing its result in a plain
+// (mediump) variable in a fragment shader drops the precision again, so
+// anything that grows with time, or becomes a texture coordinate, is kept
+// in a `highp` variable.
 
 precision highp float;
-precision highp sampler2D;
+precision mediump sampler2D;
 
 // The picture being drawn, in pixels.
 uniform vec2 uRes;
@@ -52,95 +59,9 @@ uniform sampler2D uHistory;  // the bands over the last few seconds; y = 0 is no
 uniform sampler2D uWave;     // the waveform heard now, 0.5 is silence
 uniform sampler2D uPrev;     // this scene's last frame
 uniform sampler2D uNoise;    // 256 × 256 random values; g is r moved by (37, 17)
+// Fractal noise, worked out ahead (`gpu::fbm_pixels`): r is the value, g
+// and b its slope across and up. It repeats every 8 units; see `fbm`.
+uniform sampler2D uFbm;
 
 const float PI = 3.14159265;
 const float TAU = 6.28318531;
-
-mat2 rot(float a) {
-  float c = cos(a), s = sin(a);
-  return mat2(c, s, -s, c);
-}
-
-float hash12(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
-}
-
-// Smooth value noise from the noise texture: cheap on a TV's GPU.
-float noise(vec2 x) {
-  vec2 i = floor(x);
-  vec2 f = fract(x);
-  f = f * f * (3.0 - 2.0 * f);
-  return textureLod(uNoise, (i + f + 0.5) / 256.0, 0.0).r;
-}
-
-float noise3(vec3 x) {
-  vec3 i = floor(x);
-  vec3 f = fract(x);
-  f = f * f * (3.0 - 2.0 * f);
-  vec2 uv = (i.xy + vec2(37.0, 17.0) * i.z) + f.xy;
-  vec2 rg = textureLod(uNoise, (uv + 0.5) / 256.0, 0.0).rg;
-  return mix(rg.r, rg.g, f.z);
-}
-
-float fbm(vec2 p) {
-  float sum = 0.0;
-  float amp = 0.5;
-  for (int i = 0; i < 4; i++) {
-    sum += amp * noise(p);
-    p = rot(0.6) * p * 2.03 + 11.7;
-    amp *= 0.5;
-  }
-  return sum / 0.9375;
-}
-
-// The cover's color, swinging through its shades as t goes 0 to 1 and on.
-vec3 palette(float t) {
-  t = fract(t) * 3.0;
-  vec3 a = mix(uColorA, uColorB, smoothstep(0.0, 1.0, t));
-  vec3 b = mix(uColorB, uColorC, smoothstep(1.0, 2.0, t));
-  vec3 c = mix(uColorC, uColorA, smoothstep(2.0, 3.0, t));
-  return t < 1.0 ? a : (t < 2.0 ? b : c);
-}
-
-// 0 to 1 and back, so a picture repeats as mirror images instead of seams.
-vec2 mirrored(vec2 uv) {
-  return 1.0 - abs(1.0 - mod(uv, 2.0));
-}
-
-// The cover with y up, like the screen; it repeats as mirror images.
-vec3 cover(vec2 uv) {
-  vec2 m = mirrored(uv);
-  return texture(uCover, vec2(m.x, 1.0 - m.y)).rgb;
-}
-
-float spectrum(float x) {
-  return texture(uSpectrum, vec2(clamp(x, 0.0, 1.0), 0.5)).r;
-}
-
-// The bands `ago` seconds back (0 to 1 is the whole history).
-float history(float x, float ago) {
-  return texture(uHistory, vec2(clamp(x, 0.0, 1.0), clamp(ago, 0.0, 1.0))).r;
-}
-
-float wave(float x) {
-  return texture(uWave, vec2(x, 0.5)).r * 2.0 - 1.0;
-}
-
-vec3 saturate3(vec3 c, float amount) {
-  float grey = dot(c, vec3(0.299, 0.587, 0.114));
-  return max(mix(vec3(grey), c, amount), 0.0);
-}
-
-// 1 just after each beat, easing back to 0 before the next: for steps that
-// land exactly on the beat.
-float onBeat(float sharpness) {
-  return exp(-fract(uBeats) * sharpness);
-}
-
-// Moves one step per beat, snapping quickly then holding.
-float beatSteps() {
-  float f = fract(uBeats);
-  return floor(uBeats) + smoothstep(0.0, 0.22, f);
-}
