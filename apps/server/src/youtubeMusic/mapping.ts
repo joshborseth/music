@@ -1109,13 +1109,102 @@ export const topResultFromCard = (
   )
 }
 
-/** Brackets that name a kind of video, not a version of the song. */
-const VIDEO_BRACKET =
-  /\s*[([][^)\]]*\b(official|video|audio|lyrics?|visuali[sz]er|m\/?v|hd|4k)\b[^)\]]*[)\]]/gi
+// MUSIC VIDEOS
+
+/**
+ * The music video types YouTube Music gives a watch link: `ATV` is a song
+ * (its album audio), `OMV` an official music video, and `UGC` a video anyone
+ * uploaded.
+ */
+const MUSIC_VIDEO_TYPES: ReadonlyArray<string> = [
+  'MUSIC_VIDEO_TYPE_OMV',
+  'MUSIC_VIDEO_TYPE_UGC',
+]
+
+const MusicVideoTypePayload = Schema.Struct({
+  watchEndpointMusicSupportedConfigs: Schema.Struct({
+    watchEndpointMusicConfig: Schema.Struct({
+      musicVideoType: Schema.String,
+    }),
+  }),
+})
+
+const decodeMusicVideoTypePayload = Schema.decodeUnknownOption(
+  MusicVideoTypePayload,
+)
+
+const VIDEO_ITEM = 'video'
+
+/**
+ * The id of a row or queue item that is a music video rather than a song.
+ * None for songs and anything else.
+ */
+const musicVideoIdOf = (node: Helpers.YTNode): Option.Option<string> => {
+  if (node.is(YTNodes.MusicResponsiveListItem)) {
+    const item = node.as(YTNodes.MusicResponsiveListItem)
+    return item.item_type === VIDEO_ITEM
+      ? nonEmptyString(item.id)
+      : Option.none()
+  }
+  if (node.is(YTNodes.PlaylistPanelVideo)) {
+    const video = node.as(YTNodes.PlaylistPanelVideo)
+    return pipe(
+      decodeMusicVideoTypePayload(video.endpoint.payload),
+      Option.filter(payload =>
+        Array.contains(
+          MUSIC_VIDEO_TYPES,
+          payload.watchEndpointMusicSupportedConfigs.watchEndpointMusicConfig
+            .musicVideoType,
+        ),
+      ),
+      Option.flatMap(() => nonEmptyString(video.video_id)),
+    )
+  }
+  return Option.none()
+}
+
+/** The ids of the music videos among `nodes`. */
+export const musicVideoIds = (
+  nodes: Iterable<Helpers.YTNode>,
+): ReadonlySet<string> =>
+  new Set(filterSome(Array.fromIterable(nodes), musicVideoIdOf))
+
+/** What finding a music video's song needs to know about the video. */
+export type MusicVideo = Pick<Song, 'videoId' | 'title' | 'artists'>
+
+/** Words that name a kind of video, not a version of the song. */
+const VIDEO_WORDS = globalThis.String.raw`\b(official|video|audio|lyrics?|visuali[sz]er|m\/?v|hd|4k)\b`
+
+/**
+ * A bracket that names a kind of video: "(Official Video)", "[4K]", or one
+ * that YouTube cut short, "[Official Music ...", up to the next bracket.
+ */
+const VIDEO_BRACKET = new RegExp(
+  globalThis.String.raw`\s*(\([^()]*${VIDEO_WORDS}[^()]*\)|\[[^[\]()]*${VIDEO_WORDS}[^[\]()]*(\]|(?=\s*\(|$)))`,
+  'gi',
+)
+
+/** Any bracket, closed or cut short: "(feat. X)", "[Official Music ...". */
+const ANY_BRACKET = /\s*[([][^)\]]*([)\]]|$)/g
 
 const NOT_LETTER_OR_DIGIT = /[^\p{L}\p{N}]+/gu
 
 const TITLE_ARTIST_SEPARATOR = ' - '
+
+/** A title without "Artist - " in front, as a video's title often has. */
+const titleWithoutArtist = (
+  title: string,
+  artists: ReadonlyArray<ArtistLink>,
+): string => {
+  const separator = title.indexOf(TITLE_ARTIST_SEPARATOR)
+  const prefix = title.slice(0, Math.max(0, separator)).toLowerCase()
+  const isArtistPrefix =
+    separator > 0 &&
+    Array.some(artists, ({ name }) => prefix.includes(name.toLowerCase()))
+  return isArtistPrefix
+    ? title.slice(separator + TITLE_ARTIST_SEPARATOR.length)
+    : title
+}
 
 /**
  * A title cut down to what tells songs apart: no "(Official Music Video)",
@@ -1125,26 +1214,36 @@ const TITLE_ARTIST_SEPARATOR = ' - '
 const comparableTitle = (
   title: string,
   artists: ReadonlyArray<ArtistLink>,
-): string => {
-  const separator = title.indexOf(TITLE_ARTIST_SEPARATOR)
-  const prefix = title.slice(0, Math.max(0, separator)).toLowerCase()
-  const isArtistPrefix =
-    separator > 0 &&
-    Array.some(artists, ({ name }) => prefix.includes(name.toLowerCase()))
-  return (
-    isArtistPrefix
-      ? title.slice(separator + TITLE_ARTIST_SEPARATOR.length)
-      : title
-  )
+): string =>
+  titleWithoutArtist(title, artists)
     .replace(VIDEO_BRACKET, '')
     .replace(NOT_LETTER_OR_DIGIT, '')
     .toLowerCase()
-}
 
+/**
+ * The same artist: the same artist page, or the same name. A video and its
+ * song can credit the same artist through different pages.
+ */
 const isSameArtist = (left: ArtistLink, right: ArtistLink): boolean =>
-  Option.isSome(left.maybeId) && Option.isSome(right.maybeId)
-    ? left.maybeId.value === right.maybeId.value
-    : left.name.toLowerCase() === right.name.toLowerCase()
+  (Option.isSome(left.maybeId) &&
+    Option.isSome(right.maybeId) &&
+    left.maybeId.value === right.maybeId.value) ||
+  left.name.toLowerCase() === right.name.toLowerCase()
+
+/**
+ * The words to search songs for to find a music video's song: its first
+ * artist and its title without brackets. "Taylor Swift - Anti-Hero (Official
+ * Music Video)" by Taylor Swift searches "Taylor Swift Anti-Hero".
+ */
+export const audioTrackQuery = (video: MusicVideo): string => {
+  const title = titleWithoutArtist(video.title, video.artists)
+  const bare = title.replace(ANY_BRACKET, '').trim()
+  const words = String.isNonEmpty(bare) ? bare : title
+  return Array.match(video.artists, {
+    onEmpty: () => words,
+    onNonEmpty: ([first]) => `${first.name} ${words}`,
+  })
+}
 
 /**
  * The audio track of a song that YouTube Music found as its music video: the
@@ -1155,7 +1254,7 @@ const isSameArtist = (left: ArtistLink, right: ArtistLink): boolean =>
  * the song it becomes brings its artists along.
  */
 export const audioTrackFor = (
-  video: Song,
+  video: MusicVideo,
   songs: ReadonlyArray<Song>,
 ): Option.Option<Song> => {
   const title = comparableTitle(video.title, video.artists)
