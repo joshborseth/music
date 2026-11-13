@@ -52,7 +52,24 @@ const youTubeMusic = YouTubeMusic.of({
         }),
   getUpNext: () => down,
   getDurationSeconds: () => down,
-  getArtist: () => down,
+  getArtist: artistId =>
+    artistId === 'UCgone'
+      ? down
+      : Effect.succeed({
+          artist: {
+            id: artistId,
+            name: 'An artist',
+            maybeAudience: Option.none(),
+            artwork: [],
+          },
+          maybeDescription: Option.none(),
+          topSongs: [],
+          topSongPlays: {},
+          maybeAllSongsPlaylistId: Option.none(),
+          albums: [],
+          singles: [],
+          relatedArtists: [],
+        }),
   getAlbum: albumId =>
     Effect.succeed({
       album: {
@@ -297,6 +314,87 @@ describe('TV catalog routes', () => {
       videoId: 'v1',
       liked: false,
     })
+  })
+
+  test('saving an album and following an artist, and undoing both', async () => {
+    const save = (kind: string, id: string, saved: boolean) =>
+      handler(
+        new Request('http://tv/tv/save', {
+          method: 'POST',
+          body: JSON.stringify({ kind, id, saved }),
+        }),
+      )
+
+    expect(await (await get('/tv/saved?kind=Album&id=MPREb_s')).json()).toEqual(
+      { kind: 'Album', id: 'MPREb_s', saved: false },
+    )
+    expect(await (await save('Album', 'MPREb_s', true)).json()).toEqual({
+      kind: 'Album',
+      id: 'MPREb_s',
+      saved: true,
+    })
+    expect(await (await save('Artist', 'UCs', true)).json()).toEqual({
+      kind: 'Artist',
+      id: 'UCs',
+      saved: true,
+    })
+    expect(await (await get('/tv/saved?kind=Artist&id=UCs')).json()).toEqual({
+      kind: 'Artist',
+      id: 'UCs',
+      saved: true,
+    })
+    const library = Schema.decodeUnknownSync(Tv.TvShelves)(
+      await (await get('/tv/library')).json(),
+    )
+    expect(library.shelves.map(({ title }) => title)).toEqual([
+      'Your playlists',
+      'Albums',
+      'Artists',
+    ])
+    expect(library.shelves[1]?.cards[0]).toMatchObject({
+      kind: 'Album',
+      id: 'MPREb_s',
+      title: 'An album',
+    })
+    const home = Schema.decodeUnknownSync(Tv.TvShelves)(
+      await (await get('/tv/home')).json(),
+    )
+    expect(
+      home.shelves.find(({ title }) => title === 'Artists you follow')?.cards,
+    ).toEqual([expect.objectContaining({ kind: 'Artist', id: 'UCs' })])
+
+    expect(await (await save('Album', 'MPREb_s', false)).json()).toEqual({
+      kind: 'Album',
+      id: 'MPREb_s',
+      saved: false,
+    })
+    const unfollowed = { kind: 'Artist', id: 'UCs', saved: false }
+    expect(await (await save('Artist', 'UCs', false)).json()).toEqual(
+      unfollowed,
+    )
+    // Undoing what was never saved changes nothing.
+    expect(await (await save('Artist', 'UCs', false)).json()).toEqual(
+      unfollowed,
+    )
+  })
+
+  test('saving answers 502 when YouTube Music fails, and 400 for a bad kind', async () => {
+    const gone = await handler(
+      new Request('http://tv/tv/save', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'Artist', id: 'UCgone', saved: true }),
+      }),
+    )
+    expect(gone.status).toBe(502)
+    const playlist = await handler(
+      new Request('http://tv/tv/save', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'Playlist', id: 'x', saved: true }),
+      }),
+    )
+    expect(playlist.status).toBe(400)
+    expect((await get('/tv/saved?kind=Song&id=x')).status).toBe(400)
+    expect((await get('/tv/saved?kind=Album')).status).toBe(400)
   })
 
   test('a like without a valid body is a bad request', async () => {
