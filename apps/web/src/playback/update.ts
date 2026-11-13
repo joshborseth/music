@@ -12,6 +12,7 @@ import {
   PrefetchSongs,
   SeekPhoneAudio,
   SendLocalChange,
+  SendQueueMove,
   SendToSession,
   SetPhoneAudioPlaying,
   StopPhoneAudio,
@@ -29,6 +30,7 @@ import {
   PROGRESS_INTERVAL_MS,
   PhoneAudio,
   PlayerSheet,
+  type QueueMove,
   RESTART_THRESHOLD_SECONDS,
   SEEK_TOLERANCE_SECONDS,
   type SessionSnapshot,
@@ -353,6 +355,9 @@ export const acquireSessionSocket = (model: Model): PlaybackReturn =>
         // phone changed while it was away goes in the Hello's report.
         localChanges: changes =>
           modifyFields(changes, { untilAck: () => 0, ownJumps: () => 0 }),
+        // NOTE: a move sent on the old connection may or may not have
+        // arrived; the new connection's first state says which.
+        queueMoves: () => [],
       }),
       commands: [
         send({
@@ -487,18 +492,121 @@ export const receiveSessionState = (
   receivedAt: number,
 ): PlaybackReturn => {
   const kept = keepLocalChanges(model, state, serverNow, ack)
+  const queueMoves = Array.filter(model.queueMoves, move =>
+    Option.match(move.maybeSeq, {
+      onNone: () => true,
+      onSome: seq => seq > ack,
+    }),
+  )
   return reconcilePhoneAudio(
     modifyFields(model, {
       maybeSession: () =>
         Option.some({
-          state: kept.state,
+          state: withQueueMoves(kept.state, queueMoves),
           clockOffsetMs: serverNow - receivedAt,
         }),
       phoneAudio: () => kept.phoneAudio,
       localChanges: () => kept.localChanges,
+      queueMoves: () => queueMoves,
       now: () => receivedAt,
     }),
   )
+}
+
+// QUEUE MOVES
+
+/** The queue with `move` made, as the server makes it. */
+const withQueueMove = (
+  state: Session.SessionState,
+  move: Pick<QueueMove, 'entryId' | 'maybeBeforeEntryId'>,
+): Option.Option<Session.SessionState> =>
+  Option.map(
+    Session.moveEntry(
+      state.queue,
+      state.currentEntryId,
+      move.entryId,
+      Option.getOrNull(move.maybeBeforeEntryId),
+    ),
+    queue => modifyFields(state, { queue: () => queue }),
+  )
+
+/** The queue with this phone's moves the server has not confirmed yet. */
+const withQueueMoves = (
+  state: Session.SessionState,
+  moves: ReadonlyArray<QueueMove>,
+): Session.SessionState =>
+  Array.reduce(moves, state, (moved, move) =>
+    Option.getOrElse(withQueueMove(moved, move), () => moved),
+  )
+
+/**
+ * A queue row was dragged to a new place: show it there at once, and tell
+ * the server, whose answer confirms it.
+ */
+export const moveQueueEntry = (
+  model: Model,
+  entryId: string,
+  maybeBeforeEntryId: Option.Option<string>,
+): PlaybackReturn => {
+  const maybeMoved = Option.flatMap(model.maybeSession, snapshot =>
+    Option.map(
+      withQueueMove(snapshot.state, { entryId, maybeBeforeEntryId }),
+      state => ({ ...snapshot, state }),
+    ),
+  )
+  return Option.match(maybeMoved, {
+    onNone: () => ({ model }),
+    onSome: snapshot => ({
+      model: modifyFields(model, {
+        maybeSession: () => Option.some(snapshot),
+        queueMoves: moves => [
+          ...moves,
+          { entryId, maybeBeforeEntryId, maybeSeq: Option.none() },
+        ],
+      }),
+      commands: [
+        SendQueueMove({
+          message: {
+            _tag: 'MoveEntry',
+            entryId,
+            beforeEntryId: Option.getOrNull(maybeBeforeEntryId),
+          },
+        }),
+      ],
+    }),
+  })
+}
+
+/**
+ * A move's message went out, or could not (no connection). One that never
+ * went out is forgotten, and the next state shows the queue as it is.
+ */
+export const completeSendQueueMove = (
+  model: Model,
+  entryId: string,
+  maybeSeq: Option.Option<number>,
+): PlaybackReturn => {
+  const maybeIndex = Array.findFirstIndex(
+    model.queueMoves,
+    move => move.entryId === entryId && Option.isNone(move.maybeSeq),
+  )
+  return Option.match(maybeIndex, {
+    onNone: () => ({ model }),
+    onSome: index => ({
+      model: modifyFields(model, {
+        queueMoves: moves =>
+          Option.match(maybeSeq, {
+            onNone: () => Array.remove(moves, index),
+            onSome: seq =>
+              Array.map(moves, (move, moveIndex) =>
+                moveIndex === index
+                  ? modifyFields(move, { maybeSeq: () => Option.some(seq) })
+                  : move,
+              ),
+          }),
+      }),
+    }),
+  })
 }
 
 export const receiveNotice = showNotice

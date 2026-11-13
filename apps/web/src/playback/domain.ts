@@ -68,6 +68,21 @@ export const LocalChanges = Schema.Struct({
 })
 export type LocalChanges = typeof LocalChanges.Type
 
+/**
+ * A song this phone moved in the queue (`MoveEntry`). The phone shows the
+ * move at once and keeps putting it back on top of every `State` that does
+ * not include it yet, so a state sent before the server heard of it never
+ * puts the song back where it was.
+ */
+export const QueueMove = Schema.Struct({
+  entryId: Schema.String,
+  /** None: last among the songs of its kind. */
+  maybeBeforeEntryId: Schema.Option(Schema.String),
+  /** This connection's number for the message, once it went out. */
+  maybeSeq: Schema.Option(Schema.Number),
+})
+export type QueueMove = typeof QueueMove.Type
+
 /** The phone's own audio output. */
 export const PhoneAudio = defineTaggedUnion({
   Unavailable: {},
@@ -346,5 +361,6 @@ export const initialPlaybackModel = {
   maybeNotice: Option.none<string>(),
   maybeScrubSeconds: Option.none<number>(),
   localChanges: { unsent: 0, untilAck: 0, ownJumps: 0 },
+  queueMoves: [],
   swipe: Swipe.Idle(),
 }

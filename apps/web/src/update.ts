@@ -1443,8 +1443,11 @@ const updateMessage = (model: Model, message: Message) =>
       followingCurrentSong(stepModel =>
         Playback.clickQueueEntry(stepModel, entryId),
       )(model),
-    ClickedRemoveQueueEntry: ({ entryId }) =>
-      Playback.sendCommand(model, { _tag: 'RemoveEntry', entryId }),
+    CompletedFollowQueueDrags: () => ({ model }),
+    DraggedQueueEntry: ({ entryId, maybeBeforeEntryId }) =>
+      Playback.moveQueueEntry(model, entryId, maybeBeforeEntryId),
+    SentQueueMove: ({ entryId, maybeSeq }) =>
+      Playback.completeSendQueueMove(model, entryId, maybeSeq),
     ClickedToggleAutoplay: () =>
       Option.match(model.maybeSession, {
         onNone: () => ({ model }),

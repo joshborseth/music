@@ -145,6 +145,11 @@ export const Message = defineMessageUnion({
   CompletedSendToSession: {},
   /** A local change's message went out as this connection's `maybeSeq`th. */
   SentLocalChange: { maybeSeq: Schema.Option(Schema.Number) },
+  /** A queue move's message went out as this connection's `maybeSeq`th. */
+  SentQueueMove: {
+    entryId: Schema.String,
+    maybeSeq: Schema.Option(Schema.Number),
+  },
   CompletedWaitBeforeHideNotice: { message: Schema.String },
   TickedClock: { now: Schema.Number },
 
@@ -165,6 +170,12 @@ export const Message = defineMessageUnion({
     isBuffering: Schema.Boolean,
   },
   CompletedFollowSeekBarDrags: {},
+  CompletedFollowQueueDrags: {},
+  /** A queue row was dragged by its handle and let go in a new place. */
+  DraggedQueueEntry: {
+    entryId: Schema.String,
+    maybeBeforeEntryId: Schema.Option(Schema.String),
+  },
   CompletedFollowLyrics: {},
   ClickedLyricLine: { seconds: Schema.Number },
   ClickedRetryLyrics: {},
@@ -196,7 +207,6 @@ export const Message = defineMessageUnion({
   ClickedDevice: { deviceId: Schema.String },
   ClickedWakeDevice: { deviceId: Schema.String },
   ClickedQueueEntry: { entryId: Schema.String },
-  ClickedRemoveQueueEntry: { entryId: Schema.String },
   ClickedToggleAutoplay: {},
   ClickedToggleShuffle: {},
   ClickedCycleRepeat: {},

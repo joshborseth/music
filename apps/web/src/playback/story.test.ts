@@ -15,6 +15,7 @@ import {
   PrefetchSongs,
   SeekPhoneAudio,
   SendLocalChange,
+  SendQueueMove,
   SendToSession,
   SetPhoneAudioPlaying,
   StopPhoneAudio,
@@ -550,6 +551,169 @@ describe('swiping', () => {
       message(Message.CancelledSwipePointer({ pointerId: FINGER })),
       model(model => {
         expect(model.swipe._tag).toBe('Idle')
+      }),
+    )
+  })
+})
+
+describe('moving a song in the queue', () => {
+  const queued = (entryId: string, autoplay = false): Session.QueueEntry => ({
+    entryId,
+    track: { ...entry.track, videoId: `v-${entryId}` },
+    autoplay,
+  })
+  const queueOf = (...entryIds: ReadonlyArray<string>) =>
+    entryIds.map(entryId =>
+      entryId === entry.entryId ? entry : queued(entryId, entryId === 'r1'),
+    )
+  const ORDER = queueOf('e0', 'q1', 'q2', 'q3', 'r1')
+  /** The TV plays, so this phone is only the remote. */
+  const stateMessage = (
+    queue: ReadonlyArray<Session.QueueEntry>,
+    ack: number,
+  ) =>
+    Message.ReceivedSessionState({
+      state: { ...sessionState('tv', 1), queue },
+      serverNow: SERVER_NOW,
+      ack,
+      receivedAt: SERVER_NOW,
+    })
+  const remoteWith = (queue: ReadonlyArray<Session.QueueEntry>): Model =>
+    modifyFields(connectedModel, {
+      maybeSession: () =>
+        Option.some({
+          state: { ...sessionState('tv', 1), queue },
+          clockOffsetMs: 0,
+        }),
+    })
+  const shownOrder = (model: Model) =>
+    Option.match(model.maybeSession, {
+      onNone: () => [],
+      onSome: ({ state }) => state.queue.map(({ entryId }) => entryId),
+    })
+  const dragQ3BeforeQ1 = message(
+    Message.DraggedQueueEntry({
+      entryId: 'q3',
+      maybeBeforeEntryId: Option.some('q1'),
+    }),
+  )
+  const sendQ3BeforeQ1 = SendQueueMove({
+    message: { _tag: 'MoveEntry', entryId: 'q3', beforeEntryId: 'q1' },
+  })
+  const sentAsMove = (maybeSeq: Option.Option<number>) =>
+    Command.resolve(
+      SendQueueMove,
+      Message.SentQueueMove({ entryId: 'q3', maybeSeq }),
+    )
+
+  test('a dragged row moves at once and asks the server to move it', () => {
+    story(
+      update,
+      given(remoteWith(ORDER)),
+      dragQ3BeforeQ1,
+      model(model => {
+        expect(shownOrder(model)).toEqual(['e0', 'q3', 'q1', 'q2', 'r1'])
+      }),
+      Command.expectExact(sendQ3BeforeQ1),
+      sentAsMove(Option.some(4)),
+    )
+  })
+
+  test('dropping a row last sends no song to go before', () => {
+    story(
+      update,
+      given(remoteWith(ORDER)),
+      message(
+        Message.DraggedQueueEntry({
+          entryId: 'q1',
+          maybeBeforeEntryId: Option.none(),
+        }),
+      ),
+      model(model => {
+        // Last among the songs someone queued: autoplay's stay after.
+        expect(shownOrder(model)).toEqual(['e0', 'q2', 'q3', 'q1', 'r1'])
+      }),
+      Command.expectExact(
+        SendQueueMove({
+          message: { _tag: 'MoveEntry', entryId: 'q1', beforeEntryId: null },
+        }),
+      ),
+      Command.resolve(
+        SendQueueMove,
+        Message.SentQueueMove({ entryId: 'q1', maybeSeq: Option.some(4) }),
+      ),
+    )
+  })
+
+  test('a state sent before the server heard of the move does not undo it', () => {
+    story(
+      update,
+      given(remoteWith(ORDER)),
+      dragQ3BeforeQ1,
+      Command.expectExact(sendQ3BeforeQ1),
+      sentAsMove(Option.some(4)),
+      // The server's state from before the move arrives.
+      message(stateMessage(ORDER, 3)),
+      model(model => {
+        expect(shownOrder(model)).toEqual(['e0', 'q3', 'q1', 'q2', 'r1'])
+      }),
+      // Autoplay added a song, but the server had not seen the move yet.
+      message(stateMessage([...ORDER, queued('r2', true)], 3)),
+      model(model => {
+        expect(shownOrder(model)).toEqual(['e0', 'q3', 'q1', 'q2', 'r1', 'r2'])
+        expect(model.queueMoves).toHaveLength(1)
+      }),
+      // The server's answer includes it: the phone follows the server again.
+      message(stateMessage(queueOf('e0', 'q3', 'q1', 'q2', 'r1'), 4)),
+      model(model => {
+        expect(shownOrder(model)).toEqual(['e0', 'q3', 'q1', 'q2', 'r1'])
+        expect(model.queueMoves).toEqual([])
+      }),
+      // A later move from another device is followed.
+      message(stateMessage(queueOf('e0', 'q2', 'q3', 'q1', 'r1'), 4)),
+      model(model => {
+        expect(shownOrder(model)).toEqual(['e0', 'q2', 'q3', 'q1', 'r1'])
+      }),
+    )
+  })
+
+  test('a move that never went out is forgotten, and the server order shows again', () => {
+    story(
+      update,
+      given(remoteWith(ORDER)),
+      dragQ3BeforeQ1,
+      Command.expectExact(sendQ3BeforeQ1),
+      sentAsMove(Option.none()),
+      model(model => {
+        expect(model.queueMoves).toEqual([])
+      }),
+      message(stateMessage(ORDER, 1)),
+      model(model => {
+        expect(shownOrder(model)).toEqual(ORDER.map(({ entryId }) => entryId))
+      }),
+    )
+  })
+
+  test('the current song, or a move that changes nothing, sends nothing', () => {
+    story(
+      update,
+      given(remoteWith(ORDER)),
+      message(
+        Message.DraggedQueueEntry({
+          entryId: 'e0',
+          maybeBeforeEntryId: Option.none(),
+        }),
+      ),
+      message(
+        Message.DraggedQueueEntry({
+          entryId: 'q1',
+          maybeBeforeEntryId: Option.some('q2'),
+        }),
+      ),
+      Command.expectNone(),
+      model(model => {
+        expect(shownOrder(model)).toEqual(ORDER.map(({ entryId }) => entryId))
+        expect(model.queueMoves).toEqual([])
       }),
     )
   })

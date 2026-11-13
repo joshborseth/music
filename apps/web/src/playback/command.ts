@@ -119,6 +119,18 @@ export const SendLocalChange = Command.define('SendLocalChange', {
     ),
 })
 
+/** Send a queue move this phone already shows (see `QueueMove`). */
+export const SendQueueMove = Command.define('SendQueueMove', {
+  args: { message: Session.MoveEntry },
+  messages: [Message.SentQueueMove],
+  execute: ({ message }) =>
+    sendMessage(message).pipe(
+      Effect.map(maybeSeq =>
+        Message.SentQueueMove({ entryId: message.entryId, maybeSeq }),
+      ),
+    ),
+})
+
 export const WaitBeforeReconnect = Command.define('WaitBeforeReconnect', {
   messages: [Message.CompletedWaitBeforeReconnect],
   execute: Effect.sleep(RECONNECT_DELAY).pipe(
