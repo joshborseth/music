@@ -37,6 +37,9 @@ import {
  * missing item 404, and YouTube Music failing 502, each with plain text.
  */
 
+/** How far back Home looks for albums to jump back into. */
+const HOME_HISTORY_DEPTH = 60
+
 /** How long a like waits for the song's full details before using the queue's copy. */
 const LIKE_LOOKUP_TIMEOUT = Duration.seconds(3)
 
@@ -148,11 +151,15 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
       )
 
     const home = Effect.gen(function* () {
-      const [library, liked] = yield* Effect.all(
-        [playlistStore.library(), playlistStore.playlist(LIKED_PLAYLIST_ID)],
+      const [library, liked, recent] = yield* Effect.all(
+        [
+          playlistStore.library(),
+          playlistStore.playlist(LIKED_PLAYLIST_ID),
+          playlistStore.recentlyPlayed(HOME_HISTORY_DEPTH),
+        ],
         { concurrency: 'unbounded' },
       )
-      return homeShelves(library, liked.songs)
+      return homeShelves(library, liked.songs, recent)
     }).pipe(Effect.mapError(toRouteError))
 
     const library = playlistStore.library().pipe(

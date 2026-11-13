@@ -108,6 +108,11 @@ const songAnalysis = SongAnalysis.of({
   warm: () => Effect.void,
 })
 
+const playlistStore = makePlaylistStore(
+  new Database(':memory:', { strict: true }),
+  { now: () => 1, newId: () => 'playlist-1' },
+)
+
 const { handler, dispose } = HttpRouter.toWebHandler(
   TvCatalogRoutes.pipe(
     Layer.provide(Layer.succeed(SongAnalysis)(songAnalysis)),
@@ -130,14 +135,7 @@ const { handler, dispose } = HttpRouter.toWebHandler(
         }),
       ),
     ),
-    Layer.provide(
-      Layer.succeed(PlaylistStore)(
-        makePlaylistStore(new Database(':memory:', { strict: true }), {
-          now: () => 1,
-          newId: () => 'playlist-1',
-        }),
-      ),
-    ),
+    Layer.provide(Layer.succeed(PlaylistStore)(playlistStore)),
     Layer.provide(
       Layer.succeed(Prefetcher)(
         Prefetcher.of({
@@ -173,6 +171,17 @@ describe('TV catalog routes', () => {
           ],
         },
       ],
+    })
+  })
+
+  test('home leads with what played lately, from any device', async () => {
+    Effect.runSync(playlistStore.recordPlay(song('played')))
+    const response = await get('/tv/home')
+    const body = Schema.decodeUnknownSync(Tv.TvShelves)(await response.json())
+    expect(body.shelves.map(({ title }) => title)).toEqual(['Recently played'])
+    expect(body.shelves[0]?.cards[0]).toMatchObject({
+      kind: 'Song',
+      id: 'played',
     })
   })
 

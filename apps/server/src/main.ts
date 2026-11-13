@@ -29,6 +29,12 @@ const STATIC_MIME_TYPES = { webmanifest: 'application/manifest+json' }
 const LyricsLive = TimedLyricsLive.pipe(Layer.provide(BunServices.layer))
 
 /**
+ * Playlists, Liked songs, and the play history: one SQLite file, shared by
+ * the catalog (which reads it) and the session (which notes each play).
+ */
+const PlaylistsLive = PlaylistStoreLive.pipe(Layer.provide(BunServices.layer))
+
+/**
  * Songs on disk, downloaded through yt-dlp, the prefetcher that gets them
  * ready early, and each song's analysis for the TV's visuals: shared by the
  * RPCs and playback.
@@ -57,7 +63,7 @@ const CatalogRoutes = Layer.mergeAll(RpcRoutes, TvCatalogRoutes).pipe(
   Layer.provide(YouTubeMusicLive),
   Layer.provide(ArtworkPaletteLive),
   Layer.provide(LyricsLive),
-  Layer.provide(PlaylistStoreLive.pipe(Layer.provide(BunServices.layer))),
+  Layer.provide(PlaylistsLive),
   Layer.provide(AudioLive),
 )
 
@@ -89,6 +95,7 @@ const PlaybackRoutes = Layer.mergeAll(
   Layer.provide(SessionHubLive.pipe(Layer.provide(BunServices.layer))),
   Layer.provide(YouTubeMusicLive),
   Layer.provide(LyricsLive),
+  Layer.provide(PlaylistsLive),
   Layer.provide(TvWakerLive),
   Layer.provideMerge(AudioLive),
 )

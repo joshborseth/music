@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 use crate::lyrics::SongLyrics;
 use crate::protocol::QueueTrack;
 
+/// The id of the Liked songs playlist (`LIKED_PLAYLIST_ID` in
+/// `packages/shared/src/domain.ts`). Its card and page show the heart tile.
+pub const LIKED_PLAYLIST_ID: &str = "liked";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CardKind {
     Song,
@@ -27,6 +31,13 @@ pub struct Card {
     pub subtitle: String,
     pub artwork_url: Option<String>,
     pub track: Option<QueueTrack>,
+}
+
+impl Card {
+    /// The Liked songs playlist, which has the heart tile for a cover.
+    pub fn is_liked_songs(&self) -> bool {
+        self.kind == CardKind::MyPlaylist && self.id == LIKED_PLAYLIST_ID
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -302,6 +313,7 @@ mod tests {
     fn decodes_shelves() {
         let shelves: Shelves = fixture("shelves.json");
         assert_eq!(shelves.shelves.len(), 2);
+        assert!(shelves.shelves[0].cards[0].is_liked_songs());
         let picks = &shelves.shelves[1];
         assert_eq!(picks.cards[0].kind, CardKind::Song);
         assert_eq!(

@@ -236,14 +236,56 @@ export const yourPlaylistsShelf = (library: MyLibrary): Tv.TvShelf => ({
 
 /** The most liked songs Home shows; the whole list is one OK away. */
 export const HOME_LIKED_SONGS = 30
+/** The most songs "Recently played" shows. */
+export const HOME_RECENT_SONGS = 20
+/** The most albums "Jump back in" shows. */
+export const HOME_RECENT_ALBUMS = 12
 
-/** Your playlists, then your latest liked songs. Nothing from YouTube's feed. */
+/**
+ * The albums of the songs played lately, latest first, each once. A song
+ * with no album (a video, say) adds nothing. The cover is the song's own,
+ * which for an album track is the album's.
+ */
+export const recentAlbumCards = (
+  recentSongs: ReadonlyArray<Song>,
+): ReadonlyArray<Tv.TvCard> =>
+  pipe(
+    recentSongs,
+    Array.map(song =>
+      Option.map(song.maybeAlbum, (album): Tv.TvCard => ({
+        kind: 'Album',
+        id: album.id,
+        title: album.name,
+        subtitle: artistNames(song.artists),
+        artworkUrl: artworkUrl(song.artwork, CARD_ARTWORK_WIDTH),
+        track: null,
+      })),
+    ),
+    Array.getSomes,
+    Array.dedupeWith((left, right) => left.id === right.id),
+    Array.take(HOME_RECENT_ALBUMS),
+  )
+
+/**
+ * What played lately on any device: its albums to jump back into, then the
+ * songs themselves, then your latest liked songs. Your playlists live in
+ * Library, so Home shows them only until something has played. Nothing
+ * from YouTube's feed.
+ */
 export const homeShelves = (
   library: MyLibrary,
   likedSongs: ReadonlyArray<Song>,
+  recentSongs: ReadonlyArray<Song>,
 ): Tv.TvShelves => ({
   shelves: nonEmptyShelves([
-    yourPlaylistsShelf(library),
+    { title: 'Jump back in', cards: recentAlbumCards(recentSongs) },
+    {
+      title: 'Recently played',
+      cards: Array.map(Array.take(recentSongs, HOME_RECENT_SONGS), songCard),
+    },
+    Array.isReadonlyArrayEmpty(recentSongs)
+      ? yourPlaylistsShelf(library)
+      : { title: YOUR_PLAYLISTS_TITLE, cards: [] },
     {
       title: 'Liked songs',
       cards: Array.map(Array.take(likedSongs, HOME_LIKED_SONGS), songCard),

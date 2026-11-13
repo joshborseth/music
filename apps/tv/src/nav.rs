@@ -10,7 +10,7 @@ use crate::catalog::{Card, Collection, CollectionKind, Shelf};
 use crate::controller::UiAction;
 use crate::lyrics::SongLyrics;
 use crate::protocol::{Placement, QueueTrack};
-use crate::view::View;
+use crate::view::{View, clock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -25,6 +25,15 @@ pub enum Key {
     /// A character typed on a keyboard or a phone's remote app.
     Char(char),
     Backspace,
+    // The remote's media keys. They act on the music from any screen.
+    PlayPause,
+    Play,
+    Pause,
+    Stop,
+    Next,
+    Previous,
+    FastForward,
+    Rewind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +209,31 @@ pub enum IdleButton {
 }
 
 pub const IDLE_BUTTONS: [IdleButton; 2] = [IdleButton::Browse, IdleButton::Search];
+
+/// A seek being picked. Left and Right on the seek bar, or fast-forward and
+/// rewind, move it; it goes to the session once the keys rest, as one seek,
+/// so a run of presses doesn't make the player load the song again and again.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Scrub {
+    /// Seconds to add to where the song is: what the seek will do.
+    pub offset: f64,
+    /// The last seek key.
+    pub last: Instant,
+    /// Since when a seek key has been held down, while it is.
+    pub held_since: Option<Instant>,
+    pub forward: bool,
+}
+
+/// One press of a seek key moves this far.
+pub const SEEK_STEP: f64 = 10.0;
+/// Holding a seek key moves this many seconds a second, then faster.
+const SCRUB_SPEED: f64 = 20.0;
+const SCRUB_FAST_SPEED: f64 = 60.0;
+const SCRUB_FAST_AFTER: Duration = Duration::from_millis(1500);
+/// The seek goes to the session once the keys rest this long.
+pub const SCRUB_SETTLE: Duration = Duration::from_millis(700);
+/// After a seek, the bar shows where it went until the session catches up.
+const SEEK_SHOWN_FOR: Duration = Duration::from_millis(1500);
 
 /// Rows of cards with a remembered column per row.
 #[derive(Debug, Clone, PartialEq)]
@@ -503,7 +537,7 @@ pub enum Focus {
 /// page. They match the sizes in `ui/app.slint` on a 16:9 screen.
 pub const HOME_CARDS_VISIBLE: usize = 7;
 pub const SEARCH_CARDS_VISIBLE: usize = 5;
-pub const COLLECTION_ROWS_VISIBLE: usize = 10;
+pub const COLLECTION_ROWS_VISIBLE: usize = 9;
 pub const QUEUE_ROWS_VISIBLE: usize = 8;
 
 const BACK_TO_LEAVE: Duration = Duration::from_millis(2500);
@@ -518,6 +552,12 @@ pub struct Nav {
     pub tab: Tab,
     pub focus: Focus,
     pub control: usize,
+    /// The seek bar above the buttons has the selection instead of a button.
+    pub on_bar: bool,
+    /// A seek being picked, see [`Scrub`].
+    pub scrub: Option<Scrub>,
+    /// Where the last seek went, and when.
+    seek_sent: Option<(f64, Instant)>,
     pub idle_button: usize,
     pub panel: Panel,
     /// When a key last touched the now-playing controls; `None` while they
@@ -557,6 +597,9 @@ impl Nav {
             tab: Tab::Home,
             focus: Focus::Content,
             control: 1,
+            on_bar: false,
+            scrub: None,
+            seek_sent: None,
             idle_button: 0,
             panel: Panel::None,
             controls: None,
@@ -641,6 +684,8 @@ impl Nav {
             .map(|entry| entry.track.video_id.clone());
         if current != before {
             self.liked = None;
+            self.scrub = None;
+            self.seek_sent = None;
             if let Some(video_id) = &current {
                 effects.push(Effect::LoadLiked(video_id.clone()));
                 effects.extend(self.request_lyrics());
@@ -660,6 +705,7 @@ impl Nav {
         }
         if was_idle && !self.session.is_idle() && self.tab == Tab::NowPlaying {
             self.control = 1;
+            self.on_bar = false;
         }
         if self.session.is_idle() && self.panel != Panel::None {
             self.panel = Panel::None;
@@ -721,6 +767,150 @@ impl Nav {
         self.controls = None;
         self.focus = Focus::Content;
         self.control = 1;
+        self.on_bar = false;
+    }
+
+    // SEEKING
+
+    /// Whether Left and Right seek: the seek bar has the selection.
+    pub fn on_seek_bar(&self) -> bool {
+        self.tab == Tab::NowPlaying
+            && !self.session.is_idle()
+            && self.controls.is_some()
+            && self.focus == Focus::Content
+            && self.panel == Panel::None
+            && self.menu.is_none()
+            && self.on_bar
+    }
+
+    /// Move the seek being picked: a step for a press, and for a key held
+    /// down, as far as it has been held, faster the longer it is.
+    fn scrub(&mut self, forward: bool, held: bool, now: Instant) {
+        let duration = self.session.duration_seconds;
+        if self.session.is_idle() || duration <= 0.0 {
+            return;
+        }
+        let position = self.session.position_seconds;
+        let scrub = self.scrub.get_or_insert(Scrub {
+            offset: 0.0,
+            last: now,
+            held_since: None,
+            forward,
+        });
+        if scrub.forward != forward {
+            scrub.forward = forward;
+            scrub.held_since = None;
+        }
+        let distance = if held {
+            let since = *scrub.held_since.get_or_insert(scrub.last);
+            let speed = if now.duration_since(since) < SCRUB_FAST_AFTER {
+                SCRUB_SPEED
+            } else {
+                SCRUB_FAST_SPEED
+            };
+            // A late repeat must not jump far.
+            speed * now.duration_since(scrub.last).as_secs_f64().min(0.25)
+        } else {
+            scrub.held_since = None;
+            SEEK_STEP
+        };
+        scrub.last = now;
+        let step = if forward { distance } else { -distance };
+        let target = (position + scrub.offset + step).clamp(0.0, (duration - 1.0).max(0.0));
+        scrub.offset = target - position;
+    }
+
+    /// Send the seek being picked once the keys have rested, or `now` when
+    /// `at_once`.
+    fn send_seek(&mut self, now: Instant, at_once: bool) -> Vec<Effect> {
+        let Some(scrub) = self.scrub else {
+            return Vec::new();
+        };
+        if !at_once && now.duration_since(scrub.last) < SCRUB_SETTLE {
+            return Vec::new();
+        }
+        self.scrub = None;
+        if scrub.offset.abs() < 0.5 {
+            return Vec::new();
+        }
+        let target = self.session.position_seconds + scrub.offset;
+        self.seek_sent = Some((target, now));
+        // Off the now-playing screen there is no bar to show it.
+        if self.tab != Tab::NowPlaying {
+            self.say(format!("Skipped to {}", clock(target)), now);
+        }
+        vec![Effect::Session(UiAction::SeekBy(scrub.offset))]
+    }
+
+    /// Send a picked seek once the keys have rested. Called on a timer.
+    pub fn settle_seek(&mut self, now: Instant) -> Vec<Effect> {
+        self.send_seek(now, false)
+    }
+
+    /// Where the seek bar shows the song: where a seek being picked would
+    /// go, where a seek just sent went, or where it plays.
+    pub fn shown_position(&self, now: Instant) -> f64 {
+        let position = self.session.position_seconds;
+        if let Some(scrub) = self.scrub {
+            return position + scrub.offset;
+        }
+        match self.seek_sent {
+            Some((target, at))
+                if now.duration_since(at) < SEEK_SHOWN_FOR && (position - target).abs() > 2.0 =>
+            {
+                target
+            }
+            _ => position,
+        }
+    }
+
+    /// A media key: it acts on the music from any screen, and brings up the
+    /// now-playing controls to show what it did. `None` for other keys.
+    fn media_key(&mut self, key: Key, now: Instant, effects: &mut Vec<Effect>) -> Option<bool> {
+        let playing = self.session.playing;
+        let action = match key {
+            Key::PlayPause if playing => Some(UiAction::Pause),
+            Key::PlayPause => Some(UiAction::Resume),
+            Key::Play if !playing => Some(UiAction::Resume),
+            Key::Pause | Key::Stop if playing => Some(UiAction::Pause),
+            Key::Play | Key::Pause | Key::Stop => None,
+            Key::Next => Some(UiAction::Next),
+            Key::Previous => Some(UiAction::Previous),
+            Key::FastForward | Key::Rewind => None,
+            _ => return None,
+        };
+        if self.session.is_idle() {
+            return Some(true);
+        }
+        if self.tab == Tab::NowPlaying && self.menu.is_none() {
+            self.controls = Some(now);
+        }
+        match key {
+            Key::FastForward | Key::Rewind => self.scrub(key == Key::FastForward, false, now),
+            _ => effects.extend(action.map(Effect::Session)),
+        }
+        Some(true)
+    }
+
+    /// A key that repeats because it is held down. Held seek keys scrub;
+    /// held media keys act once; anything else repeats like presses.
+    pub fn key_held(&mut self, key: Key, now: Instant) -> (bool, Vec<Effect>) {
+        let seek = match key {
+            Key::FastForward | Key::Rewind => !self.session.is_idle(),
+            Key::Left | Key::Right => self.on_seek_bar(),
+            Key::PlayPause | Key::Play | Key::Pause | Key::Stop | Key::Next | Key::Previous => {
+                return (true, Vec::new());
+            }
+            _ => false,
+        };
+        if !seek {
+            return self.key(key, now);
+        }
+        if self.tab == Tab::NowPlaying && self.menu.is_none() {
+            self.controls = Some(now);
+        }
+        self.scrub(matches!(key, Key::FastForward | Key::Right), true, now);
+        (true, Vec::new())
     }
 
     /// Hide the now-playing controls once nobody has used them for a while.
@@ -849,6 +1039,9 @@ impl Nav {
         if key != Key::Back {
             self.back_pressed = None;
         }
+        if let Some(used) = self.media_key(key, now, &mut effects) {
+            return (used, effects);
+        }
         if self.menu.is_some() {
             self.menu_key(key, now, &mut effects);
             return (true, effects);
@@ -929,7 +1122,7 @@ impl Nav {
                 self.switch_tab(Tab::ALL[index + 1], effects);
             }
             Key::Right => self.focus = Focus::Settings,
-            Key::Down | Key::Ok => self.focus = Focus::Content,
+            Key::Down | Key::Ok => self.enter_content(),
             Key::Back if self.tab != Tab::NowPlaying && !self.session.is_idle() => {
                 self.show_now_playing();
             }
@@ -942,12 +1135,20 @@ impl Nav {
         true
     }
 
+    /// Down from the tab bar. On now playing the seek bar is the nearest row.
+    fn enter_content(&mut self) {
+        self.focus = Focus::Content;
+        if self.tab == Tab::NowPlaying && self.panel == Panel::None && !self.session.is_idle() {
+            self.on_bar = true;
+        }
+    }
+
     /// The settings button: the tab bar's last stop.
     fn settings_key(&mut self, key: Key, now: Instant, effects: &mut Vec<Effect>) -> bool {
         match key {
             Key::Ok => effects.push(Effect::OpenSettings),
             Key::Left => self.focus = Focus::Tabs,
-            Key::Down => self.focus = Focus::Content,
+            Key::Down => self.enter_content(),
             Key::Back => {
                 self.focus = Focus::Tabs;
                 return self.tabs_key(key, now, effects);
@@ -966,26 +1167,48 @@ impl Nav {
         if self.panel == Panel::Queue {
             return self.queue_key(key, effects);
         }
+        if self.on_bar {
+            return self.bar_key(key, now, effects);
+        }
         match key {
             Key::Left => self.control = self.control.saturating_sub(1),
             Key::Right => self.control = (self.control + 1).min(CONTROLS.len() - 1),
-            Key::Up => self.focus = Focus::Tabs,
+            Key::Up => self.on_bar = true,
             Key::Down => {}
             Key::Ok => self.press_control(now, effects),
-            Key::Hold => {
-                if let Some(entry) = self.session.current_entry() {
-                    self.menu = Some(Menu {
-                        title: entry.track.title.clone(),
-                        subtitle: entry.track.artists.clone(),
-                        items: vec![MenuAction::Like(entry.track.clone()), MenuAction::Close],
-                        selected: 0,
-                    });
-                }
-            }
+            Key::Hold => self.song_menu(),
             Key::Back => self.hide_controls(),
             _ => {}
         }
         true
+    }
+
+    /// The seek bar: Left and Right pick a seek, OK sends it at once (or
+    /// plays and pauses), and Back drops it.
+    fn bar_key(&mut self, key: Key, now: Instant, effects: &mut Vec<Effect>) -> bool {
+        match key {
+            Key::Left | Key::Right => self.scrub(key == Key::Right, false, now),
+            Key::Up => self.focus = Focus::Tabs,
+            Key::Down => self.on_bar = false,
+            Key::Ok if self.scrub.is_some() => effects.extend(self.send_seek(now, true)),
+            Key::Ok => effects.push(Effect::Session(UiAction::PlayPause)),
+            Key::Hold => self.song_menu(),
+            Key::Back if self.scrub.is_some() => self.scrub = None,
+            Key::Back => self.hide_controls(),
+            _ => {}
+        }
+        true
+    }
+
+    fn song_menu(&mut self) {
+        if let Some(entry) = self.session.current_entry() {
+            self.menu = Some(Menu {
+                title: entry.track.title.clone(),
+                subtitle: entry.track.artists.clone(),
+                items: vec![MenuAction::Like(entry.track.clone()), MenuAction::Close],
+                selected: 0,
+            });
+        }
     }
 
     fn press_control(&mut self, now: Instant, effects: &mut Vec<Effect>) {
@@ -1838,7 +2061,10 @@ mod tests {
         let mut nav = Nav::new();
         nav.on_session(playing_view());
         let now = Instant::now();
+        // The first key shows the controls, then up goes by the seek bar.
         nav.key(Key::Up, now);
+        nav.key(Key::Up, now);
+        assert!(nav.on_seek_bar());
         nav.key(Key::Up, now);
         assert_eq!(nav.focus, Focus::Tabs);
         assert!(nav.key(Key::Back, now).0);
@@ -1990,6 +2216,227 @@ mod tests {
                 mode: PlayMode::Next,
             }]
         );
+    }
+
+    /// A song 200 seconds long, 50 seconds in.
+    fn midway_view() -> View {
+        View {
+            position_seconds: 50.0,
+            duration_seconds: 200.0,
+            ..playing_view()
+        }
+    }
+
+    #[test]
+    fn media_keys_play_pause_and_skip_from_any_screen() {
+        let mut nav = Nav::new();
+        nav.on_session(midway_view());
+        assert!(!nav.controls_shown());
+        // No "first key only shows the controls" for media keys.
+        assert_eq!(
+            press(&mut nav, &[Key::PlayPause]),
+            vec![Effect::Session(UiAction::Pause)]
+        );
+        assert!(nav.controls_shown(), "they show what the key did");
+        assert_eq!(press(&mut nav, &[Key::Play]), vec![]);
+        assert_eq!(
+            press(&mut nav, &[Key::Pause, Key::Stop]),
+            vec![
+                Effect::Session(UiAction::Pause),
+                Effect::Session(UiAction::Pause)
+            ]
+        );
+        nav.switch_tab(Tab::Home, &mut Vec::new());
+        assert_eq!(
+            press(&mut nav, &[Key::Next, Key::Previous]),
+            vec![
+                Effect::Session(UiAction::Next),
+                Effect::Session(UiAction::Previous)
+            ]
+        );
+        nav.on_session(View {
+            playing: false,
+            ..midway_view()
+        });
+        assert_eq!(
+            press(&mut nav, &[Key::PlayPause, Key::Play]),
+            vec![
+                Effect::Session(UiAction::Resume),
+                Effect::Session(UiAction::Resume)
+            ]
+        );
+        assert_eq!(nav.tab, Tab::Home, "media keys never change the screen");
+        // They work over a menu too, and leave it open.
+        nav.on_home(Ok(shelves()));
+        press(&mut nav, &[Key::Hold]);
+        assert!(nav.menu.is_some());
+        assert_eq!(
+            press(&mut nav, &[Key::Next]),
+            vec![Effect::Session(UiAction::Next)]
+        );
+        assert!(nav.menu.is_some());
+        // Held, they act once.
+        let now = Instant::now();
+        assert_eq!(nav.key_held(Key::Next, now), (true, vec![]));
+    }
+
+    #[test]
+    fn media_keys_do_nothing_with_nothing_playing() {
+        let mut nav = Nav::new();
+        nav.on_session(View {
+            connected: true,
+            ..View::default()
+        });
+        let now = Instant::now();
+        for key in [Key::PlayPause, Key::Next, Key::FastForward] {
+            assert_eq!(nav.key(key, now), (true, vec![]));
+        }
+        assert_eq!(nav.settle_seek(now + SCRUB_SETTLE), vec![]);
+    }
+
+    #[test]
+    fn up_from_the_buttons_reaches_the_seek_bar_then_the_tabs() {
+        let mut nav = Nav::new();
+        nav.on_session(midway_view());
+        press(&mut nav, &[Key::Ok, Key::Up]);
+        assert!(nav.on_seek_bar());
+        press(&mut nav, &[Key::Down]);
+        assert!(!nav.on_seek_bar());
+        assert_eq!(nav.control, 1);
+        press(&mut nav, &[Key::Up, Key::Up]);
+        assert_eq!(nav.focus, Focus::Tabs);
+        // Down from the tab bar lands on the nearest row: the seek bar.
+        press(&mut nav, &[Key::Down]);
+        assert!(nav.on_seek_bar());
+        // OK on the bar plays and pauses.
+        assert_eq!(
+            press(&mut nav, &[Key::Ok]),
+            vec![Effect::Session(UiAction::PlayPause)]
+        );
+    }
+
+    #[test]
+    fn the_seek_bar_seeks_once_the_keys_rest() {
+        let mut nav = Nav::new();
+        nav.on_session(midway_view());
+        let now = Instant::now();
+        for key in [
+            Key::Ok,
+            Key::Up,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+            Key::Left,
+        ] {
+            assert_eq!(nav.key(key, now), (true, vec![]));
+        }
+        assert_eq!(nav.scrub.map(|scrub| scrub.offset), Some(20.0));
+        assert_eq!(nav.shown_position(now), 70.0);
+        assert_eq!(nav.settle_seek(now + SCRUB_SETTLE / 2), vec![]);
+        assert_eq!(
+            nav.settle_seek(now + SCRUB_SETTLE),
+            vec![Effect::Session(UiAction::SeekBy(20.0))]
+        );
+        assert_eq!(nav.scrub, None);
+        // The bar stays where the seek went until the session catches up.
+        assert_eq!(nav.shown_position(now + SCRUB_SETTLE), 70.0);
+        nav.on_session(View {
+            position_seconds: 70.0,
+            ..midway_view()
+        });
+        assert_eq!(nav.shown_position(now + SCRUB_SETTLE), 70.0);
+        assert!(nav.notice(now + SCRUB_SETTLE).is_none(), "the bar shows it");
+    }
+
+    #[test]
+    fn ok_seeks_at_once_and_back_drops_the_seek() {
+        let mut nav = Nav::new();
+        nav.on_session(midway_view());
+        press(&mut nav, &[Key::Ok, Key::Up, Key::Left]);
+        assert_eq!(
+            press(&mut nav, &[Key::Ok]),
+            vec![Effect::Session(UiAction::SeekBy(-10.0))]
+        );
+        press(&mut nav, &[Key::Right, Key::Back]);
+        assert_eq!(nav.scrub, None);
+        assert!(nav.controls_shown(), "the first Back only drops the seek");
+        assert_eq!(nav.settle_seek(Instant::now() + SCRUB_SETTLE * 2), vec![]);
+    }
+
+    #[test]
+    fn holding_a_seek_key_scrubs_faster_the_longer_it_is_held() {
+        let mut nav = Nav::new();
+        nav.on_session(midway_view());
+        let start = Instant::now();
+        nav.key(Key::Ok, start);
+        nav.key(Key::Up, start);
+        nav.key(Key::Right, start);
+        // Repeats every 100 ms: 2 seconds a repeat, then 6 after 1.5 s held.
+        let mut now = start;
+        for _ in 0..10 {
+            now += Duration::from_millis(100);
+            nav.key_held(Key::Right, now);
+        }
+        let offset = nav.scrub.unwrap().offset;
+        assert!((offset - 30.0).abs() < 1e-6, "{offset}");
+        for _ in 0..10 {
+            now += Duration::from_millis(100);
+            nav.key_held(Key::Right, now);
+        }
+        let offset = nav.scrub.unwrap().offset;
+        assert!(offset > 50.0 && offset < 80.0, "{offset}");
+        // It stops a second short of the end.
+        for _ in 0..100 {
+            now += Duration::from_millis(100);
+            nav.key_held(Key::Right, now);
+        }
+        assert_eq!(nav.shown_position(now), 199.0);
+        assert_eq!(nav.settle_seek(now), vec![]);
+        assert_eq!(
+            nav.settle_seek(now + SCRUB_SETTLE),
+            vec![Effect::Session(UiAction::SeekBy(149.0))]
+        );
+    }
+
+    #[test]
+    fn fast_forward_and_rewind_seek_from_any_screen() {
+        let mut nav = Nav::new();
+        nav.on_session(midway_view());
+        nav.switch_tab(Tab::Home, &mut Vec::new());
+        let now = Instant::now();
+        for key in [Key::FastForward, Key::FastForward, Key::Rewind] {
+            nav.key(key, now);
+        }
+        assert_eq!(nav.tab, Tab::Home);
+        let later = now + SCRUB_SETTLE;
+        assert_eq!(
+            nav.settle_seek(later),
+            vec![Effect::Session(UiAction::SeekBy(10.0))]
+        );
+        assert_eq!(nav.notice(later), Some("Skipped to 1:00"));
+        // Rewind stops at the start.
+        for _ in 0..8 {
+            nav.key(Key::Rewind, later);
+        }
+        assert_eq!(nav.shown_position(later), 0.0);
+        // A new song drops a seek picked for the last one.
+        nav.on_session(View {
+            current: Some(1),
+            ..midway_view()
+        });
+        assert_eq!(nav.scrub, None);
+    }
+
+    #[test]
+    fn left_and_right_on_the_buttons_still_move_between_them() {
+        let mut nav = Nav::new();
+        nav.on_session(midway_view());
+        let now = Instant::now();
+        nav.key(Key::Ok, now);
+        nav.key_held(Key::Right, now);
+        nav.key_held(Key::Right, now);
+        assert_eq!(nav.control, 3);
+        assert_eq!(nav.scrub, None);
     }
 
     #[test]

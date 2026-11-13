@@ -21,8 +21,11 @@ use slint::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::catalog::{self, Analysis, Card, CardKind, CollectionKind, LikeRequest};
+use crate::catalog::{
+    self, Analysis, Card, CardKind, CollectionKind, LIKED_PLAYLIST_ID, LikeRequest,
+};
 use crate::controller::UiAction;
+use crate::images::Shape;
 use crate::local_time::LocalTime;
 use crate::lyrics::{self, RowKind};
 use crate::nav::{
@@ -85,6 +88,18 @@ fn deliver(done: impl FnOnce(&mut Ui) + Send + 'static) {
     });
 }
 
+/// An image as one place shows it: its URL, size in pixels, and shape.
+type ImageKey = (String, u32, Shape);
+
+/// Artists are round; every other cover has rounded corners.
+fn shape_of(kind: CardKind) -> Shape {
+    if kind == CardKind::Artist {
+        Shape::Round
+    } else {
+        Shape::Rounded
+    }
+}
+
 struct Hero {
     url: String,
     image: Image,
@@ -108,6 +123,7 @@ struct Models {
     menu_items: Rc<VecModel<MenuItemData>>,
     hints: Rc<VecModel<HintData>>,
     lyric_rows: Rc<VecModel<LyricRowData>>,
+    lyric_lines: Rc<VecModel<SharedString>>,
 }
 
 impl Models {
@@ -127,6 +143,7 @@ impl Models {
             menu_items: Rc::default(),
             hints: Rc::default(),
             lyric_rows: Rc::default(),
+            lyric_lines: Rc::default(),
         }
     }
 
@@ -143,6 +160,7 @@ impl Models {
         app.set_menu_items(ModelRc::from(self.menu_items.clone()));
         app.set_hints(ModelRc::from(self.hints.clone()));
         app.set_lyric_rows(ModelRc::from(self.lyric_rows.clone()));
+        app.set_lyric_lines(ModelRc::from(self.lyric_lines.clone()));
     }
 
     /// Show these shelves, rebuilding only when the set of shelves changes.
@@ -223,10 +241,10 @@ pub struct Ui {
     update_asked: bool,
     asked_update_permission: bool,
     models: Models,
-    images: HashMap<(String, u32), Image>,
-    image_order: VecDeque<(String, u32)>,
-    image_pending: HashSet<(String, u32)>,
-    image_failed: HashMap<(String, u32), Instant>,
+    images: HashMap<ImageKey, Image>,
+    image_order: VecDeque<ImageKey>,
+    image_pending: HashSet<ImageKey>,
+    image_failed: HashMap<ImageKey, Instant>,
     hero: Option<Hero>,
     hero_pending: Option<String>,
     hero_failed: Option<(String, Instant)>,
@@ -369,10 +387,15 @@ impl Ui {
             }
             return !self.back_released_to_android;
         }
-        if pressed {
-            self.dispatch(key, now)
-        } else {
-            true
+        match (pressed, repeat) {
+            (true, false) => self.dispatch(key, now),
+            (true, true) => {
+                let (used, effects) = self.nav.key_held(key, now);
+                self.run(effects);
+                self.render();
+                used
+            }
+            (false, _) => true,
         }
     }
 
@@ -610,6 +633,11 @@ impl Ui {
             changed |= self.nav.tab == Tab::NowPlaying;
         }
         changed |= self.nav.settle(now);
+        let seek = self.nav.settle_seek(now);
+        if !seek.is_empty() {
+            self.run(seek);
+            changed = true;
+        }
         if now.duration_since(self.drifted) >= DRIFT_EVERY {
             self.drifted = now;
             let (x, y) = drift();
@@ -846,9 +874,9 @@ impl Ui {
     // IMAGES
 
     /// A decoded image for `url` at `pixels`, loading it if needed.
-    fn image(&mut self, url: Option<&str>, pixels: u32) -> Option<Image> {
+    fn image(&mut self, url: Option<&str>, pixels: u32, shape: Shape) -> Option<Image> {
         let url = url?;
-        let key = (url.to_owned(), pixels);
+        let key = (url.to_owned(), pixels, shape);
         if let Some(image) = self.images.get(&key) {
             return Some(image.clone());
         }
@@ -864,7 +892,7 @@ impl Ui {
             let server = self.server.clone();
             let wanted = url.to_owned();
             self.spawn(
-                async move { crate::images::load(&http, &server, &wanted, pixels, false).await },
+                async move { crate::images::load(&http, &server, &wanted, pixels, shape, false).await },
                 move |ui, result| {
                     ui.image_pending.remove(&key);
                     match result {
@@ -913,7 +941,10 @@ impl Ui {
         let wanted = url.to_owned();
         let fetching = wanted.clone();
         self.spawn(
-            async move { crate::images::load(&http, &server, &fetching, HERO_PIXELS, true).await },
+            async move {
+                crate::images::load(&http, &server, &fetching, HERO_PIXELS, Shape::Rounded, true)
+                    .await
+            },
             move |ui, result| {
                 if ui.hero_pending.as_deref() != Some(wanted.as_str()) {
                     return;
@@ -1042,13 +1073,19 @@ impl Ui {
         );
         app.set_playing(session.playing);
         app.set_loading(session.loading);
-        app.set_position_text(clock(session.position_seconds).into());
+        // While a seek is picked, the bar and the time show where it goes.
+        let shown = self.nav.shown_position(Instant::now());
+        app.set_position_text(clock(shown).into());
         app.set_duration_text(clock(session.duration_seconds).into());
         app.set_progress(if session.duration_seconds > 0.0 {
-            (session.position_seconds / session.duration_seconds) as f32
+            (shown / session.duration_seconds) as f32
         } else {
             0.0
         });
+        app.set_seek_focused(self.nav.on_seek_bar());
+        let scrub = self.nav.scrub.map(|scrub| scrub.offset);
+        app.set_scrubbing(scrub.is_some());
+        app.set_seek_delta(scrub.map(seek_delta).unwrap_or_default().into());
         let place = match (&session.player_name, session.here) {
             (_, true) => "THIS TV".to_owned(),
             (Some(name), false) => name.to_uppercase(),
@@ -1067,7 +1104,8 @@ impl Ui {
             });
         let selectable = self.content_focused()
             && self.nav.tab == Tab::NowPlaying
-            && self.nav.panel == Panel::None;
+            && self.nav.panel == Panel::None
+            && !self.nav.on_bar;
         let controls = CONTROLS
             .iter()
             .enumerate()
@@ -1095,8 +1133,10 @@ impl Ui {
             .collect();
         sync(&self.models.controls, controls);
 
+        // The open queue shows what's next, and covers this.
         let next: Vec<_> = session
             .current
+            .filter(|_| self.nav.panel == Panel::None)
             .map(|index| {
                 session
                     .queue
@@ -1110,7 +1150,11 @@ impl Ui {
         let up_next = next
             .iter()
             .map(|entry| {
-                let image = self.image(entry.track.artwork_url.as_deref(), ROW_PIXELS);
+                let image = self.image(
+                    entry.track.artwork_url.as_deref(),
+                    ROW_PIXELS,
+                    Shape::Rounded,
+                );
                 UpNextData {
                     title: entry.track.title.clone().into(),
                     artists: entry.track.artists.clone().into(),
@@ -1136,7 +1180,11 @@ impl Ui {
                     let near = index + 12 >= self.nav.queue_top
                         && index <= self.nav.queue_top + nav::QUEUE_ROWS_VISIBLE + 12;
                     let image = if near {
-                        self.image(entry.track.artwork_url.as_deref(), ROW_PIXELS)
+                        self.image(
+                            entry.track.artwork_url.as_deref(),
+                            ROW_PIXELS,
+                            Shape::Rounded,
+                        )
                     } else {
                         None
                     };
@@ -1183,11 +1231,14 @@ impl Ui {
             Some(song) if !song.lines.is_empty() => 1,
             Some(_) => 2,
         });
-        app.set_lyrics(
-            song.map(|song| song.text.clone())
-                .unwrap_or_default()
-                .into(),
-        );
+        let text = song.map(|song| song.text.clone()).unwrap_or_default();
+        let lines = plain_lyric_lines(if song.is_some_and(|song| song.lines.is_empty()) {
+            &text
+        } else {
+            ""
+        });
+        sync(&self.models.lyric_lines, lines);
+        app.set_lyrics(text.into());
         self.draw_lyric_rows();
     }
 
@@ -1214,13 +1265,23 @@ impl Ui {
     }
 
     fn card_data(&mut self, card: &Card, selected: bool) -> CardData {
-        let image = self.image(card.artwork_url.as_deref(), CARD_PIXELS);
+        let liked = card.is_liked_songs();
+        let image = if liked {
+            None
+        } else {
+            self.image(
+                card.artwork_url.as_deref(),
+                CARD_PIXELS,
+                shape_of(card.kind),
+            )
+        };
         CardData {
             title: card.title.clone().into(),
             subtitle: card.subtitle.clone().into(),
             has_image: image.is_some(),
             image: image.unwrap_or_default(),
             round: card.kind == CardKind::Artist,
+            liked,
             selected,
             playable: card.track.is_some(),
         }
@@ -1255,6 +1316,7 @@ impl Ui {
                         || self.images.contains_key(&(
                             card.artwork_url.clone().unwrap_or_default(),
                             CARD_PIXELS,
+                            shape_of(card.kind),
                         ))
                     {
                         self.card_data(card, is_selected)
@@ -1263,6 +1325,7 @@ impl Ui {
                             title: card.title.clone().into(),
                             subtitle: card.subtitle.clone().into(),
                             round: card.kind == CardKind::Artist,
+                            liked: card.is_liked_songs(),
                             selected: is_selected,
                             playable: card.track.is_some(),
                             ..CardData::default()
@@ -1356,6 +1419,8 @@ impl Ui {
             .into(),
         );
         app.set_col_round(page.kind == CollectionKind::Artist);
+        let liked = page.kind == CollectionKind::MyPlaylist && page.id == LIKED_PLAYLIST_ID;
+        app.set_col_liked(liked);
         let collection = page.content.loaded().cloned();
         app.set_col_title(
             collection
@@ -1379,10 +1444,19 @@ impl Ui {
                 .unwrap_or_default()
                 .into(),
         );
-        let cover = self.image(
-            collection.as_ref().and_then(|c| c.artwork_url.as_deref()),
-            COVER_PIXELS,
-        );
+        let cover = if liked {
+            None
+        } else {
+            self.image(
+                collection.as_ref().and_then(|c| c.artwork_url.as_deref()),
+                COVER_PIXELS,
+                if page.kind == CollectionKind::Artist {
+                    Shape::Round
+                } else {
+                    Shape::Rounded
+                },
+            )
+        };
         app.set_col_has_artwork(cover.is_some());
         app.set_col_artwork(cover.unwrap_or_default());
         let has_tracks = collection.as_ref().is_some_and(|c| !c.tracks.is_empty());
@@ -1428,7 +1502,7 @@ impl Ui {
                         let image = if numbered || !near {
                             None
                         } else {
-                            self.image(track.artwork_url.as_deref(), ROW_PIXELS)
+                            self.image(track.artwork_url.as_deref(), ROW_PIXELS, Shape::Rounded)
                         };
                         RowData {
                             kind: "track".into(),
@@ -1459,7 +1533,7 @@ impl Ui {
                     RowRef::Card(shelf, card) => {
                         let card = &collection.shelves[shelf].cards[card];
                         let image = if near {
-                            self.image(card.artwork_url.as_deref(), ROW_PIXELS)
+                            self.image(card.artwork_url.as_deref(), ROW_PIXELS, shape_of(card.kind))
                         } else {
                             None
                         };
@@ -1538,10 +1612,26 @@ impl Ui {
     }
 }
 
+/// The remote's media keys, as the patched Slint Android backend sends them
+/// (`media_key` in `vendor/i-slint-backend-android-activity`): characters
+/// from Unicode's private use area, which no keyboard types.
+const MEDIA_KEYS: [(&str, Key); 8] = [
+    ("\u{E000}", Key::PlayPause),
+    ("\u{E001}", Key::Play),
+    ("\u{E002}", Key::Pause),
+    ("\u{E003}", Key::Stop),
+    ("\u{E004}", Key::Next),
+    ("\u{E005}", Key::Previous),
+    ("\u{E006}", Key::FastForward),
+    ("\u{E007}", Key::Rewind),
+];
+
 /// The remote's keys as Slint names them.
 fn map_key(text: &str) -> Option<Key> {
     let is = |key: SlintKey| SharedString::from(key).as_str() == text;
-    if is(SlintKey::UpArrow) {
+    if let Some((_, key)) = MEDIA_KEYS.iter().find(|(media, _)| *media == text) {
+        Some(*key)
+    } else if is(SlintKey::UpArrow) {
         Some(Key::Up)
     } else if is(SlintKey::DownArrow) {
         Some(Key::Down)
@@ -1564,6 +1654,27 @@ fn map_key(text: &str) -> Option<Key> {
             _ => None,
         }
     }
+}
+
+/// How far a seek being picked goes: "+0:30", "−1:05".
+fn seek_delta(offset: f64) -> String {
+    let sign = if offset < 0.0 { '−' } else { '+' };
+    format!("{sign}{}", clock(offset.abs().round()))
+}
+
+/// Plain lyrics as the lines the screen lays out one by one. A blank line
+/// (between verses) keeps its height as a single space.
+fn plain_lyric_lines(text: &str) -> Vec<SharedString> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text.lines()
+        .map(|line| {
+            let line = line.trim();
+            SharedString::from(if line.is_empty() { " " } else { line })
+        })
+        .collect()
 }
 
 /// A new small offset for the resting screens, each -1 to 1, from the clock.
@@ -1607,7 +1718,32 @@ fn encode_png(screenshot: Screenshot) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::queue_summary;
+    use super::{Key, map_key, plain_lyric_lines, queue_summary, seek_delta};
+
+    #[test]
+    fn says_how_far_a_seek_goes() {
+        assert_eq!(seek_delta(30.0), "+0:30");
+        assert_eq!(seek_delta(-65.4), "−1:05");
+    }
+
+    #[test]
+    fn splits_plain_lyrics_into_lines() {
+        assert_eq!(
+            plain_lyric_lines("\nOne\n\nTwo  \n"),
+            vec!["One", " ", "Two"]
+        );
+        assert!(plain_lyric_lines("  ").is_empty());
+    }
+
+    #[test]
+    fn maps_the_media_keys() {
+        assert_eq!(map_key("\u{E000}"), Some(Key::PlayPause));
+        assert_eq!(map_key("\u{E004}"), Some(Key::Next));
+        assert_eq!(map_key("\u{E007}"), Some(Key::Rewind));
+        assert_eq!(map_key("\n"), Some(Key::Ok));
+        assert_eq!(map_key("a"), Some(Key::Char('a')));
+        assert_eq!(map_key("\u{E0FF}"), None);
+    }
 
     #[test]
     fn summarizes_the_queue_with_autoplay() {

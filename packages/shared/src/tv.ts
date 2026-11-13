@@ -12,7 +12,9 @@ import { QueueTrack } from './session.ts'
  * sides together, and update the shared fixtures in `fixtures/tv/` that both
  * test suites decode.
  *
- *   GET  /tv/home                          TvShelves  your playlists, then your latest liked songs
+ *   GET  /tv/home                          TvShelves  albums and songs played lately (on any device),
+ *                                                    then your latest liked songs; your playlists
+ *                                                    until anything has played
  *   GET  /tv/library                       TvShelves  your playlists, Liked songs first
  *   GET  /tv/search?q=…                    TvShelves  songs, artists, albums, playlists
  *   GET  /tv/collection?kind=…&id=…        TvCollection

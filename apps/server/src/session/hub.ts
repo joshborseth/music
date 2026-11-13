@@ -23,8 +23,9 @@ import { Session } from '@music/shared'
 
 import { AudioStore } from '../audioStore.ts'
 import { TimedLyrics } from '../lyrics/service.ts'
+import { PlaylistStore } from '../playlists/store.ts'
 import { Prefetcher } from '../prefetch.ts'
-import { toQueueTrack } from '../tvCatalog/mapping.ts'
+import { songFromQueueTrack, toQueueTrack } from '../tvCatalog/mapping.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import {
   type Model,
@@ -74,6 +75,8 @@ const KNOWN_DURATIONS_CAPACITY = 2000
 const POWER_POLL_INTERVAL = '20 seconds'
 /** How often to read the house's UTC offset, to catch a clock change. */
 const UTC_OFFSET_INTERVAL = '1 minute'
+/** How long a play waits for the song's album and artist links before keeping the queue's copy. */
+const HISTORY_LOOKUP_TIMEOUT = '5 seconds'
 /** Device names remembered, to show a player that went away. */
 const KNOWN_DEVICES_CAPACITY = 200
 
@@ -114,6 +117,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     const prefetcher = yield* Prefetcher
     const youTubeMusic = yield* YouTubeMusic
     const timedLyrics = yield* TimedLyrics
+    const playlistStore = yield* PlaylistStore
     const lock = yield* Semaphore.make(1)
     const timers = yield* FiberMap.make<string>()
     const hubScope = yield* Scope.Scope
@@ -299,6 +303,25 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     let maybeCountedEntryId = Option.none<string>()
     let maybeAutoplayAfter = Option.none<string>()
 
+    /**
+     * Adds a song to the play history that Home's "Recently played" and
+     * "Jump back in" show, with its album and artist links when YouTube
+     * Music answers in time. Off the lock, and never fails the session.
+     */
+    const rememberPlay = (track: Session.QueueTrack) =>
+      youTubeMusic.getSong(track.videoId).pipe(
+        Effect.map(details => details.song),
+        Effect.timeout(HISTORY_LOOKUP_TIMEOUT),
+        Effect.orElseSucceed(() => songFromQueueTrack(track)),
+        Effect.flatMap(playlistStore.recordPlay),
+        Effect.tapError(error =>
+          Effect.logWarning('Could not remember a play', error.message),
+        ),
+        Effect.ignore,
+        Effect.forkIn(hubScope),
+        Effect.asVoid,
+      )
+
     /** A song counts as played once it is current and playing. */
     const countPlay = Effect.suspend(() => {
       const entryId = model.currentEntryId
@@ -313,7 +336,10 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       const entry = model.queue.find(queued => queued.entryId === entryId)
       return entry === undefined
         ? Effect.void
-        : audioStore.markPlayed(entry.track.videoId)
+        : Effect.andThen(
+            audioStore.markPlayed(entry.track.videoId),
+            rememberPlay(entry.track),
+          )
     })
 
     /**
