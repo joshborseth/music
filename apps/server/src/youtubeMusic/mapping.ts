@@ -1,4 +1,13 @@
-import { Array, Option, Order, Record, Schema, String, pipe } from 'effect'
+import {
+  Array,
+  Match,
+  Option,
+  Order,
+  Record,
+  Schema,
+  String,
+  pipe,
+} from 'effect'
 import { type Helpers, type Misc, YTNodes } from 'youtubei.js'
 
 import {
@@ -1183,9 +1192,13 @@ export const musicVideoIds = (
 /** What finding a music video's song needs to know about the video. */
 export type MusicVideo = Pick<Song, 'videoId' | 'title' | 'artists'>
 
-/** Words that name a kind of video, not a version of the song. */
+/**
+ * Words that name a kind of video, not a version of the song: "(Official
+ * Video)", "[4K]", "[1080p]", "(HQ)". "(Full Album)" is not one: the title
+ * keeps it, so a whole album uploaded as one video is still known as one.
+ */
 const VIDEO_WORDS = globalThis.String
-  .raw`\b(official|video|audio|lyrics?|visuali[sz]er|m\/?v|hd|4k)\b`
+  .raw`\b(official|video|audio|lyrics?|visuali[sz]er|m\/?v|hd|hq|4k|\d{3,4}p)\b`
 
 /**
  * A bracket that names a kind of video: "(Official Video)", "[4K]", or one
@@ -1543,6 +1556,354 @@ const searchRank = (
   return rank === 2 ? 20 : 10 + rank
 }
 
+// SEARCH FILTERS
+
+/** A track longer than this is a compilation or a whole album, not a song. */
+export const LONGEST_SONG_SECONDS = 15 * 60
+
+/**
+ * Words in a title that mark an upload of many songs as one: "(Full
+ * Album)", "3 Hours of Chill Lofi", "(1 Hour)", "Non-Stop Mix".
+ */
+const MANY_SONGS =
+  /\b(full[\s-]+(album|ep|mixtape|lp)|complete album|compilation|\d+\s*(hours?|hrs?)|(an?|one)\s+hours?|non-?stop|megamix|continuous mix)\b/i
+
+/** Words that ask for long uploads: "gybe full album", "lofi 1 hour". */
+const ASKS_FOR_LONG =
+  /\b(full|album|lp|hours?|hrs?|compilation|mix|megamix|non-?stop|continuous|set|medley)\b/i
+
+/** Whether the search has a track's whole title in it: "dopesmoker sleep". */
+const queryNamesTitle = (query: string, title: string): boolean => {
+  const words = paddedWords(title.replace(ANY_BRACKET, ''))
+  return words.trim().length >= 4 && paddedWords(query).includes(words)
+}
+
+/** Whether a track is a compilation or a whole album rather than a song. */
+export const isManySongs = (song: Song): boolean =>
+  MANY_SONGS.test(song.title) ||
+  Option.exists(
+    song.maybeDurationSeconds,
+    seconds => seconds > LONGEST_SONG_SECONDS,
+  )
+
+/**
+ * Whether a search lists a song: anything but an hours-long upload or a
+ * whole album as one track, unless the search asks for one ("lofi 1 hour",
+ * "full album") or names its title ("dopesmoker").
+ */
+export const isSongForQuery =
+  (query: string) =>
+  (song: Song): boolean =>
+    !isManySongs(song) ||
+    ASKS_FOR_LONG.test(query) ||
+    queryNamesTitle(query, song.title)
+
+// ARTIST SEARCH
+
+const COUNT_WITH_UNIT = /^([\d.,]+)\s*([KMB])?\b/i
+
+const UNIT_SIZE: Record.ReadonlyRecord<string, number> = {
+  k: 1e3,
+  m: 1e6,
+  b: 1e9,
+}
+
+/** "66.1M monthly audience" → 66,100,000; "2 subscribers" → 2. */
+export const countFromText = (text: string): Option.Option<number> =>
+  pipe(
+    Option.fromNullishOr(COUNT_WITH_UNIT.exec(text.trim())),
+    Option.flatMap(([, digits = '', unit = '']) => {
+      const value = Number(digits.replaceAll(',', ''))
+      return Number.isFinite(value)
+        ? Option.some(Math.round(value * (UNIT_SIZE[unit.toLowerCase()] ?? 1)))
+        : Option.none()
+    }),
+  )
+
+/** An artist with fewer listeners or subscribers than this is unknown. */
+export const KNOWN_ARTIST_AUDIENCE = 1000
+
+/** Whether an artist has an audience, not "Daft · 2 subscribers". */
+const isKnownArtist = (artist: ArtistSummary): boolean =>
+  Option.exists(
+    Option.flatMap(artist.maybeAudience, countFromText),
+    count => count >= KNOWN_ARTIST_AUDIENCE,
+  )
+
+/** Whether the search is exactly this name, past case and punctuation. */
+const isExactName = (query: string, name: string): boolean => {
+  const compactQuery = compactName(query)
+  return String.isNonEmpty(compactQuery) && compactName(name) === compactQuery
+}
+
+/** Whether an artist's name has the search in it, or the search theirs. */
+const nameMatches = (query: string, artist: ArtistSummary): boolean =>
+  compactName(artist.name).includes(compactName(query)) ||
+  searchNamesArtist(query, { maybeId: Option.none(), name: artist.name })
+
+/**
+ * An artist search as people mean it: the artist whose name is the search
+ * first, past case, accents, and punctuation ("ac dc", "beyonce"), and no
+ * artists with almost no audience once one with an audience matches the
+ * name: "daft" lists Daft Punk, not "Daft · 2 subscribers". With no known
+ * artist by that name, the unknown ones stay.
+ */
+export const rankArtistsForQuery = (
+  query: string,
+  artists: ReadonlyArray<ArtistSummary>,
+): ReadonlyArray<ArtistSummary> => {
+  const hasKnownMatch = Array.some(
+    artists,
+    artist => isKnownArtist(artist) && nameMatches(query, artist),
+  )
+  const kept = hasKnownMatch ? Array.filter(artists, isKnownArtist) : artists
+  return Array.sort(
+    kept,
+    Order.mapInput(Order.Number, (artist: ArtistSummary) =>
+      isExactName(query, artist.name) && isKnownArtist(artist) ? 0 : 1,
+    ),
+  )
+}
+
+// TOP RESULT CHOICE
+
+/** The top result card, and whether it is a video anyone uploaded. */
+export type TopCard = Readonly<{ topResult: TopResult; isUpload: boolean }>
+
+const UPLOADED_VIDEO = 'MUSIC_VIDEO_TYPE_UGC'
+
+/**
+ * The card above the search results (see `topResultFromCard`), noting a
+ * video someone other than the artist uploaded, such as a fan's upload of
+ * a whole album.
+ */
+export const topCardFrom = (card: TopResultCard): Option.Option<TopCard> =>
+  Option.map(topResultFromCard(card), topResult => ({
+    topResult,
+    isUpload: pipe(
+      decodeMusicVideoTypePayload((card.title.endpoint ?? card.on_tap).payload),
+      Option.exists(
+        payload =>
+          payload.watchEndpointMusicSupportedConfigs.watchEndpointMusicConfig
+            .musicVideoType === UPLOADED_VIDEO,
+      ),
+    ),
+  }))
+
+/**
+ * The card's song, when it is one a song search should rank by: not a
+ * video anyone uploaded, and not hours of music or a whole album as one
+ * video unless the search asks for that.
+ */
+export const topCardSong = (
+  query: string,
+  card: TopCard,
+): Option.Option<Song> =>
+  card.topResult._tag === 'Song' &&
+  !card.isUpload &&
+  isSongForQuery(query)(card.topResult.song)
+    ? Option.some(card.topResult.song)
+    : Option.none()
+
+/** The card as search shows it, or none when it is not worth showing. */
+const shownCard = (
+  query: string,
+  card: TopCard,
+  songs: ReadonlyArray<Song>,
+): Option.Option<TopResult> => {
+  const { topResult } = card
+  if (topResult._tag !== 'Song') {
+    return Option.some(topResult)
+  }
+  return pipe(
+    audioTrackFor(topResult.song, songs),
+    Option.orElse(() =>
+      card.isUpload ? Option.none() : Option.some(topResult.song),
+    ),
+    Option.filter(isSongForQuery(query)),
+    Option.map(song => ({ ...topResult, song })),
+  )
+}
+
+/** The name or title a top result goes by. */
+const topResultName = (topResult: TopResult): string =>
+  Match.valueTags(topResult, {
+    Artist: ({ artist }) => artist.name,
+    Album: ({ album }) => album.title,
+    Song: ({ song }) => song.title,
+    Playlist: ({ playlist }) => playlist.title,
+  })
+
+/**
+ * What search shows first. YouTube Music's card, with a music video swapped
+ * for its song (`audioTrackFor`, from `songs`, a song search for the same
+ * words); never a video someone uploaded that is no song, or a whole album
+ * or hours of music as one video (unless asked for). When the search is
+ * exactly the name of an artist with an audience (`artists`, ranked by
+ * `rankArtistsForQuery`), that artist comes first instead, unless the card
+ * itself is named exactly what was searched for: "humble" stays a song.
+ */
+export const chooseTopResult = (
+  query: string,
+  maybeCard: Option.Option<TopCard>,
+  songs: ReadonlyArray<Song>,
+  artists: ReadonlyArray<ArtistSummary>,
+): Option.Option<TopResult> => {
+  const maybeShown = Option.flatMap(maybeCard, card =>
+    shownCard(query, card, songs),
+  )
+  const isNamedExactly = Option.exists(maybeShown, topResult =>
+    isExactName(query, topResultName(topResult)),
+  )
+  const maybeNamedArtist = Array.findFirst(
+    artists,
+    artist => isExactName(query, artist.name) && isKnownArtist(artist),
+  )
+  return isNamedExactly
+    ? maybeShown
+    : Option.match(maybeNamedArtist, {
+        onNone: () => maybeShown,
+        onSome: (artist): Option.Option<TopResult> =>
+          Option.some({ _tag: 'Artist', artist, topSongs: [] }),
+      })
+}
+
+// ALBUM AND PLAYLIST SEARCH
+
+/**
+ * Words that mark a release or playlist made of other people's takes on an
+ * artist: karaoke, tributes, covers, lullaby, 8-bit, or string quartet
+ * versions ("Vitamin String Quartet Performs Daft Punk"), instrumentals.
+ */
+const TRIBUTE =
+  /\b(karaoke|tribute|homage|covers?|originally performed|in the style of|made famous|as performed by|reimagined|lullab(y|ies)|8-?bit|versions of|instrumentals?|sing-?along|backing tracks?|performs|plays the music of|string quartet)\b/i
+
+/** Whether an album is someone's karaoke, tribute, or covers of others. */
+const isTributeAlbum = (album: AlbumSummary): boolean =>
+  TRIBUTE.test(album.title) ||
+  Array.some(album.artists, ({ name }) => TRIBUTE.test(name))
+
+const isCreditedTo = (
+  credits: ReadonlyArray<ArtistLink>,
+  artist: ArtistLink,
+): boolean => Array.some(credits, credit => isSameArtist(credit, artist))
+
+/**
+ * A bare title without a plural "s", so a search typed partway, "blinding
+ * lig", which YouTube Music reads as "blinding light", still knows the
+ * singles named "Blinding Light" for other takes on "Blinding Lights".
+ */
+const singularTitle = (title: string): string =>
+  bareTitle(title).replace(/s$/, '')
+
+/**
+ * Releases from a search, without what only rides on the artist or song
+ * searched for: karaoke, tributes, and covers ("HUMBLE. (Karaoke Version)",
+ * "Lullaby Versions of Kendrick Lamar"); releases named after the artist
+ * searched for but not theirs ("THE KENDRICK LAMAR SUITE"); and other
+ * artists' singles named like the top result's song (`maybeTopSong`):
+ * "blinding lights" lists no one else's "Blinding Light(s)" single. A search
+ * that asks for a version ("humble karaoke") keeps them all.
+ */
+export const filterAlbumsForQuery = (
+  query: string,
+  albums: ReadonlyArray<AlbumSummary>,
+  maybeTopSong: Option.Option<Song> = Option.none(),
+): ReadonlyArray<AlbumSummary> => {
+  if (asksForVersion(query)) {
+    return albums
+  }
+  const searchedArtists = pipe(
+    albums,
+    Array.flatMap(({ artists }) => artists),
+    Array.filter(artist => searchNamesArtist(query, artist)),
+  )
+  const isAboutSearchedArtist = (album: AlbumSummary): boolean =>
+    Array.some(
+      searchedArtists,
+      artist =>
+        paddedWords(album.title).includes(paddedWords(artist.name)) &&
+        !isCreditedTo(album.artists, artist),
+    )
+  const isOtherTakeOnTopSong = (album: AlbumSummary): boolean =>
+    Option.exists(
+      maybeTopSong,
+      song =>
+        !Option.contains(album.maybeKind, 'Album') &&
+        singularTitle(album.title) === singularTitle(song.title) &&
+        !Array.some(song.artists, artist =>
+          isCreditedTo(album.artists, artist),
+        ),
+    )
+  return Array.filter(
+    albums,
+    album =>
+      !isTributeAlbum(album) &&
+      !isAboutSearchedArtist(album) &&
+      !isOtherTakeOnTopSong(album),
+  )
+}
+
+const VIEW_COUNT = /([\d.,]+\s*[KMB]?)\s+views?\b/i
+
+/** How often a playlist was viewed, from "Candie Schane · 1.9K views". */
+export const playlistViews = (
+  playlist: PlaylistSummary,
+): Option.Option<number> =>
+  pipe(
+    playlist.maybeSubtitle,
+    Option.flatMap(subtitle =>
+      Option.fromNullishOr(VIEW_COUNT.exec(subtitle)?.[1]),
+    ),
+    Option.flatMap(countFromText),
+  )
+
+/** A playlist seen fewer times than this is someone's own, not a find. */
+export const FEWEST_PLAYLIST_VIEWS = 1000
+
+/**
+ * Playlists from a search, without the ones hardly anyone played ("Kendrick
+ * lamar · 6 views") or of karaoke and tributes, unless the search asks for
+ * those. A playlist that shows no count, such as YouTube Music's own, stays.
+ */
+export const filterPlaylistsForQuery = (
+  query: string,
+  playlists: ReadonlyArray<PlaylistSummary>,
+): ReadonlyArray<PlaylistSummary> =>
+  Array.filter(
+    playlists,
+    playlist =>
+      !Option.exists(
+        playlistViews(playlist),
+        views => views < FEWEST_PLAYLIST_VIEWS,
+      ) &&
+      (asksForVersion(query) || !TRIBUTE.test(playlist.title)),
+  )
+
+// SUGGESTIONS
+
+/** The most suggestions shown under the search box. */
+export const MAX_SEARCH_SUGGESTIONS = 8
+
+/**
+ * What YouTube Music suggests searching for, from its suggestions: the
+ * words, each once. Its rows of songs and artists are left out.
+ */
+export const suggestionsFrom = (
+  nodes: ReadonlyArray<Helpers.YTNode>,
+): ReadonlyArray<string> =>
+  pipe(
+    filterSome(nodes, node =>
+      node.is(YTNodes.SearchSuggestion)
+        ? textToOption(node.as(YTNodes.SearchSuggestion).suggestion)
+        : Option.none(),
+    ),
+    Array.dedupeWith(
+      (left, right) => left.toLowerCase() === right.toLowerCase(),
+    ),
+    Array.take(MAX_SEARCH_SUGGESTIONS),
+  )
+
 /**
  * A song search, ranked as Apple Music and Spotify would: "daft punk" lists
  * Daft Punk's songs, then songs they are featured on, then the remixes and
@@ -1550,6 +1911,7 @@ const searchRank = (
  * its artist's songs come first and their hits after them, and covers of it
  * go last: "blinding lights" lists The Weeknd, not a metal cover. Remixes,
  * karaoke, and slowed or 8D edits go last unless the search asks for one.
+ * Hours-long uploads and whole albums are left out (see `isSongForQuery`).
  * Otherwise YouTube's order stays.
  */
 export const rankSongsForQuery = (
@@ -1565,9 +1927,16 @@ export const rankSongsForQuery = (
         hit => !Array.some([top, ...songs], song => isSameSong(song, hit)),
       ),
   })
+  const isWanted = isSongForQuery(query)
   const candidates: ReadonlyArray<Candidate> = [
-    ...Array.map(songs, song => ({ song, isArtistHit: false })),
-    ...Array.map(hits, song => ({ song, isArtistHit: true })),
+    ...Array.map(Array.filter(songs, isWanted), song => ({
+      song,
+      isArtistHit: false,
+    })),
+    ...Array.map(Array.filter(hits, isWanted), song => ({
+      song,
+      isArtistHit: true,
+    })),
   ]
   return Array.map(
     Array.sort(

@@ -36,6 +36,7 @@ const youTubeMusic = YouTubeMusic.of({
   searchAlbums: () => Effect.succeed([]),
   searchPlaylists: () => down,
   searchTopResult: () => down,
+  searchSuggestions: () => down,
   getMoodsAndGenres: () => down,
   getMood: () => down,
   getSong: videoId =>

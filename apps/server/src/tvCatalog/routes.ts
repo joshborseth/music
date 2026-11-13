@@ -189,7 +189,7 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
         onNone: () => Effect.succeedNone,
         onSome: seed =>
           awaitBriefly(
-            loadSongRadio(youTubeMusic, seed.videoId).pipe(
+            loadSongRadio(playlistStore, youTubeMusic, seed.videoId).pipe(
               Effect.map(songs => ({ seed, songs })),
             ),
             HOME_DISCOVERY_WAIT,

@@ -38,6 +38,7 @@ import {
   myPlaylistQuery,
   newReleasesQuery,
   playlistSearchQuery,
+  searchSuggestionsQuery,
   songQuery,
   songRadioQuery,
   songSearchQuery,
@@ -216,7 +217,21 @@ describe('typing a search', () => {
       model(model => {
         expect(model.searchInput).toBe('fleetwood')
       }),
-      Command.expectExact(WaitBeforeSearch({ query: 'fleetwood' })),
+      Command.expectExact(
+        searchSuggestionsQuery.Fetch({
+          args: { query: 'fleetwood' },
+          generation: FIRST_REQUEST_GENERATION,
+        }),
+        WaitBeforeSearch({ query: 'fleetwood' }),
+      ),
+      Command.resolve(
+        searchSuggestionsQuery.Fetch,
+        searchSuggestionsQuery.Message.CompletedFetch({
+          args: { query: 'fleetwood' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed(['fleetwood mac']),
+        }),
+      ),
       Command.resolve(
         WaitBeforeSearch,
         Message.CompletedWaitBeforeSearch({ query: 'fleetwood' }),

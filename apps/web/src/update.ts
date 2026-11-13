@@ -19,6 +19,7 @@ import {
   type MyPlaylistDetails,
   type PlaylistEdit,
   type PlaylistEditResult,
+  type Session,
   type Song,
   mosaicCovers,
 } from '@music/shared'
@@ -103,6 +104,7 @@ import {
   newReleasesQuery,
   playlistQuery,
   playlistSearchQuery,
+  searchSuggestionsQuery,
   songQuery,
   songRadioQuery,
   songSearchQuery,
@@ -122,6 +124,7 @@ import {
 } from './route'
 import { type MusicClient } from './rpc'
 import { ActionSheet, type PlayerPanel, type SheetContent } from './sheet'
+import { SuggestionList, listForInput, suggestionQuery } from './suggestions'
 import {
   artistNames,
   artworkUrl,
@@ -161,6 +164,11 @@ const playlistSearch = playlistSearchQuery.lift<Model, Message>({
 const topResultSearch = topResultSearchQuery.lift<Model, Message>({
   parentField: 'topResultSearch',
   toParentMessage: message => Message.GotTopResultSearchMessage({ message }),
+})
+
+const searchSuggestions = searchSuggestionsQuery.lift<Model, Message>({
+  parentField: 'searchSuggestions',
+  toParentMessage: message => Message.GotSearchSuggestionsMessage({ message }),
 })
 
 const moodGroups = moodGroupsQuery.lift<Model, Message>({
@@ -523,6 +531,51 @@ const rememberRouteSearch: UpdateStep = model =>
     onNone: () => ({ model }),
     onSome: query => rememberSearch(query)(model),
   })
+
+/** Puts the suggestions away once something is searched for or opened. */
+const hideSuggestions: UpdateStep = model => ({
+  model: modifyFields(model, {
+    suggestionList: () => SuggestionList.Hidden(),
+  }),
+})
+
+/**
+ * Shows the suggestions for what is typed from the first letter, without
+ * the pause the search waits for.
+ */
+const typeInSearch =
+  (value: string): UpdateStep =>
+  model => {
+    const query = suggestionQuery(value)
+    const typed = modifyFields(model, {
+      searchInput: () => value,
+      suggestionList: () => listForInput(model, value),
+    })
+    return String.isEmpty(query)
+      ? { model: typed }
+      : searchSuggestions.loadIfMissing(typed, { query })
+  }
+
+/**
+ * Remembers the search a song was played from, as opening a result does,
+ * so playing from the results puts the search in Recently Searched.
+ */
+const rememberPlayedSearch =
+  (maybePlayingFrom: Option.Option<Session.PlayingFrom>): UpdateStep =>
+  model =>
+    Option.exists(maybePlayingFrom, ({ kind }) => kind === 'Search')
+      ? Update.combine([rememberRouteSearch, hideSuggestions])(model)
+      : { model }
+
+/** Searches for a recent search or a suggestion, as if it were typed. */
+const searchFor =
+  (query: string): UpdateStep =>
+  model =>
+    Update.combine([
+      replaceSearch(query, routeSearchKind(model.route)),
+      rememberSearch(query),
+      hideSuggestions,
+    ])(modifyFields(model, { searchInput: () => query }))
 
 const syncSearchInput = (model: Model): Model =>
   Option.match(routeQuery(model.route), {
@@ -1335,7 +1388,10 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     }),
     searchInput: '',
     maybeEarlierSearch: Option.none(),
+    shownTopShelves: { query: '', count: 0 },
     recentSearches: [],
+    suggestionList: SuggestionList.Hidden(),
+    searchSuggestions: searchSuggestionsQuery.init(),
     recentlyViewed: [],
     libraryFilter: 'All',
     libraryPrefs: DEFAULT_LIBRARY_PREFS,
@@ -1449,6 +1505,7 @@ const updateMessage = (model: Model, message: Message) =>
         Internal: ({ url }) =>
           Update.combine([
             rememberRouteSearch,
+            hideSuggestions,
             dismissSheet,
             closePlayer,
             navigateTo(Url.toString(url), 'Push'),
@@ -1477,6 +1534,7 @@ const updateMessage = (model: Model, message: Message) =>
       if (!isActiveTab) {
         return Update.combine([
           rememberRouteSearch,
+          hideSuggestions,
           dismissSheet,
           switchTab(tab),
         ])(model)
@@ -1489,10 +1547,14 @@ const updateMessage = (model: Model, message: Message) =>
       }
     },
 
-    UpdatedSearchInput: ({ value }) => ({
-      model: modifyFields(model, { searchInput: () => value }),
-      commands: [WaitBeforeSearch({ query: value })],
-    }),
+    UpdatedSearchInput: ({ value }) =>
+      Update.combine([
+        stepModel => ({
+          model: stepModel,
+          commands: [WaitBeforeSearch({ query: value })],
+        }),
+        typeInSearch(value),
+      ])(model),
 
     CompletedWaitBeforeSearch: ({ query }) => {
       const trimmedQuery = query.trim()
@@ -1510,6 +1572,7 @@ const updateMessage = (model: Model, message: Message) =>
         ? Update.combine([
             replaceSearch(trimmedQuery, routeSearchKind(model.route)),
             rememberSearch(trimmedQuery),
+            hideSuggestions,
             stepModel => ({ model: stepModel, commands: [BlurSearchInput()] }),
           ])(model)
         : { model }
@@ -1518,6 +1581,7 @@ const updateMessage = (model: Model, message: Message) =>
     ClickedClearSearch: () =>
       Update.combine([
         replaceSearch('', routeSearchKind(model.route)),
+        hideSuggestions,
         stepModel => ({
           model: modifyFields(stepModel, { searchInput: () => '' }),
           commands: [FocusSearchInput()],
@@ -1525,13 +1589,18 @@ const updateMessage = (model: Model, message: Message) =>
       ])(model),
 
     SelectedSearchKind: ({ kind }) =>
-      replaceSearch(model.searchInput.trim(), kind)(model),
-
-    ClickedRecentSearch: ({ query }) =>
       Update.combine([
-        replaceSearch(query, routeSearchKind(model.route)),
-        rememberSearch(query),
-      ])(modifyFields(model, { searchInput: () => query })),
+        replaceSearch(model.searchInput.trim(), kind),
+        hideSuggestions,
+      ])(model),
+
+    ClickedRecentSearch: ({ query }) => searchFor(query)(model),
+
+    ClickedSearchSuggestion: ({ query }) =>
+      Update.combine([
+        searchFor(query),
+        stepModel => ({ model: stepModel, commands: [BlurSearchInput()] }),
+      ])(model),
 
     ClickedClearRecentSearches: () => ({
       model: modifyFields(model, { recentSearches: () => [] }),
@@ -1607,6 +1676,8 @@ const updateMessage = (model: Model, message: Message) =>
       ])(model),
     GotTopResultSearchMessage: ({ message }) =>
       topResultSearch.fold(model, message),
+    GotSearchSuggestionsMessage: ({ message }) =>
+      searchSuggestions.fold(model, message),
     GotMoodGroupsMessage: ({ message }) => moodGroups.fold(model, message),
     GotMoodMessage: ({ message }) => moods.fold(model, message),
     GotArtworkBackdropMessage: ({ message }) =>
@@ -1814,6 +1885,9 @@ const updateMessage = (model: Model, message: Message) =>
     CompletedSyncTitleBarReveal: () => ({ model }),
     CompletedSyncMarquee: () => ({ model }),
     CompletedRestoreScroll: () => ({ model }),
+    CompletedWaitBeforeTopShelves: ({ query, count }) => ({
+      model: modifyFields(model, { shownTopShelves: () => ({ query, count }) }),
+    }),
     CompletedFollowSheetDrags: () => ({ model }),
     CompletedTakeOverScrollRestoration: () => ({ model }),
     CompletedFocusSearchInput: () => ({ model }),
@@ -1947,7 +2021,16 @@ const updateMessage = (model: Model, message: Message) =>
       ),
 
     ClickedPlaySongs: ({ songs: songsToPlay, startIndex, maybePlayingFrom }) =>
-      Playback.clickPlaySongs(model, songsToPlay, startIndex, maybePlayingFrom),
+      Update.combine([
+        rememberPlayedSearch(maybePlayingFrom),
+        stepModel =>
+          Playback.clickPlaySongs(
+            stepModel,
+            songsToPlay,
+            startIndex,
+            maybePlayingFrom,
+          ),
+      ])(model),
     ClickedStartRadio: ({ song }) =>
       Update.combine([
         dismissSheet,

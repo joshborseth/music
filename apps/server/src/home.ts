@@ -146,33 +146,43 @@ const byWeightThenOrder = Order.combine(
 
 /**
  * A group of weighted songs as one: the song played and liked most (the
- * earliest listed on a tie), with the whole group's weight and the place of
- * its first song. Groups keep their songs in the order they were listed.
+ * earliest listed on a tie) that Home does not show elsewhere (`isShown`),
+ * or the one played and liked most when Home shows them all, with the
+ * whole group's weight and the place of its first song. Groups keep their
+ * songs in the order they were listed.
  */
-const asOne = (items: Array.NonEmptyReadonlyArray<Weighted>): Weighted => {
-  const top = pipe(
-    Array.groupBy(items, ({ song }) => song.videoId),
-    Record.values,
-    Array.map((copies): Weighted => ({
-      song: copies[0].song,
-      weight: sumWeights(copies),
-      order: copies[0].order,
-    })),
-    Array.sort(byWeightThenOrder),
-    Array.head,
-    Option.getOrElse(() => items[0]),
-  )
-  return { song: top.song, weight: sumWeights(items), order: items[0].order }
-}
+const asOne =
+  (isShown: (song: Song) => boolean) =>
+  (items: Array.NonEmptyReadonlyArray<Weighted>): Weighted => {
+    const ranked = pipe(
+      Array.groupBy(items, ({ song }) => song.videoId),
+      Record.values,
+      Array.map((copies): Weighted => ({
+        song: copies[0].song,
+        weight: sumWeights(copies),
+        order: copies[0].order,
+      })),
+      Array.sort(byWeightThenOrder),
+    )
+    const top = pipe(
+      Array.findFirst(ranked, ({ song }) => !isShown(song)),
+      Option.orElse(() => Array.head(ranked)),
+      Option.getOrElse(() => items[0]),
+    )
+    return { song: top.song, weight: sumWeights(items), order: items[0].order }
+  }
 
 /**
  * Mixes from the artists I play and like most: one per artist, the radio of
  * their song I play and like most. `played` is the play history, most
- * played first; `liked` is Liked songs.
+ * played first; `liked` is Liked songs. A mix's card shows its song, so
+ * the song is one Home shows nowhere else (`isShown`) when the artist has
+ * one: not "Mix: Mac DeMarco" based on the song in Recently played.
  */
 export const homeMixes = (
   played: ReadonlyArray<PlayedSong>,
   liked: ReadonlyArray<Song>,
+  isShown: (song: Song) => boolean = () => false,
 ): ReadonlyArray<PlaylistSummary> => {
   const weighted: ReadonlyArray<Weighted> = [
     ...Array.map(played, ({ song, playCount }, order) => ({
@@ -192,7 +202,7 @@ export const homeMixes = (
       Option.getOrElse(artistKey(song), () => song.videoId),
     ),
     Record.values,
-    Array.map(asOne),
+    Array.map(asOne(isShown)),
     Array.filter(({ weight }) => weight >= MIN_MIX_WEIGHT),
     Array.sort(byWeightThenOrder),
     Array.take(HOME_MIXES),
@@ -312,8 +322,100 @@ export type HomeFeedInput = Readonly<{
   liked: ReadonlyArray<Song>
 }>
 
-export const homeFeed = (input: HomeFeedInput): HomeFeed => ({
-  ...foldRecent(input.recentSongs),
-  maybeLastPlayed: Array.head(input.recentSongs),
-  mixes: homeMixes(input.played, input.liked),
-})
+/** The most liked songs Home shows, on the phone and on the TV. */
+export const HOME_LIKED_SONGS = 30
+
+/** One key for a song across its copies: its title and first artist. */
+const songKey = (song: Song): string =>
+  `${song.title.trim().toLowerCase()}|${pipe(
+    Array.head(song.artists),
+    Option.map(({ name }) => name.trim().toLowerCase()),
+    Option.getOrElse(() => ''),
+  )}`
+
+/** The same album: the same id, or the same title by the same artist. */
+const isSameAlbumAs =
+  (album: AlbumSummary) =>
+  (song: Song): boolean =>
+    Option.exists(
+      song.maybeAlbum,
+      ({ id, name }) =>
+        id === album.id ||
+        (name.trim().toLowerCase() === album.title.trim().toLowerCase() &&
+          Array.some(album.artists, artist =>
+            Array.some(
+              song.artists,
+              ({ name: other }) => other === artist.name,
+            ),
+          )),
+    )
+
+/**
+ * Whether Home already shows a song, or what it came from: a song played
+ * lately (on its own or from an album in Jump back in), an album in Jump
+ * back in, or one of the liked songs Home lists.
+ */
+const shownOnHome = (input: HomeFeedInput): ((song: Song) => boolean) => {
+  const { jumpBackIn } = foldRecent(input.recentSongs)
+  const shown = [
+    ...input.recentSongs,
+    ...Array.take(input.liked, HOME_LIKED_SONGS),
+  ]
+  const videoIds = new Set(Array.map(shown, ({ videoId }) => videoId))
+  const keys = new Set(Array.map(shown, songKey))
+  return song =>
+    videoIds.has(song.videoId) ||
+    keys.has(songKey(song)) ||
+    Array.some(jumpBackIn, album => isSameAlbumAs(album)(song))
+}
+
+/** The most songs Home's "More like" shelf shows. */
+export const RADIO_SONGS = 20
+
+/**
+ * "More like" a song: its radio (`radio`, without the song), leaving out
+ * what Home already shows and what played lately (`shownOnHome`), and the
+ * rest of the song's own album, so "More like Come Back to Earth" is not
+ * three more songs from Swimming.
+ */
+export const moreLike = (
+  seedVideoId: string,
+  radio: ReadonlyArray<Song>,
+  input: HomeFeedInput,
+): ReadonlyArray<Song> => {
+  const isShown = shownOnHome(input)
+  const maybeSeedAlbum = pipe(
+    Array.findFirst(
+      input.recentSongs,
+      ({ videoId }) => videoId === seedVideoId,
+    ),
+    Option.flatMap(albumOf),
+  )
+  const isOnSeedAlbum = (song: Song): boolean =>
+    Option.exists(maybeSeedAlbum, album => isSameAlbumAs(album)(song))
+  return pipe(
+    radio,
+    Array.filter(
+      song =>
+        song.videoId !== seedVideoId && !isShown(song) && !isOnSeedAlbum(song),
+    ),
+    Array.dedupeWith((left, right) => songKey(left) === songKey(right)),
+    Array.take(RADIO_SONGS),
+  )
+}
+
+export const homeFeed = (input: HomeFeedInput): HomeFeed => {
+  const recent = foldRecent(input.recentSongs)
+  const shownSongs = [
+    ...recent.recentlyPlayed,
+    ...Array.take(input.recentSongs, 1),
+  ]
+  const isShown = (song: Song): boolean =>
+    Array.some(shownSongs, ({ videoId }) => videoId === song.videoId) ||
+    Array.some(recent.jumpBackIn, album => isSameAlbumAs(album)(song))
+  return {
+    ...recent,
+    maybeLastPlayed: Array.head(input.recentSongs),
+    mixes: homeMixes(input.played, input.liked, isShown),
+  }
+}

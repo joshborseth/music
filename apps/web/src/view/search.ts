@@ -1,6 +1,6 @@
-import { Array, Match, Option } from 'effect'
+import { Array, Match, Option, String } from 'effect'
 import { AsyncData } from 'foldkit'
-import { Html, HtmlBuilder } from 'foldkit/html'
+import { Html, HtmlBuilder, createKeyedLazy } from 'foldkit/html'
 import {
   CircleX,
   Disc3,
@@ -16,9 +16,12 @@ import {
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
+  type AlbumSummary,
+  type ArtistSummary,
   type Artwork,
   type MoodCategory,
   type MoodGroup,
+  type PlaylistSummary,
   type Session,
   type Song,
   type TopResult,
@@ -31,6 +34,7 @@ import {
   SEARCH_RESULTS_ATTRIBUTE,
 } from '../constant'
 import { Message } from '../message'
+import { WaitBeforeTopShelves } from '../mount'
 import {
   type RequestError,
   albumSearchQuery,
@@ -41,6 +45,7 @@ import {
   topResultSearchQuery,
 } from '../query'
 import { SEARCH_KINDS, type SearchKind, moodRouter } from '../route'
+import { shownSuggestions, suggestionQuery } from '../suggestions'
 import { isSearchSettled, routeQuery, routeSearchKind } from '../update'
 import { largeTitle, statusBarCover } from './chrome'
 import { type PageModel } from './page'
@@ -462,10 +467,212 @@ const topSongs = (
       }),
   })
 
+type TopShelfItems = Readonly<{
+  artists: ReadonlyArray<ArtistSummary>
+  albums: ReadonlyArray<AlbumSummary>
+  playlists: ReadonlyArray<PlaylistSummary>
+}>
+
+/** The artists, albums, and playlists the Top tab shelves, past its card. */
+const topShelfItems = (
+  artistData: AsyncData.AsyncData<ReadonlyArray<ArtistSummary>, RequestError>,
+  albumData: AsyncData.AsyncData<ReadonlyArray<AlbumSummary>, RequestError>,
+  playlistData: AsyncData.AsyncData<
+    ReadonlyArray<PlaylistSummary>,
+    RequestError
+  >,
+  maybeTopResult: Option.Option<TopResult>,
+): TopShelfItems => ({
+  artists: Array.filter(
+    loadedOrEmpty(artistData),
+    artist => !isTopResult(maybeTopResult, 'Artist', artist.id),
+  ),
+  albums: Array.filter(
+    loadedOrEmpty(albumData),
+    album => !isTopResult(maybeTopResult, 'Album', album.id),
+  ),
+  playlists: Array.filter(
+    loadedOrEmpty(playlistData),
+    playlist => !isTopResult(maybeTopResult, 'Playlist', playlist.id),
+  ),
+})
+
+/**
+ * A shelf the browser lays out only once it nears the screen. Below the
+ * first rows, most of the Top tab's shelves start off screen.
+ */
+const offscreenShelf = <A>(
+  items: ReadonlyArray<A>,
+  render: (items: Array.NonEmptyReadonlyArray<A>) => Html,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Array.match(Array.take(items, TOP_SHELF_COUNT), {
+    onEmpty: () => h.empty,
+    onNonEmpty: shownItems =>
+      h.div(
+        [
+          h.Class(
+            '[contain-intrinsic-size:auto_15rem] [content-visibility:auto]',
+          ),
+        ],
+        [render(shownItems)],
+      ),
+  })
+
+const artistsShelf = (
+  artists: ReadonlyArray<ArtistSummary>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  offscreenShelf(
+    artists,
+    items =>
+      shelf(
+        {
+          title: 'Artists',
+          items,
+          toKey: artist => artist.id,
+          toCard: artistCard,
+          maybeAction: Option.some(seeAll('Artists')),
+        },
+        h,
+      ),
+    h,
+  )
+
+const albumsShelf = (
+  albums: ReadonlyArray<AlbumSummary>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  offscreenShelf(
+    albums,
+    items =>
+      shelf(
+        {
+          title: 'Albums',
+          items,
+          toKey: album => album.id,
+          toCard: albumCard,
+          maybeAction: Option.some(seeAll('Albums')),
+        },
+        h,
+      ),
+    h,
+  )
+
+const playlistsShelf = (
+  playlists: ReadonlyArray<PlaylistSummary>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  offscreenShelf(
+    playlists,
+    items =>
+      shelf(
+        {
+          title: 'Playlists',
+          items,
+          toKey: playlist => playlist.id,
+          toCard: playlistCard,
+          maybeAction: Option.some(seeAll('Playlists')),
+        },
+        h,
+      ),
+    h,
+  )
+
+type TopShelfKind = 'Artists' | 'Albums' | 'Playlists'
+
+/** The Top tab's shelves, in the order they show. */
+const TOP_SHELVES: ReadonlyArray<TopShelfKind> = [
+  'Artists',
+  'Albums',
+  'Playlists',
+]
+
+const renderTopShelf = (
+  kind: TopShelfKind,
+  artistData: AsyncData.AsyncData<ReadonlyArray<ArtistSummary>, RequestError>,
+  albumData: AsyncData.AsyncData<ReadonlyArray<AlbumSummary>, RequestError>,
+  playlistData: AsyncData.AsyncData<
+    ReadonlyArray<PlaylistSummary>,
+    RequestError
+  >,
+  topResultData: AsyncData.AsyncData<Option.Option<TopResult>, RequestError>,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const items = topShelfItems(
+    artistData,
+    albumData,
+    playlistData,
+    Option.flatten(AsyncData.getData(topResultData)),
+  )
+  return Match.value(kind).pipe(
+    Match.withReturnType<Html>(),
+    Match.when('Artists', () => artistsShelf(items.artists, h)),
+    Match.when('Albums', () => albumsShelf(items.albums, h)),
+    Match.when('Playlists', () => playlistsShelf(items.playlists, h)),
+    Match.exhaustive,
+  )
+}
+
+/** One slot per shelf: only the shelves on screen are worth keeping. */
+const lazyTopShelf = createKeyedLazy()
+
+/**
+ * The shelves showing so far, each drawn again only when a search it shows
+ * answers, not on every change to the page, such as the song playing.
+ */
+const shownTopShelves = (
+  model: PageModel,
+  query: string,
+  count: number,
+  h: HtmlBuilder<Message>,
+): ReadonlyArray<Html> =>
+  Array.map(Array.take(TOP_SHELVES, count), kind =>
+    lazyTopShelf(kind, renderTopShelf, [
+      kind,
+      artistSearchQuery.read(model.artistSearch, { query }),
+      albumSearchQuery.read(model.albumSearch, { query }),
+      playlistSearchQuery.read(model.playlistSearch, { query }),
+      topResultSearchQuery.read(model.topResultSearch, { query }),
+      h,
+    ]),
+  )
+
+/**
+ * Where the next shelf goes until the page has painted: then it says so
+ * (`WaitBeforeTopShelves`), and the shelf takes its place. The shelves
+ * come one a frame, after the first rows, so no frame holds the phone up
+ * long.
+ */
+const nextTopShelf = (
+  query: string,
+  count: number,
+  h: HtmlBuilder<Message>,
+): Html =>
+  count < TOP_SHELVES.length
+    ? h.keyed('div')(`${count}:${query}`, [
+        h.OnMount(WaitBeforeTopShelves({ query, count: count + 1 })),
+      ])
+    : h.empty
+
+const topShelves = (
+  model: PageModel,
+  query: string,
+  h: HtmlBuilder<Message>,
+): ReadonlyArray<Html> => {
+  const count =
+    model.shownTopShelves.query === query ? model.shownTopShelves.count : 0
+  return [
+    ...shownTopShelves(model, query, count, h),
+    nextTopShelf(query, count, h),
+  ]
+}
+
 /**
  * A little of everything, as Apple Music and Spotify start: the best match,
  * the first songs, then artists, albums, and playlists to swipe through.
- * Each shelf leaves out the top result and has See All for its kind.
+ * Each shelf leaves out the top result and has See All for its kind. The
+ * shelves come one a frame after the rest (`nextTopShelf`).
  */
 const topView = (
   model: PageModel,
@@ -482,24 +689,18 @@ const topView = (
     topSongs(maybeTopResult, loadedOrEmpty(songSearch)),
     song => !isTopResultSong(maybeTopResult, song),
   )
-  const artists = Array.filter(
-    loadedOrEmpty(artistSearchQuery.read(model.artistSearch, { query })),
-    artist => !isTopResult(maybeTopResult, 'Artist', artist.id),
-  )
-  const albums = Array.filter(
-    loadedOrEmpty(albumSearchQuery.read(model.albumSearch, { query })),
-    album => !isTopResult(maybeTopResult, 'Album', album.id),
-  )
-  const playlists = Array.filter(
-    loadedOrEmpty(playlistSearchQuery.read(model.playlistSearch, { query })),
-    playlist => !isTopResult(maybeTopResult, 'Playlist', playlist.id),
+  const shelfItems = topShelfItems(
+    artistSearchQuery.read(model.artistSearch, { query }),
+    albumSearchQuery.read(model.albumSearch, { query }),
+    playlistSearchQuery.read(model.playlistSearch, { query }),
+    maybeTopResult,
   )
   const isEmpty =
     Option.isNone(maybeTopResult) &&
     Array.isReadonlyArrayEmpty(songs) &&
-    Array.isReadonlyArrayEmpty(artists) &&
-    Array.isReadonlyArrayEmpty(albums) &&
-    Array.isReadonlyArrayEmpty(playlists)
+    Array.isReadonlyArrayEmpty(shelfItems.artists) &&
+    Array.isReadonlyArrayEmpty(shelfItems.albums) &&
+    Array.isReadonlyArrayEmpty(shelfItems.playlists)
 
   return Option.match(AsyncData.getError(songSearch), {
     onSome: error => requestErrorAlert(error, h),
@@ -546,36 +747,7 @@ const topView = (
                     h,
                   ),
               }),
-              shelf(
-                {
-                  title: 'Artists',
-                  items: Array.take(artists, TOP_SHELF_COUNT),
-                  toKey: artist => artist.id,
-                  toCard: artistCard,
-                  maybeAction: Option.some(seeAll('Artists')),
-                },
-                h,
-              ),
-              shelf(
-                {
-                  title: 'Albums',
-                  items: Array.take(albums, TOP_SHELF_COUNT),
-                  toKey: album => album.id,
-                  toCard: albumCard,
-                  maybeAction: Option.some(seeAll('Albums')),
-                },
-                h,
-              ),
-              shelf(
-                {
-                  title: 'Playlists',
-                  items: Array.take(playlists, TOP_SHELF_COUNT),
-                  toKey: playlist => playlist.id,
-                  toCard: playlistCard,
-                  maybeAction: Option.some(seeAll('Playlists')),
-                },
-                h,
-              ),
+              ...topShelves(model, query, h),
             ],
           ),
   })
@@ -718,6 +890,71 @@ const shownSearch = (
     : Option.filter(model.maybeEarlierSearch, earlierQuery =>
         isSearchSettled(model, earlierQuery, kind),
       )
+
+// SUGGESTIONS
+
+/** The most suggestions under the search box, leaving room for results. */
+const SHOWN_SUGGESTIONS = 6
+
+/**
+ * A suggestion with what was typed in regular weight and the rest of it in
+ * bold, so the eye goes to what it adds.
+ */
+const suggestionText = (
+  suggestion: string,
+  typed: string,
+  h: HtmlBuilder<Message>,
+): ReadonlyArray<Html> =>
+  String.isNonEmpty(typed) && suggestion.toLowerCase().startsWith(typed)
+    ? [
+        h.span([], [suggestion.slice(0, typed.length)]),
+        h.span([h.Class('font-semibold')], [suggestion.slice(typed.length)]),
+      ]
+    : [h.span([], [suggestion])]
+
+const suggestionRow = (
+  suggestion: string,
+  typed: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.keyed('li')(
+    suggestion,
+    [],
+    [
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedSearchSuggestion({ query: suggestion })),
+          h.Class(
+            'flex w-full items-center gap-3 pl-4 text-left text-[17px] transition-colors active:bg-muted/70',
+          ),
+        ],
+        [
+          icon(h, Search, 'text-muted-foreground size-[18px] shrink-0'),
+          h.span(
+            [h.Class('line-clamp-1 flex-1 border-b py-2.5 pr-4')],
+            suggestionText(suggestion, typed, h),
+          ),
+        ],
+      ),
+    ],
+  )
+
+/**
+ * What YouTube Music suggests for what is typed, from the first letter:
+ * tapping one searches for it.
+ */
+const suggestionsView = (model: PageModel, h: HtmlBuilder<Message>): Html =>
+  Array.match(Array.take(shownSuggestions(model), SHOWN_SUGGESTIONS), {
+    onEmpty: () => h.empty,
+    onNonEmpty: suggestions =>
+      h.ul(
+        [h.AriaLabel('Suggestions'), h.Class('flex flex-col pb-4')],
+        Array.map(suggestions, suggestion =>
+          suggestionRow(suggestion, suggestionQuery(model.searchInput), h),
+        ),
+      ),
+  })
 
 // RECENT SEARCHES
 
@@ -906,6 +1143,7 @@ export const searchView = (
     statusBarCover(h),
     largeTitle('Search', h.empty, h),
     stickySearchBar(model, kind, isSearching, hasTyped, h),
+    suggestionsView(model, h),
     h.div(
       [h.DataAttribute(SEARCH_RESULTS_ATTRIBUTE, ''), h.Class('pb-6')],
       [

@@ -20,7 +20,7 @@ import {
   type Tv,
 } from '@music/shared'
 
-import { mixSeedOf } from '../home.ts'
+import { HOME_LIKED_SONGS, mixSeedOf } from '../home.ts'
 
 /*
  * Pure mappings from the catalog's domain Schemas to the TV's plain JSON
@@ -240,7 +240,7 @@ export const yourPlaylistsShelf = (library: MyLibrary): Tv.TvShelf => ({
 })
 
 /** The most liked songs Home shows; the whole list is one OK away. */
-export const HOME_LIKED_SONGS = 30
+export { HOME_LIKED_SONGS }
 /** The most followed artists Home shows, the latest followed first. */
 export const HOME_FOLLOWED_ARTISTS = 20
 /** How many of your own playlists get a shelf of their songs on Home. */

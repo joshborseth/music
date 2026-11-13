@@ -38,27 +38,34 @@ import {
   type DiscographyLink,
   type MoodShelf,
   type MusicVideo,
+  type TopCard,
   type TopSong,
   albumFromListItem,
   artistFromListItem,
   audioTrackFor,
   audioTrackQuery,
+  chooseTopResult,
   discographyLink,
+  filterAlbumsForQuery,
+  filterPlaylistsForQuery,
   filterSome,
   musicVideoIds,
   playlistFromListItem,
   playlistOwnerFromResponse,
+  rankArtistsForQuery,
   rankSongsForQuery,
   releasesFromItems,
   songFromListItem,
   songFromPlaylistPanelVideo,
+  suggestionsFrom,
   toAlbumDetails,
   toArtistDetails,
   toLyrics,
   toMoodDetails,
   toMoodGroups,
   toPlaylistDetails,
-  topResultFromCard,
+  topCardFrom,
+  topCardSong,
   twoRowItemsOf,
 } from './mapping.ts'
 
@@ -125,6 +132,13 @@ const SONG_SEARCH_TTL = Duration.minutes(1)
 const SONG_SEARCH_CAPACITY = 64
 
 /**
+ * Suggestions for what is typed are kept this long. They come on every
+ * letter typed, and change slowly.
+ */
+const SUGGESTIONS_TTL = Duration.minutes(30)
+const SUGGESTIONS_CAPACITY = 1024
+
+/**
  * An artist page is kept this long. Search reads an artist's top songs from
  * it, and Home the newest releases of every artist I follow.
  */
@@ -186,6 +200,10 @@ export interface YouTubeMusicShape {
   readonly searchTopResult: (
     query: string,
   ) => Effect.Effect<Option.Option<TopResult>, YouTubeMusicError>
+  /** What YouTube Music suggests searching for as this is typed. */
+  readonly searchSuggestions: (
+    query: string,
+  ) => Effect.Effect<ReadonlyArray<string>, YouTubeMusicError>
   /** YouTube Music's moods and genres, in their groups. */
   readonly getMoodsAndGenres: () => Effect.Effect<
     ReadonlyArray<MoodGroup>,
@@ -301,11 +319,46 @@ const make = Effect.gen(function* () {
             Option.fromNullishOr(
               search.contents?.firstOfType(YTNodes.MusicCardShelf),
             ),
-            topResultFromCard,
+            topCardFrom,
           ),
       ),
     searchCacheOptions,
   )
+
+  /** An artist search, ranked and without unknown namesakes. */
+  const artistSearches = yield* Cache.makeWith(
+    (query: string) =>
+      Effect.map(searchShelf(query, 'artist'), items =>
+        rankArtistsForQuery(query, filterSome(items, artistFromListItem)),
+      ),
+    searchCacheOptions,
+  )
+
+  const suggestions = yield* Cache.makeWith(
+    (query: string) =>
+      Effect.map(
+        callYouTube(() => music.getSearchSuggestions(query)),
+        sections =>
+          suggestionsFrom(
+            Array.flatMap(sections, section =>
+              Array.fromIterable(section.contents),
+            ),
+          ),
+      ),
+    {
+      capacity: SUGGESTIONS_CAPACITY,
+      timeToLive: Exit.match({
+        onFailure: () => Duration.zero,
+        onSuccess: () => SUGGESTIONS_TTL,
+      }),
+    },
+  )
+
+  /** The card, or none when the search for it fails. */
+  const topCardOf = (query: string) =>
+    Cache.get(topCards, query).pipe(
+      Effect.orElseSucceed(() => Option.none<TopCard>()),
+    )
 
   const audioTrackSearches = yield* Semaphore.make(AUDIO_TRACK_CONCURRENCY)
 
@@ -390,23 +443,43 @@ const make = Effect.gen(function* () {
   const searchArtists = Effect.fn('YouTubeMusic.searchArtists')(function* (
     query: string,
   ) {
-    const items = yield* searchShelf(query, 'artist')
-    return filterSome(items, artistFromListItem)
+    return yield* Cache.get(artistSearches, query)
   })
 
+  /**
+   * Releases, without karaoke, tributes, and other artists' singles of the
+   * top result's song, which the card tells.
+   */
   const searchAlbums = Effect.fn('YouTubeMusic.searchAlbums')(function* (
     query: string,
   ) {
-    const items = yield* searchShelf(query, 'album')
-    return filterSome(items, albumFromListItem)
+    const [items, maybeCard] = yield* Effect.all(
+      [searchShelf(query, 'album'), topCardOf(query)],
+      { concurrency: 'unbounded' },
+    )
+    return filterAlbumsForQuery(
+      query,
+      filterSome(items, albumFromListItem),
+      Option.flatMap(maybeCard, card => topCardSong(query, card)),
+    )
   })
 
   const searchPlaylists = Effect.fn('YouTubeMusic.searchPlaylists')(function* (
     query: string,
   ) {
     const items = yield* searchShelf(query, 'playlist')
-    return filterSome(items, playlistFromListItem)
+    return filterPlaylistsForQuery(
+      query,
+      filterSome(items, playlistFromListItem),
+    )
   })
+
+  const searchSuggestions = Effect.fn('YouTubeMusic.searchSuggestions')(
+    function* (query: string) {
+      const typed = query.trim().toLowerCase()
+      return typed === '' ? [] : yield* Cache.get(suggestions, typed)
+    },
+  )
 
   /** An artist's top songs as songs, each keeping its play count. */
   const topSongsNotVideos = (page: YTMusic.Artist, details: ArtistDetails) =>
@@ -488,22 +561,19 @@ const make = Effect.gen(function* () {
    */
   const topSongFor = (query: string) =>
     Effect.gen(function* () {
-      const maybeTopResult = yield* Cache.get(topCards, query).pipe(
-        Effect.orElseSucceed(() => Option.none<TopResult>()),
+      const maybeSong = Option.flatMap(yield* topCardOf(query), card =>
+        topCardSong(query, card),
       )
-      if (Option.isNone(maybeTopResult)) return Option.none<TopSong>()
-      const topResult = maybeTopResult.value
-      if (topResult._tag !== 'Song') return Option.none<TopSong>()
+      if (Option.isNone(maybeSong)) return Option.none<TopSong>()
+      const song = maybeSong.value
       const maybeArtistId = pipe(
-        Array.findFirst(topResult.song.artists, ({ maybeId }) =>
-          Option.isSome(maybeId),
-        ),
+        Array.findFirst(song.artists, ({ maybeId }) => Option.isSome(maybeId)),
         Option.flatMap(({ maybeId }) => maybeId),
       )
       const artistSongs = Option.isSome(maybeArtistId)
         ? yield* topSongsOf(maybeArtistId.value, ARTIST_HITS_WAIT)
         : []
-      return Option.some<TopSong>({ song: topResult.song, artistSongs })
+      return Option.some<TopSong>({ song, artistSongs })
     })
 
   const songSearches = yield* Cache.makeWith(
@@ -523,27 +593,32 @@ const make = Effect.gen(function* () {
     return yield* Cache.get(songSearches, query)
   })
 
+  /**
+   * YouTube Music's card, made a song when it is a music video, left out
+   * when it is no song, and given way to the artist the search names
+   * (`chooseTopResult`). An artist comes with their most played songs.
+   */
   const searchTopResult = Effect.fn('YouTubeMusic.searchTopResult')(function* (
     query: string,
   ) {
-    const maybeTopResult = yield* Cache.get(topCards, query)
+    const [maybeCard, songs, artists] = yield* Effect.all(
+      [
+        Cache.get(topCards, query),
+        Cache.get(songShelves, query).pipe(
+          Effect.orElseSucceed((): ReadonlyArray<Song> => []),
+        ),
+        Cache.get(artistSearches, query).pipe(
+          Effect.orElseSucceed((): ReadonlyArray<ArtistSummary> => []),
+        ),
+      ],
+      { concurrency: 'unbounded' },
+    )
+    const maybeTopResult = chooseTopResult(query, maybeCard, songs, artists)
     if (Option.isNone(maybeTopResult)) return maybeTopResult
     const topResult = maybeTopResult.value
-    if (topResult._tag === 'Artist') {
-      const topSongs = yield* topSongsOf(topResult.artist.id, TOP_SONGS_WAIT)
-      return Option.some({ ...topResult, topSongs })
-    }
-    if (topResult._tag !== 'Song') return maybeTopResult
-    // A song found as its music video plays as its audio track instead.
-    const songs = yield* Cache.get(songShelves, query).pipe(
-      Effect.orElseSucceed((): ReadonlyArray<Song> => []),
-    )
-    return Option.some(
-      Option.match(audioTrackFor(topResult.song, songs), {
-        onNone: () => topResult,
-        onSome: song => ({ ...topResult, song }),
-      }),
-    )
+    if (topResult._tag !== 'Artist') return maybeTopResult
+    const topSongs = yield* topSongsOf(topResult.artist.id, TOP_SONGS_WAIT)
+    return Option.some({ ...topResult, topSongs })
   })
 
   const getMoodsAndGenres = Effect.fn('YouTubeMusic.getMoodsAndGenres')(
@@ -897,6 +972,7 @@ const make = Effect.gen(function* () {
     searchAlbums,
     searchPlaylists,
     searchTopResult,
+    searchSuggestions,
     getMoodsAndGenres,
     getMood,
     getSong,

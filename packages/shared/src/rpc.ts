@@ -62,6 +62,16 @@ export const searchTopResultRpc = Rpc.make('searchTopResult', {
   error: YouTubeMusicError,
 })
 
+/**
+ * What YouTube Music suggests searching for as something is typed, for the
+ * list under the search box. Empty for an empty query.
+ */
+export const searchSuggestionsRpc = Rpc.make('searchSuggestions', {
+  payload: SearchPayload,
+  success: Schema.Array(Schema.String),
+  error: YouTubeMusicError,
+})
+
 /** YouTube Music's moods and genres, for browsing. */
 export const getMoodsAndGenresRpc = Rpc.make('getMoodsAndGenres', {
   success: Schema.Array(MoodGroup),
@@ -166,6 +176,7 @@ export const MusicRpcs = RpcGroup.make(
   searchAlbumsRpc,
   searchPlaylistsRpc,
   searchTopResultRpc,
+  searchSuggestionsRpc,
   getMoodsAndGenresRpc,
   getMoodRpc,
   getSongRpc,

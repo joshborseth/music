@@ -27,6 +27,7 @@ import {
 } from '@music/shared'
 
 import {
+  BlurSearchInput,
   EditPlaylists,
   FetchRadio,
   LockScroll,
@@ -46,6 +47,7 @@ import {
   Marquee,
   RestoreScroll,
   SyncTitleBarReveal,
+  WaitBeforeTopShelves,
 } from './mount'
 import {
   SendToSession,
@@ -61,6 +63,7 @@ import {
   artistQuery,
   artistSearchQuery,
   playlistQuery,
+  searchSuggestionsQuery,
   songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
@@ -75,6 +78,13 @@ const pageScrolled = Mount.resolve(
   RestoreScroll,
   Message.CompletedRestoreScroll(),
 )
+
+/**
+ * A search whose Top tab shows all its shelves, which come one a frame
+ * after its first rows.
+ */
+const withTopShelves = (model: Model, query: string): Model =>
+  modifyFields(model, { shownTopShelves: () => ({ query, count: 3 }) })
 
 const sheetFollowsDrags = Mount.resolve(
   DragToDismiss,
@@ -223,7 +233,7 @@ describe('search page', () => {
     ).model
     scene(
       { update, view },
-      given(withTopResult),
+      given(withTopShelves(withTopResult, 'fleetwood mac')),
       pageScrolled,
       expect(role('heading', { name: 'Top Result' })).toExist(),
       expect(role('link', { name: /Fleetwood Mac/ })).toHaveAttr(
@@ -261,12 +271,53 @@ describe('search page', () => {
     ).model
     scene(
       { update, view },
-      given(searched),
+      given(withTopShelves(searched, query)),
       pageScrolled,
       expect(role('heading', { name: 'Songs' })).toExist(),
       expect(role('button', { name: /^Dreams ·/ })).toExist(),
       expect(role('button', { name: /^The Chain ·/ })).toExist(),
       expect(role('button', { name: /^Fleetwood Mac Tribute/ })).toBeAbsent(),
+    )
+  })
+
+  test('top draws its shelves one a frame, after its first rows', () => {
+    const stevieNicks: ArtistSummary = {
+      id: 'UCstevie',
+      name: 'Stevie Nicks',
+      maybeAudience: Option.none(),
+      artwork: [],
+    }
+    const query = 'fleetwood mac'
+    const searched = [
+      Message.GotTopResultSearchMessage({
+        message: topResultSearchQuery.Message.CompletedFetch({
+          args: { query },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed(Option.some(fleetwoodMacResult)),
+        }),
+      }),
+      Message.GotArtistSearchMessage({
+        message: artistSearchQuery.Message.CompletedFetch({
+          args: { query },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed([stevieNicks]),
+        }),
+      }),
+    ].reduce(
+      (model, message) => update(model, message).model,
+      searchResultModel(query, Result.succeed([theChain]), 'Top'),
+    )
+    scene(
+      { update, view },
+      given(searched),
+      pageScrolled,
+      expect(role('heading', { name: 'Top Result' })).toExist(),
+      expect(role('heading', { name: 'Artists' })).toBeAbsent(),
+      Mount.resolve(
+        WaitBeforeTopShelves,
+        Message.CompletedWaitBeforeTopShelves({ query, count: 1 }),
+      ),
+      expect(role('heading', { name: 'Artists' })).toExist(),
     )
   })
 
@@ -314,7 +365,7 @@ describe('search page', () => {
     )
     scene(
       { update, view },
-      given(searched),
+      given(withTopShelves(searched, query)),
       pageScrolled,
       expect(role('tab', { name: 'Top' })).toHaveAttr('aria-selected', 'true'),
       expect(role('heading', { name: 'Artists' })).toExist(),
@@ -361,7 +412,7 @@ describe('search page', () => {
     ).model
     scene(
       { update, view },
-      given(searched),
+      given(withTopShelves(searched, query)),
       pageScrolled,
       expect(role('button', { name: 'Play The Chain' })).toExist(),
       expect(role('button', { name: /^The Chain ·/ })).toBeAbsent(),
@@ -395,6 +446,7 @@ describe('search page', () => {
       pageScrolled,
       click(role('button', { name: 'The Chain · Fleetwood Mac · Rumours' })),
       Command.expectExact(
+        SaveRecentSearches({ recentSearches: ['the chain'] }),
         UnlockPhoneAudio(),
         SendToSession({
           message: {
@@ -407,9 +459,80 @@ describe('search page', () => {
         }),
       ),
       Command.resolveAll(
+        [SaveRecentSearches, Message.CompletedSaveRecentSearches()],
         [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
         [SendToSession, Message.CompletedSendToSession()],
       ),
+      expect(role('heading', { name: 'Recently Searched' })).toBeAbsent(),
+    )
+  })
+
+  test('shows suggestions from the first letter, and searches the one tapped', () => {
+    const typed = update(
+      emptySearchModel,
+      Message.UpdatedSearchInput({ value: 'Blinding L' }),
+    ).model
+    const suggested = update(
+      typed,
+      Message.GotSearchSuggestionsMessage({
+        message: searchSuggestionsQuery.Message.CompletedFetch({
+          args: { query: 'blinding l' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed([
+            'blinding lights the weeknd',
+            'blinding lights',
+          ]),
+        }),
+      }),
+    ).model
+    scene(
+      { update, view },
+      given(suggested),
+      pageScrolled,
+      expect(role('list', { name: 'Suggestions' })).toExist(),
+      click(role('button', { name: 'blinding lights the weeknd' })),
+      expect(role('list', { name: 'Suggestions' })).toBeAbsent(),
+      Command.expectExact(
+        ReplaceSearchUrl({
+          url: searchUrl('blinding lights the weeknd', 'Top'),
+        }),
+        ScrollSearchResultsToTop(),
+        SaveRecentSearches({ recentSearches: ['blinding lights the weeknd'] }),
+        BlurSearchInput(),
+      ),
+      Command.resolveAll(
+        [ReplaceSearchUrl, Message.CompletedReplaceSearchUrl()],
+        [ScrollSearchResultsToTop, Message.CompletedScrollSearchResultsToTop()],
+        [SaveRecentSearches, Message.CompletedSaveRecentSearches()],
+        [BlurSearchInput, Message.CompletedBlurSearchInput()],
+      ),
+    )
+  })
+
+  test('keeps the earlier suggestions on screen while the next ones load', () => {
+    const typed = update(
+      emptySearchModel,
+      Message.UpdatedSearchInput({ value: 'daf' }),
+    ).model
+    const suggested = update(
+      typed,
+      Message.GotSearchSuggestionsMessage({
+        message: searchSuggestionsQuery.Message.CompletedFetch({
+          args: { query: 'daf' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed(['daft punk']),
+        }),
+      }),
+    ).model
+    const typedOn = update(
+      suggested,
+      Message.UpdatedSearchInput({ value: 'daft' }),
+    ).model
+    scene(
+      { update, view },
+      given(typedOn),
+      pageScrolled,
+      expect(role('button', { name: 'daft punk' })).toExist(),
     )
   })
 
@@ -476,7 +599,10 @@ describe('search page', () => {
   })
 
   test('a song as the top result shows when it is the one playing', () => {
-    const searched = searchResultModel('the chain', Result.succeed([]), 'Top')
+    const searched = withTopShelves(
+      searchResultModel('the chain', Result.succeed([]), 'Top'),
+      'the chain',
+    )
     const withTopResult = update(
       searched,
       Message.GotTopResultSearchMessage({

@@ -9,7 +9,12 @@ import {
   type YouTubeMusicError,
 } from '@music/shared'
 
-import { HOME_HISTORY_DEPTH, type HomeFeedInput, newReleases } from './home.ts'
+import {
+  HOME_HISTORY_DEPTH,
+  type HomeFeedInput,
+  moreLike,
+  newReleases,
+} from './home.ts'
 import { type PlaylistStoreShape } from './playlists/store.ts'
 import { type YouTubeMusicShape } from './youtubeMusic/service.ts'
 
@@ -18,9 +23,6 @@ import { type YouTubeMusicShape } from './youtubeMusic/service.ts'
  * `getHome`, `getNewReleases`, and `getSongRadio` RPCs) and the TV
  * (`/tv/home`). `home.ts` shapes what these read.
  */
-
-/** The most songs Home's "More like" shelf shows. */
-export const RADIO_SONGS = 20
 
 /** How many of the most played songs Home's mixes are chosen from. */
 const MIX_CANDIDATES = 100
@@ -72,11 +74,23 @@ export const loadNewReleases = (
     return newReleases(Array.getSomes(pages), new Date(now).getUTCFullYear())
   })
 
-/** "More like": YouTube Music's radio for a song, without the song. */
+const NOTHING_PLAYED: HomeFeedInput = { recentSongs: [], played: [], liked: [] }
+
+/**
+ * "More like": YouTube Music's radio for a song, without the song, the rest
+ * of its album, or anything Home already shows (`moreLike`). The play
+ * history and likes it is checked against are read with it; when they
+ * can't be read, the radio is only cut short.
+ */
 export const loadSongRadio = (
+  store: PlaylistStoreShape,
   youTubeMusic: YouTubeMusicShape,
   videoId: string,
 ): Effect.Effect<ReadonlyArray<Song>, MusicNotFoundError | YouTubeMusicError> =>
-  youTubeMusic
-    .getUpNext(videoId)
-    .pipe(Effect.map(songs => Array.take(songs, RADIO_SONGS)))
+  Effect.all(
+    [
+      youTubeMusic.getUpNext(videoId),
+      homeFeedInput(store).pipe(Effect.orElseSucceed(() => NOTHING_PLAYED)),
+    ],
+    { concurrency: 'unbounded' },
+  ).pipe(Effect.map(([radio, input]) => moreLike(videoId, radio, input)))

@@ -2,14 +2,23 @@ import { describe, expect, test } from 'bun:test'
 import { Option } from 'effect'
 import { YTNodes } from 'youtubei.js'
 
-import { type Song } from '@music/shared'
+import {
+  type AlbumSummary,
+  type ArtistSummary,
+  type PlaylistSummary,
+  type Song,
+} from '@music/shared'
 
 import {
   albumRadio,
   artistFromTwoRowItem,
   audioTrackFor,
   audioTrackQuery,
+  chooseTopResult,
   cleanVideoTitle,
+  countFromText,
+  filterAlbumsForQuery,
+  filterPlaylistsForQuery,
   filterSome,
   hexFromArgb,
   isExplicit,
@@ -17,13 +26,16 @@ import {
   playlistOwnerFromResponse,
   playsFromListItem,
   radioOf,
+  rankArtistsForQuery,
   rankSongsForQuery,
   searchNamesArtist,
   secondsFromClock,
   songFromListItem,
   songFromPlaylistPanelVideo,
+  suggestionsFrom,
   toArtwork,
   toMoodGroups,
+  topCardFrom,
   topResultFromCard,
 } from './mapping.ts'
 
@@ -1058,5 +1070,431 @@ describe('radios', () => {
     })
     expect(albumRadio([menu])).toEqual(Option.none())
     expect(albumRadio([])).toEqual(Option.none())
+  })
+})
+
+// SEARCH FILTERS
+// The examples are what YouTube Music answered for these searches.
+
+const artistNamed = (
+  id: string,
+  name: string,
+  audience: string | undefined,
+): ArtistSummary => ({
+  id,
+  name,
+  maybeAudience: Option.fromNullishOr(audience),
+  artwork: [],
+})
+
+const watchOfType = (videoId: string, musicVideoType: string) => ({
+  watchEndpoint: {
+    videoId,
+    watchEndpointMusicSupportedConfigs: {
+      watchEndpointMusicConfig: { musicVideoType },
+    },
+  },
+})
+
+const track = (
+  videoId: string,
+  title: string,
+  artist: string,
+  seconds: number,
+): Song => ({
+  videoId,
+  title,
+  artists: [{ maybeId: Option.some(`UC${artist}`), name: artist }],
+  maybeAlbum: Option.some({ id: `MPREb_${videoId}`, name: title }),
+  maybeDurationSeconds: Option.some(seconds),
+  artwork: [],
+})
+
+const videoIdsOf = (songs: ReadonlyArray<Song>) =>
+  songs.map(({ videoId }) => videoId)
+
+describe('counts', () => {
+  test('reads audiences, subscribers, and views', () => {
+    expect(countFromText('66.1M monthly audience')).toEqual(
+      Option.some(66_100_000),
+    )
+    expect(countFromText('9.93K subscribers')).toEqual(Option.some(9930))
+    expect(countFromText('2 subscribers')).toEqual(Option.some(2))
+    expect(countFromText('1,234 views')).toEqual(Option.some(1234))
+    expect(countFromText('Artist')).toEqual(Option.none())
+  })
+})
+
+describe('song search filters', () => {
+  // "lofi"
+  const loveInYourEyes = track('Ib91lUpV7EM', 'Love In Your Eyes', 'Lee', 231)
+  const threeHours = track(
+    'kAw9xGI8vgk',
+    '3 Hours of Chill Lofi Music for DEEP Sleep or Study Session',
+    'Lumosound',
+    10_800,
+  )
+  const oneHour: Song = {
+    ...track(
+      '1N8hOpMqvYs',
+      'Lofi Rain Chill Beats for Sleep, Study & Relax (1 Hour)',
+      'Zyra Music',
+      0,
+    ),
+    maybeDurationSeconds: Option.none(),
+  }
+  const twoHours = track(
+    'iP3IfBeJ3DA',
+    '2 hours - Best of lofi hip hop (beats to chill/relax/study to)',
+    'Lofi Noodle',
+    7200,
+  )
+  const longJam = track('dope', 'Dopesmoker', 'Sleep', 3800)
+  const searched = [oneHour, loveInYourEyes, threeHours, twoHours, longJam]
+
+  test('leaves out hours-long uploads and tracks over 15 minutes', () => {
+    expect(videoIdsOf(rankSongsForQuery('lofi', searched))).toEqual([
+      'Ib91lUpV7EM',
+    ])
+  })
+
+  test('keeps them when the search asks for them or names the track', () => {
+    expect(videoIdsOf(rankSongsForQuery('lofi 1 hour', searched))).toEqual(
+      videoIdsOf(searched),
+    )
+    expect(videoIdsOf(rankSongsForQuery('dopesmoker', [longJam]))).toEqual([
+      'dope',
+    ])
+  })
+})
+
+describe('chooseTopResult', () => {
+  // "godspeed you! black emperor": a fan's upload of a whole album.
+  const fullAlbumCard = card(
+    'Godspeed You! Black Emperor - F# A# ∞ (Full Album) [1080p]',
+    watchOfType('wy4IsC5eb7o', 'MUSIC_VIDEO_TYPE_UGC'),
+    [
+      { text: 'Video' },
+      SEPARATOR,
+      { text: 'Risenz' },
+      SEPARATOR,
+      { text: '2M views' },
+      SEPARATOR,
+      { text: '1:03:29' },
+    ],
+  )
+
+  test('never shows a whole album uploaded as one video', () => {
+    const topCard = topCardFrom(fullAlbumCard)
+    expect(Option.map(topCard, ({ isUpload }) => isUpload)).toEqual(
+      Option.some(true),
+    )
+    const efrim = artistNamed(
+      'UCxlD4g6jAzebNzgh9clfONw',
+      'Efrim Manuel Menuck',
+      '443 subscribers',
+    )
+    expect(
+      chooseTopResult('godspeed you! black emperor', topCard, [], [efrim]),
+    ).toEqual(Option.none())
+  })
+
+  test('takes off the brackets that name a video quality', () => {
+    expect(cleanVideoTitle('Song [1080p] (HQ)', [])).toBe('Song')
+  })
+
+  test('keeps an official music video, as its song', () => {
+    const humble = card(
+      'HUMBLE.',
+      watchOfType('tvTRZJ-4EyI', 'MUSIC_VIDEO_TYPE_OMV'),
+      [
+        { text: 'Video' },
+        SEPARATOR,
+        artistRun('Kendrick Lamar', 'UCkendrick'),
+        SEPARATOR,
+        { text: '1.1B views' },
+        SEPARATOR,
+        { text: '3:04' },
+      ],
+    )
+    const audio: Song = {
+      ...track('ox7RsX1Ee34', 'HUMBLE.', 'Kendrick Lamar', 177),
+      artists: [{ maybeId: Option.some('UCkendrick'), name: 'Kendrick Lamar' }],
+    }
+    const result = chooseTopResult(
+      'kendrick lamar humble',
+      topCardFrom(humble),
+      [audio],
+      [],
+    )
+    expect(
+      Option.map(result, topResult =>
+        topResult._tag === 'Song' ? topResult.song.videoId : topResult._tag,
+      ),
+    ).toEqual(Option.some('ox7RsX1Ee34'))
+  })
+
+  test('puts the artist the search names first, past its punctuation', () => {
+    const playlistCard = card(
+      'Daft Punk Best Of',
+      browseTo('VLPLdaft', 'MUSIC_PAGE_TYPE_PLAYLIST'),
+      [{ text: 'Playlist' }, SEPARATOR, { text: 'Someone' }],
+    )
+    const daftPunk = artistNamed(
+      'UCRr1xG_2WIDs18a6cIiCxeA',
+      'Daft Punk',
+      '66.1M monthly audience',
+    )
+    expect(
+      chooseTopResult('daft-punk', topCardFrom(playlistCard), [], [daftPunk]),
+    ).toEqual(Option.some({ _tag: 'Artist', artist: daftPunk, topSongs: [] }))
+  })
+
+  test('keeps a card named exactly what was searched for', () => {
+    const songCard = card('Humble', watchOfType('h', 'MUSIC_VIDEO_TYPE_ATV'), [
+      { text: 'Song' },
+      SEPARATOR,
+      artistRun('Kendrick Lamar', 'UCk'),
+    ])
+    const namesake = artistNamed('UCh', 'Humble', '20K monthly audience')
+    expect(
+      Option.map(
+        chooseTopResult('humble', topCardFrom(songCard), [], [namesake]),
+        ({ _tag }) => _tag,
+      ),
+    ).toEqual(Option.some('Song'))
+  })
+
+  test('never makes an artist hardly anyone follows the top result', () => {
+    const daft = artistNamed(
+      'UC13jQSj755i1s6D6MDEt2sw',
+      'Daft',
+      '2 subscribers',
+    )
+    expect(chooseTopResult('daft', Option.none(), [], [daft])).toEqual(
+      Option.none(),
+    )
+  })
+})
+
+describe('rankArtistsForQuery', () => {
+  // "daft", in YouTube Music's order.
+  const daftPunk = artistNamed('UCdp', 'Daft Punk', '66.1M monthly audience')
+  const weeknd = artistNamed('UCw', 'The Weeknd', '236M monthly audience')
+  const echoDaft = artistNamed('UCed', 'Echo Daft', '108K monthly audience')
+  const poets = artistNamed('UCps', 'Daft Poets Society', '360 subscribers')
+  const daft = artistNamed('UCd', 'Daft', '2 subscribers')
+  const daftFunk = artistNamed('UCdf', 'DAFT FUNK', undefined)
+  const ids = (artists: ReadonlyArray<ArtistSummary>) =>
+    artists.map(({ id }) => id)
+
+  test('hides artists with tiny audiences once a known one matches', () => {
+    expect(
+      ids(
+        rankArtistsForQuery('daft', [
+          daftPunk,
+          weeknd,
+          echoDaft,
+          poets,
+          daft,
+          daftFunk,
+        ]),
+      ),
+    ).toEqual(['UCdp', 'UCw', 'UCed'])
+  })
+
+  test('keeps unknown artists when nobody known has the name', () => {
+    const efrim = artistNamed('UCe', 'Efrim Manuel Menuck', '443 subscribers')
+    expect(
+      ids(rankArtistsForQuery('godspeed you! black emperor', [efrim])),
+    ).toEqual(['UCe'])
+  })
+
+  test('puts the artist named exactly first, past accents and "&"', () => {
+    const tribute = artistNamed(
+      'UCt',
+      'Beyoncé Tribute Band',
+      '12K subscribers',
+    )
+    const beyonce = artistNamed('UCb', 'Beyoncé', '80M monthly audience')
+    expect(ids(rankArtistsForQuery('beyonce', [tribute, beyonce]))).toEqual([
+      'UCb',
+      'UCt',
+    ])
+    const simon = artistNamed(
+      'UCsg',
+      'Simon & Garfunkel',
+      '10M monthly audience',
+    )
+    expect(
+      ids(rankArtistsForQuery('simon garfunkel', [tribute, simon])),
+    ).toEqual(['UCsg', 'UCt'])
+  })
+})
+
+describe('filterAlbumsForQuery', () => {
+  const album = (
+    id: string,
+    title: string,
+    artist: string,
+    kind: 'Album' | 'Single' | 'EP',
+  ): AlbumSummary => ({
+    id,
+    title,
+    artists: [{ maybeId: Option.some(`UC${artist}`), name: artist }],
+    maybeKind: Option.some(kind),
+    maybeYear: Option.some('2017'),
+    artwork: [],
+  })
+  const ids = (albums: ReadonlyArray<AlbumSummary>) =>
+    albums.map(({ id }) => id)
+  // "kendrick lamar humble", in YouTube Music's order.
+  const kendrickAlbums: ReadonlyArray<AlbumSummary> = [
+    album('MPREb_4bCz6FCRC8M', 'DAMN.', 'Kendrick Lamar', 'Album'),
+    album(
+      'MPREb_VJRBqB1bxWu',
+      'Humble (Homage to Kendrick Lamar)',
+      'Barberry Records',
+      'Single',
+    ),
+    album(
+      'MPREb_KzByWmaSfph',
+      'HUMBLE. - Tribute to Kendrick Lamar',
+      '2017 Billboard Masters',
+      'Single',
+    ),
+    {
+      ...album(
+        'MPREb_cwCbbLs5QCI',
+        'HUMBLE. (SKRILLEX REMIX)',
+        'Skrillex',
+        'Single',
+      ),
+      artists: [
+        { maybeId: Option.some('UCSkrillex'), name: 'Skrillex' },
+        { maybeId: Option.some('UCKendrick Lamar'), name: 'Kendrick Lamar' },
+      ],
+    },
+    album(
+      'MPREb_GL8G80mHirW',
+      'HUMBLE. (Karaoke Version) (Originally Performed by Kendrick Lamar)',
+      'Sing2Piano',
+      'Single',
+    ),
+    album(
+      'MPREb_0Omhi9wUmdh',
+      'Unwrapped Vol. 9: The Songs of Kendrick Lamar Reimagined',
+      'Unwrapped',
+      'Album',
+    ),
+    album(
+      'MPREb_i8lyuFVxNY6',
+      'OMA Kendrick Lamar Instrumentals',
+      'OMA',
+      'Album',
+    ),
+    album(
+      'MPREb_P5INWF4OW5f',
+      'THE KENDRICK LAMAR SUITE',
+      'Steve Hackman',
+      'EP',
+    ),
+    album('MPREb_wCND3crJyDP', 'GNX', 'Kendrick Lamar', 'Album'),
+    album(
+      'MPREb_dqblnNqvoLh',
+      'Lullaby Versions of Kendrick Lamar',
+      'Twinkle Twinkle Little Rock Star',
+      'Album',
+    ),
+    album(
+      'MPREb_2dsvr4H0N9F',
+      '8-Bit Versions of Kendrick Lamar',
+      '8-Bit Misfits',
+      'Album',
+    ),
+  ]
+
+  test('leaves out karaoke, tributes, and releases only named after the artist', () => {
+    expect(
+      ids(filterAlbumsForQuery('kendrick lamar humble', kendrickAlbums)),
+    ).toEqual(['MPREb_4bCz6FCRC8M', 'MPREb_cwCbbLs5QCI', 'MPREb_wCND3crJyDP'])
+  })
+
+  test('keeps them all when the search asks for karaoke', () => {
+    expect(filterAlbumsForQuery('humble karaoke', kendrickAlbums)).toHaveLength(
+      kendrickAlbums.length,
+    )
+  })
+
+  test("leaves out other artists' singles of the top result's song", () => {
+    const weeknd = { maybeId: Option.some('UCweeknd'), name: 'The Weeknd' }
+    const top: Song = {
+      ...track('J7p4bzqLvCw', 'Blinding Lights', 'x', 200),
+      artists: [weeknd],
+    }
+    // "blinding lights"
+    const albums = [
+      album('MPREb_dmpixSPWaXE', 'Blinding Lights', 'From Sky', 'Single'),
+      album(
+        'MPREb_9A73CR2XTAI',
+        'Blinding Lights (Acoustic)',
+        'Matt',
+        'Single',
+      ),
+      album('MPREb_fu30JGhLsTj', 'Blinding Light', 'ZERUSH', 'Single'),
+      album('MPREb_cl1okiG5fYY', 'City Of Blinding Lights', 'U2', 'EP'),
+      album('MPREb_yGYYRy3jZpO', 'Blinding Lights', 'Sky Monkey', 'Album'),
+    ]
+    expect(
+      ids(filterAlbumsForQuery('blinding lights', albums, Option.some(top))),
+    ).toEqual(['MPREb_cl1okiG5fYY', 'MPREb_yGYYRy3jZpO'])
+  })
+})
+
+describe('filterPlaylistsForQuery', () => {
+  const playlist = (
+    id: string,
+    title: string,
+    subtitle: string,
+  ): PlaylistSummary => ({
+    id,
+    title,
+    maybeSubtitle: Option.some(subtitle),
+    artwork: [],
+  })
+  // "blinding lig", in YouTube Music's order.
+  const playlists = [
+    playlist(
+      'VLPLa',
+      'The weeknd starboy blinding light',
+      'Robin Romero · 23 views',
+    ),
+    playlist('VLPLb', 'Blinding light', 'Candie Schane · 1.9K views'),
+    playlist('VLPLc', 'Blinding Light', 'Vanyacha · 3.1K views'),
+    playlist('VLPLd', 'blinding light', 'Wayne Martorano · 25 songs'),
+    playlist('VLPLe', 'Pop Karaoke Hits', 'Sing King · 2M views'),
+  ]
+
+  test('leaves out playlists hardly anyone played, and karaoke', () => {
+    expect(
+      filterPlaylistsForQuery('blinding lig', playlists).map(({ id }) => id),
+    ).toEqual(['VLPLb', 'VLPLc', 'VLPLd'])
+  })
+})
+
+describe('suggestionsFrom', () => {
+  test('reads the words YouTube Music suggests, each once', () => {
+    const suggestion = (text: string) =>
+      new YTNodes.SearchSuggestion({
+        suggestion: { runs: [{ text }] },
+        navigationEndpoint: { searchEndpoint: { query: text } },
+      })
+    expect(
+      suggestionsFrom([
+        suggestion('blinding lights the weeknd'),
+        suggestion('blinding lights'),
+        suggestion('Blinding Lights'),
+      ]),
+    ).toEqual(['blinding lights the weeknd', 'blinding lights'])
   })
 })
