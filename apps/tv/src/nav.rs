@@ -152,7 +152,12 @@ pub enum MenuAction {
     InstallUpdate,
     /// Open what the queue plays from: its page, or its search.
     GoTo(PlayingFrom),
+    /// Show the code guests scan to add songs, large.
+    ShowScanCode,
+    /// Close the menu.
     Close,
+    /// Close the menu, declining what it offers.
+    Decline,
 }
 
 impl MenuAction {
@@ -163,7 +168,10 @@ impl MenuAction {
             MenuAction::PlayNext(_) => "Play next",
             MenuAction::AddToQueue(_) => "Add to queue",
             MenuAction::Open(CollectionKind::Artist, _) => "Go to artist",
-            MenuAction::Open(_, _) => "Open",
+            MenuAction::Open(CollectionKind::Album, _) => "Go to album",
+            MenuAction::Open(CollectionKind::Playlist | CollectionKind::MyPlaylist, _) => {
+                "Go to playlist"
+            }
             MenuAction::Like(_) => "Add to Liked Songs",
             MenuAction::SetSaved { kind, saved, .. } => match (kind, saved) {
                 (SaveKind::Album, true) => "Save to library",
@@ -188,7 +196,9 @@ impl MenuAction {
                 PlayingFromKind::Radio => "Go to radio",
                 PlayingFromKind::Search => "Go to search",
             },
-            MenuAction::Close => "Not now",
+            MenuAction::ShowScanCode => "Show code to add songs",
+            MenuAction::Close => "Cancel",
+            MenuAction::Decline => "Not now",
         }
     }
 
@@ -199,7 +209,7 @@ impl MenuAction {
             MenuAction::PlayNext(_) => "play-next",
             MenuAction::AddToQueue(_) => "queue",
             MenuAction::Open(CollectionKind::Artist, _) => "artist",
-            MenuAction::Open(_, _) => "album",
+            MenuAction::Open(_, _) => "open",
             MenuAction::Like(_) => "heart",
             MenuAction::SetSaved { saved: true, .. } => "add",
             MenuAction::SetSaved { saved: false, .. } => "remove",
@@ -211,15 +221,16 @@ impl MenuAction {
             MenuAction::OpenUpdateSettings => "settings",
             MenuAction::CheckForUpdates | MenuAction::InstallUpdate => "update",
             MenuAction::GoTo(from) => match from.kind {
-                PlayingFromKind::Album => "album",
                 PlayingFromKind::Artist => "artist",
                 PlayingFromKind::Search => "search",
-                PlayingFromKind::Playlist
+                PlayingFromKind::Album
+                | PlayingFromKind::Playlist
                 | PlayingFromKind::MyPlaylist
                 | PlayingFromKind::Mix
-                | PlayingFromKind::Radio => "library",
+                | PlayingFromKind::Radio => "open",
             },
-            MenuAction::Close => "close",
+            MenuAction::ShowScanCode => "qr",
+            MenuAction::Close | MenuAction::Decline => "close",
         }
     }
 }
@@ -802,6 +813,10 @@ pub const QUEUE_LINGER: Duration = Duration::from_secs(30);
 /// The scan code shows this long after each song starts, then only with
 /// the controls, so it never sits on the screen for a whole song.
 pub const SCAN_CODE_AFTER_START: Duration = Duration::from_secs(20);
+/// After that, the controls bring the scan code only while this many songs
+/// or fewer are queued after this one (autoplay's don't count), so it asks
+/// for songs when they run short and otherwise leaves the room to Up Next.
+pub const SHORT_QUEUE: usize = 3;
 const NOTICE_DURATION: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -846,6 +861,8 @@ pub struct Nav {
     first_session: bool,
     /// When the song playing now came up, for the scan code.
     song_started: Option<Instant>,
+    /// The scan code shows large, from the settings menu.
+    pub scan_card: bool,
 }
 
 impl Default for Nav {
@@ -883,6 +900,7 @@ impl Nav {
             queue_followed: None,
             first_session: true,
             song_started: None,
+            scan_card: false,
         }
     }
 
@@ -1013,7 +1031,11 @@ impl Nav {
     /// Nobody has touched the remote for a while and a song is up: go back
     /// to the now-playing screen, the screen the app rests on.
     pub fn rest(&mut self) {
-        if !self.session.is_idle() && self.tab != Tab::NowPlaying && self.menu.is_none() {
+        if !self.session.is_idle()
+            && self.tab != Tab::NowPlaying
+            && self.menu.is_none()
+            && !self.scan_card
+        {
             self.show_now_playing();
         }
     }
@@ -1033,14 +1055,15 @@ impl Nav {
         self.tab != Tab::NowPlaying || self.session.is_idle() || self.controls.is_some()
     }
 
-    /// Whether the now-playing screen shows the scan code: with the
-    /// controls, and for a short while after each song starts. Nothing
-    /// playing has its own, larger code.
+    /// Whether the now-playing screen shows the scan code: for a short
+    /// while after each song starts, and with the controls while the queue
+    /// runs short ([`SHORT_QUEUE`]). Nothing playing has its own, larger
+    /// code, and the settings menu shows it any time.
     pub fn scan_code_shown(&self, now: Instant) -> bool {
-        self.controls_shown()
-            || self
-                .song_started
-                .is_some_and(|at| now.saturating_duration_since(at) < SCAN_CODE_AFTER_START)
+        let starting = self
+            .song_started
+            .is_some_and(|at| now.saturating_duration_since(at) < SCAN_CODE_AFTER_START);
+        starting || (self.controls_shown() && self.clearable() <= SHORT_QUEUE)
     }
 
     fn hide_controls(&mut self) {
@@ -1329,7 +1352,7 @@ impl Nav {
         self.menu = Some(Menu {
             title: "Let Joshify update itself?".into(),
             subtitle: "Turn on “Install unknown apps” for Joshify once. After that, pick Install update in Settings when an update is ready.".into(),
-            items: vec![MenuAction::OpenUpdateSettings, MenuAction::Close],
+            items: vec![MenuAction::OpenUpdateSettings, MenuAction::Decline],
             selected: 0,
         });
     }
@@ -1345,7 +1368,7 @@ impl Nav {
         self.menu = Some(Menu {
             title: "Joshify".into(),
             subtitle: about,
-            items: vec![update, MenuAction::Close],
+            items: vec![update, MenuAction::ShowScanCode, MenuAction::Close],
             selected: 0,
         });
     }
@@ -1361,6 +1384,12 @@ impl Nav {
         }
         if let Some(used) = self.media_key(key, now, &mut effects) {
             return (used, effects);
+        }
+        if self.scan_card {
+            if matches!(key, Key::Ok | Key::Back) {
+                self.scan_card = false;
+            }
+            return (true, effects);
         }
         if self.menu.is_some() {
             self.menu_key(key, now, &mut effects);
@@ -1656,7 +1685,7 @@ impl Nav {
             .count()
     }
 
-    /// Clear takes songs out of the queue, so it asks first. "Not now" has
+    /// Clear takes songs out of the queue, so it asks first. "Cancel" has
     /// the selection, so a stray OK changes nothing.
     fn ask_clear_upcoming(&mut self) {
         let count = self.clearable();
@@ -2331,7 +2360,8 @@ impl Nav {
             MenuAction::CheckForUpdates => effects.push(Effect::CheckForUpdates),
             MenuAction::InstallUpdate => effects.push(Effect::InstallUpdate),
             MenuAction::GoTo(from) => self.go_to(from, effects),
-            MenuAction::Close => {}
+            MenuAction::ShowScanCode => self.scan_card = true,
+            MenuAction::Close | MenuAction::Decline => {}
         }
     }
 }
@@ -3085,7 +3115,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scan_code_shows_as_a_song_starts_and_with_the_controls() {
+    fn the_scan_code_shows_as_a_song_starts_and_while_the_queue_runs_short() {
         let mut nav = Nav::new();
         nav.on_session(playing_view());
         let start = Instant::now();
@@ -3093,7 +3123,18 @@ mod tests {
         let later = start + SCAN_CODE_AFTER_START + Duration::from_secs(1);
         assert!(!nav.scan_code_shown(later), "then it goes");
         nav.key(Key::Right, later);
-        assert!(nav.scan_code_shown(later), "the controls bring it back");
+        assert!(nav.controls_shown());
+        assert!(
+            !nav.scan_code_shown(later),
+            "eleven songs to go: the controls leave the room to Up Next"
+        );
+        // Three songs to go, the rest autoplay's: the controls bring it.
+        let mut short = playing_view();
+        for entry in short.queue.iter_mut().skip(4) {
+            entry.autoplay = true;
+        }
+        nav.on_session(short);
+        assert!(nav.scan_code_shown(later), "the queue runs short");
         assert!(nav.settle(later + CONTROLS_LINGER));
         assert!(!nav.scan_code_shown(later + CONTROLS_LINGER));
         // The next song shows it again.
@@ -3101,6 +3142,44 @@ mod tests {
         next.current = Some(1);
         nav.on_session(next);
         assert!(nav.scan_code_shown(Instant::now()));
+    }
+
+    #[test]
+    fn the_settings_menu_shows_the_scan_code_large() {
+        let mut nav = Nav::new();
+        nav.show_settings("Version f3a82b03 (12 Nov 2026)".into(), false);
+        let menu = nav.menu.clone().unwrap();
+        assert_eq!(
+            menu.items.iter().map(MenuAction::label).collect::<Vec<_>>(),
+            ["Check for updates", "Show code to add songs", "Cancel"]
+        );
+        press(&mut nav, &[Key::Down, Key::Ok]);
+        assert!(nav.scan_card && nav.menu.is_none());
+        // Keys other than OK and Back leave it up.
+        assert_eq!(press(&mut nav, &[Key::Down, Key::Right]), vec![]);
+        assert!(nav.scan_card);
+        press(&mut nav, &[Key::Back]);
+        assert!(!nav.scan_card);
+    }
+
+    #[test]
+    fn menus_cancel_and_the_update_prompt_says_not_now() {
+        let mut nav = Nav::new();
+        nav.ask_update_permission();
+        let menu = nav.menu.clone().unwrap();
+        assert_eq!(menu.items[1].label(), "Not now");
+        nav.on_home(Ok(shelves()));
+        nav.menu = None;
+        press(&mut nav, &[Key::Down, Key::Hold]);
+        let menu = nav.menu.clone().unwrap();
+        assert_eq!(menu.items.last().map(MenuAction::label), Some("Cancel"));
+        // An album's menu goes to it with an arrow, not a dot.
+        let open = menu
+            .items
+            .iter()
+            .find(|item| matches!(item, MenuAction::Open(..)))
+            .unwrap();
+        assert_eq!((open.label(), open.icon()), ("Go to album", "open"));
     }
 
     #[test]
@@ -3731,7 +3810,7 @@ mod tests {
             menu.subtitle,
             "This takes out the 7 songs queued after this one. Autoplay’s songs stay."
         );
-        // "Not now" has the selection: OK changes nothing.
+        // "Cancel" has the selection: OK changes nothing.
         assert_eq!(menu.items[menu.selected], MenuAction::Close);
         assert_eq!(press(&mut nav, &[Key::Ok]), vec![]);
         assert!(nav.menu.is_none());

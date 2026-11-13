@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use music_tv::catalog::Client;
+use music_tv::catalog::{CardKind, Client, Shelf};
 use music_tv::protocol::{PlayingFrom, PlayingFromKind};
 use music_tv::screenshots::{Step, run, sample_view};
 
@@ -37,6 +37,36 @@ fn main() {
         .unwrap_or(2);
     let elsewhere = (current + 1) % tracks.len().max(1);
     drop(runtime);
+    // Home with short rows, which spread their few cards across.
+    let of_kind = |kind: CardKind, count: usize| {
+        shelves
+            .iter()
+            .flat_map(|shelf| shelf.cards.iter())
+            .filter(|card| card.kind == kind)
+            .take(count)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let short_home = vec![
+        Shelf {
+            title: "Jump back in".into(),
+            cards: of_kind(CardKind::Album, 4),
+        },
+        Shelf {
+            title: "Your playlists".into(),
+            cards: of_kind(CardKind::Playlist, 2),
+        },
+        Shelf {
+            title: "Liked Songs".into(),
+            cards: of_kind(CardKind::Song, 1),
+        },
+    ];
+    // The queue running short: the song playing and two after it.
+    let short_queue = {
+        let mut view = sample_view(tracks.clone(), current, true);
+        view.queue.truncate(current + 3);
+        view
+    };
 
     let (up, down, left, right) = ("\u{f700}", "\u{f701}", "\u{f702}", "\u{f703}");
     let ok = "\n";
@@ -55,6 +85,12 @@ fn main() {
             }),
             wait(4000),
             Step::Shot("01-home"),
+            Step::Home(short_home),
+            Step::Shot("01e-home-short-rows"),
+            Step::Key(down),
+            wait(1000),
+            Step::Shot("01f-home-short-rows-down"),
+            Step::Key(up),
             // The settings button ends the tab bar; its menu checks for updates.
             Step::Key(up),
             Step::Key(right),
@@ -63,6 +99,12 @@ fn main() {
             Step::Shot("01a-settings-button"),
             Step::Key(ok),
             Step::Shot("01b-settings-menu"),
+            Step::Key(back),
+            // The settings menu shows the scan code, large.
+            Step::Key(ok),
+            Step::Key(down),
+            Step::Key(ok),
+            Step::Shot("01d-scan-code"),
             Step::Key(back),
             // Library, which the tab bar passed on its way: Liked songs first.
             Step::Key(left),
@@ -129,7 +171,7 @@ fn main() {
         up_to_clear,
         vec![
             Step::Shot("07c-queue-clear"),
-            // Clear asks first, with "Not now" selected.
+            // Clear asks first, with "Cancel" selected.
             Step::Key(ok),
             Step::Shot("07d-queue-clear-confirm"),
             Step::Key(back),
@@ -241,6 +283,14 @@ fn main() {
             // scan code goes too.
             wait(21_000),
             Step::Shot("16-resting"),
+            // Later in the song, the controls leave the room to Up Next...
+            Step::Key(right),
+            wait(800),
+            Step::Shot("16a-controls-later"),
+            // ...unless the queue runs short.
+            Step::Session(short_queue),
+            wait(600),
+            Step::Shot("16b-controls-short-queue"),
             // Go to search, from the song's menu, searches again.
             Step::Key(right),
             Step::Hold,
