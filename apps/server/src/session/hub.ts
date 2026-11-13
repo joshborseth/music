@@ -1,10 +1,13 @@
 import {
+  Config,
   Context,
   Effect,
   FiberMap,
+  FileSystem,
   Layer,
   Match,
   Option,
+  Path,
   Queue,
   Schedule,
   Schema,
@@ -38,6 +41,12 @@ import {
   update,
   wakeTimedOut,
 } from './model.ts'
+import {
+  SavedSessionJson,
+  fromSaved,
+  nextEntryNumber,
+  toSaved,
+} from './saved.ts'
 import { readUtcOffsetMinutes } from './utcOffset.ts'
 import { TvWaker } from './wake.ts'
 
@@ -48,6 +57,8 @@ import { TvWaker } from './wake.ts'
  * one lock so all devices see the same order.
  */
 
+/** Changes this close together are written to disk once. */
+const SAVE_AFTER = '1 second'
 /** How long the player may drop off (Wi-Fi blip, app restart) before pausing. */
 const PLAYER_GRACE = '15 seconds'
 /** How long a woken TV gets to open the app and connect. */
@@ -106,11 +117,49 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     const lock = yield* Semaphore.make(1)
     const timers = yield* FiberMap.make<string>()
     const hubScope = yield* Scope.Scope
-
-    let model: Model = initialModel
-    const latestState = yield* SubscriptionRef.make(
-      toSessionState(initialModel, []),
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const home = yield* Config.String('HOME').pipe(Config.withDefault('/tmp'))
+    const savedFile = yield* Config.String('SESSION_STATE_PATH').pipe(
+      Config.withDefault(
+        path.join(home, '.local', 'share', 'music', 'session.json'),
+      ),
     )
+
+    // Start from the session saved before the last restart, if any.
+    let model: Model = yield* fs.readFileString(savedFile).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(SavedSessionJson)),
+      Effect.map(saved => fromSaved(saved, Date.now())),
+      Effect.tap(restored =>
+        Effect.logInfo(
+          `Restored the session: ${restored.queue.length} songs in the queue`,
+        ),
+      ),
+      Effect.catchTag('PlatformError', () => Effect.succeed(initialModel)),
+      Effect.catch(error =>
+        Effect.as(
+          Effect.logWarning('The saved session could not be read', error),
+          initialModel,
+        ),
+      ),
+    )
+    const latestState = yield* SubscriptionRef.make(toSessionState(model, []))
+
+    /** Write the session now, replacing the file in one step. */
+    const save = Effect.gen(function* () {
+      const text = yield* Schema.encodeEffect(SavedSessionJson)(
+        toSaved(model, Date.now()),
+      )
+      const partial = `${savedFile}.partial`
+      yield* fs.makeDirectory(path.dirname(savedFile), { recursive: true })
+      yield* fs.writeFileString(partial, text)
+      yield* fs.rename(partial, savedFile)
+    }).pipe(
+      Effect.catch(error =>
+        Effect.logWarning('The session could not be saved', error),
+      ),
+    )
+    yield* Effect.addFinalizer(() => save)
     const connections = new Map<number, Connection>()
     /** Each connection's own volume, as its device last reported it. */
     const volumes = new Map<number, number | null>()
@@ -123,7 +172,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     const poweredOn = new Map<string, boolean>()
     let utcOffsetMinutes = yield* readUtcOffsetMinutes
     let nextConnectionId = 0
-    let nextEntryId = 0
+    let nextEntryId = nextEntryNumber(model.queue)
 
     const isOnline = (deviceId: string) => {
       for (const connection of connections.values()) {
@@ -418,6 +467,11 @@ export const SessionHubLive = Layer.effect(SessionHub)(
           if (outcome.broadcast) {
             yield* broadcastState
             yield* prepareAhead
+            yield* FiberMap.run(
+              timers,
+              'save',
+              Effect.andThen(Effect.sleep(SAVE_AFTER), save),
+            )
           } else if (Option.isSome(maybeReplyTo)) {
             yield* replyState(maybeReplyTo.value)
           }
