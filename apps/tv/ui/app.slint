@@ -3,7 +3,9 @@
 // Rust owns navigation. Each remote key goes to `key()`, Rust moves the
 // selection, and sets the models below; this file only lays them out and
 // animates. Everything is sized in units of 1/54 of the window height
-// (20px at 1080p), so it reads the same on any TV and any density.
+// (20px at 1080p), so it reads the same on any TV and any density. Text is
+// read from the couch: none is smaller than 1.1 units (22px at 1080p), and
+// secondary text is at least 70% white (`text-3`).
 
 import "fonts/Inter-Regular.ttf";
 import "fonts/Inter-Medium.ttf";
@@ -30,8 +32,8 @@ global Theme {
     out property <color> surface: #ffffff12;
     out property <color> surface-strong: #ffffff24;
     out property <color> text: #ffffff;
-    out property <color> text-2: #ffffffbf;
-    out property <color> text-3: #ffffff80;
+    out property <color> text-2: #ffffffdb;
+    out property <color> text-3: #ffffffb3;
     // Lyrics over the visuals: solid greys, because see-through white takes
     // on the color behind it.
     out property <color> lyric-sung: #6e7178;
@@ -61,6 +63,10 @@ export struct CardData {
 export struct ShelfData {
     title: string,
     cards: [CardData],
+    /// A short row's tip, in the room beside its cards (`library_tip` in
+    /// nav.rs). Empty for none.
+    tip-title: string,
+    tip: string,
 }
 
 export struct RowData {
@@ -225,7 +231,7 @@ component RoundButton inherits Rectangle {
         visible: root.wide;
         text: root.data.label;
         color: root.data.selected ? #0b0d12 : white;
-        font-size: root.size * 0.36;
+        font-size: max(root.size * 0.36, Metrics.u * 1.1);
         font-weight: 600;
     }
 }
@@ -238,7 +244,7 @@ component Card inherits Rectangle {
     in property <length> size;
     property <length> ring: root.data.selected ? Metrics.u * 0.22 : 0;
     width: size;
-    height: size + Metrics.u * 4.2;
+    height: size + Metrics.u * 4.6;
     art := Rectangle {
         y: root.data.selected ? -Metrics.u * 0.5 : 0;
         width: root.size;
@@ -279,21 +285,21 @@ component Card inherits Rectangle {
         }
     }
     Text {
-        y: root.size + Metrics.u * 0.8;
+        y: root.size + Metrics.u * 0.75;
         width: root.size;
         text: root.data.title;
         color: root.data.selected ? white : Theme.text-2;
-        font-size: Metrics.u * 1.0;
+        font-size: Metrics.u * 1.2;
         font-weight: 600;
         overflow: elide;
         horizontal-alignment: root.data.round ? center : left;
     }
     Text {
-        y: root.size + Metrics.u * 2.3;
+        y: root.size + Metrics.u * 2.45;
         width: root.size;
         text: root.data.subtitle;
         color: Theme.text-3;
-        font-size: Metrics.u * 0.85;
+        font-size: Metrics.u * 1.1;
         overflow: elide;
         horizontal-alignment: root.data.round ? center : left;
     }
@@ -313,7 +319,7 @@ component Shelves inherits Rectangle {
     in property <length> pad: Metrics.u * 1.2;
     property <length> gap: Metrics.u * 1.4;
     property <length> card: (root.width - root.pad * 2 - root.gap * (root.columns - 1)) / root.columns;
-    property <length> shelf-height: card + Metrics.u * 8.2;
+    property <length> shelf-height: card + Metrics.u * 8.4;
     Rectangle {
         y: 0;
         height: max(1, floor(root.height / root.shelf-height)) * root.shelf-height;
@@ -328,11 +334,13 @@ component Shelves inherits Rectangle {
                 height: root.shelf-height;
                 Text {
                     x: root.pad;
-                    y: Metrics.u * 0.6;
+                    y: Metrics.u * 0.4;
+                    width: root.width - root.pad * 2;
                     text: shelf.title;
                     color: white;
-                    font-size: Metrics.u * 1.35;
+                    font-size: Metrics.u * 1.5;
                     font-weight: 700;
+                    overflow: elide;
                 }
                 Rectangle {
                     x: root.pad - root.offsets[s] * (root.card + root.gap);
@@ -343,6 +351,49 @@ component Shelves inherits Rectangle {
                         y: 0;
                         data: card;
                         size: root.card;
+                    }
+                    // A short row's tip fills up to three cards' room
+                    // beside them.
+                    if shelf.tip-title != "" && shelf.cards.length < root.columns: Rectangle {
+                        property <int> span: min(3, root.columns - shelf.cards.length);
+                        x: shelf.cards.length * (root.card + root.gap);
+                        y: 0;
+                        width: self.span * (root.card + root.gap) - root.gap;
+                        height: root.card;
+                        border-radius: Metrics.corner(root.card);
+                        background: #ffffff0a;
+                        border-width: 1px;
+                        border-color: #ffffff1f;
+                        VerticalLayout {
+                            padding: Metrics.u * 1.8;
+                            spacing: Metrics.u * 0.6;
+                            alignment: center;
+                            Rectangle {
+                                width: Metrics.u * 3;
+                                height: self.width;
+                                border-radius: self.width / 2;
+                                background: #22d46f2e;
+                                Icon {
+                                    name: "add";
+                                    width: parent.width * 0.55;
+                                    height: self.width;
+                                    color: Theme.green;
+                                }
+                            }
+                            Text {
+                                text: shelf.tip-title;
+                                color: white;
+                                font-size: Metrics.u * 1.4;
+                                font-weight: 700;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: shelf.tip;
+                                color: Theme.text-3;
+                                font-size: Metrics.u * 1.15;
+                                wrap: word-wrap;
+                            }
+                        }
                     }
                 }
             }
@@ -362,7 +413,7 @@ component Row inherits Rectangle {
         y: parent.height - self.height - Metrics.u * 0.6;
         text: root.data.title;
         color: white;
-        font-size: Metrics.u * 1.25;
+        font-size: Metrics.u * 1.4;
         font-weight: 700;
     }
     if root.data.kind != "header": HorizontalLayout {
@@ -370,10 +421,10 @@ component Row inherits Rectangle {
         padding-right: Metrics.u * 1.2;
         spacing: Metrics.u * 1;
         if root.data.number != "": Text {
-            width: Metrics.u * 1.6;
+            width: Metrics.u * 1.8;
             text: root.data.number;
             color: root.data.selected ? #0b0d12aa : Theme.text-3;
-            font-size: Metrics.u * 0.95;
+            font-size: Metrics.u * 1.15;
             horizontal-alignment: right;
             vertical-alignment: center;
         }
@@ -398,19 +449,19 @@ component Row inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            spacing: Metrics.u * 0.15;
+            spacing: Metrics.u * 0.1;
             horizontal-stretch: 1;
             Text {
                 text: root.data.title;
                 color: root.data.selected ? #0b0d12 : (root.data.current ? Theme.green : white);
-                font-size: Metrics.u * 1.05;
+                font-size: Metrics.u * 1.25;
                 font-weight: 600;
                 overflow: elide;
             }
             if root.data.subtitle != "": Text {
                 text: root.data.subtitle;
-                color: root.data.selected ? #0b0d12b0 : Theme.text-3;
-                font-size: Metrics.u * 0.88;
+                color: root.data.selected ? #0b0d12c0 : Theme.text-3;
+                font-size: Metrics.u * 1.1;
                 overflow: elide;
             }
         }
@@ -428,8 +479,8 @@ component Row inherits Rectangle {
         }
         Text {
             text: root.data.detail;
-            color: root.data.selected ? #0b0d12b0 : Theme.text-3;
-            font-size: Metrics.u * 0.9;
+            color: root.data.selected ? #0b0d12c0 : Theme.text-3;
+            font-size: Metrics.u * 1.15;
             horizontal-alignment: right;
             vertical-alignment: center;
             horizontal-stretch: 0;
@@ -467,20 +518,20 @@ component Hint inherits HorizontalLayout {
     Rectangle {
         border-radius: Metrics.u * 0.4;
         border-width: 1px;
-        border-color: #ffffff40;
-        width: max(Metrics.u * 2.2, key-text.preferred-width + Metrics.u * 1);
-        height: Metrics.u * 1.6;
+        border-color: #ffffff59;
+        width: max(Metrics.u * 2.8, key-text.preferred-width + Metrics.u * 1.2);
+        height: Metrics.u * 2.2;
         key-text := Text {
             text: root.key;
             color: Theme.text-2;
-            font-size: Metrics.u * 0.75;
+            font-size: Metrics.u * 1.1;
             font-weight: 600;
         }
     }
     Text {
         text: root.label;
         color: Theme.text-3;
-        font-size: Metrics.u * 0.8;
+        font-size: Metrics.u * 1.1;
         vertical-alignment: center;
     }
 }
@@ -492,7 +543,7 @@ component StateChip inherits Rectangle {
     in property <string> label;
     in property <bool> on;
     width: chip-row.preferred-width;
-    height: Metrics.u * 2.2;
+    height: Metrics.u * 2.6;
     border-radius: self.height / 2;
     background: on ? #22d46f2e : Theme.surface;
     border-width: 1px;
@@ -513,7 +564,7 @@ component StateChip inherits Rectangle {
         Text {
             text: root.label;
             color: root.on ? white : Theme.text-2;
-            font-size: Metrics.u * 0.9;
+            font-size: Metrics.u * 1.1;
             font-weight: 600;
             vertical-alignment: center;
         }
@@ -559,7 +610,7 @@ component QrCard inherits Rectangle {
         Text {
             text: root.title;
             color: white;
-            font-size: Metrics.u * 1.0;
+            font-size: Metrics.u * 1.25;
             font-weight: 700;
             horizontal-alignment: root.vertical ? center : left;
             wrap: word-wrap;
@@ -567,7 +618,7 @@ component QrCard inherits Rectangle {
         Text {
             text: root.subtitle;
             color: Theme.text-3;
-            font-size: Metrics.u * 0.8;
+            font-size: Metrics.u * 1.1;
             horizontal-alignment: root.vertical ? center : left;
             wrap: word-wrap;
         }
@@ -820,16 +871,16 @@ export component App inherits Window {
                 alignment: stage.side ? LayoutAlignment.start : LayoutAlignment.center;
                 if root.playing: Icon {
                     name: "now";
-                    width: Metrics.u * 0.9;
+                    width: Metrics.u * 1.1;
                     height: self.width;
                     color: white;
                 }
                 Text {
                     text: root.where;
                     color: Theme.text-2;
-                    font-size: Metrics.u * 0.8;
+                    font-size: Metrics.u * 1.1;
                     font-weight: 600;
-                    letter-spacing: Metrics.u * 0.08;
+                    letter-spacing: Metrics.u * 0.06;
                 }
             }
             title-text := Text {
@@ -1063,9 +1114,10 @@ export component App inherits Window {
             opacity: root.controls-shown ? 1 : 0;
             visible: self.opacity > 0;
             animate y, opacity { duration: 320ms; easing: ease-out; }
-            HorizontalLayout {
+            buttons := HorizontalLayout {
                 x: Metrics.u * 5;
                 y: root.height - Metrics.u * 7.4;
+                width: self.preferred-width;
                 height: Metrics.u * 5;
                 alignment: start;
                 spacing: Metrics.u * 1.1;
@@ -1073,41 +1125,50 @@ export component App inherits Window {
                     alignment: center;
                     RoundButton { data: button; flat: root.has-visuals; }
                 }
-                Rectangle { width: Metrics.u * 2; }
-                for item in root.up-next: HorizontalLayout {
-                    spacing: Metrics.u * 0.8;
-                    width: Metrics.u * 17;
-                    VerticalLayout {
-                        alignment: center;
-                        Artwork {
-                            width: Metrics.u * 3.2;
-                            height: self.width;
-                            source: item.image;
-                            has-source: item.has-image;
-                        }
+            }
+            // The next song, in the room between the buttons and the scan
+            // code: it ends before the code (which drifts by under a unit),
+            // its title cut short to fit, and stays away when there is too
+            // little room to read it.
+            for item in root.up-next: HorizontalLayout {
+                x: buttons.x + buttons.width + Metrics.u * 1.8;
+                y: buttons.y;
+                width: scan.x - stage.shift-x - Metrics.u * 1.6 - self.x;
+                height: buttons.height;
+                visible: self.width >= Metrics.u * 10;
+                spacing: Metrics.u * 0.8;
+                VerticalLayout {
+                    alignment: center;
+                    Artwork {
+                        width: Metrics.u * 3.2;
+                        height: self.width;
+                        source: item.image;
+                        has-source: item.has-image;
                     }
-                    VerticalLayout {
-                        alignment: center;
-                        Text {
-                            text: "UP NEXT";
-                            color: Theme.text-3;
-                            font-size: Metrics.u * 0.7;
-                            font-weight: 700;
-                            letter-spacing: Metrics.u * 0.08;
-                        }
-                        Text {
-                            text: item.title;
-                            color: white;
-                            font-size: Metrics.u * 0.95;
-                            font-weight: 600;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: item.artists;
-                            color: Theme.text-3;
-                            font-size: Metrics.u * 0.85;
-                            overflow: elide;
-                        }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "UP NEXT";
+                        color: Theme.text-3;
+                        font-size: Metrics.u * 1.1;
+                        font-weight: 700;
+                        letter-spacing: Metrics.u * 0.06;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: item.title;
+                        color: white;
+                        font-size: Metrics.u * 1.2;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: item.artists;
+                        color: Theme.text-3;
+                        font-size: Metrics.u * 1.1;
+                        overflow: elide;
                     }
                 }
             }
@@ -1118,7 +1179,7 @@ export component App inherits Window {
         // change the queue; it never sits there for a whole song. Nothing
         // makes room for it (the lyrics already end above it), so nothing
         // moves when it comes and goes.
-        QrCard {
+        scan := QrCard {
             x: root.width - self.width - Metrics.safe-x + stage.shift-x;
             y: root.height - self.height - Metrics.u * 2.2 + stage.shift-y;
             opacity: root.scan-code-shown ? 1 : 0;
@@ -1127,7 +1188,9 @@ export component App inherits Window {
             code: root.qr;
             size: Metrics.u * 5;
             title: "Add songs";
-            subtitle: "Scan with your phone\non this Wi-Fi";
+            // Three short lines keep the card narrow, so the next song
+            // beside the buttons has room.
+            subtitle: "Scan with\nyour phone\non this Wi-Fi";
             // Over the visuals Skia redraws the screen every frame: keep
             // this card, which never changes, as one cached picture.
             cache-rendering-hint: true;
@@ -1210,7 +1273,7 @@ export component App inherits Window {
             if root.page-subtitle != "": Text {
                 text: root.page-subtitle;
                 color: Theme.text-3;
-                font-size: Metrics.u * 1;
+                font-size: Metrics.u * 1.2;
             }
         }
         Shelves {
@@ -1291,7 +1354,7 @@ export component App inherits Window {
                     if key.icon == "": Text {
                         text: key.label;
                         color: key.selected ? #0b0d12 : white;
-                        font-size: key.span == 1 ? Metrics.u * 1.3 : Metrics.u * 0.95;
+                        font-size: key.span == 1 ? Metrics.u * 1.3 : Metrics.u * 1.15;
                         font-weight: 600;
                     }
                 }
@@ -1318,12 +1381,12 @@ export component App inherits Window {
                 Text {
                     text: "Type with the remote. Results show up as you go.";
                     color: Theme.text-3;
-                    font-size: Metrics.u * 1.1;
+                    font-size: Metrics.u * 1.2;
                 }
                 if root.recent-searches.length > 0: Text {
                     text: "Recent searches";
                     color: white;
-                    font-size: Metrics.u * 1.25;
+                    font-size: Metrics.u * 1.4;
                     font-weight: 700;
                     // A section title, as in a list (`Row`'s header).
                     height: Metrics.u * 3.4;
@@ -1376,7 +1439,7 @@ export component App inherits Window {
             Text {
                 text: root.col-kind;
                 color: Theme.green;
-                font-size: Metrics.u * 0.85;
+                font-size: Metrics.u * 1.1;
                 font-weight: 700;
                 letter-spacing: Metrics.u * 0.1;
             }
@@ -1393,16 +1456,16 @@ export component App inherits Window {
             Text {
                 text: root.col-subtitle;
                 color: Theme.text-2;
-                font-size: Metrics.u * 1;
+                font-size: Metrics.u * 1.2;
                 wrap: word-wrap;
             }
             if root.col-description != "": Text {
                 text: root.col-description;
                 color: Theme.text-3;
-                font-size: Metrics.u * 0.85;
+                font-size: Metrics.u * 1.1;
                 wrap: word-wrap;
                 overflow: elide;
-                height: min(self.preferred-height, Metrics.u * 4.2);
+                height: min(self.preferred-height, Metrics.u * 4.1);
             }
             Rectangle { height: Metrics.u * 0.6; }
             HorizontalLayout {
@@ -1496,7 +1559,7 @@ export component App inherits Window {
                     property <bool> current: i == root.tab;
                     property <bool> focused: self.current && root.tabs-focused;
                     width: tab-row.preferred-width + Metrics.u * 2.4;
-                    height: Metrics.u * 2.8;
+                    height: Metrics.u * 3.2;
                     border-radius: self.height / 2;
                     background: self.focused ? white : (self.current ? #ffffff1f : transparent);
                     animate background { duration: Theme.quick; }
@@ -1507,7 +1570,7 @@ export component App inherits Window {
                             alignment: center;
                             Icon {
                                 name: i == 0 ? "now" : i == 1 ? "home" : i == 2 ? "search" : "library";
-                                width: Metrics.u * 1.1;
+                                width: Metrics.u * 1.3;
                                 height: self.width;
                                 color: tab-pill.focused ? #0b0d12 : (tab-pill.current ? white : Theme.text-3);
                             }
@@ -1515,7 +1578,7 @@ export component App inherits Window {
                         Text {
                             text: name;
                             color: tab-pill.focused ? #0b0d12 : (tab-pill.current ? white : Theme.text-3);
-                            font-size: Metrics.u * 1;
+                            font-size: Metrics.u * 1.2;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -1523,13 +1586,13 @@ export component App inherits Window {
                 }
                 Rectangle {
                     width: self.height;
-                    height: Metrics.u * 2.8;
+                    height: Metrics.u * 3.2;
                     border-radius: self.height / 2;
                     background: root.settings-focused ? white : transparent;
                     animate background { duration: Theme.quick; }
                     Icon {
                         name: "settings";
-                        width: Metrics.u * 1.2;
+                        width: Metrics.u * 1.4;
                         height: self.width;
                         color: root.settings-focused ? #0b0d12 : Theme.text-3;
                     }
@@ -1539,7 +1602,7 @@ export component App inherits Window {
             if root.status != "": Text {
                 text: root.status;
                 color: Theme.text-2;
-                font-size: Metrics.u * 0.9;
+                font-size: Metrics.u * 1.1;
                 vertical-alignment: center;
             }
             Text {
@@ -1556,14 +1619,14 @@ export component App inherits Window {
 
     if root.page >= 2: Rectangle {
         y: root.height - self.height;
-        height: Metrics.u * 5;
+        height: Metrics.u * 5.4;
         background: @linear-gradient(180deg, #0b0d1200 0%, #0b0d12f0 60%, #0b0d12 100%);
     }
 
     if !root.menu-open && root.hints.length > 0 && root.page != 0: HorizontalLayout {
         x: Metrics.safe-x;
-        y: root.height - Metrics.u * 2.6;
-        height: Metrics.u * 1.6;
+        y: root.height - Metrics.u * 3.1;
+        height: Metrics.u * 2.2;
         alignment: start;
         spacing: Metrics.u * 1.6;
         for hint in root.hints: Hint {
@@ -1625,14 +1688,14 @@ export component App inherits Window {
                     Text {
                         text: root.queue-summary;
                         color: Theme.text-3;
-                        font-size: Metrics.u * 0.95;
+                        font-size: Metrics.u * 1.15;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
                     // Up from the first song reaches it.
                     if root.queue-clear-shown: RoundButton {
                         data: root.queue-clear;
-                        size: Metrics.u * 2.2;
+                        size: Metrics.u * 2.6;
                         flat: true;
                     }
                 }
@@ -1658,7 +1721,7 @@ export component App inherits Window {
         Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            width: Metrics.u * 30;
+            width: Metrics.u * 34;
             height: menu-column.preferred-height;
             border-radius: Metrics.u * 1.6;
             background: #161a21;
@@ -1672,20 +1735,20 @@ export component App inherits Window {
                 Text {
                     text: root.menu-title;
                     color: white;
-                    font-size: Metrics.u * 1.4;
+                    font-size: Metrics.u * 1.6;
                     font-weight: 700;
                     overflow: elide;
                 }
                 if root.menu-subtitle != "": Text {
                     text: root.menu-subtitle;
                     color: Theme.text-3;
-                    font-size: Metrics.u * 0.95;
+                    font-size: Metrics.u * 1.15;
                     overflow: elide;
                     wrap: word-wrap;
                 }
                 Rectangle { height: Metrics.u * 0.6; }
                 for item in root.menu-items: Rectangle {
-                    height: Metrics.u * 3.4;
+                    height: Metrics.u * 3.6;
                     border-radius: Metrics.u * 0.8;
                     background: item.selected ? white : transparent;
                     animate background { duration: Theme.quick; }
@@ -1704,7 +1767,7 @@ export component App inherits Window {
                         Text {
                             text: item.label;
                             color: item.selected ? #0b0d12 : white;
-                            font-size: Metrics.u * 1.15;
+                            font-size: Metrics.u * 1.3;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -1731,7 +1794,7 @@ export component App inherits Window {
         notice-text := Text {
             text: root.notice;
             color: white;
-            font-size: Metrics.u * 1;
+            font-size: Metrics.u * 1.25;
             font-weight: 600;
         }
     }

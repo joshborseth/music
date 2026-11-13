@@ -260,6 +260,8 @@ impl Client {
         decode(response).await
     }
 
+    /// Home: the same shelves as the phone's. A mix is a `Playlist` card whose
+    /// id is YouTube's radio id, which `collection` opens like any playlist.
     pub async fn home(&self) -> Result<Vec<Shelf>, String> {
         self.get::<Shelves>("/tv/home")
             .await
@@ -400,6 +402,36 @@ mod tests {
         assert_eq!(
             CollectionKind::from_card(picks.cards[2].kind),
             Some(CollectionKind::Artist)
+        );
+    }
+
+    #[test]
+    fn decodes_home_with_its_radio_mixes_and_new_releases() {
+        let home: Shelves = fixture("home.json");
+        let titles: Vec<_> = home
+            .shelves
+            .iter()
+            .map(|shelf| shelf.title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "More like Cobra",
+                "Your mixes",
+                "New from artists you follow"
+            ]
+        );
+        assert!(home.shelves[0].cards[0].track.is_some());
+        // A mix opens as a playlist, which the server answers with its radio.
+        let mix = &home.shelves[1].cards[0];
+        assert_eq!(
+            CollectionKind::from_card(mix.kind),
+            Some(CollectionKind::Playlist)
+        );
+        assert!(mix.id.starts_with("RDAMVM"));
+        assert_eq!(
+            CollectionKind::from_card(home.shelves[2].cards[0].kind),
+            Some(CollectionKind::Album)
         );
     }
 

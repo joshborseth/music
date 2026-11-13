@@ -10,13 +10,14 @@ import {
   Tv,
 } from '@music/shared'
 
+import { HOME_RECENT_ALBUMS, HOME_RECENT_SONGS, homeFeed } from '../home.ts'
+import { type PlayedSong } from '../playlists/store.ts'
 import {
   HOME_FOLLOWED_ARTISTS,
   HOME_LIKED_SONGS,
   HOME_PLAYLIST_SHELVES,
   HOME_PLAYLIST_SONGS,
-  HOME_RECENT_ALBUMS,
-  HOME_RECENT_SONGS,
+  type HomeShelvesInput,
   SEARCH_SHELF_SIZE,
   albumCard,
   artistCollection,
@@ -29,6 +30,7 @@ import {
   myPlaylistCard,
   myPlaylistCollection,
   playlistCard,
+  playlistCollection,
   savedOf,
   searchShelves,
   songCard,
@@ -187,73 +189,167 @@ describe('cards', () => {
   })
 })
 
+/** Home as `/tv/home` builds it: from the play history and Liked songs. */
+const home = (
+  lib: MyLibrary,
+  liked: ReadonlyArray<Song>,
+  recent: ReadonlyArray<Song>,
+  more: Omit<HomeShelvesInput, 'library' | 'likedSongs' | 'feed'> & {
+    played?: ReadonlyArray<PlayedSong>
+  } = {},
+) => {
+  const { played = [], ...rest } = more
+  return homeShelves({
+    library: lib,
+    likedSongs: liked,
+    feed: homeFeed({ recentSongs: recent, played, liked }),
+    ...rest,
+  })
+}
+
+const titles = (shelves: ReadonlyArray<Tv.TvShelf>) =>
+  shelves.map(({ title }) => title)
+
 describe('shelves', () => {
-  test('home is your playlists and your latest liked songs until something plays, the fuller first', () => {
+  test('home is your liked songs, a mix of the artist you like, and your playlists until something plays, the fuller first', () => {
     const liked = Array.from({ length: HOME_LIKED_SONGS + 5 }, (_, index) =>
       song(`l${index}`),
     )
-    const { shelves } = homeShelves(library, liked, [])
-    // Two playlists leave most of their row empty, so they go second.
-    expect(shelves.map(({ title }) => title)).toEqual([
+    const { shelves } = home(library, liked, [])
+    // One mix and two playlists leave most of their rows empty: they go last.
+    expect(titles(shelves)).toEqual([
       'Liked Songs',
+      'Your mixes',
       'Your playlists',
     ])
     expect(shelves[0]?.cards).toHaveLength(HOME_LIKED_SONGS)
     expect(shelves[0]?.cards[0]).toMatchObject({ kind: 'Song', id: 'l0' })
-    expect(shelves[1]?.cards.map(({ id }) => id)).toEqual(['liked', 'p1'])
+    expect(shelves[2]?.cards.map(({ id }) => id)).toEqual(['liked', 'p1'])
   })
 
-  test('home leads with what played lately, each album under its own artist, and keeps your playlists', () => {
+  test('home splits what played lately as the phone does: albums more than one song played from, then the other songs', () => {
     const recent = [
       song('r0', { maybeAlbum: Option.some({ id: 'A', name: 'Album A' }) }),
       song('r1', { maybeAlbum: Option.none() }),
       song('r2', { maybeAlbum: Option.some({ id: 'B', name: 'Album B' }) }),
       song('r3', { maybeAlbum: Option.some({ id: 'A', name: 'Album A' }) }),
       song('r4', { maybeAlbum: Option.some({ id: 'C', name: 'Album C' }) }),
+      song('r5', { maybeAlbum: Option.some({ id: 'D', name: 'Album D' }) }),
     ]
-    const { shelves } = homeShelves(library, [song('l0')], recent)
-    expect(shelves.map(({ title }) => title)).toEqual([
-      'Jump back in',
+    const { shelves } = home(library, [], recent)
+    expect(titles(shelves)).toEqual([
       'Recently played',
+      'Jump back in',
       'Your playlists',
-      'Liked Songs',
     ])
-    expect(shelves[0]?.cards).toEqual([
+    // Album A's songs show once, as the album, under its own artist.
+    expect(shelves[0]?.cards.map(({ id }) => id)).toEqual([
+      'r1',
+      'r2',
+      'r4',
+      'r5',
+    ])
+    expect(shelves[0]?.cards[0]?.track).toEqual(toQueueTrack(recent[1]!))
+    expect(shelves[1]?.cards).toEqual([
       {
         kind: 'Album',
         id: 'A',
         title: 'Album A',
-        subtitle: 'Rick Astley',
+        subtitle: 'Album · Rick Astley',
         artworkUrl: 'https://lh3.googleusercontent.com/r0=w544-h544',
         track: null,
       },
-      expect.objectContaining({ kind: 'Album', id: 'B' }),
-      expect.objectContaining({ kind: 'Album', id: 'C' }),
     ])
-    expect(shelves[1]?.cards.map(({ id }) => id)).toEqual([
-      'r0',
-      'r1',
-      'r2',
-      'r3',
-      'r4',
-    ])
-    expect(shelves[1]?.cards[0]?.track).toEqual(toQueueTrack(recent[0]!))
   })
 
   test('home caps what played lately', () => {
-    const recent = Array.from({ length: 40 }, (_, index) =>
-      song(`r${index}`, {
-        maybeAlbum: Option.some({ id: `A${index}`, name: `Album ${index}` }),
-      }),
-    )
-    const { shelves } = homeShelves(library, [], recent)
+    const recent = [
+      ...Array.from({ length: 40 }, (_, index) =>
+        song(`a${index}`, {
+          maybeAlbum: Option.some({
+            id: `A${Math.floor(index / 2)}`,
+            name: 'Album',
+          }),
+        }),
+      ),
+      ...Array.from({ length: 30 }, (_, index) =>
+        song(`s${index}`, {
+          maybeAlbum: Option.some({ id: `S${index}`, name: 'Single' }),
+        }),
+      ),
+    ]
+    const { shelves } = home(library, [], recent)
+    expect(titles(shelves).slice(0, 2)).toEqual([
+      'Jump back in',
+      'Recently played',
+    ])
     expect(shelves[0]?.cards).toHaveLength(HOME_RECENT_ALBUMS)
     expect(shelves[1]?.cards).toHaveLength(HOME_RECENT_SONGS)
   })
 
   test('home leaves out Liked songs while it is empty', () => {
-    const { shelves } = homeShelves(library, [], [])
-    expect(shelves.map(({ title }) => title)).toEqual(['Your playlists'])
+    expect(titles(home(library, [], []).shelves)).toEqual(['Your playlists'])
+  })
+
+  test('home adds your mixes, more like the song played last, and new releases, in the phone order', () => {
+    const geese = (videoId: string) =>
+      song(videoId, {
+        title: `Geese ${videoId}`,
+        artists: [{ maybeId: Option.some('UCgeese'), name: 'Geese' }],
+      })
+    const played = [
+      { song: geese('g1'), playCount: 9 },
+      { song: song('x1'), playCount: 3 },
+      { song: geese('g2'), playCount: 2 },
+    ]
+    const recent = [geese('g2'), song('x1'), geese('g3')].map(each => ({
+      ...each,
+      maybeAlbum: Option.none(),
+    }))
+    const releases = ['N1', 'N2', 'N3'].map(id =>
+      album({
+        id,
+        maybeKind: Option.some('Single'),
+        maybeYear: Option.some('2026'),
+      }),
+    )
+    const { shelves } = home(library, [], recent, {
+      played,
+      radio: Option.some({
+        seed: recent[0]!,
+        songs: [song('m1'), song('m2'), song('m3')],
+      }),
+      newReleases: releases,
+    })
+    expect(titles(shelves)).toEqual([
+      'Recently played',
+      'More like Geese g2',
+      'New from artists you follow',
+      'Your mixes',
+      'Your playlists',
+    ])
+    // A mix per artist, the most played first, each opening as a playlist.
+    expect(shelves[3]?.cards).toEqual([
+      {
+        kind: 'Playlist',
+        id: 'RDAMVMg1',
+        title: 'Mix: Geese',
+        subtitle: 'Based on Geese g1',
+        artworkUrl: 'https://lh3.googleusercontent.com/g1=w544-h544',
+        track: null,
+      },
+      expect.objectContaining({ id: 'RDAMVMx1', title: 'Mix: Rick Astley' }),
+    ])
+    expect(shelves[1]?.cards.map(({ kind, id }) => [kind, id])).toEqual([
+      ['Song', 'm1'],
+      ['Song', 'm2'],
+      ['Song', 'm3'],
+    ])
+    expect(shelves[2]?.cards[0]).toMatchObject({
+      kind: 'Album',
+      id: 'N1',
+      subtitle: 'Single · Rick Astley · 2026',
+    })
   })
 
   test('home adds the songs of your latest playlists, and leads with full shelves while little has played', () => {
@@ -261,17 +357,14 @@ describe('shelves', () => {
     const songs = Array.from({ length: HOME_PLAYLIST_SONGS + 5 }, (_, index) =>
       song(`p${index}`),
     )
-    const { shelves } = homeShelves(
-      library,
-      [song('l0')],
-      [song('r0')],
-      [{ playlist: roadTrip, songs }],
-    )
-    // One song played: its shelves hold a card each, so the playlist leads.
-    expect(shelves.map(({ title }) => title)).toEqual([
+    const { shelves } = home(library, [song('l0')], [song('r0')], {
+      playlists: [{ playlist: roadTrip, songs }],
+    })
+    // One song played: its shelf holds a card, so the playlist leads.
+    expect(titles(shelves)).toEqual([
       'Road trip',
-      'Jump back in',
       'Recently played',
+      'Your mixes',
       'Your playlists',
       'Liked Songs',
     ])
@@ -290,16 +383,8 @@ describe('shelves', () => {
       { length: HOME_FOLLOWED_ARTISTS + 3 },
       (_, index) => artist(`UC${index}`),
     )
-    const { shelves } = homeShelves(
-      { ...library, artists: followed },
-      [song('l0')],
-      [],
-    )
-    expect(shelves.map(({ title }) => title)).toEqual([
-      'Artists you follow',
-      'Your playlists',
-      'Liked Songs',
-    ])
+    const { shelves } = home({ ...library, artists: followed }, [], [])
+    expect(titles(shelves)).toEqual(['Artists you follow', 'Your playlists'])
     expect(shelves[0]?.cards).toHaveLength(HOME_FOLLOWED_ARTISTS)
     expect(shelves[0]?.cards[0]).toMatchObject({
       kind: 'Artist',
@@ -307,13 +392,14 @@ describe('shelves', () => {
       title: 'Artist UC0',
     })
 
-    const few = homeShelves(
+    const few = home(
       { ...library, artists: [artist('UCa')] },
       Array.from({ length: 5 }, (_, index) => song(`l${index}`)),
       [],
     )
-    expect(few.shelves.map(({ title }) => title)).toEqual([
+    expect(titles(few.shelves)).toEqual([
       'Liked Songs',
+      'Your mixes',
       'Your playlists',
       'Artists you follow',
     ])
@@ -385,6 +471,27 @@ describe('collections', () => {
         cards: [albumCard(album(), false)],
       },
     ])
+  })
+
+  test('a mix made on Home says so, and a playlist says it is one', () => {
+    const details = (id: string) => ({
+      playlist: {
+        id,
+        title: 'Mix: Geese',
+        maybeSubtitle: Option.some('Based on Cobra'),
+        artwork: [],
+      },
+      maybeOwner: Option.none(),
+      maybeDescription: Option.none(),
+      maybeLengthSummary: Option.some('50 songs'),
+      tracks: [song('a')],
+    })
+    expect(playlistCollection(details('RDAMVMcobra')).subtitle).toBe(
+      'Mix · Based on Cobra · 50 songs',
+    )
+    expect(playlistCollection(details('PL1')).subtitle).toBe(
+      'Playlist · Based on Cobra · 50 songs',
+    )
   })
 
   test('my playlist spells out its length', () => {
@@ -486,6 +593,7 @@ describe('fixtures shared with the TV app', () => {
   const read = (name: string) => Bun.file(new URL(name, FIXTURES)).json()
   const cases: ReadonlyArray<readonly [string, Schema.Decoder<unknown>]> = [
     ['shelves.json', Tv.TvShelves],
+    ['home.json', Tv.TvShelves],
     ['collection.json', Tv.TvCollection],
     ['lyrics.json', Tv.TvLyrics],
     ['lyrics-untimed.json', Tv.TvLyrics],
@@ -513,7 +621,7 @@ describe('fixtures shared with the TV app', () => {
 
   test('the encoded mapping round-trips through the fixture Schema', () => {
     const encoded = Schema.encodeSync(Tv.TvShelves)(
-      homeShelves(library, [song('a')], [song('b')]),
+      home(library, [song('a')], [song('b')]),
     )
     expect(Schema.decodeExit(Tv.TvShelves)(encoded)._tag).toBe('Success')
   })

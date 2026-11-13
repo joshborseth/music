@@ -1,0 +1,50 @@
+{
+  "shelves": [
+    {
+      "title": "More like Cobra",
+      "cards": [
+        {
+          "kind": "Song",
+          "id": "aBcDeFgHiJk",
+          "title": "Trinidad",
+          "subtitle": "Geese",
+          "artworkUrl": "https://lh3.googleusercontent.com/trinidad=w544-h544-l90-rj",
+          "track": {
+            "videoId": "aBcDeFgHiJk",
+            "title": "Trinidad",
+            "artists": "Geese",
+            "album": "Getting Killed",
+            "durationSeconds": 241,
+            "artworkUrl": "https://lh3.googleusercontent.com/trinidad=w544-h544-l90-rj"
+          }
+        }
+      ]
+    },
+    {
+      "title": "Your mixes",
+      "cards": [
+        {
+          "kind": "Playlist",
+          "id": "RDAMVMcobraVideo1",
+          "title": "Mix: Geese",
+          "subtitle": "Based on Cobra",
+          "artworkUrl": "https://lh3.googleusercontent.com/cobra=w544-h544-l90-rj",
+          "track": null
+        }
+      ]
+    },
+    {
+      "title": "New from artists you follow",
+      "cards": [
+        {
+          "kind": "Album",
+          "id": "MPREb_new",
+          "title": "Getting Killed",
+          "subtitle": "Album · Geese · 2025",
+          "artworkUrl": "https://lh3.googleusercontent.com/killed=w544-h544-l90-rj",
+          "track": null
+        }
+      ]
+    }
+  ]
+}

@@ -32,7 +32,7 @@ use crate::local_time::LocalTime;
 use crate::lyrics::{self, RowKind};
 use crate::nav::{
     self, CONTROLS, CollectionButton, Control, Effect, Focus, IDLE_BUTTONS, IdleButton,
-    KEY_COLUMNS, KEYBOARD, Key, Load, Nav, Panel, PlayMode, RowRef, Tab, WIDE_KEYS,
+    KEY_COLUMNS, KEYBOARD, Key, Load, Nav, Panel, PlayMode, RowRef, ShelfTip, Tab, WIDE_KEYS,
 };
 use crate::protocol::{Placement, RepeatMode};
 use crate::update::{self, UpdateStatus};
@@ -117,7 +117,8 @@ struct Models {
     idle_buttons: Rc<VecModel<ButtonData>>,
     shelves: Rc<VecModel<ShelfData>>,
     shelf_cards: Vec<Rc<VecModel<CardData>>>,
-    shelf_titles: Vec<String>,
+    /// Each shelf's title and tip: the shelf models are rebuilt when these change.
+    shelf_titles: Vec<(String, Option<ShelfTip>)>,
     offsets: Rc<VecModel<i32>>,
     keys: Rc<VecModel<KeyData>>,
     recent_searches: Rc<VecModel<RowData>>,
@@ -169,30 +170,35 @@ impl Models {
     }
 
     /// Show these shelves, rebuilding only when the set of shelves changes.
-    fn sync_shelves(&mut self, shelves: Vec<(String, Vec<CardData>)>) {
-        let titles: Vec<String> = shelves.iter().map(|(title, _)| title.clone()).collect();
+    fn sync_shelves(&mut self, shelves: Vec<(String, Option<ShelfTip>, Vec<CardData>)>) {
+        let titles: Vec<(String, Option<ShelfTip>)> = shelves
+            .iter()
+            .map(|(title, tip, _)| (title.clone(), tip.clone()))
+            .collect();
         let same = titles == self.shelf_titles
             && shelves
                 .iter()
                 .zip(&self.shelf_cards)
-                .all(|((_, cards), model)| cards.len() == model.row_count());
+                .all(|((_, _, cards), model)| cards.len() == model.row_count());
         if same {
-            for ((_, cards), model) in shelves.into_iter().zip(&self.shelf_cards) {
+            for ((_, _, cards), model) in shelves.into_iter().zip(&self.shelf_cards) {
                 sync(model, cards);
             }
             return;
         }
         self.shelf_cards = shelves
             .iter()
-            .map(|(_, cards)| Rc::new(VecModel::from(cards.clone())))
+            .map(|(_, _, cards)| Rc::new(VecModel::from(cards.clone())))
             .collect();
         self.shelf_titles = titles;
         let rows: Vec<ShelfData> = shelves
             .iter()
             .zip(&self.shelf_cards)
-            .map(|((title, _), cards)| ShelfData {
+            .map(|((title, tip, _), cards)| ShelfData {
                 title: title.into(),
                 cards: ModelRc::from(cards.clone()),
+                tip_title: tip.as_ref().map(|tip| tip.title).unwrap_or_default().into(),
+                tip: tip.as_ref().map(|tip| tip.body).unwrap_or_default().into(),
             })
             .collect();
         self.shelves.set_vec(rows);
@@ -1414,7 +1420,10 @@ impl Ui {
                     }
                 })
                 .collect();
-            rows.push((shelf.title.clone(), cards));
+            let tip = (tab == Tab::Library)
+                .then(|| nav::library_tip(&found, row))
+                .flatten();
+            rows.push((shelf.title.clone(), tip, cards));
         }
         self.models.sync_shelves(rows);
         sync(

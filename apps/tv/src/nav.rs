@@ -325,6 +325,52 @@ impl ShelvesNav {
         }
     }
 
+    /// Takes the shelves loaded again (Home and Library reload on every
+    /// visit). The selection stays on the same card, even when its shelf
+    /// moved or cards came before it, and each row keeps its place by its
+    /// title. A reload that fails keeps the shelves already shown.
+    pub fn refresh(&mut self, result: Result<Vec<Shelf>, String>, visible: usize) {
+        let after = match (self.content.loaded(), result) {
+            (Some(_), Err(_)) => return,
+            (None, result) => return self.set(to_load(result)),
+            (Some(_), Ok(after)) => after,
+        };
+        let before = self.shelves();
+        // Where each new row was, and the card selected on it.
+        let places: Vec<Option<(usize, usize)>> = after
+            .iter()
+            .map(|shelf| {
+                let index = before.iter().position(|old| old.title == shelf.title)?;
+                let column = self.columns.get(index).copied().unwrap_or(0);
+                let found = before[index].cards.get(column).and_then(|selected| {
+                    shelf.cards.iter().position(|card| card.id == selected.id)
+                });
+                let offset = self.offsets.get(index).copied().unwrap_or(0);
+                Some((found.unwrap_or(column), offset))
+            })
+            .collect();
+        let row = before
+            .get(self.row)
+            .and_then(|selected| after.iter().position(|shelf| shelf.title == selected.title))
+            .unwrap_or(self.row);
+        self.columns = places
+            .iter()
+            .map(|place| place.map_or(0, |(column, _)| column))
+            .collect();
+        self.offsets = places
+            .iter()
+            .map(|place| place.map_or(0, |(_, offset)| offset))
+            .collect();
+        self.row = row;
+        let counts: Vec<usize> = after.iter().map(|shelf| shelf.cards.len()).collect();
+        self.set(Load::Loaded(after));
+        // A card that moved along its row stays in view.
+        for (index, count) in counts.into_iter().enumerate() {
+            self.offsets[index] =
+                keep_visible(self.offsets[index], self.columns[index], visible, count);
+        }
+    }
+
     fn shelves(&self) -> &[Shelf] {
         self.content.loaded().map_or(&[], Vec::as_slice)
     }
@@ -394,6 +440,60 @@ fn music_starts(before: &View, after: &View) -> bool {
 
 /// Keep `selected` visible in a window of `visible` items starting at `first`,
 /// with one item of context on either side when there is room.
+/// The Library's shelf titles (`libraryShelves` in the server's
+/// `tvCatalog/mapping.ts`).
+pub const LIBRARY_PLAYLISTS: &str = "Your playlists";
+pub const LIBRARY_ALBUMS: &str = "Albums";
+pub const LIBRARY_ARTISTS: &str = "Artists";
+
+/// A Library row with fewer cards than this gets a tip beside them.
+pub const LIBRARY_TIP_BELOW: usize = 4;
+
+/// What a short Library row says in the room beside its cards: how to fill
+/// it, so a new library looks meant rather than empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShelfTip {
+    pub title: &'static str,
+    pub body: &'static str,
+}
+
+const SAVE_ALBUMS: ShelfTip = ShelfTip {
+    title: "Save albums",
+    body: "Open an album and pick +, or hold OK on one. Albums saved on your phone show up here too.",
+};
+const FOLLOW_ARTISTS: ShelfTip = ShelfTip {
+    title: "Follow artists",
+    body: "Open an artist and pick +, or hold OK on one. Their new releases then show up on Home.",
+};
+const SAVE_BOTH: ShelfTip = ShelfTip {
+    title: "Save albums and follow artists",
+    body: "Pick + on an album or an artist, or hold OK on one. They show up here and on your phone.",
+};
+const MAKE_PLAYLISTS: ShelfTip = ShelfTip {
+    title: "Make playlists",
+    body: "Playlists you make on your phone show up here, Liked Songs first.",
+};
+
+/// The tip for Library row `index`, when the row is short. The last row
+/// also says how to add the kinds the Library has none of yet.
+pub fn library_tip(shelves: &[Shelf], index: usize) -> Option<ShelfTip> {
+    let shelf = shelves.get(index)?;
+    if shelf.cards.len() >= LIBRARY_TIP_BELOW {
+        return None;
+    }
+    let has = |title: &str| shelves.iter().any(|shelf| shelf.title == title);
+    let last = index + 1 == shelves.len();
+    if last && !(has(LIBRARY_ALBUMS) && has(LIBRARY_ARTISTS)) {
+        return Some(SAVE_BOTH);
+    }
+    match shelf.title.as_str() {
+        LIBRARY_PLAYLISTS => Some(MAKE_PLAYLISTS),
+        LIBRARY_ALBUMS => Some(SAVE_ALBUMS),
+        LIBRARY_ARTISTS => Some(FOLLOW_ARTISTS),
+        _ => None,
+    }
+}
+
 pub fn keep_visible(first: usize, selected: usize, visible: usize, count: usize) -> usize {
     let visible = visible.max(1);
     let max_first = count.saturating_sub(visible);
@@ -1065,11 +1165,11 @@ impl Nav {
     // CATALOG RESULTS
 
     pub fn on_home(&mut self, result: Result<Vec<Shelf>, String>) {
-        self.home.shelves.set(to_load(result));
+        self.home.shelves.refresh(result, HOME_CARDS_VISIBLE);
     }
 
     pub fn on_library(&mut self, result: Result<Vec<Shelf>, String>) {
-        self.library.shelves.set(to_load(result));
+        self.library.shelves.refresh(result, HOME_CARDS_VISIBLE);
     }
 
     pub fn on_search(&mut self, query: &str, result: Result<Vec<Shelf>, String>) {
@@ -1267,8 +1367,12 @@ impl Nav {
     pub fn switch_tab(&mut self, tab: Tab, effects: &mut Vec<Effect>) {
         self.tab = tab;
         match tab {
-            Tab::Home if self.home.shelves.content == Load::NotLoaded => {
-                self.home.shelves.content = Load::Loading;
+            // What played lately changes all the time, so Home reloads on
+            // every visit too, showing what it had meanwhile.
+            Tab::Home if self.home.shelves.content != Load::Loading => {
+                if self.home.shelves.content == Load::NotLoaded {
+                    self.home.shelves.content = Load::Loading;
+                }
                 effects.push(Effect::LoadHome);
             }
             Tab::Library => {
@@ -2212,6 +2316,100 @@ mod tests {
         assert_eq!(keep_visible(3, 3, 7, 10), 2);
         assert_eq!(keep_visible(0, 9, 7, 10), 3);
         assert_eq!(keep_visible(0, 1, 7, 3), 0);
+    }
+
+    #[test]
+    fn short_library_rows_say_how_to_fill_them() {
+        let shelf = |title: &str, count: usize| Shelf {
+            title: title.into(),
+            cards: (0..count)
+                .map(|index| album_card(&format!("c{index}")))
+                .collect(),
+        };
+        // Liked Songs and one playlist, one album, no artists yet.
+        let sparse = vec![shelf(LIBRARY_PLAYLISTS, 2), shelf(LIBRARY_ALBUMS, 1)];
+        assert_eq!(library_tip(&sparse, 0), Some(MAKE_PLAYLISTS));
+        assert_eq!(library_tip(&sparse, 1), Some(SAVE_BOTH));
+        // Only Liked Songs: the one row says how to add the rest.
+        assert_eq!(library_tip(&sparse[..1], 0), Some(SAVE_BOTH));
+        let full = vec![
+            shelf(LIBRARY_PLAYLISTS, 9),
+            shelf(LIBRARY_ALBUMS, 2),
+            shelf(LIBRARY_ARTISTS, 1),
+        ];
+        assert_eq!(library_tip(&full, 0), None);
+        assert_eq!(library_tip(&full, 1), Some(SAVE_ALBUMS));
+        assert_eq!(library_tip(&full, 2), Some(FOLLOW_ARTISTS));
+        assert_eq!(library_tip(&full, 3), None);
+    }
+
+    #[test]
+    fn a_reload_keeps_the_selection_on_the_same_card() {
+        let mut nav = Nav::new();
+        nav.on_home(Ok(shelves()));
+        press(&mut nav, &[Key::Down, Key::Right]);
+        assert_eq!(nav.home.shelves.selected_card().unwrap().id, "a1");
+        // Something played meanwhile: a new shelf leads, and a new album
+        // comes before the one selected.
+        let mut reloaded = shelves();
+        reloaded[1].cards.insert(0, album_card("new"));
+        reloaded.insert(
+            0,
+            Shelf {
+                title: "More like Song s0".into(),
+                cards: vec![song_card("m0")],
+            },
+        );
+        nav.on_home(Ok(reloaded));
+        assert_eq!(nav.home.shelves.row, 2);
+        assert_eq!(nav.home.shelves.selected_card().unwrap().id, "a1");
+    }
+
+    #[test]
+    fn a_reload_that_fails_keeps_the_shelves_shown() {
+        let mut nav = Nav::new();
+        nav.on_home(Ok(shelves()));
+        nav.on_home(Err("Can't reach the music server".into()));
+        assert_eq!(nav.home.shelves.content, Load::Loaded(shelves()));
+        // A first load that fails says so.
+        nav.on_library(Err("Can't reach the music server".into()));
+        assert!(matches!(nav.library.shelves.content, Load::Failed(_)));
+    }
+
+    #[test]
+    fn home_reloads_on_every_visit() {
+        let mut nav = Nav::new();
+        nav.on_home(Ok(shelves()));
+        let mut effects = Vec::new();
+        nav.switch_tab(Tab::Search, &mut effects);
+        nav.switch_tab(Tab::Home, &mut effects);
+        assert_eq!(effects, vec![Effect::LoadHome]);
+        // Still showing what it had while it reloads.
+        assert_eq!(nav.home.shelves.content, Load::Loaded(shelves()));
+    }
+
+    #[test]
+    fn a_mix_opens_as_a_playlist() {
+        let mut nav = Nav::new();
+        nav.on_home(Ok(vec![Shelf {
+            title: "Your mixes".into(),
+            cards: vec![Card {
+                kind: CardKind::Playlist,
+                id: "RDAMVMcobra".into(),
+                title: "Mix: Geese".into(),
+                subtitle: "Based on Cobra".into(),
+                artwork_url: None,
+                track: None,
+            }],
+        }]));
+        assert_eq!(
+            press(&mut nav, &[Key::Ok]),
+            vec![Effect::LoadCollection {
+                tab: Tab::Home,
+                kind: CollectionKind::Playlist,
+                id: "RDAMVMcobra".into(),
+            }]
+        );
     }
 
     #[test]
