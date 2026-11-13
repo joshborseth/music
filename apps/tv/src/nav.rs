@@ -99,6 +99,7 @@ pub enum Effect {
     /// version and how updates stand.
     OpenSettings,
     CheckForUpdates,
+    InstallUpdate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +123,7 @@ pub enum MenuAction {
     RemoveEntry(String),
     OpenUpdateSettings,
     CheckForUpdates,
+    InstallUpdate,
     Close,
 }
 
@@ -139,6 +141,7 @@ impl MenuAction {
             MenuAction::RemoveEntry(_) => "Remove from queue",
             MenuAction::OpenUpdateSettings => "Open settings",
             MenuAction::CheckForUpdates => "Check for updates",
+            MenuAction::InstallUpdate => "Install update",
             MenuAction::Close => "Not now",
         }
     }
@@ -154,7 +157,7 @@ impl MenuAction {
             MenuAction::Like(_) => "heart",
             MenuAction::RemoveEntry(_) => "remove",
             MenuAction::OpenUpdateSettings => "settings",
-            MenuAction::CheckForUpdates => "update",
+            MenuAction::CheckForUpdates | MenuAction::InstallUpdate => "update",
             MenuAction::Close => "close",
         }
     }
@@ -1035,18 +1038,24 @@ impl Nav {
     pub fn ask_update_permission(&mut self) {
         self.menu = Some(Menu {
             title: "Let Joshify update itself?".into(),
-            subtitle: "Turn on “Install unknown apps” for Joshify once. After that, updates install by themselves while nothing is playing.".into(),
+            subtitle: "Turn on “Install unknown apps” for Joshify once. After that, pick Install update in Settings when an update is ready.".into(),
             items: vec![MenuAction::OpenUpdateSettings, MenuAction::Close],
             selected: 0,
         });
     }
 
     /// The settings menu: `about` is the version and how updates stand.
-    pub fn show_settings(&mut self, about: String) {
+    /// With an update `ready`, it offers to install it instead of checking.
+    pub fn show_settings(&mut self, about: String, ready: bool) {
+        let update = if ready {
+            MenuAction::InstallUpdate
+        } else {
+            MenuAction::CheckForUpdates
+        };
         self.menu = Some(Menu {
             title: "Joshify".into(),
             subtitle: about,
-            items: vec![MenuAction::CheckForUpdates, MenuAction::Close],
+            items: vec![update, MenuAction::Close],
             selected: 0,
         });
     }
@@ -1737,6 +1746,7 @@ impl Nav {
             }
             MenuAction::OpenUpdateSettings => effects.push(Effect::OpenUpdateSettings),
             MenuAction::CheckForUpdates => effects.push(Effect::CheckForUpdates),
+            MenuAction::InstallUpdate => effects.push(Effect::InstallUpdate),
             MenuAction::Close => {}
         }
     }
@@ -1926,8 +1936,12 @@ mod tests {
         press(&mut nav, &[Key::Right]);
         assert_eq!((nav.tab, nav.focus), (Tab::Library, Focus::Settings));
         assert_eq!(press(&mut nav, &[Key::Ok]), vec![Effect::OpenSettings]);
-        nav.show_settings("Version f3a82b03 (12 Nov 2026)".into());
+        nav.show_settings("Version f3a82b03 (12 Nov 2026)".into(), false);
         assert_eq!(press(&mut nav, &[Key::Ok]), vec![Effect::CheckForUpdates]);
+        assert!(nav.menu.is_none());
+        // With an update downloaded, the same item installs it.
+        nav.show_settings("An update is ready.".into(), true);
+        assert_eq!(press(&mut nav, &[Key::Ok]), vec![Effect::InstallUpdate]);
         assert!(nav.menu.is_none());
         press(&mut nav, &[Key::Left]);
         assert_eq!((nav.tab, nav.focus), (Tab::Library, Focus::Tabs));

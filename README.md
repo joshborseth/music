@@ -111,7 +111,7 @@ The app connects to `http://192.168.1.67:4310`. To point it somewhere else, set 
 
 To install it, open `http://192.168.1.67:4310/tv.apk` in the TV's Downloader app. The server serves the file at `TV_APK_PATH` there. Send Files to TV works too. Joshify then appears in the TV's app list.
 
-After that first install, the app updates itself. Each build gets an id (`<commit>-<UTC time>`), which the build script compiles into the app and writes to `dist/music-tv.build`; the server answers it at `/tv/version`. The app checks only when it starts and when you pick Check for updates in its settings, so a deploy never closes it while you use it. When the server has another build, the app downloads it, waits until nothing has played on the TV for 30 seconds, and installs it. If Joshify was on screen, the server then reopens it through Home Assistant when it doesn't come back by itself within 20 seconds. If the TV was in standby or showing another app, Joshify stays closed until you open it. Once, the first time, allow "Install unknown apps" for Joshify when the app asks. After that, updates install by themselves on Android 12 and later while nothing plays. Older Android versions, or a TV that wants a confirmation anyway, show Android's Install prompt instead. Failures show in the app and in `journalctl --user -u music.service`. A build that fails to install three times is left alone until the next one.
+After that first install, the app updates itself, but only when you ask. Each build gets an id (`<commit>-<UTC time>`), which the build script compiles into the app and writes to `dist/music-tv.build`; the server answers it at `/tv/version`. The app checks when it starts, every 15 minutes, and when you pick Check for updates in its Settings. When the server has another build, the app downloads it and the top bar says "Update ready". Nothing installs until you open Settings (the button at the right end of the tab bar) and pick **Install update**, so an update never closes the app or stops the music by itself. If a newer build arrived meanwhile, that one installs. The server then reopens Joshify through Home Assistant when it doesn't come back by itself within 20 seconds. Once, the first time, allow "Install unknown apps" for Joshify when the app asks. On Android 12 and later the update then installs without a prompt. Older Android versions, or a TV that wants a confirmation anyway, show Android's Install prompt instead. Failures show in the app and in `journalctl --user -u music.service`; pick Install update again to retry.
 
 To see the screens without a TV, render them to PNG files. This needs a server with the `/tv` routes; it reads the catalog and artwork from it, and makes up its own queue instead of joining the session:
 
@@ -152,7 +152,7 @@ What the TV app does not do yet: it has no TV banner image (cargo-apk can't decl
 
 ## Hosting
 
-The installed app runs on this machine as the `music.service` systemd user unit. The Bun server serves the built web app from `apps/web/dist`, along with `/rpc`, `/session`, and `/audio`, on port 4310. Text files go out compressed with Brotli (or gzip), each compressed once as the server starts and kept in memory. The hashed files under `/assets/` are cached for a year (`immutable`); `index.html`, the service worker, and everything else that keeps its name are checked every time (`no-cache`) and answered with 304 when unchanged (`apps/server/src/webApp.ts`). It listens on every interface (`HOST=0.0.0.0`) so the TV can reach it over the home network. The unit sets `YTDLP_PATH` and `TV_APK_PATH`. `AUDIO_CACHE_DIR` and `AUDIO_CACHE_MAX_BYTES` change where songs are kept and how much space they may use. `PLAYLISTS_DB_PATH` changes where the playlists are kept, and `LYRICS_DB_PATH` where timed lyrics are cached (`~/.local/share/music/lyrics.sqlite`). `LRCLIB_URL` points the lyrics lookup at a self-hosted LRCLIB. `bun run dev` uses the same playlist file by default, so set it to a scratch path when you try changes against real playlists. The unit also reads the Home Assistant settings from `~/.config/music/server.env`:
+The installed app runs on this machine as the `music.service` systemd user unit, from the live release in `~/.local/share/music/current` (see Deploying). The Bun server serves the release's built web app from `apps/web/dist`, along with `/rpc`, `/session`, and `/audio`, on port 4310. Text files go out compressed with Brotli (or gzip), each compressed once as the server starts and kept in memory. The hashed files under `/assets/` are cached for a year (`immutable`); `index.html`, the service worker, and everything else that keeps its name are checked every time (`no-cache`) and answered with 304 when unchanged (`apps/server/src/webApp.ts`). It listens on every interface (`HOST=0.0.0.0`) so the TV can reach it over the home network. The unit sets `YTDLP_PATH` and `TV_APK_PATH`. `AUDIO_CACHE_DIR` and `AUDIO_CACHE_MAX_BYTES` change where songs are kept and how much space they may use. `PLAYLISTS_DB_PATH` changes where the playlists are kept, and `LYRICS_DB_PATH` where timed lyrics are cached (`~/.local/share/music/lyrics.sqlite`). `LRCLIB_URL` points the lyrics lookup at a self-hosted LRCLIB. `bun run dev` uses the same playlist file by default, so set it to a scratch path when you try changes against real playlists. The unit also reads the Home Assistant settings from `~/.config/music/server.env`:
 
 ```sh
 HA_TOKEN=<a long-lived access token from your Home Assistant profile>
@@ -163,11 +163,19 @@ Without those two values, the TV only shows up in the device list while its app 
 
 On the iPhone, open that address in Safari, tap Share, then **Add to Home Screen**.
 
-- Ship changes: `bun run deploy` (`scripts/deploy-main.sh`) fast-forwards this checkout to `origin/main`, builds the web app, restarts the service, and rebuilds the TV app when it changed. Pass `--tv` to the script to rebuild the TV app anyway.
 - Logs: `journalctl --user -u music.service -f`
 - Stop publishing it: `sudo tailscale serve --https=7443 off`
 
-The unit file lives at `~/.config/systemd/user/music.service`.
+The unit file is `scripts/systemd/music.service`, installed to `~/.config/systemd/user/` by each switch to a new release.
+
+### Deploying
+
+A deploy never restarts the server while music plays.
+
+- `bun run deploy` (`scripts/deploy-main.sh`) fast-forwards this checkout to `origin/main` and builds it as a release: a copy of the repository at that commit in `~/.local/share/music/releases/<commit>`, with its own `node_modules`, web build, and TV app. It rebuilds the TV app first when `apps/tv` or the Cargo files changed (`--tv` rebuilds it anyway). Then it points `~/.local/share/music/pending` at the release.
+- `music-release.timer` runs `scripts/activate-release.sh` every minute. Once nothing has played on any device for 10 minutes (the server answers `GET /session/quiet`), it points `~/.local/share/music/current` at the pending release, installs its `music.service`, and restarts the service. If the new server doesn't serve its own web app, it goes back to the release before. It keeps the live release and the one before it, and removes the rest. Several merges in a row go live together.
+- `scripts/deploy-main.sh --now` (or `scripts/activate-release.sh --now` for one already staged) switches straight away, even mid-song.
+- The phone loads the new web app the next time it opens. The TV downloads its new app after the switch and installs it when you pick Install update.
 
 ## Scripts
 
@@ -180,6 +188,8 @@ The unit file lives at `~/.config/systemd/user/music.service`.
 | `bun run lint`                         | oxlint with the Foldkit and Effect rule sets                  |
 | `bun run format`                       | oxfmt                                                         |
 | `bun run --filter @music/server smoke` | Calls every RPC against a running server                      |
+| `bun run deploy`                       | Builds `origin/main` as a release; it goes live when quiet    |
+| `scripts/activate-release.sh --now`    | Puts the staged release live now                              |
 | `scripts/build-tv-apk.sh`              | Builds the signed TV app into `dist/music-tv.apk`             |
 | `scripts/render-icons.sh`              | Renders every app icon from the logo in `branding/`           |
 | `cargo test -p music-tv`               | TV app tests: fixtures, navigation, streaming, the visualizer |

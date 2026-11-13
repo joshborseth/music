@@ -212,8 +212,8 @@ pub struct Hooks {
     pub open_update_settings: Box<dyn Fn()>,
     /// Look for an update now, from the settings menu.
     pub check_for_updates: Box<dyn Fn()>,
-    /// Tells the updater whether it may install: only while nothing plays here.
-    pub set_quiet: Box<dyn Fn(bool)>,
+    /// Install the update that is ready, from the settings menu.
+    pub install_update: Box<dyn Fn()>,
 }
 
 /// The analysis of one song: asked for, arrived, or failed for now.
@@ -411,8 +411,6 @@ impl Ui {
     // SESSION AND UPDATES
 
     pub fn on_session(&mut self, view: View) {
-        let playing_here = view.here && view.playing && !view.is_idle();
-        (self.hooks.set_quiet)(!playing_here);
         let effects = self.nav.on_session(view);
         self.run(effects);
         self.render();
@@ -426,9 +424,7 @@ impl Ui {
             UpdateStatus::UpToDate | UpdateStatus::NeedsPermission => String::new(),
             UpdateStatus::Checking => "Checking for updates…".to_owned(),
             UpdateStatus::Downloading { percent } => format!("Downloading an update · {percent}%"),
-            UpdateStatus::WaitingForQuiet => {
-                "Update ready: installs when the music stops".to_owned()
-            }
+            UpdateStatus::Ready => "Update ready: install it from Settings".to_owned(),
             UpdateStatus::Installing => "Installing an update…".to_owned(),
             UpdateStatus::Failed(_) => "Update failed".to_owned(),
         };
@@ -464,8 +460,8 @@ impl Ui {
             Some(UpdateStatus::Downloading { percent }) => {
                 format!("Downloading an update ({percent}%).")
             }
-            Some(UpdateStatus::WaitingForQuiet) => {
-                "An update is ready. It installs when the music stops.".to_owned()
+            Some(UpdateStatus::Ready) => {
+                "An update is ready. Installing it restarts Joshify.".to_owned()
             }
             Some(UpdateStatus::Installing) => "Installing an update…".to_owned(),
             Some(UpdateStatus::NeedsPermission) => {
@@ -489,9 +485,7 @@ impl Ui {
             Some(UpdateStatus::Downloading { .. }) => {
                 self.nav.say("An update is downloading", now);
             }
-            Some(UpdateStatus::WaitingForQuiet) => {
-                self.nav.say("An update installs when the music stops", now);
-            }
+            Some(UpdateStatus::Ready) => self.nav.say("An update is ready to install", now),
             Some(UpdateStatus::Installing) => self.nav.say("An update is installing", now),
             _ => {
                 self.update_asked = true;
@@ -606,9 +600,14 @@ impl Ui {
                 Effect::OpenUpdateSettings => (self.hooks.open_update_settings)(),
                 Effect::OpenSettings => {
                     let about = self.about();
-                    self.nav.show_settings(about);
+                    let ready = self.update == Some(UpdateStatus::Ready);
+                    self.nav.show_settings(about, ready);
                 }
                 Effect::CheckForUpdates => self.check_for_updates(),
+                Effect::InstallUpdate => {
+                    (self.hooks.install_update)();
+                    self.nav.say("Installing the update…", Instant::now());
+                }
             }
         }
     }

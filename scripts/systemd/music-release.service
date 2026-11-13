@@ -1,0 +1,7 @@
+# Installed to ~/.config/systemd/user by scripts/deploy-main.sh.
+[Unit]
+Description=Music: put a staged release live once nothing plays
+
+[Service]
+Type=oneshot
+ExecStart=%h/.t3/projects/music/scripts/activate-release.sh

@@ -197,7 +197,7 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
         ui::Hooks {
             open_update_settings: Box::new(|| {}),
             check_for_updates: Box::new(|| {}),
-            set_quiet: Box::new(|_| {}),
+            install_update: Box::new(|| {}),
         },
     );
     let runner = Runner {

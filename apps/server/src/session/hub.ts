@@ -37,6 +37,7 @@ import {
   lookahead,
   missingDurations,
   playerLost,
+  quietSinceAfter,
   refresh,
   sleepTimerRang,
   toSessionState,
@@ -103,6 +104,11 @@ export class SessionHub extends Context.Service<
     ) => Effect.Effect<void, never, Scope.Scope>
     /** The session as every device last saw it, then each change. */
     readonly states: Stream.Stream<Session.SessionState>
+    /**
+     * When the music last stopped (epoch ms), or `null` while it plays on
+     * any device. A deploy waits for this to restart the server.
+     */
+    readonly quietSince: Effect.Effect<number | null>
   }
 >()('music/SessionHub') {}
 
@@ -150,6 +156,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       ),
     )
     const latestState = yield* SubscriptionRef.make(toSessionState(model, []))
+    let quietSince = quietSinceAfter(null, model, Date.now())
 
     /** Write the session now, replacing the file in one step. */
     const save = Effect.gen(function* () {
@@ -526,6 +533,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         Effect.gen(function* () {
           const outcome = transition(model)
           model = outcome.model
+          quietSince = quietSinceAfter(quietSince, model, Date.now())
           if (outcome.broadcast) {
             yield* broadcastState
             yield* syncSleepTimer
@@ -768,14 +776,44 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     return SessionHub.of({
       handle,
       states: SubscriptionRef.changes(latestState),
+      quietSince: Effect.sync(() => quietSince),
     })
   }),
 )
 
-/** `GET /session`: the session WebSocket. */
+/** What `GET /session/quiet` answers. */
+export const QuietReport = Schema.Struct({
+  playing: Schema.Boolean,
+  /** How long nothing has played, in whole seconds; 0 while it plays. */
+  quietSeconds: Schema.Number,
+})
+
+const encodeQuietReport = HttpServerResponse.schemaJson(QuietReport)
+
+/**
+ * `GET /session`: the session WebSocket. `GET /session/quiet`: whether music
+ * plays, so `scripts/activate-release.sh` restarts the server only once it
+ * has been quiet for a while.
+ */
 export const SessionRoutes = HttpRouter.use(router =>
   Effect.gen(function* () {
     const hub = yield* SessionHub
+    yield* router.add(
+      'GET',
+      `${Session.SESSION_PATH}/quiet`,
+      hub.quietSince.pipe(
+        Effect.flatMap(since =>
+          encodeQuietReport({
+            playing: since === null,
+            quietSeconds:
+              since === null
+                ? 0
+                : Math.max(0, Math.floor((Date.now() - since) / 1000)),
+          }),
+        ),
+        Effect.orDie,
+      ),
+    )
     yield* router.add(
       'GET',
       Session.SESSION_PATH,

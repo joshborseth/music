@@ -17,21 +17,6 @@ fn updates_only_to_another_real_build() {
 }
 
 #[test]
-fn quiet_has_to_hold() {
-    let start = Instant::now();
-    let quiet_for = Duration::from_secs(30);
-    assert_eq!(quiet_remaining(None, start, quiet_for), None);
-    assert_eq!(
-        quiet_remaining(Some(start), start + Duration::from_secs(10), quiet_for),
-        Some(Duration::from_secs(20))
-    );
-    assert_eq!(
-        quiet_remaining(Some(start), start + Duration::from_secs(45), quiet_for),
-        Some(Duration::ZERO)
-    );
-}
-
-#[test]
 fn retries_back_off_to_a_limit() {
     let first = Duration::from_secs(60);
     let max = Duration::from_secs(3600);
@@ -74,29 +59,6 @@ fn recognizes_an_apk() {
     assert!(looks_like_apk(b"PK\x03\x04rest"));
     assert!(!looks_like_apk(b"<html>"));
     assert!(!looks_like_apk(b"PK"));
-}
-
-#[test]
-fn counts_installs_per_build() {
-    let mut attempts = Attempts::default();
-    for _ in 0..MAX_INSTALL_ATTEMPTS {
-        assert!(attempts.may_install("b"));
-        attempts.record("b");
-    }
-    assert!(!attempts.may_install("b"));
-    // A new build starts over.
-    assert!(attempts.may_install("c"));
-    let saved = Attempts::parse(&attempts.to_text());
-    assert_eq!(saved, attempts);
-    attempts.forgive("b");
-    assert!(attempts.may_install("b"));
-    assert_eq!(
-        Attempts::parse("garbage"),
-        Attempts {
-            build: "garbage".into(),
-            count: 0
-        }
-    );
 }
 
 // THE WHOLE LOOP, against a fake server and a fake Android
@@ -214,12 +176,7 @@ impl Platform for FakeAndroid {
         Ok(self.can_install.load(Ordering::SeqCst))
     }
 
-    fn install(
-        &self,
-        apk: &Path,
-        still_quiet: &(dyn Fn() -> bool + Send + Sync),
-    ) -> Result<(), String> {
-        assert!(still_quiet(), "installs only while quiet");
+    fn install(&self, apk: &Path) -> Result<(), String> {
         let result = if self.fail_installs {
             Err("INSTALL_FAILED_INVALID_APK".into())
         } else {
@@ -247,12 +204,13 @@ impl Platform for FakeAndroid {
     }
 }
 
+/// Quick retries; the timed check is left to tests that set it.
 fn fast() -> Timing {
     Timing {
         permission_recheck: Duration::from_millis(50),
         retry_first: Duration::from_millis(20),
         retry_max: Duration::from_millis(20),
-        quiet_for: Duration::from_millis(200),
+        check_every: Duration::from_secs(60),
     }
 }
 
@@ -261,6 +219,15 @@ fn start(
     installed: &str,
     android: &Arc<FakeAndroid>,
 ) -> (Updater, UnboundedReceiver<UpdateStatus>) {
+    start_with(server, installed, android, fast())
+}
+
+fn start_with(
+    server: &FakeServer,
+    installed: &str,
+    android: &Arc<FakeAndroid>,
+    timing: Timing,
+) -> (Updater, UnboundedReceiver<UpdateStatus>) {
     let (status, statuses) = unbounded_channel();
     let updater = Updater::spawn_with(
         server.url.clone(),
@@ -268,7 +235,7 @@ fn start(
         &tokio::runtime::Handle::current(),
         status,
         android.clone(),
-        fast(),
+        timing,
     );
     (updater, statuses)
 }
@@ -303,28 +270,35 @@ async fn installed(android: &FakeAndroid, calls: u32) {
     panic!("never installed {calls} time(s)");
 }
 
+fn count(server: &FakeServer, request: &str) -> usize {
+    server.requests().iter().filter(|r| *r == request).count()
+}
+
+fn serve_build(server: &FakeServer, build: &str) {
+    *server.version.lock().unwrap() = serde_json::json!({ "build": build }).to_string();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn downloads_waits_for_quiet_announces_and_installs() {
+async fn downloads_then_installs_only_when_asked() {
     let server = FakeServer::start(Some("new-2"), APK);
     let android = FakeAndroid::new("happy", false);
     let (updater, mut statuses) = start(&server, "old-1", &android);
 
-    let seen = until(&mut statuses, &UpdateStatus::WaitingForQuiet).await;
+    let seen = until(&mut statuses, &UpdateStatus::Ready).await;
     assert_eq!(
         seen.first(),
         Some(&UpdateStatus::Downloading { percent: 0 })
     );
     assert!(seen.contains(&UpdateStatus::Downloading { percent: 100 }));
-    // Something plays: nothing installs.
+    // Nobody asked: nothing installs.
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(android.install_calls.load(Ordering::SeqCst), 0);
 
-    let quiet_at = Instant::now();
-    updater.set_quiet(true);
+    updater.install_now();
     until(&mut statuses, &UpdateStatus::Installing).await;
-    assert!(quiet_at.elapsed() >= fast().quiet_for);
     installed(&android, 1).await;
     assert_eq!(*android.installs.lock().unwrap(), vec![APK.to_vec()]);
+    // Checked again before installing; the download was kept.
     assert_eq!(
         server.requests(),
         [
@@ -337,44 +311,22 @@ async fn downloads_waits_for_quiet_announces_and_installs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_newer_deploy_during_the_wait_replaces_the_download() {
+async fn a_newer_deploy_before_the_press_is_what_installs() {
     let server = FakeServer::start(Some("new-2"), APK);
     let android = FakeAndroid::new("newer", false);
     let (updater, mut statuses) = start(&server, "old-1", &android);
-    until(&mut statuses, &UpdateStatus::WaitingForQuiet).await;
-    *server.version.lock().unwrap() = serde_json::json!({ "build": "newer-3" }).to_string();
-    updater.set_quiet(true);
+    until(&mut statuses, &UpdateStatus::Ready).await;
+    serve_build(&server, "newer-3");
+    updater.install_now();
     until(&mut statuses, &UpdateStatus::Installing).await;
     installed(&android, 1).await;
-    let downloads = server
-        .requests()
-        .iter()
-        .filter(|r| *r == "GET /tv.apk")
-        .count();
-    assert_eq!(downloads, 2);
+    assert_eq!(count(&server, "GET /tv.apk"), 2);
     assert_eq!(android.install_calls.load(Ordering::SeqCst), 1);
     let cached = android
         .cache
         .join(DOWNLOADS_DIR)
         .join("music-tv-newer-3.apk");
     assert!(is_apk(&cached));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn music_starting_again_restarts_the_quiet_wait() {
-    let server = FakeServer::start(Some("new-2"), APK);
-    let android = FakeAndroid::new("restart", false);
-    let (updater, mut statuses) = start(&server, "old-1", &android);
-    until(&mut statuses, &UpdateStatus::WaitingForQuiet).await;
-    // Quiet for less than `quiet_for`, then music again.
-    updater.set_quiet(true);
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    updater.set_quiet(false);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(android.install_calls.load(Ordering::SeqCst), 0);
-    updater.set_quiet(true);
-    until(&mut statuses, &UpdateStatus::Installing).await;
-    installed(&android, 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -412,21 +364,36 @@ async fn a_check_by_hand_reports_itself() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_later_deploy_waits_for_a_restart_or_a_check_by_hand() {
+async fn a_later_deploy_is_found_by_the_timed_check_and_waits() {
     let server = FakeServer::start(Some("same-1"), APK);
     let android = FakeAndroid::new("later", false);
-    let (updater, mut statuses) = start(&server, "same-1", &android);
-    updater.set_quiet(true);
+    let timing = Timing {
+        check_every: Duration::from_millis(100),
+        ..fast()
+    };
+    let (_updater, mut statuses) = start_with(&server, "same-1", &android, timing);
     until(&mut statuses, &UpdateStatus::UpToDate).await;
-    // A deploy while the app runs: nothing happens by itself.
-    *server.version.lock().unwrap() = serde_json::json!({ "build": "new-2" }).to_string();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(server.requests(), ["GET /tv/version"]);
+    serve_build(&server, "new-2");
+    until(&mut statuses, &UpdateStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(android.install_calls.load(Ordering::SeqCst), 0);
-    // Asked by hand, it installs.
+    // Later checks find the same download and stay ready.
+    assert_eq!(count(&server, "GET /tv.apk"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_press_with_nothing_to_install_is_not_kept() {
+    let server = FakeServer::start(Some("same-1"), APK);
+    let android = FakeAndroid::new("spent", false);
+    let (updater, mut statuses) = start(&server, "same-1", &android);
+    until(&mut statuses, &UpdateStatus::UpToDate).await;
+    updater.install_now();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    serve_build(&server, "new-2");
     updater.check_now();
-    until(&mut statuses, &UpdateStatus::Installing).await;
-    installed(&android, 1).await;
+    until(&mut statuses, &UpdateStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(android.install_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -434,64 +401,40 @@ async fn asks_for_permission_before_downloading() {
     let server = FakeServer::start(Some("new-2"), APK);
     let android = FakeAndroid::new("permission", false);
     android.can_install.store(false, Ordering::SeqCst);
-    let (updater, mut statuses) = start(&server, "old-1", &android);
-    updater.set_quiet(true);
+    let (_updater, mut statuses) = start(&server, "old-1", &android);
     until(&mut statuses, &UpdateStatus::NeedsPermission).await;
-    assert!(!server.requests().contains(&"GET /tv.apk".to_owned()));
+    assert_eq!(count(&server, "GET /tv.apk"), 0);
     // Granted in Settings: the next look goes ahead.
     android.can_install.store(true, Ordering::SeqCst);
-    until(&mut statuses, &UpdateStatus::Installing).await;
+    until(&mut statuses, &UpdateStatus::Ready).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gives_up_on_a_build_that_never_installs() {
+async fn a_failed_install_waits_for_another_press() {
     let server = FakeServer::start(Some("broken-2"), APK);
     let android = FakeAndroid::new("broken", true);
     let (updater, mut statuses) = start(&server, "old-1", &android);
-    updater.set_quiet(true);
-    let gave_up = UpdateStatus::Failed(format!(
-        "Build broken-2 did not install after {MAX_INSTALL_ATTEMPTS} tries"
-    ));
-    until(&mut statuses, &gave_up).await;
+    until(&mut statuses, &UpdateStatus::Ready).await;
+    updater.install_now();
+    until(
+        &mut statuses,
+        &UpdateStatus::Failed("INSTALL_FAILED_INVALID_APK".into()),
+    )
+    .await;
+    // The retry finds the download again and only offers it.
+    until(&mut statuses, &UpdateStatus::Ready).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(
-        android.install_calls.load(Ordering::SeqCst),
-        MAX_INSTALL_ATTEMPTS
-    );
-    // Downloaded once, kept for each try.
-    let downloads = server
-        .requests()
-        .iter()
-        .filter(|r| *r == "GET /tv.apk")
-        .count();
-    assert_eq!(downloads, 1);
-    // Each failure reached the server's log once.
-    assert!(server.requests().contains(&"POST /tv-log".to_owned()));
-    // Each failed install took back its announcement, so the server never
-    // reopens (or turns on) a TV whose app never closed.
-    let announced = server
-        .requests()
-        .iter()
-        .filter(|r| *r == "POST /tv/updating")
-        .count();
-    let cancelled = server
-        .requests()
-        .iter()
-        .filter(|r| *r == "DELETE /tv/updating")
-        .count();
-    assert!(announced > 0);
-    assert_eq!(announced, cancelled);
-    // A restart remembers the tries.
-    let (_again, mut again) = start(&server, "old-1", &android);
-    until(&mut again, &gave_up).await;
-    assert_eq!(
-        android.install_calls.load(Ordering::SeqCst),
-        MAX_INSTALL_ATTEMPTS
-    );
-    // Asking by hand tries once more.
-    updater.check_now();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(android.install_calls.load(Ordering::SeqCst) > MAX_INSTALL_ATTEMPTS);
+    assert_eq!(android.install_calls.load(Ordering::SeqCst), 1);
+    // The failure reached the server's log, and the announcement was taken
+    // back, so the server never reopens (or turns on) a TV whose app never
+    // closed.
+    assert_eq!(count(&server, "POST /tv-log"), 1);
+    assert_eq!(count(&server, "POST /tv/updating"), 1);
+    assert_eq!(count(&server, "DELETE /tv/updating"), 1);
+    // Downloaded once, kept for the next press.
+    assert_eq!(count(&server, "GET /tv.apk"), 1);
+    updater.install_now();
+    installed(&android, 2).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -508,13 +451,14 @@ async fn rejects_a_download_that_is_not_an_apk() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn installs_in_the_background_without_asking_to_reopen() {
+async fn installs_off_screen_without_asking_to_reopen() {
     let server = FakeServer::start(Some("new-2"), APK);
     let android = FakeAndroid::new("background", false);
     android.foreground.store(false, Ordering::SeqCst);
     let (updater, mut statuses) = start(&server, "old-1", &android);
-    updater.set_quiet(true);
+    until(&mut statuses, &UpdateStatus::Ready).await;
+    updater.install_now();
     until(&mut statuses, &UpdateStatus::Installing).await;
     installed(&android, 1).await;
-    assert!(!server.requests().contains(&"POST /tv/updating".to_owned()));
+    assert_eq!(count(&server, "POST /tv/updating"), 0);
 }
