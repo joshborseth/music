@@ -28,6 +28,8 @@ const SCENES: ReadonlyArray<SceneDef> = [
   { name: 'Terrain', file: 'terrain.glsl', land: true },
   { name: 'Halo', file: 'halo.glsl', land: false },
   { name: 'Tunnel', file: 'tunnel.glsl', land: false },
+  { name: 'Aurora', file: 'aurora.glsl', land: false },
+  { name: 'Stars', file: 'stars.glsl', land: false },
 ]
 
 const BANDS = 48
@@ -45,6 +47,9 @@ const LAND_COLUMNS = 2 * (1 + BANDS + 5) + 1
 const LAND_VERTICES = HISTORY_ROWS * (2 * LAND_COLUMNS + 2) - 2
 /** The glow is this many times smaller than the scenes, each way (gpu.rs). */
 const BLOOM_DIVISOR = 8
+
+/** One of a frame's passes, which the bench times alone. */
+type Pass = 'scene' | 'bloom' | 'final' | 'present'
 
 // MUSIC ----------------------------------------------------------------
 
@@ -157,23 +162,37 @@ const motion = (music: Music, seed: number): Motion => {
 
 interface ScreenLook {
   readonly punch: number
+  readonly bulge: number
+  readonly lift: number
   readonly split: number
   readonly glow: number
   readonly flash: Rgb
   readonly vignette: Rgb
 }
 
+const smoothstep = (from: number, to: number, x: number): number => {
+  const t = clamp01((x - from) / (to - from))
+  return t * t * (3 - 2 * t)
+}
+
+/** How hard the beat hits the picture: the TV's `motion::hit`. */
+const hit = (music: Music): number =>
+  music.kick * (0.3 + 0.7 * smoothstep(0.3, 0.85, music.intensity))
+
 /**
- * The screen pass's values, the same at every pixel, once a frame: the
- * TV's `Screen::new` (motion.rs). Keep the two in step.
+ * The picture's values, the same at every pixel, once a frame: the TV's
+ * `Screen::new` (motion.rs). Keep the two in step.
  */
 const screenLook = (music: Music, color: Rgb): ScreenLook => {
   const { drop, tension } = music
-  const flash = drop ** 10 * 0.55
+  const beat = hit(music)
+  const flash = drop ** 8 * 0.8
   return {
-    punch: 1 - 0.018 * music.kick * (0.4 + music.energy) - 0.03 * drop,
+    punch: 1 - 0.05 * beat - 0.05 * drop,
+    bulge: 0.08 * beat + 0.08 * drop * drop,
+    lift: 1 + 0.4 * beat + 0.45 * drop,
     split: 0.006 * drop * drop * drop,
-    glow: 0.4 + 0.35 * music.energy + 0.5 * drop,
+    glow: 0.3 + 0.5 * music.energy + 0.8 * beat + 0.7 * drop,
     flash: [
       (color[0] + 0.3 * (1 - color[0])) * flash,
       (color[1] + 0.3 * (1 - color[1])) * flash,
@@ -819,6 +838,7 @@ const makeEngine = (
     f('uBeatPulse', music.beatPulse)
     f('uBarPulse', music.barPulse)
     f('uKick', music.kick)
+    f('uHit', hit(music))
     f('uAccent', music.accent)
     f('uEnergy', music.energy)
     f('uTension', music.tension)
@@ -961,7 +981,9 @@ const makeEngine = (
   let frames = 0
   /**
    * One frame: scene `a`, dissolving into `b` by `mix`. While both show,
-   * they take turns, one a frame, as on the TV.
+   * they take turns, one a frame, as on the TV. `only` draws one pass and
+   * skips the rest, for the bench: `scene` draws the scene (or scenes) of
+   * this frame, the others what the frames before left.
    */
   const frame = (
     music: Music,
@@ -970,18 +992,22 @@ const makeEngine = (
     b: number,
     mix: number,
     screen: [number, number],
+    only?: Pass,
   ) => {
     gl.bindVertexArray(vao)
-    update(music, dt)
+    const runs = (pass: Pass) => only === undefined || only === pass
+    if (runs('scene')) update(music, dt)
     frames++
     const sceneA = scenes[a]
     const sceneB = mix > 0 && b !== a ? scenes[b] : undefined
     if (sceneA === undefined) return
-    if (sceneB === undefined || frames % 2 === 0) drawScene(sceneA, music)
-    if (sceneB !== undefined && frames % 2 === 1) drawScene(sceneB, music)
+    if (runs('scene')) {
+      if (sceneB === undefined || frames % 2 === 0) drawScene(sceneA, music)
+      if (sceneB !== undefined && frames % 2 === 1) drawScene(sceneB, music)
+    }
     const outA = sceneA.targets[0]
     const outB = (sceneB ?? sceneA).targets[0]
-    if (bright !== null && blur !== null) {
+    if (runs('bloom') && bright !== null && blur !== null) {
       beginPass(brightParts)
       gl.useProgram(bright.program)
       setMusic(bright, music, [brightParts.width, brightParts.height], null)
@@ -1013,7 +1039,7 @@ const makeEngine = (
         gl.uniform2f(blurTexelAt, 1 / brightParts.width, 1 / brightParts.height)
       fullscreen()
     }
-    if (final !== null) {
+    if (runs('final') && final !== null) {
       beginPass(picture)
       gl.useProgram(final.program)
       setMusic(final, music, [picture.width, picture.height], sceneA)
@@ -1040,6 +1066,8 @@ const makeEngine = (
       }
       f('uMix', mix)
       f('uPunch', look.punch)
+      f('uBulge', look.bulge)
+      f('uLift', look.lift)
       f('uSplit', look.split)
       f('uGlow', look.glow)
       v3('uFlash', look.flash)
@@ -1055,7 +1083,7 @@ const makeEngine = (
         gl.uniform2f(poolAt, picture.width / reach, picture.height / reach)
       fullscreen()
     }
-    if (present !== null) {
+    if (runs('present') && present !== null) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null)
       gl.viewport(0, 0, screen[0], screen[1])
       gl.clearColor(0, 0, 0, 1)
@@ -1067,15 +1095,6 @@ const makeEngine = (
       if (pictureAt !== undefined) gl.uniform1i(pictureAt, 0)
       fullscreen()
     }
-  }
-
-  /** Scene `index` alone, without the glow or the picture: for the bench. */
-  const sceneOnly = (music: Music, dt: number, index: number) => {
-    const scene = scenes[index]
-    if (scene === undefined) return
-    gl.bindVertexArray(vao)
-    update(music, dt)
-    drawScene(scene, music)
   }
 
   /** Every scene back to black, as a scene the TV brings on starts. */
@@ -1091,7 +1110,6 @@ const makeEngine = (
 
   return {
     frame,
-    sceneOnly,
     setCover,
     setHistory,
     setSide,
@@ -1166,20 +1184,17 @@ const sheet = () => {
 }
 
 /**
- * Times every scene, drawn alone, at the size the TV starts each scene at
- * (1088 × 612) on a 1280 × 720 screen, or at the sizes the URL names:
+ * Times every scene at the size the TV starts each scene at (1088 × 612)
+ * on a 1280 × 720 screen, or at the sizes the URL names:
  * `?screen=1920x1080&scene=896x504` is a 1080p TV holding a scene at 70%.
- * In a software renderer the numbers
- * only rank the scenes against each other (and a change against the code
- * before it): a TV's GPU is far slower, and runs mediump at twice the
- * rate, which this can't show.
+ * In a software renderer the numbers only rank the scenes against each
+ * other (and a change against the code before it): a TV's GPU is far
+ * slower, and runs mediump at twice the rate, which this can't show.
  *
- * Two numbers a scene: the whole frame, every pass, and the scene's own
- * pass alone (what differs between scenes). Each scene warms up in one
- * animation frame and its whole frames are timed over the next: the time
- * between that frame and the one after is the drawing (and at most one
- * display refresh of waiting). Its own pass is timed the same way over
- * the frame after that.
+ * For each scene: the whole frame, every pass, then each pass alone (the
+ * scene's own, the glow, the picture, the screen), each drawn `FRAMES`
+ * times between two reads of a pixel, which wait for the GPU. The bench
+ * runs `?runs=` times (5) and shows each number's median.
  */
 const bench = () => {
   const out = element('pre')
@@ -1193,6 +1208,7 @@ const bench = () => {
   }
   const [width, height] = size('screen', [1280, 720])
   const [sceneWidth, sceneHeight] = size('scene', [1088, 612])
+  const runs = Math.max(1, Number(params.get('runs') ?? 5))
   const canvas = element('canvas')
   canvas.width = width
   canvas.height = height
@@ -1206,62 +1222,70 @@ const bench = () => {
   const pixel = new Uint8Array(4)
   const finish = () =>
     gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel)
+  const FRAMES = 10
   const at = (60 / 124) * 4 * 20.25
-  const frames = 8
-  const lines: Array<string> = []
-  const draw = (index: number, from: number, count: number) => {
-    const song = madeUpSong(124)
-    for (let step = 0; step < count; step++)
-      engine.frame(song(at + (from + step) / 60), 1 / 60, index, index, 0, [
-        width,
-        height,
-      ])
-    finish()
+  const columns = ['frame', 'scene', 'glow', 'picture', 'screen'] as const
+  const passes: Record<(typeof columns)[number], Pass | undefined> = {
+    frame: undefined,
+    scene: 'scene',
+    glow: 'bloom',
+    picture: 'final',
+    screen: 'present',
   }
-  const drawAlone = (index: number) => {
+  const times: Array<Record<string, Array<number>>> = SCENES.map(() => ({}))
+  // The lab is no Foldkit app: the bench reads the clock around GPU work
+  // it waits for, which is the point of it.
+  // oxlint-disable-next-line foldkit/no-impure-call-at-decision-time
+  const clock = () => performance.now()
+  const time = (index: number, only: Pass | undefined): number => {
     const song = madeUpSong(124)
-    for (let step = 0; step < frames; step++)
-      engine.sceneOnly(song(at + step / 60), 1 / 60, index)
     finish()
-  }
-  // Each scene steps through: warm up, time whole frames, time its pass.
-  let index = 0
-  let step: 'warm' | 'frames' | 'alone' = 'warm'
-  let started = -1
-  let frameMs = 0
-  const tick = (now: number) => {
-    if (step === 'alone') {
-      frameMs = (now - started) / frames
-      started = now
-      drawAlone(index)
-      step = 'frames'
-      requestAnimationFrame(tick)
-      return
-    }
-    if (step === 'frames' && started >= 0) {
-      const alone = (now - started) / frames
-      const name = SCENES[index]?.name ?? ''
-      lines.push(
-        `${name.padEnd(10)} ${frameMs.toFixed(1).padStart(7)} ms a frame ${alone.toFixed(1).padStart(7)} ms its own pass`,
+    const started = clock()
+    for (let step = 0; step < FRAMES; step++)
+      engine.frame(
+        song(at + step / 60),
+        1 / 60,
+        index,
+        index,
+        0,
+        [width, height],
+        only,
       )
-      out.textContent = lines.join('\n')
-      started = -1
-      step = 'warm'
-      index++
-    }
-    if (index >= SCENES.length) {
-      console.log(`bench\n${lines.join('\n')}`)
-      return
-    }
-    if (step === 'warm') {
-      draw(index, 0, 3)
-      step = 'frames'
-    } else {
-      started = now
-      draw(index, 3, frames)
-      step = 'alone'
-    }
-    requestAnimationFrame(tick)
+    finish()
+    return (clock() - started) / FRAMES
+  }
+  // One run a frame, so the page stays responsive between them.
+  let run = 0
+  const tick = () => {
+    times.forEach((row, index) => {
+      // Warm up: the scene's targets and programs in use.
+      const song = madeUpSong(124)
+      for (let step = 0; step < 4; step++)
+        engine.frame(song(at - step / 60), 1 / 60, index, index, 0, [
+          width,
+          height,
+        ])
+      for (const column of columns) {
+        const list = (row[column] ??= [])
+        list.push(time(index, passes[column]))
+      }
+    })
+    run++
+    const median = (values: ReadonlyArray<number> = []) =>
+      [...values].sort((x, y) => x - y)[Math.floor(values.length / 2)] ?? 0
+    const lines = SCENES.map((def, index) => {
+      const row = times[index] ?? {}
+      const cells = columns.map(
+        column => `${column} ${median(row[column]).toFixed(2).padStart(6)}`,
+      )
+      return `${def.name.padEnd(9)} ${cells.join('  ')}`
+    })
+    out.textContent = [`run ${run} of ${runs} (ms)`, ...lines].join('\n')
+    if (run < runs) requestAnimationFrame(tick)
+    else
+      console.log(
+        `bench ${width}x${height} ${sceneWidth}x${sceneHeight}\n${lines.join('\n')}`,
+      )
   }
   requestAnimationFrame(tick)
 }
@@ -1369,11 +1393,11 @@ const live = () => {
     if (auto && music.section !== lastSection) {
       lastSection = music.section
       const pool: Record<string, ReadonlyArray<number>> = {
-        Intro: [0, 1],
+        Intro: [0, 5, 1],
         Verse: [1, 2],
         Build: [2, 3],
-        Drop: [4, 3],
-        Breakdown: [0, 1],
+        Drop: [4, 6, 3],
+        Breakdown: [5, 0, 1],
       }
       const options = pool[music.section] ?? [0]
       const choice = options[Math.floor(music.beats / 32) % options.length] ?? 0
@@ -1517,9 +1541,21 @@ const songMusic = (frame: SongFrame): Music => {
   }
 }
 
-const SCENE_COLORS = ['#4f8cff', '#a46bff', '#38d39f', '#ffd23f', '#ff8a3d']
+const SCENE_COLORS = [
+  '#4f8cff',
+  '#a46bff',
+  '#38d39f',
+  '#ffd23f',
+  '#ff8a3d',
+  '#5fe0e6',
+  '#ff6bd5',
+]
 
-/** Roughly the TV's words over the visuals, with lyrics, for judging them. */
+/**
+ * The TV's words over the visuals, with lyrics, for judging them: where
+ * and how large `ui/app.slint` draws them (its unit is a 54th of the
+ * height), in its solid greys.
+ */
 const drawOverlay = (
   context: CanvasRenderingContext2D,
   cover: CanvasImageSource | null,
@@ -1527,29 +1563,30 @@ const drawOverlay = (
   height: number,
   title: string,
 ) => {
-  const u = height / 36
-  const art = u * 15
-  const left = u * 5.5
-  const top = (height - art - u * 5) / 2
+  const u = height / 54
+  const art = u * 24
+  const left = u * 5.2
+  const top = u * 8.2
   if (cover !== null) context.drawImage(cover, left, top, art, art)
   context.fillStyle = '#ffffff'
-  context.font = `700 ${u * 2.2}px system-ui, sans-serif`
-  context.fillText(title.slice(0, 22), left, top + art + u * 2.8)
-  context.fillStyle = 'rgba(255,255,255,0.7)'
-  context.font = `${u * 1.25}px system-ui, sans-serif`
-  context.fillText('Artist', left, top + art + u * 4.6)
+  context.font = `800 ${u * 2.3}px system-ui, sans-serif`
+  context.fillText(title.slice(0, 22).toUpperCase(), left, top + art + u * 4.4)
+  context.fillStyle = '#dfe0e3'
+  context.font = `${u * 1.3}px system-ui, sans-serif`
+  context.fillText('Artist', left, top + art + u * 6.6)
   const lines = [
-    'the line before',
-    'every line runs down',
-    'the line being sung',
-    'the next line comes',
-    'and another after',
+    'Hot, hot, hot, the line before',
+    'What now, every line runs down',
+    'Fresh, watch the line being sung',
+    'Pupils dilated, the next line',
+    "I'm surfin' on another after",
+    'Walk on my path, and the last',
   ]
   lines.forEach((line, index) => {
     const now = index === 2
-    context.fillStyle = now ? '#ffffff' : 'rgba(255,255,255,0.45)'
-    context.font = `${now ? 700 : 500} ${u * (now ? 2.2 : 1.7)}px system-ui, sans-serif`
-    context.fillText(line, u * 35, height * 0.32 + index * u * 3.2)
+    context.fillStyle = now ? '#ffffff' : index < 2 ? '#6e7178' : '#b4b7bd'
+    context.font = `${now ? 800 : 700} ${u * (now ? 2.5 : 2.1)}px system-ui, sans-serif`
+    context.fillText(line, u * 37, u * (10 + index * 4.6))
   })
 }
 

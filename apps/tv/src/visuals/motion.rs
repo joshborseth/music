@@ -82,13 +82,19 @@ impl Motion {
     }
 }
 
-/// One frame's values for the screen (`present.glsl`): the same at every
-/// one of its two million pixels.
+/// One frame's values for the picture (`final.glsl`): the same at every
+/// one of its pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Screen {
     /// How large the picture is read: below 1 punches in on the kick and
     /// as a drop lands (`uPunch`).
     pub punch: f32,
+    /// How much further the edges punch in than the middle, like a lens
+    /// thumped (`uBulge`).
+    pub bulge: f32,
+    /// How bright the light is: above 1 on the kick and through a drop
+    /// (`uLift`).
+    pub lift: f32,
     /// How far the colors split, at the corners, as a drop builds and
     /// lands (`uSplit`).
     pub split: f32,
@@ -102,20 +108,41 @@ pub struct Screen {
     pub vignette: [f32; 3],
 }
 
+/// How hard the beat hits the picture, 0 to 1: the kick, which the
+/// analysis already makes as hard as the music is loud and wild, softened
+/// further in a calm part, so a ballad's beat only nods.
+pub fn hit(music: &Music) -> f32 {
+    music.kick * (0.3 + 0.7 * smoothstep(0.3, 0.85, music.intensity))
+}
+
 impl Screen {
     /// The values for `music`'s frame, flashing in `color`, the cover's.
     pub fn new(music: &Music, color: [f32; 3]) -> Self {
         let drop = music.drop;
         let tension = music.tension;
-        let flash = drop.powi(10) * 0.55;
+        let hit = hit(music);
+        // The flash is over in about a beat; the drop's light stays up
+        // through its two bars, falling away.
+        let flash = drop.powi(8) * 0.8;
         Self {
-            punch: 1.0 - 0.018 * music.kick * (0.4 + music.energy) - 0.03 * drop,
+            punch: 1.0 - 0.05 * hit - 0.05 * drop,
+            bulge: 0.08 * hit + 0.08 * drop * drop,
+            lift: 1.0 + 0.4 * hit + 0.45 * drop,
             split: 0.006 * drop * drop * drop,
-            glow: 0.4 + 0.35 * music.energy + 0.5 * drop,
+            glow: 0.3 + 0.5 * music.energy + 0.8 * hit + 0.7 * drop,
             flash: color.map(|channel| (channel + 0.3 * (1.0 - channel)) * flash),
-            vignette: [1.05 - 0.4 * tension, 0.25 - 0.1 * tension, 0.55 - 0.25 * tension],
+            vignette: [
+                1.05 - 0.4 * tension,
+                0.25 - 0.1 * tension,
+                0.55 - 0.25 * tension,
+            ],
         }
     }
+}
+
+fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
+    let t = ((x - from) / (to - from)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// A well-mixed 32-bit hash. The lab's `hash` is the same.
@@ -211,6 +238,8 @@ mod tests {
             [1.0, 0.5, 0.0],
         );
         assert_eq!(quiet.punch, 1.0);
+        assert_eq!(quiet.bulge, 0.0);
+        assert_eq!(quiet.lift, 1.0);
         assert_eq!(quiet.split, 0.0);
         assert_eq!(quiet.flash, [0.0; 3]);
         assert_eq!(quiet.vignette, [1.05, 0.25, 0.55]);
@@ -222,14 +251,37 @@ mod tests {
             },
             [1.0, 0.5, 0.0],
         );
-        assert!(landing.punch < 0.96);
+        assert!(landing.punch < 0.93);
+        assert!(landing.lift > 1.4);
         assert!((landing.split - 0.006).abs() < 1e-6);
         // The cover's color, a third of the way to white.
-        let expected = [1.0, 0.65, 0.3].map(|channel: f32| channel * 0.55);
+        let expected = [1.0, 0.65, 0.3].map(|channel: f32| channel * 0.8);
         for (got, want) in landing.flash.iter().zip(expected) {
             assert!((got - want).abs() < 1e-5, "{:?}", landing.flash);
         }
         assert!(landing.vignette[2] < quiet.vignette[2]);
+    }
+
+    #[test]
+    fn the_beat_hits_wild_music_hard_and_calm_music_softly() {
+        let beat = |intensity: f32| {
+            Screen::new(
+                &Music {
+                    kick: 0.8,
+                    drop: 0.0,
+                    tension: 0.0,
+                    intensity,
+                    ..music()
+                },
+                [1.0, 0.5, 0.0],
+            )
+        };
+        let (wild, calm) = (beat(0.95), beat(0.3));
+        // A wild part's kick punches in by a few percent and lifts the
+        // light by a third; a calm part's by a third as much.
+        assert!(wild.punch < 0.965 && wild.lift > 1.3, "{wild:?}");
+        assert!(calm.punch > 0.985 && calm.lift < 1.1, "{calm:?}");
+        assert!(wild.glow > calm.glow + 0.3);
     }
 
     #[test]

@@ -88,7 +88,7 @@ void main() {
   vec3 land = mix(uColorC * 0.03, lit * 0.35, smoothstep(0.0, 1.2, h));
   // Peaks glow.
   land += lit * smoothstep(0.6, 1.6, h) * 0.6;
-  vec3 line = lit * (0.5 + 1.4 * uBeatPulse + 1.2 * uDrop) * (0.4 + h);
+  vec3 line = lit * (0.5 + 0.3 * uBeatPulse + 1.6 * uHit + 1.2 * uDrop) * (0.4 + h);
   // Far off, the land fades into the sky at the horizon.
   float fog = smoothstep(2.0, DEPTH + 1.0, dist);
   vBase = mix(land, sky(vec3(d.x / dist, 0.0, 1.0)), fog);

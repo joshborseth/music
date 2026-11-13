@@ -1,7 +1,8 @@
 // TERRAIN: flying low over a landscape made of the song itself. The last
 // four seconds of the spectrum stand up as mountains: new ones rise on the
 // horizon and roll toward you, bass by the road and treble far out. A sun
-// in the cover's colors sits on the horizon and the grid flashes on the beat.
+// in the cover's colors sits on the horizon; on the beat it swells, the
+// mountains jump, and the grid flashes.
 //
 // Two draws. This file's `main` paints the sky across the picture; then
 // the land goes on top as a mesh (`terrain.vert`, `terrain.frag`), one row
@@ -20,9 +21,9 @@ uniform float uHistoryAge; // 0 to 1: how far toward the next row the history is
 // once a frame (motion.rs).
 uniform vec4 uFlight;
 
-// How much the mountains stand up now.
+// How much the mountains stand up now: they jump on the beat.
 float lift() {
-  return (0.35 + 0.65 * uIntensity) * (1.0 + 0.5 * uDrop);
+  return (0.35 + 0.65 * uIntensity) * (1.0 + 0.35 * uHit + 0.5 * uDrop);
 }
 
 // How far the camera looks down: the horizon sits this far above the
@@ -36,7 +37,7 @@ vec3 sky(highp vec3 dir) {
   vec3 color = mix(uColorB * 0.35, uColorC * 0.04, pow(up, 0.6));
   // The sun: banded like an old poster, swelling on the bass.
   vec2 s = vec2(dir.x, dir.y - 0.1) * 3.2;
-  float radius = 0.36 + 0.05 * uBands.x + 0.03 * uBeatPulse;
+  float radius = 0.36 + 0.05 * uBands.x + 0.05 * uHit;
   float d = length(s);
   float bands = step(0.0, sin((s.y + uDrive * 0.05) * 30.0) + 0.85 + s.y * 4.0);
   float disc = smoothstep(radius, radius - 0.01, d) * bands;

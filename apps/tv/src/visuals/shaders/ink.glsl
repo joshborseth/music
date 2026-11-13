@@ -1,6 +1,7 @@
 // INK: luminous ink poured into moving water. Each frame carries the last
 // one along a swirling current; the bass and the kick pour in fresh ink,
-// and a drop bursts it out from the middle.
+// each beat sends a ripple out and pushes the ink with it, and a drop
+// bursts it out from the middle.
 //
 // The ink is kept as one amount in the picture's alpha, and shown through
 // the cover's light (`glow`): thin ink is the deep shade, thick ink burns
@@ -18,8 +19,8 @@ void main() {
   // slope worked out ahead (`uFbm`).
   vec2 slope = fbmSlope(p * 1.6 + t);
   vec2 flow = vec2(slope.y, -slope.x) * (0.0016 + 0.003 * uEnergy);
-  // Breathe outward on the bass and burst on a drop.
-  flow += p * (0.002 * uBands.x + 0.02 * uDrop * uDrop);
+  // Breathe outward on the bass, push out on the beat, burst on a drop.
+  flow += p * (0.002 * uBands.x + 0.01 * uHit + 0.02 * uDrop * uDrop);
   highp vec2 back = uv - flow * vec2(uRes.y / uRes.x, 1.0);
   float ink = texture(uPrev, back).a;
   // Fade, with a floor step so the last traces clear in 8 bits.
@@ -30,10 +31,11 @@ void main() {
     vec2 d = p - pourer.xy;
     ink += exp(-dot(d, d) / (pourer.z * pourer.z)) * pourer.w * (0.5 - 0.1 * float(i));
   }
-  // A ripple out from the middle on each bar, gone a moment after it.
-  if (uBarPulse > 0.004) {
-    float ring = abs(length(p) - (0.05 + 0.6 * fract(uBar)));
-    ink += uBarPulse * 0.12 * exp(-ring * 60.0);
+  // A ripple out from the middle on each beat, as hard as it hits (the
+  // bar's first hardest), gone before the next.
+  if (uHit > 0.01) {
+    float ring = abs(length(p) - (0.04 + 0.45 * fract(uBeats)));
+    ink += uHit * 0.3 * exp(-ring * 45.0);
   }
   // Keep the thin ink from banding in 8 bits.
   ink = clamp(ink + (hash12(gl_FragCoord.xy + uTime) - 0.5) / 255.0, 0.0, 1.0);

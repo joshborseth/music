@@ -27,16 +27,17 @@ void main() {
   // Mirrored left and right: bass at the bottom, treble at the top.
   float x = abs(atan(p.y, p.x)) / PI;
   float level = spectrum(1.0 - x);
-  float radius = 0.2 + 0.07 * uBands.x + 0.03 * uBeatPulse;
-  float outer = radius + 0.03 + level * 0.2;
+  // The ring jumps out on the beat, and its bars reach further.
+  float radius = 0.2 + 0.07 * uBands.x + 0.06 * uHit;
+  float outer = radius + 0.03 + level * (0.2 + 0.08 * uHit);
   // The bars, their ends a pixel soft, split into spokes.
   float pixel = 1.5 / uRes.y;
   float bars = smoothstep(radius - pixel, radius + pixel, r)
     * smoothstep(outer + pixel, outer - pixel, r)
     * smoothstep(0.42, 0.22, abs(fract(x * 32.0) - 0.5));
-  float light = bars * (0.25 + 0.5 * level);
+  float light = bars * (0.25 + 0.5 * level) * (1.0 + 0.7 * uHit);
   // The rim, bright on the beat.
-  light += exp(-abs(r - radius) * 150.0) * (0.45 + 0.4 * uBeatPulse);
+  light += exp(-abs(r - radius) * 150.0) * (0.4 + 0.9 * uHit);
   // This beat's shock wave, as strong as the music is wild.
   float beat = fract(uBeats);
   float front = abs(r - (radius + beat * 0.8));
