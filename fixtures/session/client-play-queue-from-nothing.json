@@ -1,0 +1,15 @@
+{
+  "_tag": "PlayQueue",
+  "tracks": [
+    {
+      "videoId": "dQw4w9WgXcQ",
+      "title": "Never Gonna Give You Up",
+      "artists": "Rick Astley",
+      "album": null,
+      "durationSeconds": null,
+      "artworkUrl": null
+    }
+  ],
+  "startIndex": 0,
+  "playingFrom": null
+}

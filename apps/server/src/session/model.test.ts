@@ -1445,6 +1445,7 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-pause.json',
     'client-pause-at.json',
     'client-play-queue.json',
+    'client-play-queue-from-nothing.json',
     'client-enqueue.json',
     'client-skip-to.json',
     'client-remove-entry.json',

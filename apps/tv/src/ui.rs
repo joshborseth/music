@@ -36,7 +36,7 @@ use crate::nav::{
 };
 use crate::protocol::{Placement, RepeatMode};
 use crate::update::{self, UpdateStatus};
-use crate::view::{PlayClock, View, clock};
+use crate::view::{PlayClock, View, clock, playing_from_line};
 use crate::visuals::{Cover, Screenshot, Stage, Visuals};
 use crate::{
     App, ButtonData, CardData, HintData, KeyData, LyricRowData, MenuItemData, RowData, ShelfData,
@@ -559,16 +559,23 @@ impl Ui {
                 }
                 Effect::PlayCollection { kind, id, mode } => {
                     let catalog = self.catalog.clone();
+                    let wanted = id.clone();
                     self.spawn(
-                        async move { catalog.collection(kind, &id).await },
+                        async move { catalog.collection(kind, &wanted).await },
                         move |ui, result| match result {
                             Ok(collection) if !collection.tracks.is_empty() => {
+                                let from = Some(nav::playing_from(kind, &id, &collection.title));
                                 let tracks = collection.tracks;
                                 let _ = ui.actions.send(match mode {
-                                    PlayMode::Play => UiAction::PlayTracks { tracks, start: 0 },
+                                    PlayMode::Play => UiAction::PlayTracks {
+                                        tracks,
+                                        start: 0,
+                                        from,
+                                    },
                                     PlayMode::Shuffle => UiAction::PlayTracks {
                                         tracks: nav::shuffled(tracks, Instant::now()),
                                         start: 0,
+                                        from,
                                     },
                                     PlayMode::Next => UiAction::Enqueue {
                                         tracks,
@@ -1164,6 +1171,13 @@ impl Ui {
             format!("PAUSED · {place}")
         };
         app.set_where(place.into());
+        let (from_kind, from_title) = session
+            .playing_from
+            .as_ref()
+            .map(playing_from_line)
+            .unwrap_or_default();
+        app.set_from_kind(from_kind.into());
+        app.set_from_title(from_title.into());
 
         let liked =
             self.nav.liked.as_ref().is_some_and(|(id, liked)| {

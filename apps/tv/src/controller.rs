@@ -9,7 +9,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::audio::{Command, Engine, Event};
-use crate::protocol::{ClientMessage, Placement, QueueTrack, ServerMessage, SessionState};
+use crate::protocol::{
+    ClientMessage, Placement, PlayingFrom, QueueTrack, ServerMessage, SessionState,
+};
 use crate::session::Inbound;
 use crate::view::{PlayClock, View};
 use crate::volume::Volume;
@@ -31,6 +33,8 @@ pub enum UiAction {
     PlayTracks {
         tracks: Vec<QueueTrack>,
         start: usize,
+        /// The album, playlist, artist, or search they come from.
+        from: Option<PlayingFrom>,
     },
     Enqueue {
         tracks: Vec<QueueTrack>,
@@ -263,14 +267,18 @@ impl Controller {
             device_id: self.device_id.clone(),
         };
         match action {
-            UiAction::PlayTracks { tracks, start } => {
+            UiAction::PlayTracks {
+                tracks,
+                start,
+                from,
+            } => {
                 if tracks.is_empty() {
                     return;
                 }
                 self.send(ClientMessage::PlayQueue {
                     tracks,
                     start_index: start,
-                    playing_from: None,
+                    playing_from: from,
                 });
                 if !self.is_active() {
                     self.send(here);
@@ -442,6 +450,7 @@ impl Controller {
             utc_offset_minutes: self.utc_offset_minutes,
             repeat: state.repeat,
             shuffle: state.shuffle,
+            playing_from: state.playing_from.clone(),
         }
     }
 }

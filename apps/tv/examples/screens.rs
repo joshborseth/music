@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use music_tv::catalog::Client;
+use music_tv::protocol::{PlayingFrom, PlayingFromKind};
 use music_tv::screenshots::{Step, run, sample_view};
 
 fn main() {
@@ -91,6 +92,10 @@ fn main() {
             Step::Key(right),
             wait(800),
             Step::Shot("06-controls"),
+            // Holding OK offers to go to what the queue plays from.
+            Step::Hold,
+            Step::Shot("06b-song-menu"),
+            Step::Key(back),
             // Up to the seek bar, and three steps forward.
             Step::Key(up),
             Step::Key(right),
@@ -108,6 +113,9 @@ fn main() {
             Step::Key(ok),
             wait(1500),
             Step::Shot("07-queue"),
+            Step::Hold,
+            Step::Shot("07a-queue-menu"),
+            Step::Key(back),
             // The queue's header says how shuffle and repeat are set.
             Step::Session(music_tv::view::View {
                 shuffle: true,
@@ -213,6 +221,18 @@ fn main() {
             Step::Rest,
             wait(2000),
             Step::Shot("14-now-playing"),
+            // An album with a long name is cut short to the song's width.
+            Step::Session(music_tv::view::View {
+                playing_from: Some(PlayingFrom {
+                    kind: PlayingFromKind::Album,
+                    title: "Random Access Memories (10th Anniversary Edition, Remastered Deluxe)"
+                        .into(),
+                    id: "MPREb_example".into(),
+                }),
+                ..sample_view(tracks.clone(), current, true)
+            }),
+            Step::Shot("14a-now-playing-from-album"),
+            Step::Session(sample_view(tracks.clone(), current, true)),
             // The remote's fast-forward key, from the resting screen.
             Step::Key(fast_forward),
             Step::Key(fast_forward),
@@ -221,6 +241,13 @@ fn main() {
             // scan code goes too.
             wait(21_000),
             Step::Shot("16-resting"),
+            // Go to search, from the song's menu, searches again.
+            Step::Key(right),
+            Step::Hold,
+            Step::Key(down),
+            Step::Key(ok),
+            wait(5000),
+            Step::Shot("17-go-to-search"),
         ],
     ];
     run(&server, &out, steps.into_iter().flatten().collect());
