@@ -1504,8 +1504,29 @@ const isVersion = (song: Song): boolean =>
   VERSION_OF_SONG.test(song.title) ||
   Option.exists(song.maybeAlbum, ({ name }) => VERSION_OF_SONG.test(name))
 
+/**
+ * Two songs made one: "Bohemian Rhapsody x Walk It Talk It", "Did you hear
+ * that? Zelda x", "Song A vs Song B", a mashup or a medley. The joining "x"
+ * is lowercase, so "Malcolm X" is a song.
+ */
+const MASHUP_JOINER = /\s[x×](\s|$)/
+
+const MASHUP_WORDS = /\s(vs\.?|versus)\s|\b(mash-?ups?|medley)\b/i
+
+/**
+ * Whether a title is two songs made one. Brackets are left out, so "(feat.
+ * A x B)" is no mashup.
+ */
+const isMashupTitle = (title: string): boolean => {
+  const bare = title.replace(ANY_BRACKET, '')
+  return MASHUP_JOINER.test(bare) || MASHUP_WORDS.test(bare)
+}
+
 const asksForVersion = (query: string): boolean =>
-  VERSION_OF_SONG.test(query) || ASKS_FOR_VERSION.test(query)
+  VERSION_OF_SONG.test(query) ||
+  ASKS_FOR_VERSION.test(query) ||
+  MASHUP_WORDS.test(query) ||
+  /\sx\s/i.test(query)
 
 /** The song YouTube Music picked as its top result, with its artist's hits. */
 export type TopSong = Readonly<{
@@ -1540,7 +1561,8 @@ type Candidate = Readonly<{ song: Song; isArtistHit: boolean }>
  * searched for or of the top result come first, then their hits, then songs
  * they are featured on, then other songs. Remixes, covers, karaoke, and
  * slowed or 8D edits go last, unless the search asks for one, and so do
- * other artists' songs with the top result's title.
+ * other artists' songs with the top result's title. Other artists'
+ * mashups, "A x B" medleys, and "vs" edits go after even those.
  */
 const searchRank = (
   query: string,
@@ -1563,12 +1585,16 @@ const searchRank = (
       maybeTop,
       top => bareTitle(top.song.title) === bareTitle(song.title),
     )
-  const isUnasked =
-    !asksForVersion(query) &&
+  const isUnasked = !asksForVersion(query)
+  if (isUnasked && rank === 0 && isMashupTitle(song.title)) {
+    return -1
+  }
+  if (
+    isUnasked &&
     (isVersion(song) ||
       (rank === 0 && VERSION_BRACKET.test(song.title)) ||
       isCoverOfTop)
-  if (isUnasked) {
+  ) {
     return rank
   }
   if (isArtistHit) {
@@ -1643,6 +1669,10 @@ export const countFromText = (text: string): Option.Option<number> =>
 
 /** An artist with fewer listeners or subscribers than this is unknown. */
 export const KNOWN_ARTIST_AUDIENCE = 1000
+
+/** How many listen to or follow an artist, or 0 when YouTube does not say. */
+const audienceOf = (artist: ArtistSummary): number =>
+  Option.getOrElse(Option.flatMap(artist.maybeAudience, countFromText), () => 0)
 
 /** Whether an artist has an audience, not "Daft · 2 subscribers". */
 const isKnownArtist = (artist: ArtistSummary): boolean =>
@@ -1762,7 +1792,9 @@ const topResultName = (topResult: TopResult): string =>
  * or hours of music as one video (unless asked for). When the search is
  * exactly the name of an artist with an audience (`artists`, ranked by
  * `rankArtistsForQuery`), that artist comes first instead, unless the card
- * itself is named exactly what was searched for: "humble" stays a song.
+ * itself is named exactly what was searched for: "humble" stays a song; or
+ * the card is an artist with a bigger audience: "kendrick" stays Kendrick
+ * Lamar, not an artist named "Kendrick" with 1.76K subscribers.
  */
 export const chooseTopResult = (
   query: string,
@@ -1780,13 +1812,194 @@ export const chooseTopResult = (
     artists,
     artist => isExactName(query, artist.name) && isKnownArtist(artist),
   )
-  return isNamedExactly
+  const isBiggerArtistCard = Option.exists(maybeShown, topResult =>
+    Option.exists(
+      maybeNamedArtist,
+      named =>
+        topResult._tag === 'Artist' &&
+        audienceOf(topResult.artist) > audienceOf(named),
+    ),
+  )
+  return isNamedExactly || isBiggerArtistCard
     ? maybeShown
     : Option.match(maybeNamedArtist, {
         onNone: () => maybeShown,
         onSome: (artist): Option.Option<TopResult> =>
           Option.some({ _tag: 'Artist', artist, topSongs: [] }),
       })
+}
+
+// SEARCH FOCUS
+
+/**
+ * What a search is about, which its artists, albums, and playlists are
+ * judged by: what search shows first (`chooseTopResult`), and every artist
+ * the artist search found, known or not, whose names tell when a title
+ * means someone else ("Empire of Geese" for "geese").
+ */
+export type SearchFocus = Readonly<{
+  maybeTopResult: Option.Option<TopResult>
+  artists: ReadonlyArray<ArtistSummary>
+}>
+
+/** A search known only by its words. */
+export const NO_FOCUS: SearchFocus = {
+  maybeTopResult: Option.none(),
+  artists: [],
+}
+
+const artistLinkOf = (artist: ArtistSummary): ArtistLink => ({
+  maybeId: Option.some(artist.id),
+  name: artist.name,
+})
+
+const isCreditedTo = (
+  credits: ReadonlyArray<ArtistLink>,
+  artist: ArtistLink,
+): boolean => Array.some(credits, credit => isSameArtist(credit, artist))
+
+/** Who the top result is by: the artist, or a song's or album's artists. */
+const topResultArtists = (focus: SearchFocus): ReadonlyArray<ArtistLink> =>
+  Option.match(focus.maybeTopResult, {
+    onNone: () => [],
+    onSome: topResult =>
+      Match.valueTags(topResult, {
+        Artist: ({ artist }) => [artistLinkOf(artist)],
+        Album: ({ album }) => album.artists,
+        Song: ({ song }) => song.artists,
+        Playlist: () => [],
+      }),
+  })
+
+/** The artist a search is for, when its top result is an artist. */
+const searchedArtistOf = (focus: SearchFocus): Option.Option<ArtistSummary> =>
+  Option.flatMap(focus.maybeTopResult, topResult =>
+    topResult._tag === 'Artist' ? Option.some(topResult.artist) : Option.none(),
+  )
+
+/**
+ * Whether a text has these words in a row, as whole words, except that the
+ * last one may be typed partway: "blinding lig" is in "Blinding Light", and
+ * "geese" is not in "Bee Gees".
+ */
+const hasPhrase = (text: string, phrase: string): boolean => {
+  const words = paddedWords(phrase).trimEnd()
+  return words.trim().length > 0 && paddedWords(text).includes(words)
+}
+
+/**
+ * Whether a text has every word of a search, as whole words in any order,
+ * the last one perhaps typed partway: "taylor swift full concert" is in
+ * "Taylor Swift - reputation stadium tour (Full Concert)".
+ */
+const hasWords = (text: string, query: string): boolean => {
+  const words = paddedWords(query).trim().split(' ').filter(String.isNonEmpty)
+  const padded = paddedWords(text)
+  return (
+    Array.isArrayNonEmpty(words) &&
+    words.every((word, index) =>
+      padded.includes(index === words.length - 1 ? ` ${word}` : ` ${word} `),
+    )
+  )
+}
+
+/** Whether a search is the start of a longer name: "daft" of "Daft Punk". */
+const isStartOfName = (query: string, name: string): boolean =>
+  compactName(name) !== compactName(query) &&
+  hasPhrase(name, query) &&
+  paddedWords(name).startsWith(paddedWords(query).trimEnd())
+
+/**
+ * The words a title has to have to be about a search. A search for the
+ * start of the top artist's name means that artist: "daft" asks for "Daft
+ * Punk", so "Coins - Daft Science" is not about it. Otherwise the search's
+ * own words, or the top artist's name.
+ */
+const titlePhrases = (
+  query: string,
+  focus: SearchFocus,
+): ReadonlyArray<string> =>
+  Option.match(searchedArtistOf(focus), {
+    onNone: () => [query],
+    onSome: ({ name }) => (isStartOfName(query, name) ? [name] : [query, name]),
+  })
+
+/**
+ * Whether a title has the words of a search (`titlePhrases`, `hasWords`),
+ * and is not about another
+ * artist whose name only has the search in it: "Empire of Geese
+ * Перезаливы" is about Empire of Geese, not Geese.
+ */
+const isTitleAbout = (
+  title: string,
+  query: string,
+  focus: SearchFocus,
+): boolean => {
+  const ownNames = Array.map(topResultArtists(focus), ({ name }) =>
+    compactName(name),
+  )
+  return Array.some(
+    titlePhrases(query, focus),
+    phrase =>
+      hasWords(title, phrase) &&
+      !Array.some(
+        focus.artists,
+        ({ name }) =>
+          compactName(name) !== compactName(phrase) &&
+          !Array.contains(ownNames, compactName(name)) &&
+          hasPhrase(name, phrase) &&
+          hasPhrase(title, name),
+      ),
+  )
+}
+
+// ARTIST FILTER
+
+/**
+ * Whether an artist's name fits a search: it is the search, starts with
+ * it ("daft" for Daft Punk, "daft pu" too), has it as whole words
+ * ("kendrick" for Anna Kendrick), or the search starts or ends with it
+ * ("daft punk get lucky").
+ */
+const nameFits = (query: string, name: string): boolean =>
+  isExactName(query, name) ||
+  compactName(name).startsWith(compactName(query)) ||
+  hasPhrase(name, query) ||
+  searchNamesArtist(query, { maybeId: Option.none(), name })
+
+/**
+ * The artists a search shows: those whose names fit it (`nameFits`), and
+ * whoever the top result is by, so "bohemian rhapsody" lists Queen, not the
+ * related artists YouTube Music adds or an artist named "Bohemian Rhapsody"
+ * that hardly anyone follows. Artists with almost no audience drop out once
+ * a known one is listed. The top result's artists come first, then the one
+ * named exactly, then the rest in YouTube Music's order.
+ */
+export const filterArtistsForQuery = (
+  query: string,
+  artists: ReadonlyArray<ArtistSummary>,
+  focus: SearchFocus,
+): ReadonlyArray<ArtistSummary> => {
+  const topArtists = topResultArtists(focus)
+  const isTopArtist = (artist: ArtistSummary): boolean =>
+    isCreditedTo(topArtists, artistLinkOf(artist))
+  const fitting = Array.filter(
+    rankArtistsForQuery(query, artists),
+    artist => nameFits(query, artist.name) || isTopArtist(artist),
+  )
+  const shown = Array.some(fitting, isKnownArtist)
+    ? Array.filter(fitting, isKnownArtist)
+    : fitting
+  return Array.sort(
+    shown,
+    Order.mapInput(Order.Number, (artist: ArtistSummary) =>
+      isTopArtist(artist)
+        ? 0
+        : isExactName(query, artist.name) && isKnownArtist(artist)
+          ? 1
+          : 2,
+    ),
+  )
 }
 
 // ALBUM AND PLAYLIST SEARCH
@@ -1804,10 +2017,18 @@ const isTributeAlbum = (album: AlbumSummary): boolean =>
   TRIBUTE.test(album.title) ||
   Array.some(album.artists, ({ name }) => TRIBUTE.test(name))
 
-const isCreditedTo = (
-  credits: ReadonlyArray<ArtistLink>,
-  artist: ArtistLink,
-): boolean => Array.some(credits, credit => isSameArtist(credit, artist))
+/** A "(feat. Kendrick Lamar)" or "[with SZA]" bracket in a title. */
+const FEATURE_BRACKET = /[([]\s*(feat\.?|ft\.?|featuring|with)\s[^)\]]*[)\]]/gi
+
+/**
+ * Whether a release is the artist's: they are credited, or a bracket in
+ * its title has them featured: "Malcolm X (feat. Kendrick Lamar)".
+ */
+const isReleaseBy = (album: AlbumSummary, artist: ArtistLink): boolean =>
+  isCreditedTo(album.artists, artist) ||
+  Array.some(album.title.match(FEATURE_BRACKET) ?? [], bracket =>
+    hasPhrase(bracket, artist.name),
+  )
 
 /**
  * A bare title without a plural "s", so a search typed partway, "blinding
@@ -1821,31 +2042,55 @@ const singularTitle = (title: string): string =>
  * Releases from a search, without what only rides on the artist or song
  * searched for: karaoke, tributes, and covers ("HUMBLE. (Karaoke Version)",
  * "Lullaby Versions of Kendrick Lamar"); releases named after the artist
- * searched for but not theirs ("THE KENDRICK LAMAR SUITE"); and other
- * artists' singles named like the top result's song (`maybeTopSong`):
- * "blinding lights" lists no one else's "Blinding Light(s)" single. A search
- * that asks for a version ("humble karaoke") keeps them all.
+ * searched for but not theirs ("THE KENDRICK LAMAR SUITE"); other artists'
+ * singles named like the top result's song: "blinding lights" lists no one
+ * else's "Blinding Light(s)" single; and, when the search is for an artist,
+ * other artists' releases that only have its words in their titles: "daft"
+ * lists no "Daft Funk" or "Daft", "kendrick" no "Kendrick? Did You Hear
+ * That, Kendrick?". A release by an artist the search shows
+ * (`filterArtistsForQuery`) stays. The artist searched for is the top
+ * result's, or a known artist the search names: an artist named "Bohemian
+ * Rhapsody" that hardly anyone follows does not hide Queen's "Bohemian
+ * Rhapsody" soundtrack. A search that asks for a version ("humble karaoke")
+ * keeps them all.
  */
 export const filterAlbumsForQuery = (
   query: string,
   albums: ReadonlyArray<AlbumSummary>,
-  maybeTopSong: Option.Option<Song> = Option.none(),
+  focus: SearchFocus = NO_FOCUS,
 ): ReadonlyArray<AlbumSummary> => {
   if (asksForVersion(query)) {
     return albums
   }
-  const searchedArtists = pipe(
-    albums,
-    Array.flatMap(({ artists }) => artists),
-    Array.filter(artist => searchNamesArtist(query, artist)),
+  const isUnknown = (artist: ArtistLink): boolean =>
+    Array.some(
+      focus.artists,
+      known =>
+        isSameArtist(artistLinkOf(known), artist) && !isKnownArtist(known),
+    )
+  const maybeSearched = searchedArtistOf(focus)
+  const searchedArtists = Array.dedupeWith(
+    [
+      ...Option.toArray(Option.map(maybeSearched, artistLinkOf)),
+      ...pipe(
+        albums,
+        Array.flatMap(({ artists }) => artists),
+        Array.filter(
+          artist => searchNamesArtist(query, artist) && !isUnknown(artist),
+        ),
+      ),
+    ],
+    isSameArtist,
   )
   const isAboutSearchedArtist = (album: AlbumSummary): boolean =>
     Array.some(
       searchedArtists,
       artist =>
-        paddedWords(album.title).includes(paddedWords(artist.name)) &&
-        !isCreditedTo(album.artists, artist),
+        hasPhrase(album.title, artist.name) && !isReleaseBy(album, artist),
     )
+  const maybeTopSong = Option.flatMap(focus.maybeTopResult, topResult =>
+    topResult._tag === 'Song' ? Option.some(topResult.song) : Option.none(),
+  )
   const isOtherTakeOnTopSong = (album: AlbumSummary): boolean =>
     Option.exists(
       maybeTopSong,
@@ -1856,14 +2101,57 @@ export const filterAlbumsForQuery = (
           isCreditedTo(album.artists, artist),
         ),
     )
+  const shownArtists = Option.isSome(maybeSearched)
+    ? Array.map(
+        filterArtistsForQuery(query, focus.artists, focus),
+        artistLinkOf,
+      )
+    : []
+  const isOthersNamesake = (album: AlbumSummary): boolean =>
+    Option.isSome(maybeSearched) &&
+    hasWords(album.title, query) &&
+    !Array.some([...searchedArtists, ...shownArtists], artist =>
+      isReleaseBy(album, artist),
+    )
   return Array.filter(
     albums,
     album =>
       !isTributeAlbum(album) &&
       !isAboutSearchedArtist(album) &&
-      !isOtherTakeOnTopSong(album),
+      !isOtherTakeOnTopSong(album) &&
+      !isOthersNamesake(album),
   )
 }
+
+/**
+ * The top song's own album first among the releases a search found: from
+ * the search when it has it, else `maybeFetched`, the album looked up by
+ * the song's album id.
+ */
+export const withTopSongAlbum = (
+  albums: ReadonlyArray<AlbumSummary>,
+  albumId: string,
+  maybeFetched: Option.Option<AlbumSummary>,
+): ReadonlyArray<AlbumSummary> =>
+  pipe(
+    Array.findFirst(albums, ({ id }) => id === albumId),
+    Option.orElse(() => maybeFetched),
+    Option.match({
+      onNone: () => albums,
+      onSome: album => [
+        album,
+        ...Array.filter(albums, ({ id }) => id !== album.id),
+      ],
+    }),
+  )
+
+/** The id of the album of the song search shows first, if it is a song. */
+export const topSongAlbumId = (focus: SearchFocus): Option.Option<string> =>
+  Option.flatMap(focus.maybeTopResult, topResult =>
+    topResult._tag === 'Song'
+      ? Option.map(topResult.song.maybeAlbum, ({ id }) => id)
+      : Option.none(),
+  )
 
 const VIEW_COUNT = /([\d.,]+\s*[KMB]?)\s+views?\b/i
 
@@ -1882,24 +2170,115 @@ export const playlistViews = (
 /** A playlist seen fewer times than this is someone's own, not a find. */
 export const FEWEST_PLAYLIST_VIEWS = 1000
 
+const SONG_COUNT = /\b[\d,]+\s+(songs?|tracks?)\b/i
+
 /**
- * Playlists from a search, without the ones hardly anyone played ("Kendrick
- * lamar · 6 views") or of karaoke and tributes, unless the search asks for
- * those. A playlist that shows no count, such as YouTube Music's own, stays.
+ * Who made a playlist, from its subtitle: "Batson" in "Batson · 1.6M
+ * views", "YouTube Music" in "YouTube Music · 126 songs".
+ */
+const playlistAuthor = (playlist: PlaylistSummary): Option.Option<string> =>
+  pipe(
+    playlist.maybeSubtitle,
+    Option.map(subtitle =>
+      Array.filter(
+        subtitle.split(' · '),
+        segment => segment !== PLAYLIST_LABEL,
+      ),
+    ),
+    Option.flatMap(Array.head),
+    Option.map(String.trim),
+    Option.filter(String.isNonEmpty),
+  )
+
+/** The accounts YouTube Music makes its own playlists with. */
+const EDITORIAL_AUTHORS: ReadonlyArray<string> = ['YouTube Music']
+
+/** YouTube Music's own playlists have ids that start with this. */
+const EDITORIAL_ID = /^(VL)?RDCLAK5uy_/
+
+/** Whether YouTube Music made a playlist: "Presenting Daft Punk". */
+const isEditorial = (playlist: PlaylistSummary): boolean =>
+  EDITORIAL_ID.test(playlist.id) ||
+  Option.exists(playlistAuthor(playlist), author =>
+    Array.contains(EDITORIAL_AUTHORS, author),
+  )
+
+/**
+ * Videos rather than songs: "(Full Concert)", "Live Stream", "All Daft
+ * Punk Music Videos In Order", "Live Footage", a documentary.
+ */
+const VIDEO_COMPILATION =
+  /\b(full\s+(concert|show|set|performance|movie|film)|concert\s+(film|movie)|live\s*-?\s*stream(s|ed|ing)?|livestreams?|music\s+videos?|videos?|mvs?|live\s+footage|documentar(y|ies)|interviews?|react(s|ing|ions?)?|vlogs?)\b/i
+
+/** Edits of an artist's songs: "Daft Punk Slowed Reverb", "Type Beats". */
+const PLAYLIST_EDIT =
+  /\b(slowed|sped[\s-]?up|8d|nightcore|reverb(ed)?|bass[\s-]?boosted|mash-?ups?|type\s+beats?)\b/i
+
+/**
+ * Playlists from a search, as people mean it. YouTube Music's own come
+ * first (`featured`, from its "Featured playlists" search, when their
+ * titles are about the search), then the artist's own, then the rest. A
+ * playlist stays when its title is about the search (`isTitleAbout`: as
+ * whole words, so "geese" lists no Bee Gees or Goose), or it is by the
+ * artist searched for or YouTube Music. Left out, unless the search asks
+ * for them: videos ("(Full Concert)", "Music Videos"), slowed, sped up, or
+ * mashed up edits, karaoke, and tributes. Someone's playlist hardly anyone
+ * played goes too: under 1,000 views ("Kendrick lamar · 6 views"), or one
+ * that shows its songs where a played one shows its views ("Geese · 9
+ * songs"), which YouTube does for a playlist with none worth counting.
  */
 export const filterPlaylistsForQuery = (
   query: string,
   playlists: ReadonlyArray<PlaylistSummary>,
-): ReadonlyArray<PlaylistSummary> =>
-  Array.filter(
-    playlists,
-    playlist =>
-      !Option.exists(
-        playlistViews(playlist),
-        views => views < FEWEST_PLAYLIST_VIEWS,
-      ) &&
-      (asksForVersion(query) || !TRIBUTE.test(playlist.title)),
+  focus: SearchFocus = NO_FOCUS,
+  featured: ReadonlyArray<PlaylistSummary> = [],
+): ReadonlyArray<PlaylistSummary> => {
+  const ownNames = Array.map(topResultArtists(focus), ({ name }) =>
+    compactName(name),
   )
+  const isArtistsOwn = (playlist: PlaylistSummary): boolean =>
+    Option.exists(playlistAuthor(playlist), author =>
+      Array.contains(ownNames, compactName(author)),
+    )
+  const asksForVideos = VIDEO_COMPILATION.test(query)
+  const asksForEdits = asksForVersion(query) || PLAYLIST_EDIT.test(query)
+  const isWanted = (playlist: PlaylistSummary): boolean =>
+    (asksForVideos || !VIDEO_COMPILATION.test(playlist.title)) &&
+    (asksForEdits ||
+      (!PLAYLIST_EDIT.test(playlist.title) && !TRIBUTE.test(playlist.title)))
+  const isPlayed = (playlist: PlaylistSummary): boolean =>
+    Option.match(playlistViews(playlist), {
+      onNone: () =>
+        !Option.exists(playlist.maybeSubtitle, subtitle =>
+          SONG_COUNT.test(subtitle),
+        ),
+      onSome: views => views >= FEWEST_PLAYLIST_VIEWS,
+    })
+  const isAbout = (playlist: PlaylistSummary): boolean =>
+    isTitleAbout(playlist.title, query, focus)
+  const kept = [
+    ...Array.filter(
+      featured,
+      playlist => isEditorial(playlist) && isAbout(playlist),
+    ),
+    ...Array.filter(
+      playlists,
+      playlist =>
+        isEditorial(playlist) ||
+        isArtistsOwn(playlist) ||
+        (isAbout(playlist) && isPlayed(playlist)),
+    ),
+  ]
+  return pipe(
+    Array.dedupeWith(kept, (left, right) => left.id === right.id),
+    Array.filter(isWanted),
+    Array.sort(
+      Order.mapInput(Order.Number, (playlist: PlaylistSummary) =>
+        isEditorial(playlist) ? 0 : isArtistsOwn(playlist) ? 1 : 2,
+      ),
+    ),
+  )
+}
 
 // SUGGESTIONS
 

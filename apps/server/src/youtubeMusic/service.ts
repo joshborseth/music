@@ -38,6 +38,8 @@ import {
   type DiscographyLink,
   type MoodShelf,
   type MusicVideo,
+  NO_FOCUS,
+  type SearchFocus,
   type TopCard,
   type TopSong,
   albumFromListItem,
@@ -47,6 +49,7 @@ import {
   chooseTopResult,
   discographyLink,
   filterAlbumsForQuery,
+  filterArtistsForQuery,
   filterPlaylistsForQuery,
   filterSome,
   musicVideoIds,
@@ -67,7 +70,9 @@ import {
   toPlaylistDetails,
   topCardFrom,
   topCardSong,
+  topSongAlbumId,
   twoRowItemsOf,
+  withTopSongAlbum,
 } from './mapping.ts'
 
 /**
@@ -138,6 +143,22 @@ const SONG_SEARCH_CAPACITY = 64
  */
 const SUGGESTIONS_TTL = Duration.minutes(30)
 const SUGGESTIONS_CAPACITY = 1024
+
+/**
+ * A top song's album, looked up when the album search missed it, is kept
+ * this long. It changes rarely.
+ */
+const ALBUM_SUMMARY_TTL = Duration.days(1)
+const ALBUM_SUMMARY_CAPACITY = 256
+
+/**
+ * How long the album search waits for the top song's album when it has to
+ * be looked up. A slow one shows on the next search.
+ */
+const TOP_ALBUM_WAIT = Duration.millis(1500)
+
+/** The chip that searches YouTube Music's own playlists. */
+const FEATURED_PLAYLISTS = 'Featured playlists'
 
 /**
  * An artist page is kept this long. Search reads an artist's top songs from
@@ -322,27 +343,50 @@ const make = Effect.gen(function* () {
     searchCacheOptions,
   )
 
+  /** The search with no kind picked, which has YouTube Music's card. */
+  const searches = yield* Cache.makeWith(
+    (query: string) => callYouTube(() => music.search(query)),
+    searchCacheOptions,
+  )
+
   /** The card YouTube Music shows above its results, as it shows it. */
-  const topCards = yield* Cache.makeWith(
+  const topCards = (query: string) =>
+    Effect.map(Cache.get(searches, query), search =>
+      Option.flatMap(
+        Option.fromNullishOr(
+          search.contents?.firstOfType(YTNodes.MusicCardShelf),
+        ),
+        topCardFrom,
+      ),
+    )
+
+  /**
+   * YouTube Music's own playlists for a search, from its "Featured
+   * playlists" chip, which only the search with no kind picked offers.
+   */
+  const featuredPlaylists = yield* Cache.makeWith(
     (query: string) =>
-      Effect.map(
-        callYouTube(() => music.search(query)),
-        search =>
-          Option.flatMap(
-            Option.fromNullishOr(
-              search.contents?.firstOfType(YTNodes.MusicCardShelf),
-            ),
-            topCardFrom,
-          ),
+      Effect.flatMap(Cache.get(searches, query), search =>
+        Array.contains(search.filters, FEATURED_PLAYLISTS)
+          ? Effect.map(
+              callYouTube(() => search.applyFilter(FEATURED_PLAYLISTS)),
+              featured =>
+                filterSome(
+                  featured.contents?.firstOfType(YTNodes.MusicShelf)
+                    ?.contents ?? [],
+                  playlistFromListItem,
+                ),
+            )
+          : Effect.succeed([]),
       ),
     searchCacheOptions,
   )
 
-  /** An artist search, ranked and without unknown namesakes. */
-  const artistSearches = yield* Cache.makeWith(
+  /** Every artist an artist search finds, in YouTube Music's order. */
+  const artistShelves = yield* Cache.makeWith(
     (query: string) =>
       Effect.map(searchShelf(query, 'artist'), items =>
-        rankArtistsForQuery(query, filterSome(items, artistFromListItem)),
+        filterSome(items, artistFromListItem),
       ),
     searchCacheOptions,
   )
@@ -369,8 +413,74 @@ const make = Effect.gen(function* () {
 
   /** The card, or none when the search for it fails. */
   const topCardOf = (query: string) =>
-    Cache.get(topCards, query).pipe(
-      Effect.orElseSucceed(() => Option.none<TopCard>()),
+    topCards(query).pipe(Effect.orElseSucceed(() => Option.none<TopCard>()))
+
+  /**
+   * What a search is about (`SearchFocus`): its top result and every artist
+   * it found. It fails when the search for the card does, so a failure is
+   * not kept; a song or artist search YouTube did not answer counts as
+   * nothing found.
+   */
+  const searchFocuses = yield* Cache.makeWith(
+    (query: string) =>
+      Effect.map(
+        Effect.all(
+          [
+            topCards(query),
+            Cache.get(songShelves, query).pipe(
+              Effect.orElseSucceed((): ReadonlyArray<Song> => []),
+            ),
+            Cache.get(artistShelves, query).pipe(
+              Effect.orElseSucceed((): ReadonlyArray<ArtistSummary> => []),
+            ),
+          ],
+          { concurrency: 'unbounded' },
+        ),
+        ([maybeCard, songs, artists]): SearchFocus => ({
+          maybeTopResult: chooseTopResult(
+            query,
+            maybeCard,
+            songs,
+            rankArtistsForQuery(query, artists),
+          ),
+          artists,
+        }),
+      ),
+    searchCacheOptions,
+  )
+
+  /** The focus, or none but the words when the search for it fails. */
+  const focusOf = (query: string) =>
+    Cache.get(searchFocuses, query).pipe(Effect.orElseSucceed(() => NO_FOCUS))
+
+  /** An album as a list shows it, kept for a day: a top song's album. */
+  const albumSummaries = yield* Cache.makeWith(
+    (albumId: string) =>
+      Effect.flatMap(
+        lookUp(albumId, () => music.getAlbum(albumId)),
+        page =>
+          orNotFound(albumId)(
+            Option.map(toAlbumDetails(albumId, page), ({ album }) => album),
+          ),
+      ),
+    {
+      capacity: ALBUM_SUMMARY_CAPACITY,
+      timeToLive: Exit.match({
+        onFailure: () => Duration.zero,
+        onSuccess: () => ALBUM_SUMMARY_TTL,
+      }),
+    },
+  )
+
+  /**
+   * An album, or none if it takes longer than `TOP_ALBUM_WAIT`. A slow one
+   * carries on loading, so the cache has it next time.
+   */
+  const albumSummaryOf = (albumId: string) =>
+    Effect.forkDetach(Cache.get(albumSummaries, albumId)).pipe(
+      Effect.flatMap(Fiber.join),
+      Effect.timeoutOption(TOP_ALBUM_WAIT),
+      Effect.orElseSucceed(() => Option.none<AlbumSummary>()),
     )
 
   const audioTrackSearches = yield* Semaphore.make(AUDIO_TRACK_CONCURRENCY)
@@ -453,37 +563,95 @@ const make = Effect.gen(function* () {
           ),
         )
 
+  /**
+   * The artists whose names fit the search, and whoever the top result is
+   * by (`filterArtistsForQuery`). When the artist search missed the top
+   * song's artist, their page stands in, if it comes within
+   * `ARTIST_HITS_WAIT`; the song search reads the same page.
+   */
   const searchArtists = Effect.fn('YouTubeMusic.searchArtists')(function* (
     query: string,
   ) {
-    return yield* Cache.get(artistSearches, query)
+    const [artists, focus] = yield* Effect.all(
+      [Cache.get(artistShelves, query), focusOf(query)],
+      { concurrency: 'unbounded' },
+    )
+    const shown = filterArtistsForQuery(query, artists, focus)
+    const maybeMissingId = pipe(
+      Option.flatMap(focus.maybeTopResult, topResult =>
+        topResult._tag === 'Song'
+          ? Array.findFirst(topResult.song.artists, ({ maybeId }) =>
+              Option.isSome(maybeId),
+            )
+          : Option.none(),
+      ),
+      Option.flatMap(({ maybeId }) => maybeId),
+      Option.filter(id => !Array.some(artists, artist => artist.id === id)),
+    )
+    if (Option.isNone(maybeMissingId)) return shown
+    const maybePage = yield* Effect.forkDetach(
+      getArtistOverview(maybeMissingId.value),
+    ).pipe(
+      Effect.flatMap(Fiber.join),
+      Effect.timeoutOption(ARTIST_HITS_WAIT),
+      Effect.orElseSucceed(() => Option.none<ArtistDetails>()),
+    )
+    return Option.match(maybePage, {
+      onNone: () => shown,
+      onSome: ({ artist }) =>
+        filterArtistsForQuery(query, [...artists, artist], focus),
+    })
   })
 
   /**
-   * Releases, without karaoke, tributes, and other artists' singles of the
-   * top result's song, which the card tells.
+   * Releases, without karaoke, tributes, other artists' singles of the top
+   * song, and other artists' namesakes (`filterAlbumsForQuery`), with the
+   * top song's own album first, looked up by its id when the album search
+   * missed it: "bohemian rhapsody" lists A Night at the Opera.
    */
   const searchAlbums = Effect.fn('YouTubeMusic.searchAlbums')(function* (
     query: string,
   ) {
-    const [items, maybeCard] = yield* Effect.all(
-      [searchShelf(query, 'album'), topCardOf(query)],
+    const [items, focus] = yield* Effect.all(
+      [searchShelf(query, 'album'), focusOf(query)],
       { concurrency: 'unbounded' },
     )
-    return filterAlbumsForQuery(
+    const albums = filterAlbumsForQuery(
       query,
       filterSome(items, albumFromListItem),
-      Option.flatMap(maybeCard, card => topCardSong(query, card)),
+      focus,
     )
+    const maybeAlbumId = topSongAlbumId(focus)
+    if (Option.isNone(maybeAlbumId)) return albums
+    const albumId = maybeAlbumId.value
+    const maybeFetched = Array.some(albums, ({ id }) => id === albumId)
+      ? Option.none<AlbumSummary>()
+      : yield* albumSummaryOf(albumId)
+    return withTopSongAlbum(albums, albumId, maybeFetched)
   })
 
+  /**
+   * Playlists about the search, YouTube Music's own first
+   * (`filterPlaylistsForQuery`).
+   */
   const searchPlaylists = Effect.fn('YouTubeMusic.searchPlaylists')(function* (
     query: string,
   ) {
-    const items = yield* searchShelf(query, 'playlist')
+    const [items, focus, featured] = yield* Effect.all(
+      [
+        searchShelf(query, 'playlist'),
+        focusOf(query),
+        Cache.get(featuredPlaylists, query).pipe(
+          Effect.orElseSucceed((): ReadonlyArray<PlaylistSummary> => []),
+        ),
+      ],
+      { concurrency: 'unbounded' },
+    )
     return filterPlaylistsForQuery(
       query,
       filterSome(items, playlistFromListItem),
+      focus,
+      featured,
     )
   })
 
@@ -614,19 +782,7 @@ const make = Effect.gen(function* () {
   const searchTopResult = Effect.fn('YouTubeMusic.searchTopResult')(function* (
     query: string,
   ) {
-    const [maybeCard, songs, artists] = yield* Effect.all(
-      [
-        Cache.get(topCards, query),
-        Cache.get(songShelves, query).pipe(
-          Effect.orElseSucceed((): ReadonlyArray<Song> => []),
-        ),
-        Cache.get(artistSearches, query).pipe(
-          Effect.orElseSucceed((): ReadonlyArray<ArtistSummary> => []),
-        ),
-      ],
-      { concurrency: 'unbounded' },
-    )
-    const maybeTopResult = chooseTopResult(query, maybeCard, songs, artists)
+    const { maybeTopResult } = yield* Cache.get(searchFocuses, query)
     if (Option.isNone(maybeTopResult)) return maybeTopResult
     const topResult = maybeTopResult.value
     if (topResult._tag !== 'Artist') return maybeTopResult
