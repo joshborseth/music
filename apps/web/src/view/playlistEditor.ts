@@ -274,8 +274,13 @@ export const editingPlaylistView = (
 
 // ADD SONGS
 
+/** What the Add Songs and cover sheets show. */
+export type AddSongsModel = Readonly<
+  Pick<Model, 'myPlaylists' | 'home' | 'songSearch' | 'addSongsSearch'>
+>
+
 const loadedDetails = (
-  model: Model,
+  model: AddSongsModel,
   playlistId: string,
 ): Option.Option<MyPlaylistDetails> =>
   AsyncData.getData(myPlaylistQuery.read(model.myPlaylists, { playlistId }))
@@ -332,7 +337,7 @@ const hint = (text: string, h: HtmlBuilder<Message>): Html =>
 
 /** Before anything is typed: the songs played lately, from Home. */
 const suggestions = (
-  model: Model,
+  model: AddSongsModel,
   playlistId: string,
   heldVideoIds: ReadonlyArray<string>,
   h: HtmlBuilder<Message>,
@@ -366,7 +371,7 @@ const suggestions = (
   )
 
 const searchResults = (
-  model: Model,
+  model: AddSongsModel,
   playlistId: string,
   heldVideoIds: ReadonlyArray<string>,
   query: string,
@@ -383,7 +388,7 @@ const searchResults = (
 
 /** Add Songs: search YouTube Music and add songs to the playlist one by one. */
 export const addSongsSheet = (
-  model: Model,
+  model: AddSongsModel,
   playlistId: string,
   h: HtmlBuilder<Message>,
 ): Html => {
@@ -527,7 +532,7 @@ const coverChoice = (
 
 /** The cover choice: the mosaic, or the cover of one of its songs. */
 export const chooseCoverSheet = (
-  model: Model,
+  model: AddSongsModel,
   playlistId: string,
   h: HtmlBuilder<Message>,
 ): Html =>

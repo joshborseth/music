@@ -1,6 +1,6 @@
 import { Array, Option, pipe } from 'effect'
 import { AsyncData } from 'foldkit'
-import { Html, HtmlBuilder } from 'foldkit/html'
+import { Html, HtmlBuilder, createLazy } from 'foldkit/html'
 import {
   AudioLines,
   Check,
@@ -74,7 +74,11 @@ import {
 } from './collectionDownload'
 import { librarySortSheet } from './library'
 import { deviceIcon, thisDeviceName } from './player'
-import { addSongsSheet, chooseCoverSheet } from './playlistEditor'
+import {
+  type AddSongsModel,
+  addSongsSheet,
+  chooseCoverSheet,
+} from './playlistEditor'
 import {
   ArtworkShape,
   albumHref,
@@ -87,6 +91,31 @@ import {
   playlistLength,
   songHref,
 } from './shared'
+
+/**
+ * What the action sheet shows. It leaves out the playback clock, so a
+ * playing song never redraws a sheet, open or slid away. The sleep timer
+ * sheet's countdown comes worked out instead, and only while it is that
+ * sheet.
+ */
+export type SheetModel = Readonly<
+  Pick<
+    Model,
+    | 'actionSheet'
+    | 'route'
+    | 'albums'
+    | 'playlists'
+    | 'myLibrary'
+    | 'myPlaylists'
+    | 'downloads'
+    | 'libraryPrefs'
+    | 'maybeIdentity'
+    | 'maybeSession'
+    | 'playlistTitleInput'
+    | 'playerSheet'
+  > &
+    AddSongsModel & { sleepTimerSubtitle: string }
+>
 
 const actionClass =
   'flex h-14 w-full items-center gap-4 px-5 text-left text-[17px] transition-colors active:bg-muted'
@@ -141,7 +170,7 @@ const sheetHeading = (
 
 /** The playlist of mine this page shows, if it holds the song. */
 const shownPlaylistWith = (
-  model: Model,
+  model: SheetModel,
   videoId: string,
 ): Option.Option<MyPlaylistSummary> =>
   AppRoute.matchOrElse(
@@ -214,7 +243,7 @@ const soundCheckSwitch = (isOn: boolean, h: HtmlBuilder<Message>): Html =>
 
 /** Sound Check's switch, when the sheet is about the song in the open player. */
 const playerSettings = (
-  model: Model,
+  model: SheetModel,
   song: Song,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -235,7 +264,7 @@ const playerSettings = (
   )
 
 const songActions = (
-  model: Model,
+  model: SheetModel,
   song: Song,
   h: HtmlBuilder<Message>,
 ): Html => {
@@ -395,7 +424,7 @@ const songActionsFor = (
 
 /** Download the songs, or take them off the phone once some are on it. */
 const downloadAction = (
-  model: Model,
+  model: SheetModel,
   request: DownloadRequest,
   h: HtmlBuilder<Message>,
 ): Html => {
@@ -487,7 +516,7 @@ const shareAction = (
   actionButton(Message.ClickedShare({ title, href }), Share, 'Share', h)
 
 const albumActions = (
-  model: Model,
+  model: SheetModel,
   details: AlbumDetails,
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => {
@@ -524,7 +553,7 @@ const albumActions = (
 }
 
 const playlistDetailsActions = (
-  model: Model,
+  model: SheetModel,
   details: PlaylistDetails,
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => {
@@ -547,7 +576,7 @@ const playlistDetailsActions = (
  * page's own data, which is loaded whenever its ⋯ shows.
  */
 const collectionActions = (
-  model: Model,
+  model: SheetModel,
   kind: CollectionKind,
   id: string,
   h: HtmlBuilder<Message>,
@@ -682,7 +711,7 @@ const wakeButton = (
   )
 }
 
-const devicePicker = (model: Model, h: HtmlBuilder<Message>): Html =>
+const devicePicker = (model: SheetModel, h: HtmlBuilder<Message>): Html =>
   h.div(
     [h.Class('flex flex-col')],
     [
@@ -811,7 +840,7 @@ const sleepTimerSubtitle = (model: Model): string =>
     },
   )
 
-const sleepTimerPicker = (model: Model, h: HtmlBuilder<Message>): Html => {
+const sleepTimerPicker = (model: SheetModel, h: HtmlBuilder<Message>): Html => {
   const maybeTimer = Option.flatMap(model.maybeSession, ({ state }) =>
     Option.fromNullishOr(state.sleepTimer),
   )
@@ -822,7 +851,7 @@ const sleepTimerPicker = (model: Model, h: HtmlBuilder<Message>): Html => {
   return h.div(
     [h.Class('flex flex-col')],
     [
-      sheetHeading('Sleep Timer', Option.some(sleepTimerSubtitle(model)), h),
+      sheetHeading('Sleep Timer', Option.some(model.sleepTimerSubtitle), h),
       h.div(
         [h.Class('flex flex-col border-t py-2')],
         [
@@ -886,7 +915,7 @@ const songCountText = (songs: ReadonlyArray<Song>): Option.Option<string> =>
 
 /** Every playlist of mine to add songs to, after a row for a new one. */
 const playlistPicker = (
-  model: Model,
+  model: SheetModel,
   songs: ReadonlyArray<Song>,
   suggestedTitle: string,
   h: HtmlBuilder<Message>,
@@ -984,7 +1013,7 @@ const sheetButtonClass =
 
 /** A form that names a playlist, for a new one or a rename. */
 const playlistTitleForm = (
-  model: Model,
+  model: SheetModel,
   config: Readonly<{
     heading: string
     maybeSubtitle: Option.Option<string>
@@ -1194,7 +1223,7 @@ const confirmRemoveDownload = (
   )
 
 const sheetContent = (
-  model: Model,
+  model: SheetModel,
   content: SheetContent,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -1260,7 +1289,7 @@ const sheetLabel = (content: SheetContent): string =>
   })
 
 const sheetFrame = (
-  model: Model,
+  model: SheetModel,
   content: SheetContent,
   isOpen: boolean,
   h: HtmlBuilder<Message>,
@@ -1306,10 +1335,82 @@ const sheetFrame = (
   )
 }
 
-/** The action sheet, sliding up over everything when shown. */
-export const actionSheetView = (model: Model, h: HtmlBuilder<Message>): Html =>
+const sheetView = (model: SheetModel, h: HtmlBuilder<Message>): Html =>
   ActionSheet.match(model.actionSheet, {
     Hidden: () => h.empty,
     Shown: ({ content }) => sheetFrame(model, content, true, h),
     Dismissed: ({ content }) => sheetFrame(model, content, false, h),
   })
+
+/** One slot: there is one action sheet. */
+const lazySheet = createLazy()
+
+/** Builds the sheet's model from its parts, which the slot compares. */
+const renderSheet = (
+  actionSheet: Model['actionSheet'],
+  route: Model['route'],
+  albums: Model['albums'],
+  playlists: Model['playlists'],
+  myLibrary: Model['myLibrary'],
+  myPlaylists: Model['myPlaylists'],
+  downloads: Model['downloads'],
+  libraryPrefs: Model['libraryPrefs'],
+  maybeIdentity: Model['maybeIdentity'],
+  maybeSession: Model['maybeSession'],
+  playlistTitleInput: string,
+  playerSheet: Model['playerSheet'],
+  home: Model['home'],
+  songSearch: Model['songSearch'],
+  addSongsSearch: Model['addSongsSearch'],
+  sleepTimerSubtitle: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  sheetView(
+    {
+      actionSheet,
+      route,
+      albums,
+      playlists,
+      myLibrary,
+      myPlaylists,
+      downloads,
+      libraryPrefs,
+      maybeIdentity,
+      maybeSession,
+      playlistTitleInput,
+      playerSheet,
+      home,
+      songSearch,
+      addSongsSearch,
+      sleepTimerSubtitle,
+    },
+    h,
+  )
+
+const isSleepTimerSheet = (sheet: ActionSheet): boolean =>
+  sheet._tag !== 'Hidden' && sheet.content._tag === 'SleepTimer'
+
+/**
+ * The action sheet, sliding up over everything when shown. It is drawn
+ * again only when something it shows changes, open or slid away.
+ */
+export const actionSheetView = (model: Model, h: HtmlBuilder<Message>): Html =>
+  lazySheet(renderSheet, [
+    model.actionSheet,
+    model.route,
+    model.albums,
+    model.playlists,
+    model.myLibrary,
+    model.myPlaylists,
+    model.downloads,
+    model.libraryPrefs,
+    model.maybeIdentity,
+    model.maybeSession,
+    model.playlistTitleInput,
+    model.playerSheet,
+    model.home,
+    model.songSearch,
+    model.addSongsSearch,
+    isSleepTimerSheet(model.actionSheet) ? sleepTimerSubtitle(model) : '',
+    h,
+  ])

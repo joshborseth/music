@@ -28,6 +28,8 @@ export interface SungWord {
 export type LyricRow =
   | {
       readonly _tag: 'Sung'
+      /** The line itself, so the view can keep a row whose words have not moved on. */
+      readonly line: LyricLine
       readonly startSeconds: number
       readonly text: string
       readonly state: LineState
@@ -119,6 +121,7 @@ export const lyricRows = (
     const state = stateOf(index, maybeActiveIndex)
     return {
       _tag: 'Sung',
+      line,
       startSeconds: line.startSeconds,
       text: line.text,
       state,

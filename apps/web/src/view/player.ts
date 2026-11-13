@@ -1,10 +1,11 @@
 import { Array, Option, pipe } from 'effect'
 import { AsyncData } from 'foldkit'
-import { Html, HtmlBuilder } from 'foldkit/html'
+import { Html, HtmlBuilder, createLazy } from 'foldkit/html'
 import {
   ChevronDown,
   Ellipsis,
   Heart,
+  type IconNode,
   Infinity as InfinityIcon,
   ListMusic,
   LoaderCircle,
@@ -56,7 +57,7 @@ import {
   upcomingEntries,
 } from '../playback/domain'
 import { displayedPosition } from '../playback/position'
-import { SwipeTarget, swipeOn } from '../playback/swipe'
+import { Swipe, SwipeTarget, swipeOn } from '../playback/swipe'
 import { artworkBackdropQuery, songQuery } from '../query'
 import { searchUrl } from '../route'
 import { type PlayerPanel } from '../sheet'
@@ -170,7 +171,7 @@ const elsewhere = (
   )
 
 /** This phone's own name, as the device picker shows it. */
-export const thisDeviceName = (model: Model): string =>
+export const thisDeviceName = (model: Pick<Model, 'maybeIdentity'>): string =>
   Option.match(model.maybeIdentity, {
     onNone: () => 'This phone',
     onSome: ({ deviceName }) => `This ${deviceName}`,
@@ -187,15 +188,11 @@ const isLoading = (model: Model, snapshot: SessionSnapshot): boolean =>
     ({ status }) => status === 'TurningOn',
   )
 
-const progressFraction = (
-  model: Model,
-  snapshot: SessionSnapshot,
-  entry: Session.QueueEntry,
-): number => {
-  const duration = entry.track.durationSeconds ?? 0
-  return duration > 0
-    ? Math.min(1, displayedPosition(model, snapshot) / duration)
-    : 0
+/** How far the mini player's line reaches, as its CSS width. */
+const progressWidth = (track: Session.QueueTrack, position: number): string => {
+  const duration = track.durationSeconds ?? 0
+  const progress = duration > 0 ? Math.min(1, position / duration) : 0
+  return `${(progress * 100).toFixed(2)}%`
 }
 
 // ARTWORK
@@ -245,10 +242,22 @@ const playPauseIcon = (isPlaying: boolean, isLoading: boolean) => {
   }
 }
 
+type PlayPauseLook = Readonly<{ buttonClass: string; iconClass: string }>
+
+const MINI_PLAY_PAUSE: PlayPauseLook = {
+  buttonClass: 'size-11',
+  iconClass: 'size-6',
+}
+
+const PLAYER_PLAY_PAUSE: PlayPauseLook = {
+  buttonClass: 'size-20',
+  iconClass: 'size-12',
+}
+
 const playPauseButton = (
   isPlaying: boolean,
   isLoading: boolean,
-  config: Readonly<{ buttonClass: string; iconClass: string }>,
+  config: PlayPauseLook,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.button(
@@ -275,6 +284,46 @@ const playPauseButton = (
     ],
   )
 
+// MEMOIZATION
+
+/*
+ * The clock ticks several times a second while a song plays, and each tick
+ * draws the app again. Each part of the player is kept in its own slot and
+ * drawn again only when what it shows changes, so a tick redraws the seek
+ * bar, the progress line, and the lyrics' rows that moved on, and nothing
+ * else. Every argument is compared by reference, so each part takes only
+ * the values it shows, never the Model. A slot's node must sit at one place
+ * in the page, so each place has its own.
+ */
+const lazyMiniPlayer = createLazy()
+const lazyPlayerSheet = createLazy()
+const lazyMiniTrack = createLazy()
+const lazyMiniPlayPause = createLazy()
+const lazyMiniNext = createLazy()
+const lazyBackdrop = createLazy()
+const lazyHeader = createLazy()
+const lazyArtwork = createLazy()
+const lazyCompactNowPlaying = createLazy()
+const lazyUntimedLyrics = createLazy()
+const lazyQueue = createLazy()
+const lazyTitleRow = createLazy()
+const lazyTransport = createLazy()
+const lazyBlockedAudio = createLazy()
+const lazyPanelBar = createLazy()
+const lazyStatusBar = createLazy()
+const lazyNotice = createLazy()
+
+const NO_SWIPE: Swipe = Swipe.Idle()
+
+/**
+ * The swipe a part follows: the one on `isTarget`, or none. Swipes on
+ * anything else leave the part alone.
+ */
+const swipeFor = (
+  swipe: Swipe,
+  isTarget: (target: SwipeTarget) => boolean,
+): Swipe => (Option.isSome(swipeOn(swipe, isTarget)) ? swipe : NO_SWIPE)
+
 // MINI PLAYER
 
 /** How much of a finger's travel the mini player follows sideways. */
@@ -286,22 +335,74 @@ const ARTWORK_SWIPE_FOLLOW = 0.5
 /** How far a swipe goes before the mini player fades as far as it will. */
 const SWIPE_FADE_DISTANCE = 320
 
+/** The song and where it plays: tap to open the player. */
+const miniPlayerTrack = (
+  track: Session.QueueTrack,
+  subtitle: string,
+  isElsewhere: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(Message.ClickedOpenPlayer()),
+      h.AriaLabel('Open player'),
+      h.Class('flex h-full min-w-0 flex-1 items-center gap-3 pl-2 text-left'),
+    ],
+    [
+      artwork(track, 'size-10 rounded-lg', 40, h),
+      h.span(
+        [h.Class('flex min-w-0 flex-col')],
+        [
+          h.span(
+            [h.Class('line-clamp-1 text-[15px] leading-tight font-medium')],
+            [track.title],
+          ),
+          h.span(
+            [
+              h.Class(
+                cn(
+                  'line-clamp-1 text-[13px] leading-tight',
+                  isElsewhere ? 'text-primary' : 'text-muted-foreground',
+                ),
+              ),
+            ],
+            [subtitle],
+          ),
+        ],
+      ),
+    ],
+  )
+
+const miniPlayerNext = (hasNext: boolean, h: HtmlBuilder<Message>): Html =>
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(Message.ClickedNextTrack()),
+      h.AriaLabel('Next'),
+      h.Disabled(!hasNext),
+      h.Class(
+        'flex size-11 shrink-0 items-center justify-center rounded-full transition-transform active:scale-90 disabled:opacity-35 disabled:active:scale-100',
+      ),
+    ],
+    [icon(h, SkipForward, 'size-6 fill-current stroke-[1.5]')],
+  )
+
+const isMiniPlayer = (target: SwipeTarget): boolean =>
+  target._tag === 'MiniPlayer'
+
 const miniPlayer = (
-  model: Model,
-  snapshot: SessionSnapshot,
-  entry: Session.QueueEntry,
+  track: Session.QueueTrack,
+  subtitle: string,
+  isElsewhere: boolean,
+  isPlaying: boolean,
+  isLoading: boolean,
+  hasNext: boolean,
+  swipe: Swipe,
+  width: string,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const maybeElsewhere = elsewhere(model, snapshot)
-  const subtitle = Option.match(maybeElsewhere, {
-    onNone: () => entry.track.artists,
-    onSome: outputText,
-  })
-  const progress = progressFraction(model, snapshot, entry)
-  const maybeSwipe = swipeOn(
-    model.swipe,
-    target => target._tag === 'MiniPlayer',
-  )
+  const maybeSwipe = swipeOn(swipe, isMiniPlayer)
   const swipeX = Option.match(maybeSwipe, {
     onNone: () => 0,
     onSome: ({ deltaX }) => deltaX,
@@ -334,69 +435,20 @@ const miniPlayer = (
           }),
         ],
         [
-          h.button(
-            [
-              h.Type('button'),
-              h.OnClick(Message.ClickedOpenPlayer()),
-              h.AriaLabel('Open player'),
-              h.Class(
-                'flex h-full min-w-0 flex-1 items-center gap-3 pl-2 text-left',
-              ),
-            ],
-            [
-              artwork(entry.track, 'size-10 rounded-lg', 40, h),
-              h.span(
-                [h.Class('flex min-w-0 flex-col')],
-                [
-                  h.span(
-                    [
-                      h.Class(
-                        'line-clamp-1 text-[15px] leading-tight font-medium',
-                      ),
-                    ],
-                    [entry.track.title],
-                  ),
-                  h.span(
-                    [
-                      h.Class(
-                        cn(
-                          'line-clamp-1 text-[13px] leading-tight',
-                          Option.isSome(maybeElsewhere)
-                            ? 'text-primary'
-                            : 'text-muted-foreground',
-                        ),
-                      ),
-                    ],
-                    [subtitle],
-                  ),
-                ],
-              ),
-            ],
-          ),
-          playPauseButton(
-            snapshot.state.playing,
-            isLoading(model, snapshot),
-            { buttonClass: 'size-11', iconClass: 'size-6' },
+          lazyMiniTrack(miniPlayerTrack, [track, subtitle, isElsewhere, h]),
+          lazyMiniPlayPause(playPauseButton, [
+            isPlaying,
+            isLoading,
+            MINI_PLAY_PAUSE,
             h,
-          ),
-          h.button(
-            [
-              h.Type('button'),
-              h.OnClick(Message.ClickedNextTrack()),
-              h.AriaLabel('Next'),
-              h.Disabled(!hasNextEntry(snapshot.state)),
-              h.Class(
-                'flex size-11 shrink-0 items-center justify-center rounded-full transition-transform active:scale-90 disabled:opacity-35 disabled:active:scale-100',
-              ),
-            ],
-            [icon(h, SkipForward, 'size-6 fill-current stroke-[1.5]')],
-          ),
+          ]),
+          lazyMiniNext(miniPlayerNext, [hasNext, h]),
           h.div(
             [h.Class('absolute inset-x-6 bottom-0 h-[2px] rounded-full')],
             [
               h.div([
                 h.Class('bg-foreground/70 h-full rounded-full'),
-                h.Style({ width: `${(progress * 100).toFixed(2)}%` }),
+                h.Style({ width }),
               ]),
             ],
           ),
@@ -409,13 +461,13 @@ const miniPlayer = (
 // FULL PLAYER
 
 const seekBar = (
-  model: Model,
-  snapshot: SessionSnapshot,
-  entry: Session.QueueEntry,
+  track: Session.QueueTrack,
+  displayed: number,
+  isScrubbing: boolean,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const duration = entry.track.durationSeconds ?? 0
-  const position = Math.min(displayedPosition(model, snapshot), duration)
+  const duration = track.durationSeconds ?? 0
+  const position = Math.min(displayed, duration)
   const percent = duration > 0 ? (position / duration) * 100 : 0
   return h.div(
     [h.Class('flex flex-col'), h.DataAttribute('no-drag', '')],
@@ -423,9 +475,7 @@ const seekBar = (
       h.div(
         [
           h.OnMount(FollowSeekBarDrags()),
-          ...(Option.isSome(model.maybeScrubSeconds)
-            ? [h.DataAttribute('scrubbing', '')]
-            : []),
+          ...(isScrubbing ? [h.DataAttribute('scrubbing', '')] : []),
           h.Class('seek-area -my-2 flex touch-none items-center py-2'),
         ],
         [
@@ -487,8 +537,9 @@ const transportButton = (
   )
 
 const transportControls = (
-  model: Model,
-  snapshot: SessionSnapshot,
+  isPlaying: boolean,
+  isLoading: boolean,
+  hasNext: boolean,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
@@ -508,19 +559,14 @@ const transportControls = (
         'size-9 fill-current stroke-[1.25]',
         h,
       ),
-      playPauseButton(
-        snapshot.state.playing,
-        isLoading(model, snapshot),
-        { buttonClass: 'size-20', iconClass: 'size-12' },
-        h,
-      ),
+      playPauseButton(isPlaying, isLoading, PLAYER_PLAY_PAUSE, h),
       transportButton(
         Message.ClickedNextTrack(),
         SkipForward,
         'Next',
         'size-9 fill-current stroke-[1.25]',
         h,
-        hasNextEntry(snapshot.state),
+        hasNext,
       ),
       transportButton(
         Message.ClickedSkipBy({ seconds: SKIP_SECONDS }),
@@ -532,8 +578,11 @@ const transportControls = (
     ],
   )
 
-const blockedAudioPrompt = (model: Model, h: HtmlBuilder<Message>): Html =>
-  model.phoneAudio._tag === 'Blocked'
+const blockedAudioPrompt = (
+  isBlocked: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
+  isBlocked
     ? h.button(
         [
           h.Type('button'),
@@ -607,12 +656,11 @@ const trackButtonClass =
 
 /** Like the song, or open everything else that can be done with it. */
 const trackActions = (
-  model: Model,
   track: Session.QueueTrack,
+  isLiked: boolean,
   h: HtmlBuilder<Message>,
 ): Html => {
   const song = songFromQueueTrack(track)
-  const isLiked = Array.contains(likedVideoIds(model), track.videoId)
   return h.div(
     [h.Class('flex shrink-0 items-center')],
     [
@@ -643,20 +691,20 @@ const trackActions = (
   )
 }
 
+const isPlayerArtwork = (target: SwipeTarget): boolean =>
+  target._tag === 'PlayerArtwork'
+
 /**
  * The big artwork. Swiping it sideways skips; pulling it down closes the
  * player, which the whole sheet follows.
  */
 const artworkPanel = (
-  model: Model,
-  snapshot: SessionSnapshot,
-  entry: Session.QueueEntry,
+  track: Session.QueueTrack,
+  isPlaying: boolean,
+  swipe: Swipe,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const maybeSwipe = swipeOn(
-    model.swipe,
-    target => target._tag === 'PlayerArtwork',
-  )
+  const maybeSwipe = swipeOn(swipe, isPlayerArtwork)
   const swipeX = Option.match(maybeSwipe, {
     onNone: () => 0,
     onSome: swipe => (swipe.axis === 'Horizontal' ? swipe.deltaX : 0),
@@ -676,10 +724,10 @@ const artworkPanel = (
     ],
     [
       artwork(
-        entry.track,
+        track,
         cn(
           'player-artwork aspect-square w-full max-w-[min(100%,24rem,44vh)] rounded-2xl',
-          snapshot.state.playing
+          isPlaying
             ? 'scale-100 shadow-2xl shadow-black/50'
             : 'scale-[0.8] shadow-lg shadow-black/30',
         ),
@@ -691,17 +739,28 @@ const artworkPanel = (
 }
 
 const compactNowPlaying = (
-  model: Model,
-  entry: Session.QueueEntry,
+  track: Session.QueueTrack,
+  isLiked: boolean,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
     [h.Class('flex items-center gap-3 py-3')],
     [
-      artwork(entry.track, 'size-14 rounded-lg shadow-md', 56, h),
-      trackTitle(entry.track, false, h),
-      trackActions(model, entry.track, h),
+      artwork(track, 'size-14 rounded-lg shadow-md', 56, h),
+      trackTitle(track, false, h),
+      trackActions(track, isLiked, h),
     ],
+  )
+
+/** The big title under the artwork, with the like and ⋯ buttons. */
+const titleRow = (
+  track: Session.QueueTrack,
+  isLiked: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex items-center gap-2')],
+    [trackTitle(track, true, h), trackActions(track, isLiked, h)],
   )
 
 const scrollPanelClass =
@@ -713,10 +772,27 @@ const plainPanel = (content: Html, h: HtmlBuilder<Message>): Html =>
     [content],
   )
 
-const lyricsPanel = (
-  model: Model,
-  snapshot: SessionSnapshot,
-  entry: Session.QueueEntry,
+type SongDetailsData = ReturnType<typeof songQuery.read>
+
+/** The song's lyrics when they are timed, line by line. */
+const maybeTimedLyrics = (details: SongDetailsData) =>
+  pipe(
+    AsyncData.getData(details),
+    Option.flatMap(({ maybeLyrics }) => maybeLyrics),
+    Option.flatMap(lyrics =>
+      Option.map(lyrics.maybeLines, lines => ({
+        lines,
+        maybeSource: lyrics.maybeSource,
+      })),
+    ),
+  )
+
+/**
+ * The lyrics panel while the song's details load or fail, and for a song
+ * without timed lyrics. None of it moves with the song.
+ */
+const untimedLyricsPanel = (
+  details: SongDetailsData,
   h: HtmlBuilder<Message>,
 ): Html => {
   const message = (text: string) =>
@@ -724,83 +800,98 @@ const lyricsPanel = (
       h.p([h.Class('py-10 text-center text-[17px] text-white/60')], [text]),
       h,
     )
-  return AsyncData.matchData(
-    songQuery.read(model.songs, { videoId: entry.track.videoId }),
-    {
-      onEmpty: () =>
-        plainPanel(
-          h.div(
-            [h.Class('flex justify-center py-10 text-white/60')],
-            [icon(h, LoaderCircle, 'size-6 animate-spin')],
-          ),
-          h,
+  return AsyncData.matchData(details, {
+    onEmpty: () =>
+      plainPanel(
+        h.div(
+          [h.Class('flex justify-center py-10 text-white/60')],
+          [icon(h, LoaderCircle, 'size-6 animate-spin')],
         ),
-      onFailure: () =>
-        plainPanel(
-          h.div(
-            [h.Class('flex flex-col items-center gap-4 py-10')],
-            [
-              h.p(
-                [h.Class('text-center text-[17px] text-white/60')],
-                ['Lyrics could not be loaded.'],
-              ),
-              h.button(
-                [
-                  h.Type('button'),
-                  h.OnClick(Message.ClickedRetryLyrics()),
-                  h.Class(
-                    'flex h-10 items-center gap-2 rounded-full bg-white/15 px-5 text-[15px] font-semibold text-white active:scale-95 active:bg-white/25',
-                  ),
-                ],
-                [icon(h, RotateCw, 'size-4'), 'Try Again'],
-              ),
-            ],
-          ),
-          h,
+        h,
+      ),
+    onFailure: () =>
+      plainPanel(
+        h.div(
+          [h.Class('flex flex-col items-center gap-4 py-10')],
+          [
+            h.p(
+              [h.Class('text-center text-[17px] text-white/60')],
+              ['Lyrics could not be loaded.'],
+            ),
+            h.button(
+              [
+                h.Type('button'),
+                h.OnClick(Message.ClickedRetryLyrics()),
+                h.Class(
+                  'flex h-10 items-center gap-2 rounded-full bg-white/15 px-5 text-[15px] font-semibold text-white active:scale-95 active:bg-white/25',
+                ),
+              ],
+              [icon(h, RotateCw, 'size-4'), 'Try Again'],
+            ),
+          ],
         ),
-      onData: details =>
-        Option.match(details.maybeLyrics, {
-          onNone: () => message('No lyrics for this song.'),
-          onSome: lyrics =>
-            Option.match(lyrics.maybeLines, {
-              onSome: lines =>
-                timedLyrics(
-                  lines,
-                  displayedPosition(model, snapshot),
-                  snapshot.state.playing,
-                  lyrics.maybeSource,
-                  scrollPanelClass,
-                  h,
+        h,
+      ),
+    onData: ({ maybeLyrics }) =>
+      Option.match(maybeLyrics, {
+        onNone: () => message('No lyrics for this song.'),
+        onSome: lyrics =>
+          plainPanel(
+            h.div(
+              [h.Class('flex flex-col gap-6 py-6')],
+              [
+                h.p(
+                  [
+                    h.Class(
+                      'text-[26px] leading-snug font-bold tracking-tight whitespace-pre-line text-white/90 select-text',
+                    ),
+                  ],
+                  [lyrics.text],
                 ),
-              onNone: () =>
-                plainPanel(
-                  h.div(
-                    [h.Class('flex flex-col gap-6 py-6')],
-                    [
-                      h.p(
-                        [
-                          h.Class(
-                            'text-[26px] leading-snug font-bold tracking-tight whitespace-pre-line text-white/90 select-text',
-                          ),
-                        ],
-                        [lyrics.text],
-                      ),
-                      Option.match(lyrics.maybeSource, {
-                        onNone: () => h.empty,
-                        onSome: source =>
-                          h.p(
-                            [h.Class('text-xs text-white/50')],
-                            [`Lyrics from ${source}`],
-                          ),
-                      }),
-                    ],
-                  ),
-                  h,
-                ),
-            }),
-        }),
-    },
-  )
+                Option.match(lyrics.maybeSource, {
+                  onNone: () => h.empty,
+                  onSome: source =>
+                    h.p(
+                      [h.Class('text-xs text-white/50')],
+                      [`Lyrics from ${source}`],
+                    ),
+                }),
+              ],
+            ),
+            h,
+          ),
+      }),
+  })
+}
+
+const lyricsPanel = (
+  details: SongDetailsData,
+  position: number,
+  isPlaying: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(maybeTimedLyrics(details), {
+    onNone: () => lazyUntimedLyrics(untimedLyricsPanel, [details, h]),
+    onSome: ({ lines, maybeSource }) =>
+      timedLyrics(lines, position, isPlaying, maybeSource, scrollPanelClass, h),
+  })
+
+/** Lyrics not asked for yet: one value, so the player can be kept. */
+const NO_SONG_DETAILS: SongDetailsData = AsyncData.Idle()
+
+/**
+ * The song's details while the lyrics show. Elsewhere the player never
+ * reads them, so they stay one value and the player is kept.
+ */
+const lyricsDetails = (
+  model: Model,
+  track: Session.QueueTrack,
+): SongDetailsData => {
+  if (model.playerPanel !== 'Lyrics') {
+    return NO_SONG_DETAILS
+  }
+  const details = songQuery.read(model.songs, { videoId: track.videoId })
+  return AsyncData.isIdle(details) ? NO_SONG_DETAILS : details
 }
 
 /** A switch in the queue's header: shuffle or repeat. */
@@ -863,15 +954,15 @@ const queueControls = (
  * repeat sit above them.
  */
 const queuePanel = (
-  model: Model,
-  snapshot: SessionSnapshot,
+  state: Session.SessionState,
   color: string,
+  swipe: Swipe,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const upcoming = upcomingEntries(snapshot.state)
+  const upcoming = upcomingEntries(state)
   const queued = Array.filter(upcoming, entry => !entry.autoplay)
   const autoplayed = Array.filter(upcoming, entry => entry.autoplay)
-  const isAutoplayOn = snapshot.state.autoplay
+  const isAutoplayOn = state.autoplay
   return h.div(
     [
       h.DataAttribute('sheet-scroll', ''),
@@ -883,7 +974,7 @@ const queuePanel = (
       h.Style({ '--queue-lift': `color-mix(in oklab, ${color}, black 35%)` }),
     ],
     [
-      queueControls(snapshot.state, h),
+      queueControls(state, h),
       Array.match(queued, {
         onEmpty: () => h.empty,
         onNonEmpty: entries =>
@@ -900,25 +991,22 @@ const queuePanel = (
                         [h.Class('text-[17px] font-bold')],
                         ['Playing Next'],
                       ),
-                      Option.match(
-                        Option.fromNullishOr(snapshot.state.playingFrom),
-                        {
-                          onNone: () => h.empty,
-                          onSome: playingFrom =>
-                            h.a(
-                              [
-                                h.Href(playingFromHref(playingFrom)),
-                                h.AriaLabel(playingFromLabel(playingFrom)),
-                                h.Class(
-                                  'truncate text-[13px] text-white/60 active:opacity-60',
-                                ),
-                              ],
-                              [
-                                `From ${playingFromName(playingFrom)}${playingFrom.kind === 'Radio' ? ' Radio' : ''}`,
-                              ],
-                            ),
-                        },
-                      ),
+                      Option.match(Option.fromNullishOr(state.playingFrom), {
+                        onNone: () => h.empty,
+                        onSome: playingFrom =>
+                          h.a(
+                            [
+                              h.Href(playingFromHref(playingFrom)),
+                              h.AriaLabel(playingFromLabel(playingFrom)),
+                              h.Class(
+                                'truncate text-[13px] text-white/60 active:opacity-60',
+                              ),
+                            ],
+                            [
+                              `From ${playingFromName(playingFrom)}${playingFrom.kind === 'Radio' ? ' Radio' : ''}`,
+                            ],
+                          ),
+                      }),
                     ],
                   ),
                   h.button(
@@ -934,7 +1022,7 @@ const queuePanel = (
                   ),
                 ],
               ),
-              queueList(model, entries, h),
+              queueList(entries, swipe, h),
             ],
           ),
       }),
@@ -982,7 +1070,7 @@ const queuePanel = (
           isAutoplayOn
             ? Array.match(autoplayed, {
                 onEmpty: () => h.empty,
-                onNonEmpty: entries => queueList(model, entries, h),
+                onNonEmpty: entries => queueList(entries, swipe, h),
               })
             : h.empty,
         ],
@@ -997,47 +1085,49 @@ const queuePanel = (
  * dragged is lifted onto a solid surface above the rows it passes.
  */
 const queueList = (
-  model: Model,
   entries: ReadonlyArray<Session.QueueEntry>,
+  swipe: Swipe,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.ul(
     [h.Class('-mx-2 flex flex-col pb-4'), h.OnMount(FollowQueueDrags())],
-    Array.map(entries, entry =>
-      h.keyed('li')(
-        entry.entryId,
-        [
-          h.DataAttribute('queue-entry', entry.entryId),
-          h.Class(
-            'rounded-lg data-dragging:relative data-dragging:z-10 data-dragging:bg-(--queue-lift) data-dragging:shadow-[0_12px_28px_-10px_rgb(0_0_0/0.7)] data-dragging:ring-1 data-dragging:ring-white/15',
-          ),
-        ],
-        [
-          swipeableRow(
-            {
-              target: SwipeTarget.QueueEntry({
-                entryId: entry.entryId,
-              }),
-              maybeSwipe: swipeOn(
-                model.swipe,
-                target =>
-                  target._tag === 'QueueEntry' &&
-                  target.entryId === entry.entryId,
-              ),
-              maybeRightReveal: Option.none(),
-              maybeLeftReveal: Option.some({
-                label: 'Remove',
-                icon: Trash2,
-                isDestructive: true,
-              }),
-              surfaceClass: 'bg-neutral-800',
-            },
-            queueRow(entry, h),
-            h,
-          ),
-        ],
+    Array.map(entries, entry => queueItem(entry, swipe, h)),
+  )
+
+const queueItem = (
+  entry: Session.QueueEntry,
+  swipe: Swipe,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.keyed('li')(
+    entry.entryId,
+    [
+      h.DataAttribute('queue-entry', entry.entryId),
+      h.Class(
+        'rounded-lg data-dragging:relative data-dragging:z-10 data-dragging:bg-(--queue-lift) data-dragging:shadow-[0_12px_28px_-10px_rgb(0_0_0/0.7)] data-dragging:ring-1 data-dragging:ring-white/15',
       ),
-    ),
+    ],
+    [
+      swipeableRow(
+        {
+          target: SwipeTarget.QueueEntry({ entryId: entry.entryId }),
+          maybeSwipe: swipeOn(
+            swipe,
+            target =>
+              target._tag === 'QueueEntry' && target.entryId === entry.entryId,
+          ),
+          maybeRightReveal: Option.none(),
+          maybeLeftReveal: Option.some({
+            label: 'Remove',
+            icon: Trash2,
+            isDestructive: true,
+          }),
+          surfaceClass: 'bg-neutral-800',
+        },
+        queueRow(entry, h),
+        h,
+      ),
+    ],
   )
 
 /** One upcoming song: tap to jump to it, or drag its handle to move it. */
@@ -1107,13 +1197,34 @@ const panelToggle = (
     [icon(h, iconNode, 'size-[22px]')],
   )
 
+/** Where the music plays, as the player's device button shows it. */
+type DeviceLabel = Readonly<{
+  iconNode: IconNode
+  text: string
+  isElsewhere: boolean
+}>
+
+const deviceLabel = (model: Model, snapshot: SessionSnapshot): DeviceLabel =>
+  Option.match(elsewhere(model, snapshot), {
+    onNone: () => ({
+      iconNode: Speaker,
+      text: thisDeviceName(model),
+      isElsewhere: false,
+    }),
+    onSome: output => ({
+      iconNode: deviceIcon(output.device, false),
+      text: outputText(output),
+      isElsewhere: true,
+    }),
+  })
+
 const deviceButton = (
-  model: Model,
-  snapshot: SessionSnapshot,
+  iconNode: IconNode,
+  text: string,
+  isElsewhere: boolean,
   h: HtmlBuilder<Message>,
-): Html => {
-  const maybeElsewhere = elsewhere(model, snapshot)
-  return h.button(
+): Html =>
+  h.button(
     [
       h.Type('button'),
       h.OnClick(Message.ClickedDevices()),
@@ -1121,44 +1232,51 @@ const deviceButton = (
       h.Class(
         cn(
           'flex h-11 min-w-0 items-center gap-2 rounded-full px-4 text-[13px] font-semibold active:bg-white/10',
-          Option.isSome(maybeElsewhere) ? 'text-primary' : 'text-white/70',
+          isElsewhere ? 'text-primary' : 'text-white/70',
         ),
       ),
     ],
     [
-      icon(
-        h,
-        Option.match(maybeElsewhere, {
-          onNone: () => Speaker,
-          onSome: ({ device }) => deviceIcon(device, false),
-        }),
-        'size-5 shrink-0',
-      ),
-      h.span(
-        [h.Class('line-clamp-1')],
-        [
-          Option.match(maybeElsewhere, {
-            onNone: () => thisDeviceName(model),
-            onSome: outputText,
-          }),
-        ],
-      ),
+      icon(h, iconNode, 'size-5 shrink-0'),
+      h.span([h.Class('line-clamp-1')], [text]),
     ],
   )
-}
+
+/** Lyrics, where the music plays, and the queue, along the bottom. */
+const panelBar = (
+  panel: PlayerPanel,
+  iconNode: IconNode,
+  text: string,
+  isElsewhere: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex items-center justify-between pt-1')],
+    [
+      panelToggle('Lyrics', panel, MessageSquareQuote, 'Lyrics', h),
+      deviceButton(iconNode, text, isElsewhere, h),
+      panelToggle('Queue', panel, ListMusic, 'Up next', h),
+    ],
+  )
+
+/** What the sleep timer button says: nothing until a timer is set. */
+const sleepTimerText = (snapshot: SessionSnapshot, now: number): string =>
+  Option.match(sleepCountdown(snapshot, now), {
+    onNone: () => '',
+    onSome: countdown =>
+      SleepCountdown.match(countdown, {
+        Remaining: ({ seconds }) => countdownText(seconds),
+        EndOfSong: () => 'End of song',
+      }),
+  })
 
 /**
  * The sleep timer, top right: a moon to set one, or a moon with the time
  * left once one is set, wherever the music plays.
  */
-const sleepTimerButton = (
-  model: Model,
-  snapshot: SessionSnapshot,
-  h: HtmlBuilder<Message>,
-): Html =>
-  Option.match(sleepCountdown(snapshot, model.now), {
-    onNone: () =>
-      h.button(
+const sleepTimerButton = (text: string, h: HtmlBuilder<Message>): Html =>
+  text === ''
+    ? h.button(
         [
           h.Type('button'),
           h.OnClick(Message.ClickedSleepTimer()),
@@ -1168,13 +1286,8 @@ const sleepTimerButton = (
           ),
         ],
         [icon(h, Moon, 'size-[22px]')],
-      ),
-    onSome: countdown => {
-      const text = SleepCountdown.match(countdown, {
-        Remaining: ({ seconds }) => countdownText(seconds),
-        EndOfSong: () => 'End of song',
-      })
-      return h.button(
+      )
+    : h.button(
         [
           h.Type('button'),
           h.OnClick(Message.ClickedSleepTimer()),
@@ -1185,8 +1298,6 @@ const sleepTimerButton = (
         ],
         [icon(h, Moon, 'size-3.5 fill-current'), text],
       )
-    },
-  })
 
 /** The backdrop's color until the server sends the cover's own. */
 const NEUTRAL_BACKDROP = 'oklch(0.205 0 0)'
@@ -1269,16 +1380,76 @@ const statusBarColor = (color: string, h: HtmlBuilder<Message>): Html =>
     h.Style({ backgroundColor: color }),
   ])
 
-const playerSheet = (
-  model: Model,
-  snapshot: SessionSnapshot,
-  entry: Session.QueueEntry,
+/**
+ * The top of the player: Close, the grabber, what the queue plays from, and
+ * the sleep timer.
+ */
+const playerHeader = (
+  playingFrom: Session.PlayingFrom | null,
+  sleepText: string,
   h: HtmlBuilder<Message>,
-): Html => {
-  const isOpen = model.playerSheet._tag === 'Open'
-  const panel = model.playerPanel
-  const color = backdropColor(model, entry.track)
-  return h.div(
+): Html =>
+  h.div(
+    [
+      h.Class(
+        'relative grid h-10 grid-cols-[minmax(2.5rem,1fr)_minmax(0,max-content)_minmax(2.5rem,1fr)] items-center',
+      ),
+    ],
+    [
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedClosePlayer()),
+          h.AriaLabel('Close player'),
+          h.Class(
+            'col-start-1 flex size-10 items-center justify-center justify-self-start rounded-full text-white/80 active:bg-white/10',
+          ),
+        ],
+        [icon(h, ChevronDown, 'size-7')],
+      ),
+      h.span([
+        h.AriaHidden(true),
+        h.Class(
+          cn(
+            'absolute left-1/2 h-[5px] w-10 -translate-x-1/2 rounded-full bg-white/35',
+            playingFrom === null ? 'top-1/2 -translate-y-1/2' : '-top-0.5',
+          ),
+        ),
+      ]),
+      Option.match(Option.fromNullishOr(playingFrom), {
+        onNone: () => h.empty,
+        onSome: from => playingFromHeader(from, h),
+      }),
+      h.div(
+        [h.Class('col-start-3 justify-self-end')],
+        [sleepTimerButton(sleepText, h)],
+      ),
+    ],
+  )
+
+const isQueueEntry = (target: SwipeTarget): boolean =>
+  target._tag === 'QueueEntry'
+
+const playerSheet = (
+  isOpen: boolean,
+  panel: PlayerPanel,
+  state: Session.SessionState,
+  track: Session.QueueTrack,
+  color: string,
+  isLiked: boolean,
+  deviceIconNode: IconNode,
+  deviceText: string,
+  isElsewhere: boolean,
+  sleepText: string,
+  isLoading: boolean,
+  isBlocked: boolean,
+  position: number,
+  isScrubbing: boolean,
+  details: SongDetailsData,
+  swipe: Swipe,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
     [
       h.Role('dialog'),
       h.AriaModal(true),
@@ -1292,7 +1463,7 @@ const playerSheet = (
       ),
     ],
     [
-      playerBackdrop(color, entry.track, h),
+      lazyBackdrop(playerBackdrop, [color, track, h]),
       h.div(
         [
           h.Class(
@@ -1300,86 +1471,66 @@ const playerSheet = (
           ),
         ],
         [
-          h.div(
-            [
-              h.Class(
-                'relative grid h-10 grid-cols-[minmax(2.5rem,1fr)_minmax(0,max-content)_minmax(2.5rem,1fr)] items-center',
-              ),
-            ],
-            [
-              h.button(
-                [
-                  h.Type('button'),
-                  h.OnClick(Message.ClickedClosePlayer()),
-                  h.AriaLabel('Close player'),
-                  h.Class(
-                    'col-start-1 flex size-10 items-center justify-center justify-self-start rounded-full text-white/80 active:bg-white/10',
-                  ),
-                ],
-                [icon(h, ChevronDown, 'size-7')],
-              ),
-              h.span([
-                h.AriaHidden(true),
-                h.Class(
-                  cn(
-                    'absolute left-1/2 h-[5px] w-10 -translate-x-1/2 rounded-full bg-white/35',
-                    snapshot.state.playingFrom === null
-                      ? 'top-1/2 -translate-y-1/2'
-                      : '-top-0.5',
-                  ),
-                ),
-              ]),
-              Option.match(Option.fromNullishOr(snapshot.state.playingFrom), {
-                onNone: () => h.empty,
-                onSome: playingFrom => playingFromHeader(playingFrom, h),
-              }),
-              h.div(
-                [h.Class('col-start-3 justify-self-end')],
-                [sleepTimerButton(model, snapshot, h)],
-              ),
-            ],
-          ),
+          lazyHeader(playerHeader, [state.playingFrom, sleepText, h]),
           panel === 'Artwork'
-            ? artworkPanel(model, snapshot, entry, h)
-            : compactNowPlaying(model, entry, h),
-          panel === 'Lyrics' ? lyricsPanel(model, snapshot, entry, h) : h.empty,
-          panel === 'Queue' ? queuePanel(model, snapshot, color, h) : h.empty,
+            ? lazyArtwork(artworkPanel, [
+                track,
+                state.playing,
+                swipeFor(swipe, isPlayerArtwork),
+                h,
+              ])
+            : lazyCompactNowPlaying(compactNowPlaying, [track, isLiked, h]),
+          panel === 'Lyrics'
+            ? lyricsPanel(details, position, state.playing, h)
+            : h.empty,
+          panel === 'Queue'
+            ? lazyQueue(queuePanel, [
+                state,
+                color,
+                swipeFor(swipe, isQueueEntry),
+                h,
+              ])
+            : h.empty,
           h.div(
             [h.Class('flex flex-col gap-3 pt-2')],
             [
               panel === 'Artwork'
-                ? h.div(
-                    [h.Class('flex items-center gap-2')],
-                    [
-                      trackTitle(entry.track, true, h),
-                      trackActions(model, entry.track, h),
-                    ],
-                  )
+                ? lazyTitleRow(titleRow, [track, isLiked, h])
                 : h.empty,
-              seekBar(model, snapshot, entry, h),
-              transportControls(model, snapshot, h),
-              blockedAudioPrompt(model, h),
-              h.div(
-                [h.Class('flex items-center justify-between pt-1')],
-                [
-                  panelToggle('Lyrics', panel, MessageSquareQuote, 'Lyrics', h),
-                  deviceButton(model, snapshot, h),
-                  panelToggle('Queue', panel, ListMusic, 'Up next', h),
-                ],
-              ),
+              seekBar(track, position, isScrubbing, h),
+              lazyTransport(transportControls, [
+                state.playing,
+                isLoading,
+                hasNextEntry(state),
+                h,
+              ]),
+              lazyBlockedAudio(blockedAudioPrompt, [isBlocked, h]),
+              lazyPanelBar(panelBar, [
+                panel,
+                deviceIconNode,
+                deviceText,
+                isElsewhere,
+                h,
+              ]),
             ],
           ),
         ],
       ),
-      statusBarColor(color, h),
+      lazyStatusBar(statusBarColor, [color, h]),
     ],
   )
-}
+
+/** The swipe the full player follows: on its artwork or a queue row. */
+const isPlayerSwipe = (target: SwipeTarget): boolean =>
+  isPlayerArtwork(target) || isQueueEntry(target)
 
 // NOTICE
 
-const noticeToast = (model: Model, h: HtmlBuilder<Message>): Html =>
-  Option.match(model.maybeNotice, {
+const noticeToast = (
+  maybeNotice: Option.Option<string>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(maybeNotice, {
     onNone: () => h.empty,
     onSome: notice =>
       h.div(
@@ -1404,6 +1555,61 @@ const noticeToast = (model: Model, h: HtmlBuilder<Message>): Html =>
       ),
   })
 
+/**
+ * The mini player and the full player for the song playing. Each takes the
+ * values it shows, worked out here, and is kept until one of them changes:
+ * only a tick of the clock moves the position, so typing, scrolling, and
+ * pages loading leave both alone.
+ */
+const nowPlayingView = (
+  model: Model,
+  snapshot: SessionSnapshot,
+  entry: Session.QueueEntry,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const { state } = snapshot
+  const { track } = entry
+  const position = displayedPosition(model, snapshot)
+  const loading = isLoading(model, snapshot)
+  const device = deviceLabel(model, snapshot)
+  const color = backdropColor(model, track)
+  return h.div(
+    [],
+    [
+      lazyMiniPlayer(miniPlayer, [
+        track,
+        device.isElsewhere ? device.text : track.artists,
+        device.isElsewhere,
+        state.playing,
+        loading,
+        hasNextEntry(state),
+        swipeFor(model.swipe, isMiniPlayer),
+        progressWidth(track, position),
+        h,
+      ]),
+      lazyPlayerSheet(playerSheet, [
+        model.playerSheet._tag === 'Open',
+        model.playerPanel,
+        state,
+        track,
+        color,
+        Array.contains(likedVideoIds(model), track.videoId),
+        device.iconNode,
+        device.text,
+        device.isElsewhere,
+        sleepTimerText(snapshot, model.now),
+        loading,
+        model.phoneAudio._tag === 'Blocked',
+        position,
+        Option.isSome(model.maybeScrubSeconds),
+        lyricsDetails(model, track),
+        swipeFor(model.swipe, isPlayerSwipe),
+        h,
+      ]),
+    ],
+  )
+}
+
 /** The mini player, the full player, and any notice. */
 export const playerView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const maybeNowPlaying = Option.flatMap(model.maybeSession, snapshot =>
@@ -1415,15 +1621,9 @@ export const playerView = (model: Model, h: HtmlBuilder<Message>): Html => {
       Option.match(maybeNowPlaying, {
         onNone: () => h.empty,
         onSome: ({ snapshot, entry }) =>
-          h.div(
-            [],
-            [
-              miniPlayer(model, snapshot, entry, h),
-              playerSheet(model, snapshot, entry, h),
-            ],
-          ),
+          nowPlayingView(model, snapshot, entry, h),
       }),
-      noticeToast(model, h),
+      lazyNotice(noticeToast, [model.maybeNotice, h]),
     ],
   )
 }

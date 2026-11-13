@@ -797,7 +797,9 @@ const loadedLibrary = (model: Model): Option.Option<MyLibrary> =>
   AsyncData.getData(myLibraryQuery.read(model.myLibrary))
 
 /** The ids of the songs I like, as far as this device knows. */
-export const likedVideoIds = (model: Model): ReadonlyArray<string> =>
+export const likedVideoIds = (
+  model: Pick<Model, 'myLibrary'>,
+): ReadonlyArray<string> =>
   Option.match(AsyncData.getData(myLibraryQuery.read(model.myLibrary)), {
     onNone: () => [],
     onSome: ({ likedVideoIds: ids }) => ids,

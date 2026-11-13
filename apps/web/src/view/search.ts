@@ -1,6 +1,6 @@
 import { Array, Match, Option, String } from 'effect'
 import { AsyncData } from 'foldkit'
-import { Html, HtmlBuilder, createKeyedLazy } from 'foldkit/html'
+import { Html, HtmlBuilder, createKeyedLazy, createLazy } from 'foldkit/html'
 import {
   CircleX,
   Disc3,
@@ -622,7 +622,7 @@ const lazyTopShelf = createKeyedLazy()
  * answers, not on every change to the page, such as the song playing.
  */
 const shownTopShelves = (
-  model: PageModel,
+  model: ResultsModel,
   query: string,
   count: number,
   h: HtmlBuilder<Message>,
@@ -656,7 +656,7 @@ const nextTopShelf = (
     : h.empty
 
 const topShelves = (
-  model: PageModel,
+  model: ResultsModel,
   query: string,
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => {
@@ -675,7 +675,7 @@ const topShelves = (
  * shelves come one a frame after the rest (`nextTopShelf`).
  */
 const topView = (
-  model: PageModel,
+  model: ResultsModel,
   query: string,
   h: HtmlBuilder<Message>,
 ): Html => {
@@ -777,8 +777,26 @@ const noResults = (
     h,
   )
 
+/**
+ * What a search's results show. Leaving out what is typed, the results are
+ * not drawn again on every letter, only when a search they show answers.
+ */
+type ResultsModel = Readonly<
+  Pick<
+    PageModel,
+    | 'songSearch'
+    | 'artistSearch'
+    | 'albumSearch'
+    | 'playlistSearch'
+    | 'topResultSearch'
+    | 'shownTopShelves'
+    | 'swipe'
+    | 'playing'
+  >
+>
+
 const resultsView = (
-  model: PageModel,
+  model: ResultsModel,
   query: string,
   kind: SearchKind,
   h: HtmlBuilder<Message>,
@@ -890,6 +908,68 @@ const shownSearch = (
     : Option.filter(model.maybeEarlierSearch, earlierQuery =>
         isSearchSettled(model, earlierQuery, kind),
       )
+
+/** One slot: one search's results show at a time. */
+const lazyResults = createLazy()
+
+/**
+ * Builds the results' model from its parts, which the slot compares. The
+ * song playing comes as its id, because the page builds its `playing`
+ * afresh each time it is drawn.
+ */
+const renderResults = (
+  query: string,
+  kind: SearchKind,
+  songSearch: PageModel['songSearch'],
+  artistSearch: PageModel['artistSearch'],
+  albumSearch: PageModel['albumSearch'],
+  playlistSearch: PageModel['playlistSearch'],
+  topResultSearch: PageModel['topResultSearch'],
+  shownTopShelves: PageModel['shownTopShelves'],
+  swipe: PageModel['swipe'],
+  currentVideoId: string,
+  isPlaying: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
+  resultsView(
+    {
+      songSearch,
+      artistSearch,
+      albumSearch,
+      playlistSearch,
+      topResultSearch,
+      shownTopShelves,
+      swipe,
+      playing: {
+        maybeVideoId: Option.liftPredicate(currentVideoId, id => id !== ''),
+        isPlaying,
+      },
+    },
+    query,
+    kind,
+    h,
+  )
+
+const memoizedResults = (
+  model: PageModel,
+  query: string,
+  kind: SearchKind,
+  h: HtmlBuilder<Message>,
+): Html =>
+  lazyResults(renderResults, [
+    query,
+    kind,
+    model.songSearch,
+    model.artistSearch,
+    model.albumSearch,
+    model.playlistSearch,
+    model.topResultSearch,
+    model.shownTopShelves,
+    model.swipe,
+    Option.getOrElse(model.playing.maybeVideoId, () => ''),
+    model.playing.isPlaying,
+    h,
+  ])
 
 // SUGGESTIONS
 
@@ -1154,7 +1234,7 @@ export const searchView = (
               hasTyped || Option.isSome(maybeQuery)
                 ? h.div([h.Class('pt-1')], [loadingRows(h)])
                 : emptySearchView(model, h),
-            onSome: query => resultsView(model, query, kind, h),
+            onSome: query => memoizedResults(model, query, kind, h),
           },
         ),
       ],

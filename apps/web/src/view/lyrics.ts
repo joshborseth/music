@@ -1,9 +1,15 @@
 import { Array, Match, Option } from 'effect'
-import { Html, HtmlBuilder } from 'foldkit/html'
+import { Html, HtmlBuilder, createKeyedLazy } from 'foldkit/html'
 
 import type { LyricLine } from '@music/shared'
 
-import { BREAK_DOTS, type LineState, type LyricRow, lyricRows } from '../lyrics'
+import {
+  BREAK_DOTS,
+  type LineState,
+  type LyricRow,
+  type SungWord,
+  lyricRows,
+} from '../lyrics'
 import { Message } from '../message'
 import { FollowLyrics } from '../mount'
 
@@ -23,32 +29,51 @@ const stateAttribute = (state: LineState): string =>
     Match.exhaustive,
   )
 
+/**
+ * Each row is kept in its own slot, by its place in the lyrics, and drawn
+ * again only when its state or its sung words change, so a tick redraws the
+ * row being sung and nothing else.
+ */
+const lazyRow = createKeyedLazy()
+
+/** Which of a line's words are sung, one character each. */
+const sungWords = (words: ReadonlyArray<SungWord>): string =>
+  Array.join(
+    Array.map(words, ({ isSung }) => (isSung ? '1' : '0')),
+    '',
+  )
+
 const sungRow = (
-  row: Extract<LyricRow, { _tag: 'Sung' }>,
+  line: LyricLine,
+  state: LineState,
+  sung: string,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.keyed('div')(
-    `line-${row.startSeconds}`,
+    `line-${line.startSeconds}`,
     [
       h.DataAttribute('lyric-row', ''),
-      h.DataAttribute('state', stateAttribute(row.state)),
+      h.DataAttribute('state', stateAttribute(state)),
       h.Class('lyric-row'),
     ],
     [
       h.button(
         [
           h.Type('button'),
-          h.OnClick(Message.ClickedLyricLine({ seconds: row.startSeconds })),
+          h.OnClick(Message.ClickedLyricLine({ seconds: line.startSeconds })),
           h.Class('lyric-line'),
         ],
-        Array.match(row.words, {
-          onEmpty: () => [row.text],
+        Array.match(line.words, {
+          onEmpty: () => [line.text],
           onNonEmpty: words =>
-            Array.map(words, word =>
+            Array.map(words, (word, index) =>
               h.span(
                 [
                   h.Class('lyric-word'),
-                  h.DataAttribute('sung', word.isSung ? 'true' : 'false'),
+                  h.DataAttribute(
+                    'sung',
+                    sung.charAt(index) === '1' ? 'true' : 'false',
+                  ),
                 ],
                 [word.text],
               ),
@@ -59,14 +84,16 @@ const sungRow = (
   )
 
 const breakRow = (
-  row: Extract<LyricRow, { _tag: 'Break' }>,
+  startSeconds: number,
+  isActive: boolean,
+  litDots: number,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.keyed('div')(
-    `break-${row.startSeconds}`,
+    `break-${startSeconds}`,
     [
       h.DataAttribute('lyric-row', ''),
-      h.DataAttribute('state', row.isActive ? 'active' : 'idle'),
+      h.DataAttribute('state', isActive ? 'active' : 'idle'),
       h.AriaHidden(true),
       h.Class('lyric-break'),
     ],
@@ -79,7 +106,7 @@ const breakRow = (
             Array.makeBy(BREAK_DOTS, index =>
               h.span([
                 h.Class('lyric-dot'),
-                h.DataAttribute('lit', index < row.litDots ? 'true' : 'false'),
+                h.DataAttribute('lit', index < litDots ? 'true' : 'false'),
               ]),
             ),
           ),
@@ -87,6 +114,15 @@ const breakRow = (
       ),
     ],
   )
+
+const rowView = (
+  row: LyricRow,
+  index: number,
+  h: HtmlBuilder<Message>,
+): Html =>
+  row._tag === 'Sung'
+    ? lazyRow(index, sungRow, [row.line, row.state, sungWords(row.words), h])
+    : lazyRow(index, breakRow, [row.startSeconds, row.isActive, row.litDots, h])
 
 /** The lyrics panel's contents when the lyrics are timed. */
 export const timedLyrics = (
@@ -107,8 +143,8 @@ export const timedLyrics = (
     [
       h.div(
         [h.Class('lyrics-lines')],
-        Array.map(lyricRows(lines, positionSeconds), row =>
-          row._tag === 'Sung' ? sungRow(row, h) : breakRow(row, h),
+        Array.map(lyricRows(lines, positionSeconds), (row, index) =>
+          rowView(row, index, h),
         ),
       ),
       Option.match(maybeSource, {

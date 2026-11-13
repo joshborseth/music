@@ -1,5 +1,5 @@
 import { Array } from 'effect'
-import { Html, HtmlBuilder } from 'foldkit/html'
+import { Html, HtmlBuilder, createLazy } from 'foldkit/html'
 import { ChevronLeft, House, type IconNode, LibraryBig, Search } from 'lucide'
 
 import { icon } from '@/lib/icons'
@@ -14,23 +14,19 @@ import { restoredScrollTop } from '../update'
 
 // PAGE
 
-/**
- * Wraps a page in its own fixed scroll box and has it enter at the scroll
- * position it was left at. The document itself never scrolls: iOS 26 blurs
- * the top of a Home Screen app whenever the document is scrolled (see
- * `.page-scroller` in styles.css). Each page gets its own element, so moving
- * between pages replaces the DOM and runs the page transition.
- */
-export const page = (
-  model: Model,
+const lazyPage = createLazy()
+
+const pageView = (
+  key: string,
+  scrollTop: number,
   className: string,
-  content: ReadonlyArray<Html>,
+  content: Html,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.keyed('div')(
-    pageKey(model.route),
+    key,
     [
-      h.OnMount(RestoreScroll({ top: restoredScrollTop(model) })),
+      h.OnMount(RestoreScroll({ top: scrollTop })),
       h.DataAttribute(PAGE_ATTRIBUTE, ''),
       h.Class('page-scroller'),
     ],
@@ -41,10 +37,32 @@ export const page = (
             cn('mx-auto flex min-h-full w-full max-w-xl flex-col', className),
           ),
         ],
-        content,
+        [content],
       ),
     ],
   )
+
+/**
+ * Wraps a page in its own fixed scroll box and has it enter at the scroll
+ * position it was left at. The document itself never scrolls: iOS 26 blurs
+ * the top of a Home Screen app whenever the document is scrolled (see
+ * `.page-scroller` in styles.css). Each page gets its own element, so moving
+ * between pages replaces the DOM and runs the page transition. It is drawn
+ * again only when the page or its content changes.
+ */
+export const page = (
+  model: Model,
+  className: string,
+  content: Html,
+  h: HtmlBuilder<Message>,
+): Html =>
+  lazyPage(pageView, [
+    pageKey(model.route),
+    restoredScrollTop(model),
+    className,
+    content,
+    h,
+  ])
 
 // TOP EDGE
 
@@ -241,11 +259,9 @@ const tabButton = (tab: Tab, activeTab: Tab, h: HtmlBuilder<Message>): Html => {
   )
 }
 
-/**
- * The capsule floating along the bottom that switches between Home, Search,
- * and Library.
- */
-export const tabBar = (model: Model, h: HtmlBuilder<Message>): Html =>
+const lazyTabBar = createLazy()
+
+const tabBarView = (activeTab: Tab, h: HtmlBuilder<Message>): Html =>
   h.div(
     [
       h.Class(
@@ -262,7 +278,14 @@ export const tabBar = (model: Model, h: HtmlBuilder<Message>): Html =>
             'floating pointer-events-auto mx-auto flex h-[var(--tab-bar-height)] max-w-md rounded-full p-1',
           ),
         ],
-        Array.map(TABS, tab => tabButton(tab, model.navigation.activeTab, h)),
+        Array.map(TABS, tab => tabButton(tab, activeTab, h)),
       ),
     ],
   )
+
+/**
+ * The capsule floating along the bottom that switches between Home, Search,
+ * and Library. It is drawn again only when the tab changes.
+ */
+export const tabBar = (model: Model, h: HtmlBuilder<Message>): Html =>
+  lazyTabBar(tabBarView, [model.navigation.activeTab, h])

@@ -424,7 +424,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
         hasMiniPlayer(model)
           ? 'pb-[calc(var(--tab-bar-space)+var(--mini-player-height)+1.5rem)]'
           : 'pb-[calc(var(--tab-bar-space)+1rem)]',
-        [memoizedPage(model, routeContent, h)],
+        memoizedPage(model, routeContent, h),
         h,
       ),
       tabBar(model, h),
