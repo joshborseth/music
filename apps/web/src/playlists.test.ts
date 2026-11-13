@@ -16,16 +16,26 @@ import {
 
 import {
   EditPlaylists,
+  FocusAddSongsInput,
   FocusPlaylistTitleInput,
   LockScroll,
   NavigateBack,
   NavigateInternal,
+  SaveLibraryPrefs,
   UnlockScroll,
+  WaitBeforeAddSongsSearch,
 } from './command'
+import { DEFAULT_LIBRARY_PREFS, type LibraryPrefs } from './library'
 import { Message } from './message'
 import { type Model } from './model'
 import { WaitBeforeHideNotice } from './playback/command'
-import { myLibraryQuery, myPlaylistQuery } from './query'
+import { PlaylistEditor } from './playlistEditor'
+import {
+  homeQuery,
+  myLibraryQuery,
+  myPlaylistQuery,
+  songSearchQuery,
+} from './query'
 import { AppRoute } from './route'
 import { ActionSheet } from './sheet'
 import { initialModel, likedVideoIds, update } from './update'
@@ -55,6 +65,10 @@ const summary = (
   totalSeconds: songCount * 270,
   covers: [],
   updatedAt: 1,
+  createdAt: 1,
+  maybePlayedAt: Option.none(),
+  maybeDescription: Option.none(),
+  maybeCoverVideoId: Option.none(),
 })
 
 const liked = summary(LIKED_PLAYLIST_ID, 'Liked Songs', 0)
@@ -68,6 +82,8 @@ const libraryOf = (
   likedVideoIds: likedIds,
   albums: [],
   artists: [],
+  albumPlayedAt: {},
+  artistPlayedAt: {},
 })
 
 const withLibrary = (base: Model, library: MyLibrary): Model =>
@@ -555,6 +571,343 @@ describe('following an artist', () => {
           }),
         }),
       ),
+    )
+  })
+})
+
+describe('editing my playlist', () => {
+  const landslide: Song = {
+    ...theChain,
+    videoId: 'WM7-PYtXtJM',
+    title: 'Landslide',
+    maybeAlbum: Option.some({ id: 'MPREb_fm1975', name: 'Fleetwood Mac' }),
+    artwork: [
+      { url: 'https://lh3.googleusercontent.com/l', width: 60, height: 60 },
+    ],
+  }
+  const page = () =>
+    playlistPageModel({
+      playlist: { ...roadTrip, songCount: 3 },
+      songs: [dreams, theChain, landslide],
+    })
+  const editing = () =>
+    update(page(), Message.ClickedEditPlaylist({ playlistId: roadTrip.id }))
+      .model
+  const savedNothing = {
+    library: libraryOf([liked, roadTrip]),
+    maybePlaylist: Option.none(),
+  }
+
+  test('Done saves a new title and description, and leaves the rest', () => {
+    const rename = {
+      _tag: 'Rename',
+      playlistId: roadTrip.id,
+      title: 'Coast road',
+    } as const
+    const setDescription = {
+      _tag: 'SetDescription',
+      playlistId: roadTrip.id,
+      description: 'Windows down.',
+    } as const
+    story(
+      update,
+      given(page()),
+      message(Message.ClickedEditPlaylist({ playlistId: roadTrip.id })),
+      model(current => {
+        expect(current.playlistEditor).toStrictEqual(
+          PlaylistEditor.Editing({
+            playlistId: roadTrip.id,
+            titleInput: 'Road trip',
+            descriptionInput: '',
+          }),
+        )
+      }),
+      message(Message.UpdatedPlaylistEditorTitle({ value: '  Coast road ' })),
+      message(
+        Message.UpdatedPlaylistEditorDescription({ value: 'Windows down. ' }),
+      ),
+      message(Message.ClickedDoneEditingPlaylist()),
+      model(current => {
+        expect(current.playlistEditor._tag).toBe('Closed')
+        expect(
+          Option.map(
+            AsyncData.getData(
+              myPlaylistQuery.read(current.myPlaylists, {
+                playlistId: roadTrip.id,
+              }),
+            ),
+            ({ playlist }) => [playlist.title, playlist.maybeDescription],
+          ),
+        ).toStrictEqual(
+          Option.some(['Coast road', Option.some('Windows down.')]),
+        )
+      }),
+      Command.expectExact(
+        EditPlaylists({ edit: rename }),
+        EditPlaylists({ edit: setDescription }),
+      ),
+      Command.resolveAll(
+        [
+          EditPlaylists,
+          Message.CompletedEditPlaylists({
+            edit: rename,
+            result: Result.succeed(savedNothing),
+          }),
+        ],
+        [
+          EditPlaylists,
+          Message.CompletedEditPlaylists({
+            edit: setDescription,
+            result: Result.succeed(savedNothing),
+          }),
+        ],
+      ),
+    )
+  })
+
+  test('Done after emptying the title sends nothing', () => {
+    story(
+      update,
+      given(editing()),
+      message(Message.UpdatedPlaylistEditorTitle({ value: '   ' })),
+      message(Message.ClickedDoneEditingPlaylist()),
+      model(current => {
+        expect(current.playlistEditor._tag).toBe('Closed')
+      }),
+      Command.expectNone(),
+    )
+  })
+
+  test('a dragged song moves at once and the server is told', () => {
+    const edit = {
+      _tag: 'MoveSong',
+      playlistId: roadTrip.id,
+      videoId: landslide.videoId,
+      maybeBeforeVideoId: Option.some(dreams.videoId),
+    } as const
+    story(
+      update,
+      given(editing()),
+      message(
+        Message.DraggedPlaylistSong({
+          playlistId: roadTrip.id,
+          videoId: landslide.videoId,
+          maybeBeforeVideoId: Option.some(dreams.videoId),
+        }),
+      ),
+      model(current => {
+        expect(shownSongs(current, roadTrip.id)).toStrictEqual([
+          landslide.videoId,
+          dreams.videoId,
+          theChain.videoId,
+        ])
+      }),
+      Command.expectExact(EditPlaylists({ edit })),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit,
+          result: Result.succeed(savedNothing),
+        }),
+      ),
+    )
+  })
+
+  test('Add Songs searches, adds a song with a check, and says nothing else', () => {
+    const rhiannon: Song = { ...theChain, videoId: 'rh1', title: 'Rhiannon' }
+    const add = {
+      _tag: 'AddSongs',
+      playlistId: roadTrip.id,
+      songs: [rhiannon],
+    } as const
+    const remove = {
+      _tag: 'RemoveSong',
+      playlistId: roadTrip.id,
+      videoId: rhiannon.videoId,
+    } as const
+    story(
+      update,
+      given(editing()),
+      message(Message.ClickedAddSongs({ playlistId: roadTrip.id })),
+      model(current => {
+        expect(current.actionSheet).toStrictEqual(
+          ActionSheet.Shown({
+            content: { _tag: 'AddSongs', playlistId: roadTrip.id },
+          }),
+        )
+      }),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      Command.resolve(
+        FocusAddSongsInput,
+        Message.CompletedFocusAddSongsInput(),
+      ),
+      Command.resolve(
+        homeQuery.Fetch,
+        homeQuery.Message.CompletedFetch({
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed({
+            jumpBackIn: [],
+            recentlyPlayed: [],
+            maybeLastPlayed: Option.none(),
+            mixes: [],
+          }),
+        }),
+      ),
+      message(Message.UpdatedAddSongsInput({ value: 'rhiannon' })),
+      Command.resolve(
+        WaitBeforeAddSongsSearch,
+        Message.CompletedWaitBeforeAddSongsSearch({ query: 'rhiannon' }),
+      ),
+      model(current => {
+        expect(current.addSongsSearch).toStrictEqual({
+          input: 'rhiannon',
+          query: 'rhiannon',
+        })
+      }),
+      Command.resolve(
+        songSearchQuery.Fetch,
+        songSearchQuery.Message.CompletedFetch({
+          args: { query: 'rhiannon' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed([rhiannon]),
+        }),
+      ),
+      message(
+        Message.ClickedToggleSongInPlaylist({
+          playlistId: roadTrip.id,
+          song: rhiannon,
+        }),
+      ),
+      model(current => {
+        expect(shownSongs(current, roadTrip.id)).toStrictEqual([
+          dreams.videoId,
+          theChain.videoId,
+          landslide.videoId,
+          rhiannon.videoId,
+        ])
+      }),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit: add,
+          result: Result.succeed({
+            library: libraryOf([liked, { ...roadTrip, songCount: 4 }]),
+            maybePlaylist: Option.some({
+              playlist: { ...roadTrip, songCount: 4 },
+              songs: [dreams, theChain, landslide, rhiannon],
+            }),
+          }),
+        }),
+      ),
+      model(current => {
+        expect(current.maybeNotice).toStrictEqual(Option.none())
+      }),
+      message(
+        Message.ClickedToggleSongInPlaylist({
+          playlistId: roadTrip.id,
+          song: rhiannon,
+        }),
+      ),
+      Command.expectExact(EditPlaylists({ edit: remove })),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit: remove,
+          result: Result.succeed(savedNothing),
+        }),
+      ),
+    )
+  })
+
+  test("picking a song's cover shows it at once", () => {
+    const edit = {
+      _tag: 'SetCover',
+      playlistId: roadTrip.id,
+      maybeVideoId: Option.some(landslide.videoId),
+    } as const
+    story(
+      update,
+      given(editing()),
+      message(Message.ClickedChoosePlaylistCover({ playlistId: roadTrip.id })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      message(
+        Message.SelectedPlaylistCover({
+          playlistId: roadTrip.id,
+          maybeVideoId: Option.some(landslide.videoId),
+        }),
+      ),
+      model(current => {
+        expect(current.actionSheet._tag).toBe('Dismissed')
+        expect(
+          Option.map(
+            AsyncData.getData(
+              myPlaylistQuery.read(current.myPlaylists, {
+                playlistId: roadTrip.id,
+              }),
+            ),
+            ({ playlist }) => [playlist.maybeCoverVideoId, playlist.covers],
+          ),
+        ).toStrictEqual(
+          Option.some([Option.some(landslide.videoId), [landslide.artwork]]),
+        )
+      }),
+      Command.expectExact(UnlockScroll(), EditPlaylists({ edit })),
+      Command.resolve(UnlockScroll, Message.CompletedUnlockScroll()),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit,
+          result: Result.succeed(savedNothing),
+        }),
+      ),
+    )
+  })
+})
+
+describe('library order and layout', () => {
+  test('are saved on this device as they change', () => {
+    const sorted: LibraryPrefs = {
+      ...DEFAULT_LIBRARY_PREFS,
+      sorts: { ...DEFAULT_LIBRARY_PREFS.sorts, Albums: 'Artist' },
+    }
+    const listed: LibraryPrefs = {
+      ...sorted,
+      layouts: { ...sorted.layouts, Albums: 'List' },
+    }
+    story(
+      update,
+      given(libraryModel),
+      message(Message.ClickedLibrarySort({ kind: 'Albums' })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      message(Message.SelectedLibrarySort({ kind: 'Albums', sort: 'Artist' })),
+      Command.expectExact(UnlockScroll(), SaveLibraryPrefs({ prefs: sorted })),
+      Command.resolve(UnlockScroll, Message.CompletedUnlockScroll()),
+      Command.resolve(SaveLibraryPrefs, Message.CompletedSaveLibraryPrefs()),
+      message(Message.ClickedToggleLibraryLayout({ kind: 'Albums' })),
+      model(current => {
+        expect(current.libraryPrefs).toStrictEqual(listed)
+      }),
+      Command.resolve(SaveLibraryPrefs, Message.CompletedSaveLibraryPrefs()),
+    )
+  })
+
+  test('come back from the device when the app opens', () => {
+    const stored: LibraryPrefs = {
+      ...DEFAULT_LIBRARY_PREFS,
+      layouts: { Playlists: 'Grid', Albums: 'List' },
+    }
+    story(
+      update,
+      given(libraryModel),
+      message(
+        Message.CompletedLoadLibrary({
+          recentlyViewed: [],
+          maybePrefs: Option.some(stored),
+        }),
+      ),
+      model(current => {
+        expect(current.libraryPrefs).toStrictEqual(stored)
+      }),
     )
   })
 })

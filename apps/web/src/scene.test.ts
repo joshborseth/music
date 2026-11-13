@@ -953,6 +953,10 @@ describe('library', () => {
                   totalSeconds: 270,
                   covers: [],
                   updatedAt: 2,
+                  createdAt: 2,
+                  maybePlayedAt: Option.none(),
+                  maybeDescription: Option.none(),
+                  maybeCoverVideoId: Option.none(),
                 },
                 {
                   id: 'road-trip',
@@ -962,11 +966,17 @@ describe('library', () => {
                   totalSeconds: 3_900,
                   covers: [],
                   updatedAt: 1,
+                  createdAt: 1,
+                  maybePlayedAt: Option.none(),
+                  maybeDescription: Option.none(),
+                  maybeCoverVideoId: Option.none(),
                 },
               ],
               likedVideoIds: ['FhgFtXESdPk'],
               albums: [],
               artists: [],
+              albumPlayedAt: {},
+              artistPlayedAt: {},
             }),
         }),
     })
@@ -1089,6 +1099,10 @@ const likedSongs: MyPlaylistSummary = {
   totalSeconds: 0,
   covers: [],
   updatedAt: 1,
+  createdAt: 1,
+  maybePlayedAt: Option.none(),
+  maybeDescription: Option.none(),
+  maybeCoverVideoId: Option.none(),
 }
 
 const libraryWith = (overrides: Partial<MyLibrary> = {}): MyLibrary => ({
@@ -1096,6 +1110,8 @@ const libraryWith = (overrides: Partial<MyLibrary> = {}): MyLibrary => ({
   likedVideoIds: [],
   albums: [],
   artists: [],
+  albumPlayedAt: {},
+  artistPlayedAt: {},
   ...overrides,
 })
 

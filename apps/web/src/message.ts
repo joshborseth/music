@@ -19,7 +19,14 @@ import {
   DownloadedCollection,
   StorageEstimate,
 } from './downloads/domain'
-import { LibraryFilter, LibraryItem } from './library'
+import {
+  LayoutKind,
+  LibraryFilter,
+  LibraryItem,
+  LibraryPrefs,
+  LibrarySort,
+  SortableKind,
+} from './library'
 import { MediaKey } from './playback/domain'
 import { SwipeTarget } from './playback/swipe'
 import {
@@ -65,7 +72,11 @@ export const Message = defineMessageUnion({
   CompletedBlurSearchInput: {},
   CompletedLockScroll: {},
   CompletedUnlockScroll: {},
-  CompletedLoadLibrary: { recentlyViewed: Schema.Array(LibraryItem) },
+  CompletedLoadLibrary: {
+    recentlyViewed: Schema.Array(LibraryItem),
+    maybePrefs: Schema.Option(LibraryPrefs),
+  },
+  CompletedSaveLibraryPrefs: {},
   CompletedSaveRecentlyViewed: {},
   CompletedShuffleSongs: {
     songs: Schema.Array(Song),
@@ -87,6 +98,11 @@ export const Message = defineMessageUnion({
   ClickedClearRecentlyViewed: {},
   ConfirmedClearRecentlyViewed: {},
   SelectedLibraryFilter: { filter: LibraryFilter },
+  UpdatedLibrarySearchInput: { value: Schema.String },
+  ClickedClearLibrarySearch: {},
+  ClickedLibrarySort: { kind: SortableKind },
+  SelectedLibrarySort: { kind: SortableKind, sort: LibrarySort },
+  ClickedToggleLibraryLayout: { kind: LayoutKind },
   ClickedShuffleSongs: { songs: Schema.Array(Song) },
   ClickedSongActions: { song: Song },
   ClickedDevices: {},
@@ -171,6 +187,28 @@ export const Message = defineMessageUnion({
   ClickedDeletePlaylist: { playlistId: Schema.String, title: Schema.String },
   ConfirmedDeletePlaylist: { playlistId: Schema.String },
   CompletedFocusPlaylistTitleInput: {},
+  ClickedEditPlaylist: { playlistId: Schema.String },
+  UpdatedPlaylistEditorTitle: { value: Schema.String },
+  UpdatedPlaylistEditorDescription: { value: Schema.String },
+  ClickedDoneEditingPlaylist: {},
+  CompletedFollowPlaylistDrags: {},
+  /** A song of a playlist being edited was dragged to a new place. */
+  DraggedPlaylistSong: {
+    playlistId: Schema.String,
+    videoId: Schema.String,
+    maybeBeforeVideoId: Schema.Option(Schema.String),
+  },
+  ClickedAddSongs: { playlistId: Schema.String },
+  CompletedFocusAddSongsInput: {},
+  UpdatedAddSongsInput: { value: Schema.String },
+  CompletedWaitBeforeAddSongsSearch: { query: Schema.String },
+  /** + beside a song in Add Songs, or its check to take it out again. */
+  ClickedToggleSongInPlaylist: { playlistId: Schema.String, song: Song },
+  ClickedChoosePlaylistCover: { playlistId: Schema.String },
+  SelectedPlaylistCover: {
+    playlistId: Schema.String,
+    maybeVideoId: Schema.Option(Schema.String),
+  },
   CompletedEditPlaylists: {
     edit: PlaylistEdit,
     result: Schema.Result(PlaylistEditResult, RequestError),

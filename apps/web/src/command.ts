@@ -15,8 +15,16 @@ import {
   SEARCH_INPUT_ID,
   SEARCH_RESULTS_SELECTOR,
 } from './constant'
-import { LibraryItem, RECENTLY_VIEWED_KEY, RecentlyViewedJson } from './library'
+import {
+  LIBRARY_PREFS_KEY,
+  LibraryItem,
+  LibraryPrefs,
+  LibraryPrefsJson,
+  RECENTLY_VIEWED_KEY,
+  RecentlyViewedJson,
+} from './library'
 import { Message } from './message'
+import { ADD_SONGS_INPUT_ID } from './playlistEditor'
 import { withRequestError } from './query'
 import { MusicClient } from './rpc'
 
@@ -274,8 +282,10 @@ export const LoadLibrary = Command.define('LoadLibrary', {
       RECENTLY_VIEWED_KEY,
       RecentlyViewedJson,
     )
+    const maybePrefs = yield* readStored(LIBRARY_PREFS_KEY, LibraryPrefsJson)
     return Message.CompletedLoadLibrary({
       recentlyViewed: Option.getOrElse(maybeRecentlyViewed, () => []),
+      maybePrefs,
     })
   }).pipe(Effect.provide(BrowserKeyValueStore.layerLocalStorage)),
 })
@@ -299,3 +309,34 @@ export const SaveRecentlyViewed = Command.define('SaveRecentlyViewed', {
       Effect.as(Message.CompletedSaveRecentlyViewed()),
     ),
 })
+
+/** Remembers how this device sorts and lays out the Library. */
+export const SaveLibraryPrefs = Command.define('SaveLibraryPrefs', {
+  args: { prefs: LibraryPrefs },
+  messages: [Message.CompletedSaveLibraryPrefs],
+  execute: ({ prefs }) =>
+    writeStored(LIBRARY_PREFS_KEY, LibraryPrefsJson, prefs).pipe(
+      Effect.as(Message.CompletedSaveLibraryPrefs()),
+    ),
+})
+
+export const FocusAddSongsInput = Command.define('FocusAddSongsInput', {
+  messages: [Message.CompletedFocusAddSongsInput],
+  execute: Dom.focus(`#${ADD_SONGS_INPUT_ID}`).pipe(
+    Effect.ignore,
+    Effect.as(Message.CompletedFocusAddSongsInput()),
+  ),
+})
+
+/** A pause in typing in Add Songs before the search is sent. */
+export const WaitBeforeAddSongsSearch = Command.define(
+  'WaitBeforeAddSongsSearch',
+  {
+    args: { query: Schema.String },
+    messages: [Message.CompletedWaitBeforeAddSongsSearch],
+    execute: ({ query }) =>
+      Effect.sleep(SEARCH_DEBOUNCE).pipe(
+        Effect.as(Message.CompletedWaitBeforeAddSongsSearch({ query })),
+      ),
+  },
+)

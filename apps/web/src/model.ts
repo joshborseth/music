@@ -1,7 +1,7 @@
 import { Schema } from 'effect'
 
 import { Downloads } from './downloads/domain'
-import { LibraryFilter, LibraryItem } from './library'
+import { LibraryFilter, LibraryItem, LibraryPrefs } from './library'
 import { NavigationModel } from './navigation'
 import {
   Connection,
@@ -13,6 +13,7 @@ import {
   SessionSnapshot,
 } from './playback/domain'
 import { Swipe } from './playback/swipe'
+import { AddSongsSearch, PlaylistEditor } from './playlistEditor'
 import {
   albumQuery,
   albumSearchQuery,
@@ -48,6 +49,13 @@ export const Model = Schema.Struct({
   /** Albums, artists, and playlists opened on this device, newest first. */
   recentlyViewed: Schema.Array(LibraryItem),
   libraryFilter: LibraryFilter,
+  /** How this device sorts and lays out the Library. */
+  libraryPrefs: LibraryPrefs,
+  /** What is typed in the Library's search field, which filters it. */
+  librarySearchInput: Schema.String,
+  /** The playlist page being edited, if any. */
+  playlistEditor: PlaylistEditor,
+  addSongsSearch: AddSongsSearch,
   songSearch: songSearchQuery.Model,
   artistSearch: artistSearchQuery.Model,
   albumSearch: albumSearchQuery.Model,

@@ -6,15 +6,17 @@ import {
   type AlbumSummary,
   type ArtistSummary,
   LIKED_PLAYLIST_ID,
+  MAX_PLAYLIST_DESCRIPTION_LENGTH,
   MAX_PLAYLIST_TITLE_LENGTH,
   type PlaylistEdit,
   type Song,
+  mosaicCovers,
 } from '@music/shared'
 
 import {
   PLAY_HISTORY_SIZE,
   makePlaylistStore,
-  mosaicCovers,
+  normalizeDescription,
   normalizeTitle,
 } from './store.ts'
 
@@ -52,6 +54,25 @@ const run = <A, E>(effect: Effect.Effect<A, E>) =>
 
 const edit = (store: ReturnType<typeof makeStore>, change: PlaylistEdit) =>
   Result.getOrThrow(run(store.edit(change)))
+
+const songIds = (result: ReturnType<typeof edit>): ReadonlyArray<string> =>
+  Option.getOrThrow(result.maybePlaylist).songs.map(({ videoId }) => videoId)
+
+/** A store holding one playlist, `playlist-1`, of the songs `a` to `d`. */
+const storeWithMix = () => {
+  const store = makeStore()
+  edit(store, {
+    _tag: 'Create',
+    title: 'Mix',
+    songs: [
+      song('a', { albumId: 'one' }),
+      song('b', { albumId: 'two' }),
+      song('c', { albumId: 'three' }),
+      song('d', { albumId: 'four' }),
+    ],
+  })
+  return store
+}
 
 describe('playlist store', () => {
   test('starts with only an empty Liked songs', () => {
@@ -186,6 +207,187 @@ describe('playlist store', () => {
     expect(library.playlists.map(({ title }) => title)).toEqual(['Liked Songs'])
   })
 
+  test('moves a song before another, or to the end', () => {
+    const store = storeWithMix()
+    const up = edit(store, {
+      _tag: 'MoveSong',
+      playlistId: 'playlist-1',
+      videoId: 'c',
+      maybeBeforeVideoId: Option.some('a'),
+    })
+    expect(songIds(up)).toEqual(['c', 'a', 'b', 'd'])
+
+    const down = edit(store, {
+      _tag: 'MoveSong',
+      playlistId: 'playlist-1',
+      videoId: 'c',
+      maybeBeforeVideoId: Option.none(),
+    })
+    expect(songIds(down)).toEqual(['a', 'b', 'd', 'c'])
+
+    const beforeMissing = edit(store, {
+      _tag: 'MoveSong',
+      playlistId: 'playlist-1',
+      videoId: 'a',
+      maybeBeforeVideoId: Option.some('gone'),
+    })
+    expect(songIds(beforeMissing)).toEqual(['b', 'd', 'c', 'a'])
+
+    const added = edit(store, {
+      _tag: 'AddSongs',
+      playlistId: 'playlist-1',
+      songs: [song('e')],
+    })
+    expect(songIds(added)).toEqual(['b', 'd', 'c', 'a', 'e'])
+  })
+
+  test('moving a song it does not hold changes nothing', () => {
+    const store = storeWithMix()
+    const result = edit(store, {
+      _tag: 'MoveSong',
+      playlistId: 'playlist-1',
+      videoId: 'gone',
+      maybeBeforeVideoId: Option.some('a'),
+    })
+    expect(songIds(result)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  test('keeps Liked songs newest first', () => {
+    const store = makeStore()
+    edit(store, { _tag: 'SetLiked', song: song('a'), isLiked: true })
+    edit(store, { _tag: 'SetLiked', song: song('b'), isLiked: true })
+    const result = edit(store, {
+      _tag: 'MoveSong',
+      playlistId: LIKED_PLAYLIST_ID,
+      videoId: 'a',
+      maybeBeforeVideoId: Option.some('b'),
+    })
+    expect(result.library.likedVideoIds).toEqual(['b', 'a'])
+  })
+
+  test('sets and clears a description', () => {
+    const store = storeWithMix()
+    const described = edit(store, {
+      _tag: 'SetDescription',
+      playlistId: 'playlist-1',
+      description: '  For the long drive.  ',
+    })
+    expect(
+      Option.getOrThrow(described.maybePlaylist).playlist.maybeDescription,
+    ).toEqual(Option.some('For the long drive.'))
+    expect(
+      described.library.playlists.find(({ id }) => id === 'playlist-1')
+        ?.maybeDescription,
+    ).toEqual(Option.some('For the long drive.'))
+
+    const cleared = edit(store, {
+      _tag: 'SetDescription',
+      playlistId: 'playlist-1',
+      description: '   ',
+    })
+    expect(
+      Option.getOrThrow(cleared.maybePlaylist).playlist.maybeDescription,
+    ).toEqual(Option.none())
+  })
+
+  test("shows one song's cover in place of the mosaic", () => {
+    const store = storeWithMix()
+    const mosaic = Option.getOrThrow(
+      edit(store, { _tag: 'AddSongs', playlistId: 'playlist-1', songs: [] })
+        .maybePlaylist,
+    ).playlist
+    expect(mosaic.covers).toHaveLength(4)
+    expect(mosaic.maybeCoverVideoId).toEqual(Option.none())
+
+    const picked = Option.getOrThrow(
+      edit(store, {
+        _tag: 'SetCover',
+        playlistId: 'playlist-1',
+        maybeVideoId: Option.some('c'),
+      }).maybePlaylist,
+    ).playlist
+    expect(picked.maybeCoverVideoId).toEqual(Option.some('c'))
+    expect(picked.covers).toEqual([song('c').artwork])
+
+    const notHeld = Option.getOrThrow(
+      edit(store, {
+        _tag: 'SetCover',
+        playlistId: 'playlist-1',
+        maybeVideoId: Option.some('gone'),
+      }).maybePlaylist,
+    ).playlist
+    expect(notHeld.maybeCoverVideoId).toEqual(Option.some('c'))
+
+    const back = Option.getOrThrow(
+      edit(store, {
+        _tag: 'SetCover',
+        playlistId: 'playlist-1',
+        maybeVideoId: Option.none(),
+      }).maybePlaylist,
+    ).playlist
+    expect(back.covers).toHaveLength(4)
+    expect(back.maybeCoverVideoId).toEqual(Option.none())
+  })
+
+  test('goes back to the mosaic when the cover song is removed', () => {
+    const store = storeWithMix()
+    edit(store, {
+      _tag: 'SetCover',
+      playlistId: 'playlist-1',
+      maybeVideoId: Option.some('b'),
+    })
+    edit(store, { _tag: 'RemoveSong', playlistId: 'playlist-1', videoId: 'b' })
+    const readded = Option.getOrThrow(
+      edit(store, {
+        _tag: 'AddSongs',
+        playlistId: 'playlist-1',
+        songs: [song('b', { albumId: 'two' })],
+      }).maybePlaylist,
+    ).playlist
+    expect(readded.maybeCoverVideoId).toEqual(Option.none())
+    expect(readded.covers).toHaveLength(4)
+  })
+
+  test('Liked songs keeps its own description and cover', () => {
+    const store = makeStore()
+    edit(store, { _tag: 'SetLiked', song: song('a'), isLiked: true })
+    edit(store, {
+      _tag: 'SetDescription',
+      playlistId: LIKED_PLAYLIST_ID,
+      description: 'Nope',
+    })
+    const result = edit(store, {
+      _tag: 'SetCover',
+      playlistId: LIKED_PLAYLIST_ID,
+      maybeVideoId: Option.some('a'),
+    })
+    const liked = Option.getOrThrow(result.maybePlaylist).playlist
+    expect(liked.maybeDescription).toEqual(Option.none())
+    expect(liked.maybeCoverVideoId).toEqual(Option.none())
+  })
+
+  test('knows when each playlist, album, and artist last played', () => {
+    const store = makeStore()
+    edit(store, {
+      _tag: 'Create',
+      title: 'Mix',
+      songs: [song('a', { albumId: 'one' }), song('b', { albumId: 'two' })],
+    })
+    edit(store, { _tag: 'Create', title: 'Quiet', songs: [song('c')] })
+    Result.getOrThrow(run(store.recordPlay(song('a', { albumId: 'one' }))))
+    Result.getOrThrow(run(store.recordPlay(song('b', { albumId: 'two' }))))
+    const library = Result.getOrThrow(run(store.library()))
+
+    const mix = library.playlists.find(({ title }) => title === 'Mix')
+    const quiet = library.playlists.find(({ title }) => title === 'Quiet')
+    const latest = Option.getOrThrow(mix?.maybePlayedAt ?? Option.none())
+    expect(quiet?.maybePlayedAt).toEqual(Option.none())
+    expect(quiet?.createdAt).toBeGreaterThan(mix?.createdAt ?? Infinity)
+    expect(library.albumPlayedAt['two']).toBe(latest)
+    expect(library.albumPlayedAt['one']).toBeLessThan(latest)
+    expect(library.artistPlayedAt).toEqual({ UCartist: latest })
+  })
+
   test('a missing playlist is not found', () => {
     const store = makeStore()
 
@@ -238,6 +440,12 @@ const artist = (id: string): ArtistSummary => ({
   maybeAudience: Option.some('1M monthly audience'),
   artwork: [],
 })
+
+/** Takes a file back to before playlists had descriptions and covers. */
+const dropDescriptionsAndCovers = (db: Database): void => {
+  db.run('ALTER TABLE playlists DROP COLUMN description')
+  db.run('ALTER TABLE playlists DROP COLUMN cover_video_id')
+}
 
 const ids = <A extends Readonly<{ id: string }>>(
   items: ReadonlyArray<A>,
@@ -330,6 +538,7 @@ describe('saved albums and followed artists', () => {
     Result.getOrThrow(run(older.recordPlay(song('b'))))
     db.run('DROP TABLE saved_albums')
     db.run('DROP TABLE followed_artists')
+    dropDescriptionsAndCovers(db)
     db.run('PRAGMA user_version = 2')
 
     const reopened = makePlaylistStore(db, options)
@@ -350,11 +559,46 @@ describe('saved albums and followed artists', () => {
     expect(ids(saved.library.albums)).toEqual(['a'])
   })
 
+  test('a file from before descriptions and covers keeps its playlists', () => {
+    const db = new Database(':memory:', { strict: true })
+    const options = { now: () => 1, newId: () => 'kept' }
+    Result.getOrThrow(
+      run(
+        makePlaylistStore(db, options).edit({
+          _tag: 'Create',
+          title: 'Kept',
+          songs: [song('a'), song('b')],
+        }),
+      ),
+    )
+    dropDescriptionsAndCovers(db)
+    db.run('PRAGMA user_version = 4')
+
+    const reopened = makePlaylistStore(db, options)
+    const details = Result.getOrThrow(run(reopened.playlist('kept')))
+    expect(details.playlist).toMatchObject({
+      title: 'Kept',
+      maybeDescription: Option.none(),
+      maybeCoverVideoId: Option.none(),
+    })
+    expect(details.songs.map(({ videoId }) => videoId)).toEqual(['a', 'b'])
+
+    const described = edit(reopened, {
+      _tag: 'SetDescription',
+      playlistId: 'kept',
+      description: 'Still here.',
+    })
+    expect(
+      Option.getOrThrow(described.maybePlaylist).playlist.maybeDescription,
+    ).toEqual(Option.some('Still here.'))
+  })
+
   test('a file from before the title case names Liked Songs the new way', () => {
     const db = new Database(':memory:', { strict: true })
     const options = { now: () => 1, newId: () => 'kept' }
     makePlaylistStore(db, options)
     db.run("UPDATE playlists SET title = 'Liked songs' WHERE id = 'liked'")
+    dropDescriptionsAndCovers(db)
     db.run('PRAGMA user_version = 3')
 
     const library = Result.getOrThrow(
@@ -443,6 +687,18 @@ describe('normalizeTitle', () => {
     expect(normalizeTitle('x'.repeat(300))).toHaveLength(
       MAX_PLAYLIST_TITLE_LENGTH,
     )
+  })
+})
+
+describe('normalizeDescription', () => {
+  test('trims, shortens, and drops an empty description', () => {
+    expect(normalizeDescription('  Long drive  ')).toEqual(
+      Option.some('Long drive'),
+    )
+    expect(normalizeDescription('  ')).toEqual(Option.none())
+    expect(
+      Option.getOrThrow(normalizeDescription('x'.repeat(1000))),
+    ).toHaveLength(MAX_PLAYLIST_DESCRIPTION_LENGTH)
   })
 })
 

@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import { Array, Option, Schema, pipe } from 'effect'
 
 // ARTWORK
 
@@ -251,6 +251,9 @@ export const LIKED_PLAYLIST_ID = 'liked'
 /** The longest playlist title the server keeps. */
 export const MAX_PLAYLIST_TITLE_LENGTH = 100
 
+/** The longest playlist description the server keeps. */
+export const MAX_PLAYLIST_DESCRIPTION_LENGTH = 300
+
 /** A playlist made in this app and kept on the music server. */
 export const MyPlaylistSummary = Schema.Struct({
   id: Schema.String,
@@ -259,12 +262,52 @@ export const MyPlaylistSummary = Schema.Struct({
   isLiked: Schema.Boolean,
   songCount: Schema.Number,
   totalSeconds: Schema.Number,
-  /** Up to four different covers from its first songs, for the mosaic. */
+  /**
+   * Up to four different covers from its first songs, for the mosaic, or
+   * only the cover of the song picked as its cover.
+   */
   covers: Schema.Array(Artwork),
   /** When it last changed, in milliseconds since the epoch. */
   updatedAt: Schema.Number,
+  /** When it was made, in milliseconds since the epoch. */
+  createdAt: Schema.Number,
+  /** When one of its songs last played, on any device. */
+  maybePlayedAt: Schema.Option(Schema.Number),
+  maybeDescription: Schema.Option(Schema.String),
+  /** The song whose cover it shows in place of the mosaic. */
+  maybeCoverVideoId: Schema.Option(Schema.String),
 })
 export type MyPlaylistSummary = typeof MyPlaylistSummary.Type
+
+/** How many covers the mosaic shows. */
+export const MOSAIC_COVER_COUNT = 4
+
+const coverKey = (song: Song): string =>
+  Option.getOrElse(
+    Option.map(song.maybeAlbum, ({ id }) => id),
+    () => song.videoId,
+  )
+
+/**
+ * The songs whose covers a playlist can show, in playlist order: the first
+ * song of each album, with artwork.
+ */
+export const coverSongs = (songs: ReadonlyArray<Song>): ReadonlyArray<Song> =>
+  pipe(
+    songs,
+    Array.filter(song => Array.isReadonlyArrayNonEmpty(song.artwork)),
+    Array.dedupeWith((left, right) => coverKey(left) === coverKey(right)),
+  )
+
+/** Up to four covers from different albums, in playlist order. */
+export const mosaicCovers = (
+  songs: ReadonlyArray<Song>,
+): ReadonlyArray<Artwork> =>
+  pipe(
+    coverSongs(songs),
+    Array.take(MOSAIC_COVER_COUNT),
+    Array.map(song => song.artwork),
+  )
 
 /**
  * Everything kept in my library: the playlists made in this app, which songs
@@ -278,6 +321,10 @@ export const MyLibrary = Schema.Struct({
   albums: Schema.Array(AlbumSummary),
   /** The artists followed, the latest followed first. */
   artists: Schema.Array(ArtistSummary),
+  /** When a song of each saved album last played, by album id. */
+  albumPlayedAt: Schema.Record(Schema.String, Schema.Number),
+  /** When a song by each followed artist last played, by artist id. */
+  artistPlayedAt: Schema.Record(Schema.String, Schema.Number),
 })
 export type MyLibrary = typeof MyLibrary.Type
 
@@ -311,6 +358,22 @@ export const PlaylistEdit = Schema.Union([
   Schema.TaggedStruct('RemoveSong', {
     playlistId: Schema.String,
     videoId: Schema.String,
+  }),
+  /** Moves a song before another, or to the end. */
+  Schema.TaggedStruct('MoveSong', {
+    playlistId: Schema.String,
+    videoId: Schema.String,
+    maybeBeforeVideoId: Schema.Option(Schema.String),
+  }),
+  /** An empty description removes it. */
+  Schema.TaggedStruct('SetDescription', {
+    playlistId: Schema.String,
+    description: Schema.String,
+  }),
+  /** Shows one of its songs' covers, or with none the mosaic again. */
+  Schema.TaggedStruct('SetCover', {
+    playlistId: Schema.String,
+    maybeVideoId: Schema.Option(Schema.String),
   }),
   /** Likes a song, putting it first in Liked songs, or unlikes it. */
   Schema.TaggedStruct('SetLiked', { song: Song, isLiked: Schema.Boolean }),

@@ -20,6 +20,9 @@ export type PageModel = Readonly<
     | 'recentSearches'
     | 'recentlyViewed'
     | 'libraryFilter'
+    | 'libraryPrefs'
+    | 'librarySearchInput'
+    | 'playlistEditor'
     | 'songSearch'
     | 'artistSearch'
     | 'albumSearch'
@@ -69,6 +72,9 @@ const renderPage = (
   recentSearches: Model['recentSearches'],
   recentlyViewed: Model['recentlyViewed'],
   libraryFilter: Model['libraryFilter'],
+  libraryPrefs: Model['libraryPrefs'],
+  librarySearchInput: string,
+  playlistEditor: Model['playlistEditor'],
   songSearch: Model['songSearch'],
   artistSearch: Model['artistSearch'],
   albumSearch: Model['albumSearch'],
@@ -101,6 +107,9 @@ const renderPage = (
       recentSearches,
       recentlyViewed,
       libraryFilter,
+      libraryPrefs,
+      librarySearchInput,
+      playlistEditor,
       songSearch,
       artistSearch,
       albumSearch,
@@ -151,6 +160,9 @@ export const memoizedPage = (
     model.recentSearches,
     model.recentlyViewed,
     model.libraryFilter,
+    model.libraryPrefs,
+    model.librarySearchInput,
+    model.playlistEditor,
     model.songSearch,
     model.artistSearch,
     model.albumSearch,

@@ -21,6 +21,7 @@ import {
 import { isAlbumSaved } from '../library'
 import { Message } from '../message'
 import { Model } from '../model'
+import { isEditing } from '../playlistEditor'
 import {
   albumQuery,
   artistQuery,
@@ -42,6 +43,7 @@ import { myPlaylistView } from './myPlaylist'
 import { type PageModel, memoizedPage } from './page'
 import { hasMiniPlayer, playerView } from './player'
 import { playlistView } from './playlist'
+import { doneEditingButton } from './playlistEditor'
 import { searchView } from './search'
 import { artistNames, artworkUrl, emptyState } from './shared'
 import { actionSheetView } from './sheet'
@@ -356,47 +358,51 @@ const routeParts = (
         Option.map(maybePlaylist, ({ title }) => title),
         myPlaylistView(model, playlistId, h),
         h,
-        navBarButtons(
-          [
-            downloadButton(
-              model,
-              Option.map(
-                maybeDetails,
-                ({ playlist, songs }): DownloadedCollection => ({
-                  kind: 'MyPlaylist',
-                  id: playlist.id,
-                  title: playlist.title,
-                  subtitle: playlist.isLiked ? 'Your likes' : 'Your playlist',
-                  maybeArtworkUrl: Option.flatMap(
-                    Array.head(playlist.covers),
-                    cover => artworkUrl(cover, DOWNLOAD_ARTWORK_WIDTH),
+        isEditing(model.playlistEditor, playlistId)
+          ? doneEditingButton(h)
+          : navBarButtons(
+              [
+                downloadButton(
+                  model,
+                  Option.map(
+                    maybeDetails,
+                    ({ playlist, songs }): DownloadedCollection => ({
+                      kind: 'MyPlaylist',
+                      id: playlist.id,
+                      title: playlist.title,
+                      subtitle: playlist.isLiked
+                        ? 'Your likes'
+                        : 'Your playlist',
+                      maybeArtworkUrl: Option.flatMap(
+                        Array.head(playlist.covers),
+                        cover => artworkUrl(cover, DOWNLOAD_ARTWORK_WIDTH),
+                      ),
+                      videoIds: Array.map(songs, ({ videoId }) => videoId),
+                    }),
                   ),
-                  videoIds: Array.map(songs, ({ videoId }) => videoId),
-                }),
-              ),
+                  h,
+                ),
+                Option.match(
+                  Option.filter(maybePlaylist, ({ isLiked }) => !isLiked),
+                  {
+                    onNone: () => h.empty,
+                    onSome: ({ id, title }) =>
+                      navBarButton(
+                        {
+                          onClick: Message.ClickedPlaylistActions({
+                            playlistId: id,
+                            title,
+                          }),
+                          iconNode: Ellipsis,
+                          label: 'Playlist Options',
+                        },
+                        h,
+                      ),
+                  },
+                ),
+              ],
               h,
             ),
-            Option.match(
-              Option.filter(maybePlaylist, ({ isLiked }) => !isLiked),
-              {
-                onNone: () => h.empty,
-                onSome: ({ id, title }) =>
-                  navBarButton(
-                    {
-                      onClick: Message.ClickedPlaylistActions({
-                        playlistId: id,
-                        title,
-                      }),
-                      iconNode: Ellipsis,
-                      label: 'Playlist Options',
-                    },
-                    h,
-                  ),
-              },
-            ),
-          ],
-          h,
-        ),
       )
     },
     Mood: ({ params }) =>

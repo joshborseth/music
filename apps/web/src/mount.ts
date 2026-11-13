@@ -375,7 +375,25 @@ export const DragToDismiss = Mount.defineStream('DragToDismiss', {
 
 // QUEUE DRAGS
 
-const QUEUE_ROW_SELECTOR = '[data-queue-entry]'
+/** Where a list's draggable rows are, what each is, and what scrolls it. */
+interface RowDragConfig {
+  readonly rowSelector: string
+  readonly rowId: (row: HTMLElement) => string | undefined
+  readonly scrollerSelector: string
+}
+
+const QUEUE_DRAG: RowDragConfig = {
+  rowSelector: '[data-queue-entry]',
+  rowId: row => row.dataset['queueEntry'],
+  scrollerSelector: SCROLL_AREA_SELECTOR,
+}
+
+const PLAYLIST_DRAG: RowDragConfig = {
+  rowSelector: '[data-playlist-song]',
+  rowId: row => row.dataset['playlistSong'],
+  scrollerSelector: PAGE_SELECTOR,
+}
+
 const REORDER_HANDLE_SELECTOR = '[data-reorder-handle]'
 
 /** How long the other rows take to slide out of the dragged row's way. */
@@ -415,10 +433,13 @@ interface QueueDrag {
   to: number
 }
 
-const queueRows = (list: HTMLElement): ReadonlyArray<HTMLElement> =>
+const draggableRows = (
+  list: HTMLElement,
+  config: RowDragConfig,
+): ReadonlyArray<HTMLElement> =>
   Array.from(list.children).filter(
     (child): child is HTMLElement =>
-      child instanceof HTMLElement && child.matches(QUEUE_ROW_SELECTOR),
+      child instanceof HTMLElement && child.matches(config.rowSelector),
   )
 
 const translateY = (offset: number): string =>
@@ -435,15 +456,16 @@ const edgeSpeed = (inside: number): number =>
       )
 
 /**
- * Lets a queue row be dragged up or down by its handle, the way Apple Music
- * does: the row follows the finger, the rows it passes slide out of its way,
+ * Lets a row of the queue, or of a playlist being edited, be dragged up or
+ * down by its handle, the way Apple Music does: the row follows the finger, the rows it passes slide out of its way,
  * and near the top or bottom the queue scrolls along. Let go, the row settles
  * into the gap and `onMove` reports where it went; the list re-rendered in
  * its new order then takes over from the inline offsets. The handle's press
  * never reaches the row's own swipe.
  */
-const followQueueDrags = (
+const followRowDrags = (
   list: HTMLElement,
+  config: RowDragConfig,
   onMove: (entryId: string, maybeBeforeEntryId: Option.Option<string>) => void,
 ) => {
   const maybeWindow = list.ownerDocument.defaultView
@@ -574,7 +596,7 @@ const followQueueDrags = (
     ) {
       return
     }
-    const rows = queueRows(list)
+    const rows = draggableRows(list, config)
     const from = rows.findIndex(row => row.contains(maybeHandle))
     const row = rows[from]
     if (row === undefined) {
@@ -582,7 +604,7 @@ const followQueueDrags = (
     }
     event.preventDefault()
     list.setPointerCapture(event.pointerId)
-    const maybeScroller = list.closest(SCROLL_AREA_SELECTOR)
+    const maybeScroller = list.closest(config.scrollerSelector)
     const scroller = maybeScroller instanceof HTMLElement ? maybeScroller : null
     maybeDrag = {
       pointerId: event.pointerId,
@@ -627,7 +649,7 @@ const followQueueDrags = (
     maybeDrag = undefined
     stopAutoScroll()
     const row = drag.rows[drag.from]
-    const maybeEntryId = row?.dataset['queueEntry']
+    const maybeEntryId = row === undefined ? undefined : config.rowId(row)
     if (
       row === undefined ||
       maybeEntryId === undefined ||
@@ -638,7 +660,7 @@ const followQueueDrags = (
     }
     const entryId = maybeEntryId
     const maybeBeforeEntryId = beforeEntryIdAfterMove(
-      drag.rows.map(each => each.dataset['queueEntry'] ?? ''),
+      drag.rows.map(each => config.rowId(each) ?? ''),
       drag.from,
       drag.to,
     )
@@ -704,7 +726,7 @@ const followQueueDrags = (
     list.removeEventListener('lostpointercapture', handlePointerCancel)
     stopAutoScroll()
     clearTimeout(maybeTimer)
-    clearRows(queueRows(list))
+    clearRows(draggableRows(list, config))
   }
 }
 
@@ -724,14 +746,59 @@ export const FollowQueueDrags = Mount.defineStream('FollowQueueDrags', {
         Effect.sync(() => {
           const stopFollowing =
             element instanceof HTMLElement
-              ? followQueueDrags(element, (entryId, maybeBeforeEntryId) =>
-                  Queue.offerUnsafe(
-                    queue,
-                    Message.DraggedQueueEntry({ entryId, maybeBeforeEntryId }),
-                  ),
+              ? followRowDrags(
+                  element,
+                  QUEUE_DRAG,
+                  (entryId, maybeBeforeEntryId) =>
+                    Queue.offerUnsafe(
+                      queue,
+                      Message.DraggedQueueEntry({
+                        entryId,
+                        maybeBeforeEntryId,
+                      }),
+                    ),
                 )
               : () => {}
           Queue.offerUnsafe(queue, Message.CompletedFollowQueueDrags())
+          return stopFollowing
+        }),
+        stopFollowing => Effect.sync(stopFollowing),
+      ).pipe(Effect.flatMap(() => Effect.never)),
+    ),
+})
+
+type PlaylistDragMessage =
+  | typeof Message.CompletedFollowPlaylistDrags.Type
+  | typeof Message.DraggedPlaylistSong.Type
+
+/**
+ * Reorders the songs of a playlist being edited by their handles, as the
+ * queue's are; see `followRowDrags`. The page scrolls along.
+ */
+export const FollowPlaylistDrags = Mount.defineStream('FollowPlaylistDrags', {
+  args: { playlistId: Schema.String },
+  messages: [Message.CompletedFollowPlaylistDrags, Message.DraggedPlaylistSong],
+  execute: ({ element, playlistId }) =>
+    Stream.callback<PlaylistDragMessage>(queue =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const stopFollowing =
+            element instanceof HTMLElement
+              ? followRowDrags(
+                  element,
+                  PLAYLIST_DRAG,
+                  (videoId, maybeBeforeVideoId) =>
+                    Queue.offerUnsafe(
+                      queue,
+                      Message.DraggedPlaylistSong({
+                        playlistId,
+                        videoId,
+                        maybeBeforeVideoId,
+                      }),
+                    ),
+                )
+              : () => {}
+          Queue.offerUnsafe(queue, Message.CompletedFollowPlaylistDrags())
           return stopFollowing
         }),
         stopFollowing => Effect.sync(stopFollowing),
