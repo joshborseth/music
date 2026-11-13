@@ -8,6 +8,7 @@ import {
   type Model,
   currentPosition,
   initialModel,
+  playerLost,
   update,
 } from './model.ts'
 import {
@@ -103,6 +104,48 @@ describe('saved session', () => {
     expect(resumed.playing).toBe(true)
     expect(resumed.currentEntryId).toBe('e1')
     expect(resumed.positionSeconds).toBe(12)
+  })
+
+  test('a player that played on still takes the session back when its grace ran out during the shutdown', () => {
+    // The phone's socket closes as the server stops, and the server takes
+    // longer than the grace to exit, so it writes the pause for the lost
+    // player.
+    const lost = playerLost(playing(), 'phone', 20_000).model
+    expect(lost.playing).toBe(false)
+    const after = restart(lost, 21_000, 25_000)
+    expect(after.pausedForLostPlayer).toBe(true)
+    const resumed = update(
+      after,
+      {
+        _tag: 'Hello',
+        deviceId: 'phone',
+        name: 'phone',
+        kind: 'Web',
+        player: {
+          entryId: 'e0',
+          positionSeconds: 24,
+          playing: true,
+          seekSeq: after.seekSeq,
+          playingSetHere: false,
+        },
+      },
+      context('phone', 26_000),
+    ).model
+    expect(resumed.playing).toBe(true)
+    expect(resumed.positionSeconds).toBe(24)
+  })
+
+  test('an older file without the field reads the lost-player pause from playing', () => {
+    const { pausedForLostPlayer: _paused, ...older } = toSaved(
+      playerLost(playing(), 'phone', 20_000).model,
+      21_000,
+    )
+    expect(fromSaved(older, 22_000).pausedForLostPlayer).toBe(false)
+    const { pausedForLostPlayer: _alsoPaused, ...olderPlaying } = toSaved(
+      playing(),
+      21_000,
+    )
+    expect(fromSaved(olderPlaying, 22_000).pausedForLostPlayer).toBe(true)
   })
 
   test('a sleep timer still to come survives a restart, and a passed one does not', () => {
