@@ -28,6 +28,7 @@ export const SavedSession = Schema.Struct({
   unshuffled: Schema.optionalKey(Schema.Array(Schema.String)),
   sleepTimer: Schema.optionalKey(Schema.NullOr(Session.SleepTimer)),
   playingFrom: Schema.optionalKey(Schema.NullOr(Session.PlayingFrom)),
+  soundCheck: Schema.optionalKey(Schema.Boolean),
   /**
    * The server paused only because the player went away. A deploy closes
    * every socket and can take longer to stop than `PLAYER_GRACE`, so the
@@ -56,6 +57,7 @@ export const toSaved = (model: Model, now: number): SavedSession => ({
   unshuffled: model.unshuffled,
   sleepTimer: model.sleepTimer,
   playingFrom: model.playingFrom,
+  soundCheck: model.soundCheck,
   pausedForLostPlayer: model.pausedForLostPlayer,
 })
 
@@ -70,7 +72,11 @@ export const fromSaved = (saved: SavedSession, now: number): Model => {
     entry => entry.entryId === saved.currentEntryId,
   )
   if (current === undefined) {
-    return { ...initialModel, autoplay: saved.autoplay }
+    return {
+      ...initialModel,
+      autoplay: saved.autoplay,
+      soundCheck: saved.soundCheck ?? initialModel.soundCheck,
+    }
   }
   const length = current.track.durationSeconds ?? Number.POSITIVE_INFINITY
   return {
@@ -88,6 +94,7 @@ export const fromSaved = (saved: SavedSession, now: number): Model => {
     shuffle: saved.shuffle ?? false,
     unshuffled: saved.unshuffled ?? [],
     playingFrom: saved.playingFrom ?? null,
+    soundCheck: saved.soundCheck ?? initialModel.soundCheck,
     // NOTE: a pause the server made because the player went away, before
     // or during the restart, still yields to a player that played on.
     pausedForLostPlayer: saved.playing || (saved.pausedForLostPlayer ?? false),

@@ -105,6 +105,30 @@ pub struct Lyrics {
     pub lines: Option<Vec<LyricLine>>,
 }
 
+/// Where a song's Sound Check gain comes from. Mirrors `TvLoudnessSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoudnessSource {
+    /// The server measured the song's audio.
+    Measured,
+    /// YouTube's loudness figure, until the server has measured it.
+    YouTube,
+    /// Nothing known yet: the gain is 0.
+    #[serde(other)]
+    Unknown,
+}
+
+/// How to level one song (`GET /tv/loudness`): `gain_db` brings it to the
+/// loudness every song plays at, never past its true peak.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Loudness {
+    pub video_id: String,
+    pub gain_db: f32,
+    pub source: LoudnessSource,
+    pub integrated_lufs: Option<f64>,
+    pub true_peak_dbtp: Option<f64>,
+}
+
 /// What a stretch of a song is, as the server's analysis heard it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SectionKind {
@@ -460,6 +484,20 @@ mod tests {
         assert!(version.build.is_some());
         let none: Version = fixture("version-none.json");
         assert_eq!(none.build, None);
+    }
+
+    #[test]
+    fn decodes_a_loudness() {
+        let measured: Loudness = fixture("loudness.json");
+        assert_eq!(measured.source, LoudnessSource::Measured);
+        assert_eq!(measured.gain_db, -6.2);
+        assert_eq!(measured.integrated_lufs, Some(-7.8));
+        let youtube: Loudness = fixture("loudness-youtube.json");
+        assert_eq!(youtube.source, LoudnessSource::YouTube);
+        assert_eq!(youtube.true_peak_dbtp, None);
+        // A source this app doesn't know yet reads as unknown.
+        let newer: LoudnessSource = serde_json::from_str("\"Guessed\"").unwrap();
+        assert_eq!(newer, LoudnessSource::Unknown);
     }
 
     #[test]

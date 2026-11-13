@@ -288,5 +288,6 @@ pub fn sample_view(tracks: Vec<QueueTrack>, current: usize, here: bool) -> View 
             title: "daft punk".into(),
             id: "daft punk".into(),
         }),
+        sound_check: true,
     }
 }

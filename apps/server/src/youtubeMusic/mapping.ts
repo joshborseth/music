@@ -413,6 +413,27 @@ export const songFromPlaylistPanelVideo = (
     ),
   )
 
+const PlayerLoudness = Schema.Struct({
+  playerConfig: Schema.Struct({
+    audioConfig: Schema.Struct({ perceptualLoudnessDb: Schema.Number }),
+  }),
+})
+const decodePlayerLoudness = Schema.decodeUnknownOption(PlayerLoudness)
+
+/**
+ * YouTube's loudness figure from a raw `/player` response: the song's
+ * integrated loudness in LUFS (`perceptualLoudnessDb`, the same figure as
+ * its `trackAbsoluteLoudnessLkfs`). Only the mobile clients' responses
+ * carry it. On real songs it is within 0.1 LU of ffmpeg's EBU R128 reading.
+ */
+export const perceptualLoudnessOf = (
+  response: unknown,
+): Option.Option<number> =>
+  Option.map(
+    decodePlayerLoudness(response),
+    player => player.playerConfig.audioConfig.perceptualLoudnessDb,
+  )
+
 /** Lyrics from the song's lyrics tab. */
 export const toLyrics = (
   shelf: YTNodes.MusicDescriptionShelf,

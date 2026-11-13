@@ -50,6 +50,7 @@
     "autoplay": true,
     "repeat": "Off",
     "shuffle": false,
+    "soundCheck": true,
     "sleepTimer": { "_tag": "EndOfSong" },
     "playingFrom": null
   }

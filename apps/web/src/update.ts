@@ -2106,6 +2106,16 @@ const updateMessage = (model: Model, message: Message) =>
             enabled: !state.autoplay,
           }),
       }),
+    // NOTE: the sheet stays open, so the switch shows the server's answer.
+    ClickedToggleSoundCheck: () =>
+      Option.match(model.maybeSession, {
+        onNone: () => ({ model }),
+        onSome: ({ state }) =>
+          Playback.sendCommand(model, {
+            _tag: 'SetSoundCheck',
+            enabled: !state.soundCheck,
+          }),
+      }),
     ClickedToggleShuffle: () =>
       Option.match(model.maybeSession, {
         onNone: () => ({ model }),

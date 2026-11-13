@@ -71,6 +71,8 @@ pub struct View {
     pub shuffle: bool,
     /// What the queue was started from, for "Playing from" and Go to.
     pub playing_from: Option<PlayingFrom>,
+    /// Sound Check levels every song to the same loudness.
+    pub sound_check: bool,
 }
 
 impl View {

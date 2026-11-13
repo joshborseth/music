@@ -53,6 +53,8 @@ pub enum UiAction {
     CycleRepeat,
     /// Remove the songs queued after the current one; autoplay's stay.
     ClearUpcoming,
+    /// Turn Sound Check on or off for the whole session.
+    SetSoundCheck(bool),
 }
 
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -187,6 +189,7 @@ impl Controller {
     /// Make the engine match the session.
     fn reconcile(&mut self) {
         let Some(state) = &self.state else { return };
+        self.engine.send(Command::SetSoundCheck(state.sound_check));
         let current = state.current().filter(|_| self.is_active());
         let Some(current) = current else {
             if self.loaded.take().is_some() {
@@ -333,6 +336,10 @@ impl Controller {
                 }
                 return;
             }
+            UiAction::SetSoundCheck(enabled) => {
+                self.send(ClientMessage::SetSoundCheck { enabled });
+                return;
+            }
             _ => {}
         }
         let Some(state) = &self.state else { return };
@@ -456,6 +463,7 @@ impl Controller {
             repeat: state.repeat,
             shuffle: state.shuffle,
             playing_from: state.playing_from.clone(),
+            sound_check: state.sound_check,
         }
     }
 }

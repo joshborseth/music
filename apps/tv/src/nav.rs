@@ -154,6 +154,8 @@ pub enum MenuAction {
     GoTo(PlayingFrom),
     /// Show the code guests scan to add songs, large.
     ShowScanCode,
+    /// Turn Sound Check on (`true`) or off, for the whole session.
+    SetSoundCheck(bool),
     /// Close the menu.
     Close,
     /// Close the menu, declining what it offers.
@@ -197,6 +199,8 @@ impl MenuAction {
                 PlayingFromKind::Search => "Go to search",
             },
             MenuAction::ShowScanCode => "Show code to add songs",
+            MenuAction::SetSoundCheck(true) => "Turn on Sound Check",
+            MenuAction::SetSoundCheck(false) => "Turn off Sound Check",
             MenuAction::Close => "Cancel",
             MenuAction::Decline => "Not now",
         }
@@ -230,6 +234,7 @@ impl MenuAction {
                 | PlayingFromKind::Radio => "open",
             },
             MenuAction::ShowScanCode => "qr",
+            MenuAction::SetSoundCheck(_) => "now",
             MenuAction::Close | MenuAction::Decline => "close",
         }
     }
@@ -1359,16 +1364,22 @@ impl Nav {
 
     /// The settings menu: `about` is the version and how updates stand.
     /// With an update `ready`, it offers to install it instead of checking.
+    /// Sound Check belongs to the session, so it shows once the TV is in it.
     pub fn show_settings(&mut self, about: String, ready: bool) {
         let update = if ready {
             MenuAction::InstallUpdate
         } else {
             MenuAction::CheckForUpdates
         };
+        let mut items = vec![update, MenuAction::ShowScanCode];
+        if self.session.connected {
+            items.push(MenuAction::SetSoundCheck(!self.session.sound_check));
+        }
+        items.push(MenuAction::Close);
         self.menu = Some(Menu {
             title: "Joshify".into(),
             subtitle: about,
-            items: vec![update, MenuAction::ShowScanCode, MenuAction::Close],
+            items,
             selected: 0,
         });
     }
@@ -2361,6 +2372,17 @@ impl Nav {
             MenuAction::InstallUpdate => effects.push(Effect::InstallUpdate),
             MenuAction::GoTo(from) => self.go_to(from, effects),
             MenuAction::ShowScanCode => self.scan_card = true,
+            MenuAction::SetSoundCheck(enabled) => {
+                effects.push(Effect::Session(UiAction::SetSoundCheck(enabled)));
+                self.say(
+                    if enabled {
+                        "Sound Check is on: every song plays at the same volume"
+                    } else {
+                        "Sound Check is off"
+                    },
+                    now,
+                );
+            }
             MenuAction::Close | MenuAction::Decline => {}
         }
     }
@@ -3142,6 +3164,34 @@ mod tests {
         next.current = Some(1);
         nav.on_session(next);
         assert!(nav.scan_code_shown(Instant::now()));
+    }
+
+    #[test]
+    fn the_settings_menu_switches_sound_check_for_the_session() {
+        let mut nav = Nav::new();
+        nav.on_session(View {
+            sound_check: true,
+            ..playing_view()
+        });
+        nav.show_settings("Version f3a82b03 (12 Nov 2026)".into(), false);
+        let items = &nav.menu.as_ref().unwrap().items;
+        assert_eq!(items[2], MenuAction::SetSoundCheck(false));
+        assert_eq!(items[2].label(), "Turn off Sound Check");
+        assert_eq!(
+            press(&mut nav, &[Key::Down, Key::Down, Key::Ok]),
+            vec![Effect::Session(UiAction::SetSoundCheck(false))]
+        );
+        assert!(nav.menu.is_none());
+        // Off, it offers to turn it back on.
+        nav.on_session(View {
+            sound_check: false,
+            ..playing_view()
+        });
+        nav.show_settings(String::new(), false);
+        assert_eq!(
+            nav.menu.as_ref().unwrap().items[2],
+            MenuAction::SetSoundCheck(true)
+        );
     }
 
     #[test]

@@ -814,6 +814,26 @@ describe('repeat and shuffle', () => {
     expect(failed.currentEntryId).toBe('e1')
   })
 
+  test('Sound Check is on until someone turns it off, and only then says so', () => {
+    expect(playing().soundCheck).toBe(true)
+    expect(toSessionState(playing(), []).soundCheck).toBe(true)
+    const off = update(
+      playing(),
+      { _tag: 'SetSoundCheck', enabled: false },
+      makeContext('tv', 2_000),
+    )
+    expect(off.broadcast).toBe(true)
+    expect(off.model.soundCheck).toBe(false)
+    // The music plays on as it was.
+    expect(off.model.seekSeq).toBe(playing().seekSeq)
+    const again = update(
+      off.model,
+      { _tag: 'SetSoundCheck', enabled: false },
+      makeContext('phone', 3_000),
+    )
+    expect(again.broadcast).toBe(false)
+  })
+
   test('a repeating queue never asks autoplay for more', () => {
     const last = atLast()
     expect(Option.isSome(lookahead(last).maybeAutoplayAfter)).toBe(true)
@@ -1519,6 +1539,7 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-set-autoplay.json',
     'client-set-repeat.json',
     'client-set-shuffle.json',
+    'client-set-sound-check.json',
     'client-set-sleep-timer.json',
     'client-set-sleep-timer-end-of-song.json',
     'client-cancel-sleep-timer.json',

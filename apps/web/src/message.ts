@@ -331,6 +331,8 @@ export const Message = defineMessageUnion({
   SelectedSleepTimer: { timer: Schema.NullOr(Session.SleepTimerChoice) },
   ClickedQueueEntry: { entryId: Schema.String },
   ClickedToggleAutoplay: {},
+  /** Sound Check's switch in the player's ⋯: levels songs on the TV. */
+  ClickedToggleSoundCheck: {},
   ClickedToggleShuffle: {},
   /** "Clear" over Playing next: the songs someone queued go. */
   ClickedClearUpcoming: {},

@@ -12,6 +12,7 @@ import {
   type YouTubeMusicError,
 } from '@music/shared'
 
+import { gainFromYouTube, measuredLoudness } from '../analysis/loudness.ts'
 import { type AnalysisError, SongAnalysis } from '../analysis/service.ts'
 import { VIDEO_ID } from '../audio.ts'
 import { homeFeed } from '../home.ts'
@@ -53,6 +54,12 @@ import {
  */
 const HOME_DISCOVERY_WAIT = Duration.seconds(4)
 
+/**
+ * How long Sound Check waits for YouTube's loudness figure for a song the
+ * server hasn't measured, before answering that it knows none.
+ */
+const YOUTUBE_LOUDNESS_WAIT = Duration.seconds(3)
+
 /** How long a like waits for the song's full details before using the queue's copy. */
 const LIKE_LOOKUP_TIMEOUT = Duration.seconds(3)
 
@@ -73,6 +80,10 @@ const VideoParams = Schema.Struct({ videoId: NonBlank })
 const SavedParams = Schema.Struct({ kind: Tv.TvSaveKind, id: NonBlank })
 const SongParams = Schema.Struct({
   videoId: Schema.String.check(Schema.isPattern(VIDEO_ID)),
+})
+const LoudnessParams = Schema.Struct({
+  ...SongParams.fields,
+  wait: Schema.optionalKey(Schema.Literals(['true', 'false'])),
 })
 
 // ERRORS
@@ -316,6 +327,57 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
       )
     })
 
+    /**
+     * The song's Sound Check gain: measured, or else YouTube's figure, or
+     * else none, without waiting long. With `wait=true`, the measured one,
+     * waiting for the song to download and be measured.
+     */
+    const loudness = Effect.gen(function* () {
+      const { videoId: id, wait } = yield* HttpServerRequest.schemaSearchParams(
+        LoudnessParams,
+      ).pipe(Effect.mapError(badRequest('Needs a valid videoId')))
+      if (wait === 'true') {
+        return yield* songAnalysis.loudness(id).pipe(
+          Effect.map(measured => measuredLoudness(id, measured)),
+          Effect.tapError(error =>
+            Effect.logWarning('Measuring a song failed', id, error.message),
+          ),
+          Effect.mapError(analysisRouteError),
+        )
+      }
+      const known = yield* songAnalysis.knownLoudness(id)
+      if (Option.isSome(known)) return measuredLoudness(id, known.value)
+      yield* songAnalysis.warm(id)
+      const maybeYouTubeLufs = yield* youTubeMusic.getLoudnessLufs(id).pipe(
+        Effect.timeoutOption(YOUTUBE_LOUDNESS_WAIT),
+        Effect.map(Option.flatten),
+        Effect.tapError(error =>
+          Effect.logWarning(
+            "YouTube's loudness figure failed",
+            id,
+            error.message,
+          ),
+        ),
+        Effect.orElseSucceed(() => Option.none<number>()),
+      )
+      return Option.match(maybeYouTubeLufs, {
+        onNone: (): Tv.TvLoudness => ({
+          videoId: id,
+          gainDb: 0,
+          source: 'Unknown',
+          integratedLufs: null,
+          truePeakDbtp: null,
+        }),
+        onSome: (youTubeLufs): Tv.TvLoudness => ({
+          videoId: id,
+          gainDb: gainFromYouTube(youTubeLufs),
+          source: 'YouTube',
+          integratedLufs: Math.round(youTubeLufs * 10) / 10,
+          truePeakDbtp: null,
+        }),
+      })
+    })
+
     const liked = Effect.gen(function* () {
       const id = yield* videoId
       return yield* playlistStore.library().pipe(
@@ -445,6 +507,7 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
     )
     yield* router.add('GET', '/tv/lyrics', respond(Tv.TvLyrics, lyrics))
     yield* router.add('GET', '/tv/analysis', respond(Tv.TvAnalysis, analysis))
+    yield* router.add('GET', '/tv/loudness', respond(Tv.TvLoudness, loudness))
     yield* router.add('GET', '/tv/liked', respond(Tv.TvLiked, liked))
     yield* router.add('POST', '/tv/like', respond(Tv.TvLiked, like))
     yield* router.add('GET', '/tv/saved', respond(Tv.TvSaved, saved))
