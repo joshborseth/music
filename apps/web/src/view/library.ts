@@ -169,13 +169,13 @@ const recentlyViewedSection = (
             [
               h.h2(
                 [h.Class('text-[22px] leading-tight font-bold tracking-tight')],
-                ['Recently viewed'],
+                ['Recently Viewed'],
               ),
               h.button(
                 [
                   h.Type('button'),
                   h.OnClick(Message.ClickedClearRecentlyViewed()),
-                  h.AriaLabel('Clear recently viewed'),
+                  h.AriaLabel('Clear Recently Viewed'),
                   h.Class('text-primary text-[17px] active:opacity-50'),
                 ],
                 ['Clear'],

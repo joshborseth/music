@@ -236,7 +236,7 @@ const likedSongsShelf = (model: PageModel, h: HtmlBuilder<Message>): Html =>
       onSome: ({ songs }) =>
         songGridShelf(
           {
-            title: 'Liked songs',
+            title: 'Liked Songs',
             songs: Array.take(songs, LIKED_SONGS_ON_HOME),
             playing: model.playing,
           },

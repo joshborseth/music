@@ -811,12 +811,12 @@ const queuePanel = (
               h.div(
                 [h.Class('flex items-center justify-between pt-4 pb-2')],
                 [
-                  h.h3([h.Class('text-[17px] font-bold')], ['Playing next']),
+                  h.h3([h.Class('text-[17px] font-bold')], ['Playing Next']),
                   h.button(
                     [
                       h.Type('button'),
                       h.OnClick(Message.ClickedClearUpcoming()),
-                      h.AriaLabel('Clear Playing next'),
+                      h.AriaLabel('Clear Playing Next'),
                       h.Class(
                         '-my-2 -mr-2 h-10 rounded-full px-3 text-[15px] font-semibold text-white/80 active:bg-white/10',
                       ),
@@ -900,7 +900,7 @@ const queueList = (
         [
           h.DataAttribute('queue-entry', entry.entryId),
           h.Class(
-            'rounded-lg data-dragging:relative data-dragging:z-10 data-dragging:bg-(--queue-lift) data-dragging:ring-1 data-dragging:ring-white/15',
+            'rounded-lg data-dragging:relative data-dragging:z-10 data-dragging:bg-(--queue-lift) data-dragging:shadow-[0_12px_28px_-10px_rgb(0_0_0/0.7)] data-dragging:ring-1 data-dragging:ring-white/15',
           ),
         ],
         [
@@ -1053,7 +1053,7 @@ const sleepTimerButton = (
         [
           h.Type('button'),
           h.OnClick(Message.ClickedSleepTimer()),
-          h.AriaLabel('Sleep timer'),
+          h.AriaLabel('Sleep Timer'),
           h.Class(
             'flex size-10 items-center justify-center rounded-full text-white/80 active:bg-white/10',
           ),
@@ -1069,7 +1069,7 @@ const sleepTimerButton = (
         [
           h.Type('button'),
           h.OnClick(Message.ClickedSleepTimer()),
-          h.AriaLabel(`Sleep timer: ${text}`),
+          h.AriaLabel(`Sleep Timer: ${text}`),
           h.Class(
             'flex h-8 items-center gap-1.5 rounded-full bg-white/15 px-3 text-[13px] font-semibold text-white tabular-nums active:bg-white/25',
           ),
@@ -1101,7 +1101,9 @@ const backdropColor = (model: Model, track: Session.QueueTrack): string =>
 /**
  * The cover itself, blurred over the whole player and darkened toward the
  * bottom so the controls read, on the solid `color`. The one blur and fade
- * the app keeps. The top starts as `color` itself and fades into the cover,
+ * the app keeps. The blurred cover is dimmed before it is laid down, so even
+ * a white cover leaves a dark grey under the white controls: `color` itself
+ * is never lighter than oklch 0.36 (`apps/server/src/palette/extract.ts`). The top starts as `color` itself and fades into the cover,
  * because iOS fills the status bar above the player with that one solid
  * color (see `statusBarColor`), and a blurred image under it would show a
  * seam.
@@ -1126,13 +1128,13 @@ const playerBackdrop = (
             h.Alt(''),
             h.Referrerpolicy('no-referrer'),
             h.Class(
-              'absolute inset-0 size-full scale-[1.6] object-cover opacity-90 blur-[72px] saturate-[1.8]',
+              'absolute inset-0 size-full scale-[1.6] object-cover opacity-90 blur-[72px] brightness-[0.58] saturate-[1.8]',
             ),
           ]),
       }),
       h.div([
         h.Class(
-          'absolute inset-0 bg-gradient-to-b from-black/25 via-black/40 to-black/70',
+          'absolute inset-0 bg-gradient-to-b from-black/20 via-black/40 to-black/70',
         ),
       ]),
       h.div([

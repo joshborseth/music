@@ -167,7 +167,7 @@ describe('TV catalog routes', () => {
             {
               kind: 'MyPlaylist',
               id: 'liked',
-              title: 'Liked songs',
+              title: 'Liked Songs',
               subtitle: 'Playlist · 0 songs',
               artworkUrl: null,
               track: null,

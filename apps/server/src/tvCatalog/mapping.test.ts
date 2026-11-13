@@ -69,7 +69,7 @@ const myPlaylist = (
   overrides: Partial<MyPlaylistSummary> = {},
 ): MyPlaylistSummary => ({
   id: 'liked',
-  title: 'Liked songs',
+  title: 'Liked Songs',
   isLiked: true,
   songCount: 12,
   totalSeconds: 3900,
@@ -193,7 +193,7 @@ describe('shelves', () => {
     const { shelves } = homeShelves(library, liked, [])
     // Two playlists leave most of their row empty, so they go second.
     expect(shelves.map(({ title }) => title)).toEqual([
-      'Liked songs',
+      'Liked Songs',
       'Your playlists',
     ])
     expect(shelves[0]?.cards).toHaveLength(HOME_LIKED_SONGS)
@@ -214,7 +214,7 @@ describe('shelves', () => {
       'Jump back in',
       'Recently played',
       'Your playlists',
-      'Liked songs',
+      'Liked Songs',
     ])
     expect(shelves[0]?.cards).toEqual([
       {
@@ -271,7 +271,7 @@ describe('shelves', () => {
       'Jump back in',
       'Recently played',
       'Your playlists',
-      'Liked songs',
+      'Liked Songs',
     ])
     expect(shelves[0]?.cards).toHaveLength(HOME_PLAYLIST_SONGS)
     expect(shelves[0]?.cards[0]).toMatchObject({ kind: 'Song', id: 'p0' })

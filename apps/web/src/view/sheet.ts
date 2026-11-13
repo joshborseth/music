@@ -230,33 +230,33 @@ const songActionsFor = (
           actionButton(
             Message.ClickedEnqueueSongs({ songs: [song], placement: 'Next' }),
             ListStart,
-            'Play next',
+            'Play Next',
             h,
           ),
           actionButton(
             Message.ClickedEnqueueSongs({ songs: [song], placement: 'Last' }),
             ListEnd,
-            'Add to queue',
+            'Add to Queue',
             h,
           ),
           actionButton(
             Message.ClickedStartRadio({ song }),
             Radio,
-            'Start radio',
+            'Start Radio',
             h,
           ),
           ...playlistActions,
           Option.match(song.maybeAlbum, {
             onNone: () => h.empty,
             onSome: album =>
-              actionLink(albumHref(album.id), Disc3, 'Go to album', h),
+              actionLink(albumHref(album.id), Disc3, 'Go to Album', h),
           }),
           Option.match(firstArtistId(song.artists), {
             onNone: () => h.empty,
             onSome: artistId =>
-              actionLink(artistHref(artistId), MicVocal, 'Go to artist', h),
+              actionLink(artistHref(artistId), MicVocal, 'Go to Artist', h),
           }),
-          actionLink(songHref(song.videoId), FileText, 'Lyrics and details', h),
+          actionLink(songHref(song.videoId), FileText, 'Lyrics and Details', h),
         ],
       ),
     ],
@@ -307,7 +307,7 @@ const wakeButton = (
     ],
     [
       icon(h, status === 'Off' ? Power : SquareArrowUpRightExit, 'size-3.5'),
-      status === 'Off' ? 'Turn on' : 'Open',
+      status === 'Off' ? 'Turn On' : 'Open',
     ],
   )
 }
@@ -865,14 +865,14 @@ const sheetLabel = (content: SheetContent): string =>
   SheetContent.match(content, {
     SongActions: ({ song }) => song.title,
     Devices: () => 'Play on',
-    SleepTimer: () => 'Sleep timer',
-    AddToPlaylist: () => 'Add to a playlist',
-    NewPlaylist: () => 'New playlist',
+    SleepTimer: () => 'Sleep Timer',
+    AddToPlaylist: () => 'Add to a Playlist',
+    NewPlaylist: () => 'New Playlist',
     PlaylistActions: ({ title }) => title,
-    RenamePlaylist: () => 'Rename playlist',
-    ConfirmDeletePlaylist: () => 'Delete playlist',
-    ConfirmClearRecentlyViewed: () => 'Clear recently viewed',
-    ConfirmRemoveDownload: () => 'Remove download',
+    RenamePlaylist: () => 'Rename Playlist',
+    ConfirmDeletePlaylist: () => 'Delete Playlist',
+    ConfirmClearRecentlyViewed: () => 'Clear Recently Viewed',
+    ConfirmRemoveDownload: () => 'Remove Download',
   })
 
 const sheetFrame = (

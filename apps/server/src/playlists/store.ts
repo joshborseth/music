@@ -31,7 +31,7 @@ import {
   Song,
 } from '@music/shared'
 
-const LIKED_TITLE = 'Liked songs'
+const LIKED_TITLE = 'Liked Songs'
 const UNTITLED = 'Untitled playlist'
 
 /** How many covers the mosaic shows, and how far down to look for them. */
@@ -86,6 +86,9 @@ const MIGRATIONS: ReadonlyArray<string> = [
     artist TEXT NOT NULL,
     followed_at INTEGER NOT NULL
   ) STRICT;
+  `,
+  `
+  UPDATE playlists SET title = 'Liked Songs' WHERE id = 'liked';
   `,
 ]
 

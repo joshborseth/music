@@ -23,7 +23,12 @@ export const RestoreScroll = Mount.define('RestoreScroll', {
   messages: [Message.CompletedRestoreScroll],
   execute: ({ element, top }) =>
     Effect.sync(() => {
-      element.scrollTo({ top, behavior: 'instant' })
+      // NOTE: the page is new, so it already sits at the top. Scrolling it
+      // there anyway would make the browser lay out the whole app at once,
+      // mid-render, which on a cold start is the costliest part of booting.
+      if (top > 0) {
+        element.scrollTo({ top, behavior: 'instant' })
+      }
       return Message.CompletedRestoreScroll()
     }),
 })
@@ -70,7 +75,9 @@ export const SyncTitleBarReveal = Mount.defineStream('SyncTitleBarReveal', {
             maybeBar.style.setProperty('--reveal-end', `${revealEnd}px`)
           }
 
-          placeReveal()
+          // NOTE: no first measure here: a ResizeObserver reports every
+          // element it starts watching once the page is laid out, before it
+          // is painted, so measuring now would only force an early layout.
           const observer = new ResizeObserver(placeReveal)
           observer.observe(element)
           maybeWindow?.addEventListener('resize', placeReveal)
@@ -135,7 +142,8 @@ export const Marquee = Mount.defineStream('Marquee', {
             }
           }
 
-          measure()
+          // NOTE: the observer's first report, after layout and before
+          // paint, is the first measure; see `SyncTitleBarReveal`.
           const observer = new ResizeObserver(measure)
           observer.observe(element)
           if (maybeText instanceof HTMLElement) {
@@ -378,6 +386,12 @@ const ROW_SETTLE_MS = 160
 
 const ROW_EASING = 'cubic-bezier(0.2, 0, 0, 1)'
 
+/** How long a row takes to lift off the list when its handle is pressed. */
+const ROW_LIFT_MS = 150
+
+/** How much bigger a lifted row is, so it reads as floating over the rows it passes. */
+const ROW_LIFT_SCALE = '1.03'
+
 /** A row dragged this close to the scroll area's top or bottom scrolls it. */
 const AUTO_SCROLL_EDGE_PX = 64
 
@@ -438,6 +452,9 @@ const followQueueDrags = (
   const makeWay = prefersLessMotion
     ? 'none'
     : `transform ${ROW_MAKE_WAY_MS}ms ${ROW_EASING}`
+  const lift = prefersLessMotion
+    ? 'none'
+    : `scale ${ROW_LIFT_MS}ms ${ROW_EASING}`
   let maybeDrag: QueueDrag | undefined
   let settlingRows: ReadonlyArray<HTMLElement> = []
   let maybeFrame: number | undefined
@@ -447,6 +464,7 @@ const followQueueDrags = (
     rows.forEach(row => {
       row.style.transition = ''
       row.style.transform = ''
+      row.style.scale = ''
       row.removeAttribute('data-dragging')
     })
 
@@ -464,6 +482,7 @@ const followQueueDrags = (
     rows.forEach(row => {
       row.style.transition = makeWay
       row.style.transform = ''
+      row.style.scale = ''
     })
     settlingRows = rows
     maybeTimer = setTimeout(() => {
@@ -579,9 +598,12 @@ const followQueueDrags = (
       clientY: event.clientY,
       to: from,
     }
+    // NOTE: the lifted row follows the finger with no transition on its
+    // transform; only its growth, a separate `scale`, eases in.
     rows.forEach(each => {
-      each.style.transition = each === row ? 'none' : makeWay
+      each.style.transition = each === row ? lift : makeWay
     })
+    row.style.scale = ROW_LIFT_SCALE
     row.setAttribute('data-dragging', '')
   }
 
@@ -622,10 +644,11 @@ const followQueueDrags = (
     )
     row.style.transition = prefersLessMotion
       ? 'none'
-      : `transform ${ROW_SETTLE_MS}ms ${ROW_EASING}`
+      : `transform ${ROW_SETTLE_MS}ms ${ROW_EASING}, scale ${ROW_SETTLE_MS}ms ${ROW_EASING}`
     row.style.transform = translateY(
       settleOffset(drag.slots, drag.from, drag.to),
     )
+    row.style.scale = ''
     settlingRows = drag.rows
     maybeTimer = setTimeout(
       () => {
