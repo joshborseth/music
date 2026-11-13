@@ -18,8 +18,8 @@ export type PageModel = Readonly<
     | 'searchInput'
     | 'maybeEarlierSearch'
     | 'recentSearches'
-    | 'recentlyPlayed'
     | 'recentlyViewed'
+    | 'libraryFilter'
     | 'songSearch'
     | 'artistSearch'
     | 'albumSearch'
@@ -33,6 +33,8 @@ export type PageModel = Readonly<
     | 'playlists'
     | 'myLibrary'
     | 'myPlaylists'
+    | 'home'
+    | 'songRadios'
     | 'swipe'
   > & { playing: NowPlaying; playOn: PlayOn }
 >
@@ -63,8 +65,8 @@ const renderPage = (
   searchInput: string,
   maybeEarlierSearch: Model['maybeEarlierSearch'],
   recentSearches: Model['recentSearches'],
-  recentlyPlayed: Model['recentlyPlayed'],
   recentlyViewed: Model['recentlyViewed'],
+  libraryFilter: Model['libraryFilter'],
   songSearch: Model['songSearch'],
   artistSearch: Model['artistSearch'],
   albumSearch: Model['albumSearch'],
@@ -78,6 +80,8 @@ const renderPage = (
   playlists: Model['playlists'],
   myLibrary: Model['myLibrary'],
   myPlaylists: Model['myPlaylists'],
+  home: Model['home'],
+  songRadios: Model['songRadios'],
   swipe: Model['swipe'],
   currentVideoId: string,
   isPlaying: boolean,
@@ -91,8 +95,8 @@ const renderPage = (
       searchInput,
       maybeEarlierSearch,
       recentSearches,
-      recentlyPlayed,
       recentlyViewed,
+      libraryFilter,
       songSearch,
       artistSearch,
       albumSearch,
@@ -106,6 +110,8 @@ const renderPage = (
       playlists,
       myLibrary,
       myPlaylists,
+      home,
+      songRadios,
       swipe,
       playing: {
         maybeVideoId: Option.liftPredicate(currentVideoId, id => id !== ''),
@@ -137,8 +143,8 @@ export const memoizedPage = (
     model.searchInput,
     model.maybeEarlierSearch,
     model.recentSearches,
-    model.recentlyPlayed,
     model.recentlyViewed,
+    model.libraryFilter,
     model.songSearch,
     model.artistSearch,
     model.albumSearch,
@@ -152,6 +158,8 @@ export const memoizedPage = (
     model.playlists,
     model.myLibrary,
     model.myPlaylists,
+    model.home,
+    model.songRadios,
     rowSwipe(model.swipe),
     Option.getOrElse(playing.maybeVideoId, () => ''),
     playing.isPlaying,

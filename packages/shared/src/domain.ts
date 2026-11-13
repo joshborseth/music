@@ -223,11 +223,18 @@ export const MyPlaylistSummary = Schema.Struct({
 })
 export type MyPlaylistSummary = typeof MyPlaylistSummary.Type
 
-/** Every playlist made in this app, and which songs are liked. */
+/**
+ * Everything kept in my library: the playlists made in this app, which songs
+ * are liked, and the albums saved and artists followed.
+ */
 export const MyLibrary = Schema.Struct({
   /** Liked songs first, then the most recently changed. */
   playlists: Schema.Array(MyPlaylistSummary),
   likedVideoIds: Schema.Array(Schema.String),
+  /** The albums saved to the library, the latest saved first. */
+  albums: Schema.Array(AlbumSummary),
+  /** The artists followed, the latest followed first. */
+  artists: Schema.Array(ArtistSummary),
 })
 export type MyLibrary = typeof MyLibrary.Type
 
@@ -238,7 +245,10 @@ export const MyPlaylistDetails = Schema.Struct({
 })
 export type MyPlaylistDetails = typeof MyPlaylistDetails.Type
 
-/** A change to my playlists. */
+/**
+ * A change to my library: my playlists, Liked songs, saved albums, and
+ * followed artists.
+ */
 export const PlaylistEdit = Schema.Union([
   /** A new playlist, empty or holding a copy of `songs`. */
   Schema.TaggedStruct('Create', {
@@ -261,16 +271,40 @@ export const PlaylistEdit = Schema.Union([
   }),
   /** Likes a song, putting it first in Liked songs, or unlikes it. */
   Schema.TaggedStruct('SetLiked', { song: Song, isLiked: Schema.Boolean }),
+  /** Saves an album to the library, putting it first, or removes it. */
+  Schema.TaggedStruct('SetAlbumSaved', {
+    album: AlbumSummary,
+    isSaved: Schema.Boolean,
+  }),
+  /** Follows an artist, putting them first, or unfollows them. */
+  Schema.TaggedStruct('SetArtistFollowed', {
+    artist: ArtistSummary,
+    isFollowed: Schema.Boolean,
+  }),
 ])
 export type PlaylistEdit = typeof PlaylistEdit.Type
 
-/** My playlists after an edit, and the playlist it changed. */
+/** My library after an edit, and the playlist it changed. */
 export const PlaylistEditResult = Schema.Struct({
   library: MyLibrary,
-  /** The changed playlist as it now stands. None after a delete. */
+  /**
+   * The changed playlist as it now stands. None after a delete, and after
+   * saving an album or following an artist.
+   */
   maybePlaylist: Schema.Option(MyPlaylistDetails),
 })
 export type PlaylistEditResult = typeof PlaylistEditResult.Type
+
+// HOME
+
+/** What Home shows from the play history, which every device adds to. */
+export const HomeFeed = Schema.Struct({
+  /** The albums of the songs played lately, the latest first, each once. */
+  jumpBackIn: Schema.Array(AlbumSummary),
+  /** The songs played lately on any device, the latest first, each once. */
+  recentlyPlayed: Schema.Array(Song),
+})
+export type HomeFeed = typeof HomeFeed.Type
 
 // ERRORS
 

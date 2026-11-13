@@ -2,11 +2,15 @@ import { Array, Effect } from 'effect'
 
 import { MusicRpcs, type Song } from '@music/shared'
 
+import { HOME_HISTORY_DEPTH, homeFeed } from './home.ts'
 import { TimedLyrics } from './lyrics/service.ts'
 import { ArtworkPalette } from './palette/service.ts'
 import { PlaylistStore } from './playlists/store.ts'
 import { Prefetcher, pageJobs } from './prefetch.ts'
 import { YouTubeMusic } from './youtubeMusic/service.ts'
+
+/** The most songs Home's "More like" shelf shows. */
+const RADIO_SONGS = 20
 
 /**
  * Answers each MusicRpcs call from the YouTube Music catalog or the playlist
@@ -71,6 +75,14 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
           .playlist(playlistId)
           .pipe(Effect.tap(details => prepare(details.songs, 2, 3))),
       editPlaylists: ({ edit }) => playlistStore.edit(edit),
+      getHome: () =>
+        playlistStore
+          .recentlyPlayed(HOME_HISTORY_DEPTH)
+          .pipe(Effect.map(homeFeed)),
+      getSongRadio: ({ videoId }) =>
+        youTubeMusic
+          .getUpNext(videoId)
+          .pipe(Effect.map(songs => Array.take(songs, RADIO_SONGS))),
       getArtworkBackdrop: ({ artworkUrl }) =>
         artworkPalette.backdropFor(artworkUrl),
     }

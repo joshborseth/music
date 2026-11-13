@@ -7,6 +7,7 @@ import {
   AlbumSummary,
   ArtistDetails,
   ArtistSummary,
+  HomeFeed,
   MoodDetails,
   MoodGroup,
   type MusicNotFoundError,
@@ -190,6 +191,26 @@ export const myPlaylistQuery = Query.define({
   error: RequestError,
   execute: ({ playlistId }) =>
     MusicClient.use(client => client.getMyPlaylist({ playlistId })).pipe(
+      withRequestError,
+    ),
+})
+
+/** What played lately on any device, for Home. */
+export const homeQuery = Query.define({
+  name: 'Home',
+  data: HomeFeed,
+  error: RequestError,
+  execute: MusicClient.use(client => client.getHome()).pipe(withRequestError),
+})
+
+/** YouTube Music's radio for a song: what it would play after it. */
+export const songRadioQuery = Query.define({
+  name: 'SongRadio',
+  args: { videoId: Schema.String },
+  data: Schema.Array(Song),
+  error: RequestError,
+  execute: ({ videoId }) =>
+    MusicClient.use(client => client.getSongRadio({ videoId })).pipe(
       withRequestError,
     ),
 })

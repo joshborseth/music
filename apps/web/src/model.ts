@@ -1,8 +1,6 @@
 import { Schema } from 'effect'
 
-import { Session } from '@music/shared'
-
-import { LibraryItem } from './library'
+import { LibraryFilter, LibraryItem } from './library'
 import { NavigationModel } from './navigation'
 import {
   Connection,
@@ -20,6 +18,7 @@ import {
   artistQuery,
   artistSearchQuery,
   artworkBackdropQuery,
+  homeQuery,
   moodGroupsQuery,
   moodQuery,
   myLibraryQuery,
@@ -27,6 +26,7 @@ import {
   playlistQuery,
   playlistSearchQuery,
   songQuery,
+  songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
 } from './query'
@@ -43,8 +43,9 @@ export const Model = Schema.Struct({
    */
   maybeEarlierSearch: Schema.Option(Schema.String),
   recentSearches: Schema.Array(Schema.String),
-  recentlyPlayed: Schema.Array(Session.QueueTrack),
+  /** Albums, artists, and playlists opened on this device, newest first. */
   recentlyViewed: Schema.Array(LibraryItem),
+  libraryFilter: LibraryFilter,
   songSearch: songSearchQuery.Model,
   artistSearch: artistSearchQuery.Model,
   albumSearch: albumSearchQuery.Model,
@@ -58,6 +59,9 @@ export const Model = Schema.Struct({
   playlists: playlistQuery.Model,
   myLibrary: myLibraryQuery.Model,
   myPlaylists: myPlaylistQuery.Model,
+  /** What played lately on any device, from the server's history. */
+  home: homeQuery.Model,
+  songRadios: songRadioQuery.Model,
   /** The full player's background color for each song's artwork. */
   artworkBackdrops: artworkBackdropQuery.Model,
   /** The name being typed for a new or renamed playlist. */

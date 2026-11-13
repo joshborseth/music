@@ -5,6 +5,8 @@ import { modifyFields } from 'foldkit/struct'
 import { describe, expect, test } from 'vitest'
 
 import {
+  type AlbumSummary,
+  type ArtistSummary,
   LIKED_PLAYLIST_ID,
   type MyLibrary,
   type MyPlaylistDetails,
@@ -61,7 +63,12 @@ const roadTrip = summary('road-trip', 'Road trip', 1)
 const libraryOf = (
   playlists: ReadonlyArray<MyPlaylistSummary>,
   likedIds: ReadonlyArray<string> = [],
-): MyLibrary => ({ playlists, likedVideoIds: likedIds })
+): MyLibrary => ({
+  playlists,
+  likedVideoIds: likedIds,
+  albums: [],
+  artists: [],
+})
 
 const withLibrary = (base: Model, library: MyLibrary): Model =>
   modifyFields(base, {
@@ -372,6 +379,178 @@ describe('making a playlist', () => {
           edit: { _tag: 'Delete', playlistId: roadTrip.id },
           result: Result.succeed({
             library: libraryOf([liked]),
+            maybePlaylist: Option.none(),
+          }),
+        }),
+      ),
+    )
+  })
+})
+
+const rumours: AlbumSummary = {
+  id: 'MPREb_1SbgcDGdrT4',
+  title: 'Rumours',
+  artists: [{ maybeId: Option.some('UCfleetwood'), name: 'Fleetwood Mac' }],
+  maybeKind: Option.some('Album'),
+  maybeYear: Option.some('1977'),
+  artwork: [],
+}
+
+const fleetwoodMac: ArtistSummary = {
+  id: 'UCfleetwood',
+  name: 'Fleetwood Mac',
+  maybeAudience: Option.none(),
+  artwork: [],
+}
+
+const savedAlbumIds = (current: Model): Option.Option<ReadonlyArray<string>> =>
+  Option.map(
+    AsyncData.getData(myLibraryQuery.read(current.myLibrary)),
+    ({ albums }) => albums.map(({ id }) => id),
+  )
+
+const followedArtistIds = (
+  current: Model,
+): Option.Option<ReadonlyArray<string>> =>
+  Option.map(
+    AsyncData.getData(myLibraryQuery.read(current.myLibrary)),
+    ({ artists }) => artists.map(({ id }) => id),
+  )
+
+describe('saving an album', () => {
+  test('shows it saved at once, and says where it went once the server has it', () => {
+    const edit = {
+      _tag: 'SetAlbumSaved' as const,
+      album: rumours,
+      isSaved: true,
+    }
+    story(
+      update,
+      given(libraryModel),
+      message(Message.ClickedToggleAlbumSaved({ album: rumours })),
+      model(current => {
+        expect(savedAlbumIds(current)).toStrictEqual(Option.some([rumours.id]))
+      }),
+      Command.expectExact(EditPlaylists({ edit })),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit,
+          result: Result.succeed({
+            library: { ...libraryOf([liked, roadTrip]), albums: [rumours] },
+            maybePlaylist: Option.none(),
+          }),
+        }),
+      ),
+      model(current => {
+        expect(current.maybeNotice).toStrictEqual(
+          Option.some('Saved to your Library'),
+        )
+      }),
+      Command.expectExact(
+        WaitBeforeHideNotice({ message: 'Saved to your Library' }),
+      ),
+      Command.resolve(
+        WaitBeforeHideNotice,
+        Message.CompletedWaitBeforeHideNotice({
+          message: 'Saved to your Library',
+        }),
+      ),
+    )
+  })
+
+  test('tapping it again removes the album', () => {
+    const edit = {
+      _tag: 'SetAlbumSaved' as const,
+      album: rumours,
+      isSaved: false,
+    }
+    story(
+      update,
+      given(
+        withLibrary(libraryModel, {
+          ...libraryOf([liked]),
+          albums: [rumours],
+        }),
+      ),
+      message(Message.ClickedToggleAlbumSaved({ album: rumours })),
+      model(current => {
+        expect(savedAlbumIds(current)).toStrictEqual(Option.some([]))
+      }),
+      Command.expectExact(EditPlaylists({ edit })),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit,
+          result: Result.succeed({
+            library: libraryOf([liked]),
+            maybePlaylist: Option.none(),
+          }),
+        }),
+      ),
+      Command.resolve(
+        WaitBeforeHideNotice,
+        Message.CompletedWaitBeforeHideNotice({
+          message: 'Removed from your Library',
+        }),
+      ),
+    )
+  })
+})
+
+describe('following an artist', () => {
+  test('follows at once, newest first, and unfollows on a second tap', () => {
+    const follow = {
+      _tag: 'SetArtistFollowed' as const,
+      artist: fleetwoodMac,
+      isFollowed: true,
+    }
+    const unfollow = { ...follow, isFollowed: false }
+    const otherArtist = { ...fleetwoodMac, id: 'UCother', name: 'Other' }
+    story(
+      update,
+      given(
+        withLibrary(libraryModel, {
+          ...libraryOf([liked]),
+          artists: [otherArtist],
+        }),
+      ),
+      message(Message.ClickedToggleArtistFollowed({ artist: fleetwoodMac })),
+      model(current => {
+        expect(followedArtistIds(current)).toStrictEqual(
+          Option.some([fleetwoodMac.id, otherArtist.id]),
+        )
+      }),
+      Command.expectExact(EditPlaylists({ edit: follow })),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit: follow,
+          result: Result.succeed({
+            library: {
+              ...libraryOf([liked]),
+              artists: [fleetwoodMac, otherArtist],
+            },
+            maybePlaylist: Option.none(),
+          }),
+        }),
+      ),
+      model(current => {
+        expect(current.maybeNotice).toStrictEqual(Option.none())
+      }),
+      message(Message.ClickedToggleArtistFollowed({ artist: fleetwoodMac })),
+      model(current => {
+        expect(followedArtistIds(current)).toStrictEqual(
+          Option.some([otherArtist.id]),
+        )
+      }),
+      Command.expectExact(EditPlaylists({ edit: unfollow })),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit: unfollow,
+          result: Result.succeed({
+            library: { ...libraryOf([liked]), artists: [otherArtist] },
             maybePlaylist: Option.none(),
           }),
         }),

@@ -6,6 +6,7 @@ import {
   AlbumSummary,
   ArtistDetails,
   ArtistSummary,
+  HomeFeed,
   MoodDetails,
   MoodGroup,
   MusicNotFoundError,
@@ -113,6 +114,22 @@ export const editPlaylistsRpc = Rpc.make('editPlaylists', {
   error: Schema.Union([MusicNotFoundError, PlaylistStoreError]),
 })
 
+/** What played lately on any device, for Home. */
+export const getHomeRpc = Rpc.make('getHome', {
+  success: HomeFeed,
+  error: PlaylistStoreError,
+})
+
+/**
+ * The songs YouTube Music's radio would play after a song, for Home's
+ * "More like" shelf.
+ */
+export const getSongRadioRpc = Rpc.make('getSongRadio', {
+  payload: Schema.Struct({ videoId: Schema.String }),
+  success: Schema.Array(Song),
+  error: LookupError,
+})
+
 /**
  * The full player's background for a song's artwork: a dark version of the
  * color the cover reads as. Null when the artwork cannot be read.
@@ -124,7 +141,7 @@ export const getArtworkBackdropRpc = Rpc.make('getArtworkBackdrop', {
 
 /**
  * Every call the web app makes to the music server: the YouTube Music
- * catalog, and the playlists made in the app.
+ * catalog, the library kept in the app, and the play history.
  */
 export const MusicRpcs = RpcGroup.make(
   searchSongsRpc,
@@ -141,6 +158,8 @@ export const MusicRpcs = RpcGroup.make(
   getMyLibraryRpc,
   getMyPlaylistRpc,
   editPlaylistsRpc,
+  getHomeRpc,
+  getSongRadioRpc,
   getArtworkBackdropRpc,
 )
 export type MusicRpcs = typeof MusicRpcs

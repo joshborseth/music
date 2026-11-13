@@ -3,10 +3,27 @@ import { Array, Option, Schema, pipe } from 'effect'
 import {
   type AlbumSummary,
   type ArtistSummary,
+  type MyLibrary,
   type PlaylistSummary,
-  Session,
+  type Session,
   type Song,
 } from '@music/shared'
+
+/** What the Library lists: everything, or one kind of thing. */
+export const LibraryFilter = Schema.Literals([
+  'All',
+  'Playlists',
+  'Albums',
+  'Artists',
+])
+export type LibraryFilter = typeof LibraryFilter.Type
+
+/** The filters the Library offers as chips. All is none of them picked. */
+export const LIBRARY_FILTER_CHIPS: ReadonlyArray<LibraryFilter> = [
+  'Playlists',
+  'Albums',
+  'Artists',
+]
 
 /** Something the person opened, so the Library can take them back to it. */
 export const LibraryItem = Schema.Struct({
@@ -18,19 +35,11 @@ export const LibraryItem = Schema.Struct({
 })
 export type LibraryItem = typeof LibraryItem.Type
 
-export const RecentlyPlayedJson = Schema.fromJsonString(
-  Schema.Array(Session.QueueTrack),
-)
-
 export const RecentlyViewedJson = Schema.fromJsonString(
   Schema.Array(LibraryItem),
 )
 
-export const RECENTLY_PLAYED_KEY = 'music:recently-played'
-
 export const RECENTLY_VIEWED_KEY = 'music:recently-viewed'
-
-export const MAX_RECENTLY_PLAYED = 50
 
 export const MAX_RECENTLY_VIEWED = 24
 
@@ -51,19 +60,22 @@ export const rememberFirst = <A>(
     Array.take(max),
   )
 
+export const isAlbumSaved = (library: MyLibrary, albumId: string): boolean =>
+  Array.some(library.albums, ({ id }) => id === albumId)
+
+export const isArtistFollowed = (
+  library: MyLibrary,
+  artistId: string,
+): boolean => Array.some(library.artists, ({ id }) => id === artistId)
+
 export const isSameLibraryItem = (
   left: LibraryItem,
   right: LibraryItem,
 ): boolean => left.kind === right.kind && left.id === right.id
 
-export const isSameTrack = (
-  left: Session.QueueTrack,
-  right: Session.QueueTrack,
-): boolean => left.videoId === right.videoId
-
 /**
- * A queued track as a Song, so the Library can list and replay it. The queue
- * keeps the credits as one line of text, so they no longer link anywhere.
+ * A queued track as a Song, so Home can list and replay it. The queue keeps
+ * the credits as one line of text, so they no longer link anywhere.
  */
 export const songFromQueueTrack = (track: Session.QueueTrack): Song => ({
   videoId: track.videoId,

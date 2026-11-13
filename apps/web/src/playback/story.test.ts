@@ -1,13 +1,16 @@
 import { Option } from 'effect'
+import { AsyncData } from 'foldkit'
 import { Command, given, message, model, story } from 'foldkit/story'
 import { modifyFields } from 'foldkit/struct'
 import { describe, expect, test } from 'vitest'
 
 import { type Session, type Song } from '@music/shared'
 
-import { SaveRecentlyPlayed, UnlockScroll } from '../command'
+import { UnlockScroll } from '../command'
+import { songFromQueueTrack } from '../library'
 import { Message } from '../message'
 import { type Model } from '../model'
+import { homeQuery } from '../query'
 import { AppRoute } from '../route'
 import { initialModel, update } from '../update'
 import {
@@ -127,14 +130,6 @@ describe('playing on this phone', () => {
         }),
         mediaSession,
         PrefetchSongs({ videoIds: ['dQw4w9WgXcQ'] }),
-        SaveRecentlyPlayed({ recentlyPlayed: [entry.track] }),
-      ),
-      model(model => {
-        expect(model.recentlyPlayed).toStrictEqual([entry.track])
-      }),
-      Command.resolve(
-        SaveRecentlyPlayed,
-        Message.CompletedSaveRecentlyPlayed(),
       ),
       Command.resolve(
         LoadPhoneAudio,
@@ -176,15 +171,8 @@ describe('playing on this phone', () => {
       model(model => {
         expect(model.phoneAudio._tag).toBe('Idle')
       }),
-      Command.expectExact(
-        StopPhoneAudio(),
-        SaveRecentlyPlayed({ recentlyPlayed: [entry.track] }),
-      ),
+      Command.expectExact(StopPhoneAudio()),
       Command.resolve(StopPhoneAudio, Message.CompletedStopPhoneAudio()),
-      Command.resolve(
-        SaveRecentlyPlayed,
-        Message.CompletedSaveRecentlyPlayed(),
-      ),
     )
   })
 
@@ -843,7 +831,6 @@ describe('on the lock screen', () => {
     Command.resolve(UpdateMediaSession, Message.CompletedUpdateMediaSession()),
     Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
     sentAs(2),
-    Command.resolve(SaveRecentlyPlayed, Message.CompletedSaveRecentlyPlayed()),
   ]
 
   test('with repeat on, the last song ending starts the first on its own', () => {
@@ -867,7 +854,6 @@ describe('on the lock screen', () => {
         mediaSessionFor(0),
         prefetchFrom(0),
         SendLocalChange({ message: { _tag: 'Advanced', fromEntryId: 'e2' } }),
-        SaveRecentlyPlayed({ recentlyPlayed: [queue[0]!.track] }),
       ),
       ...resolveLoad(0),
     )
@@ -876,7 +862,18 @@ describe('on the lock screen', () => {
   test('a song that ends starts the next one without waiting for the server', () => {
     story(
       update,
-      given(playingQueue('e0')),
+      given(
+        modifyFields(playingQueue('e0'), {
+          home: query =>
+            modifyFields(query, {
+              data: () =>
+                AsyncData.succeed({
+                  jumpBackIn: [],
+                  recentlyPlayed: [songFromQueueTrack(queue[0]!.track)],
+                }),
+            }),
+        }),
+      ),
       message(Message.EndedPhoneAudio({ entryId: 'e0' })),
       model(model => {
         expect(currentEntryId(model)).toEqual(Option.some('e1'))
@@ -892,14 +889,21 @@ describe('on the lock screen', () => {
           }),
         )
         expect(model.phoneAudioSeconds).toBe(0)
-        expect(model.recentlyPlayed).toStrictEqual([queue[1]?.track])
+        expect(
+          Option.map(
+            AsyncData.getData(homeQuery.read(model.home)),
+            ({ recentlyPlayed }) =>
+              recentlyPlayed.map(({ videoId }) => videoId),
+          ),
+        ).toEqual(
+          Option.some([queue[1]!.track.videoId, queue[0]!.track.videoId]),
+        )
       }),
       Command.expectExact(
         loads(1),
         mediaSessionFor(1),
         prefetchFrom(1),
         SendLocalChange({ message: { _tag: 'Advanced', fromEntryId: 'e0' } }),
-        SaveRecentlyPlayed({ recentlyPlayed: [queue[1]!.track] }),
       ),
       ...resolveLoad(1),
       // The server agrees: nothing reloads.
@@ -1011,10 +1015,6 @@ describe('on the lock screen', () => {
         Message.CompletedUpdateMediaSession(),
       ),
       Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
-      Command.resolve(
-        SaveRecentlyPlayed,
-        Message.CompletedSaveRecentlyPlayed(),
-      ),
     )
   })
 
@@ -1034,7 +1034,6 @@ describe('on the lock screen', () => {
         mediaSessionFor(2),
         prefetchFrom(2),
         SendLocalChange({ message: { _tag: 'SkipTo', entryId: 'e2' } }),
-        SaveRecentlyPlayed({ recentlyPlayed: [queue[2]!.track] }),
       ),
       ...resolveLoad(2),
     )
@@ -1436,7 +1435,6 @@ describe('on the lock screen', () => {
         mediaSessionFor(2),
         prefetchFrom(2),
         SendLocalChange({ message: { _tag: 'Next' } }),
-        SaveRecentlyPlayed({ recentlyPlayed: [queue[2]!.track] }),
       ),
       ...resolveLoad(2),
     )
@@ -1455,7 +1453,6 @@ describe('on the lock screen', () => {
         mediaSessionFor(0),
         prefetchFrom(0),
         SendLocalChange({ message: { _tag: 'SkipTo', entryId: 'e0' } }),
-        SaveRecentlyPlayed({ recentlyPlayed: [queue[0]!.track] }),
       ),
       ...resolveLoad(0),
     )

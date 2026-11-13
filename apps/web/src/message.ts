@@ -3,9 +3,16 @@ import { Url } from 'foldkit'
 import { defineMessageUnion } from 'foldkit/message'
 import { UrlRequest } from 'foldkit/navigation'
 
-import { PlaylistEdit, PlaylistEditResult, Session, Song } from '@music/shared'
+import {
+  AlbumSummary,
+  ArtistSummary,
+  PlaylistEdit,
+  PlaylistEditResult,
+  Session,
+  Song,
+} from '@music/shared'
 
-import { LibraryItem } from './library'
+import { LibraryFilter, LibraryItem } from './library'
 import { MediaKey } from './playback/domain'
 import { SwipeTarget } from './playback/swipe'
 import {
@@ -15,6 +22,7 @@ import {
   artistQuery,
   artistSearchQuery,
   artworkBackdropQuery,
+  homeQuery,
   moodGroupsQuery,
   moodQuery,
   myLibraryQuery,
@@ -22,6 +30,7 @@ import {
   playlistQuery,
   playlistSearchQuery,
   songQuery,
+  songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
 } from './query'
@@ -48,11 +57,7 @@ export const Message = defineMessageUnion({
   CompletedBlurSearchInput: {},
   CompletedLockScroll: {},
   CompletedUnlockScroll: {},
-  CompletedLoadLibrary: {
-    recentlyPlayed: Schema.Array(Session.QueueTrack),
-    recentlyViewed: Schema.Array(LibraryItem),
-  },
-  CompletedSaveRecentlyPlayed: {},
+  CompletedLoadLibrary: { recentlyViewed: Schema.Array(LibraryItem) },
   CompletedSaveRecentlyViewed: {},
   CompletedShuffleSongs: {
     songs: Schema.Array(Song),
@@ -71,8 +76,9 @@ export const Message = defineMessageUnion({
   ClickedClearRecentSearches: {},
   ClickedBack: {},
   ClickedTab: { tab: Tab },
-  ClickedClearLibrary: {},
-  ConfirmedClearLibrary: {},
+  ClickedClearRecentlyViewed: {},
+  ConfirmedClearRecentlyViewed: {},
+  SelectedLibraryFilter: { filter: LibraryFilter },
   ClickedShuffleSongs: { songs: Schema.Array(Song) },
   ClickedSongActions: { song: Song },
   ClickedDevices: {},
@@ -94,6 +100,8 @@ export const Message = defineMessageUnion({
   GotPlaylistMessage: { message: playlistQuery.Message },
   GotMyLibraryMessage: { message: myLibraryQuery.Message },
   GotMyPlaylistMessage: { message: myPlaylistQuery.Message },
+  GotHomeMessage: { message: homeQuery.Message },
+  GotSongRadioMessage: { message: songRadioQuery.Message },
   GotArtworkBackdropMessage: { message: artworkBackdropQuery.Message },
 
   ClickedAddToPlaylist: {
@@ -111,6 +119,8 @@ export const Message = defineMessageUnion({
     songs: Schema.Array(Song),
   },
   ClickedToggleLiked: { song: Song },
+  ClickedToggleAlbumSaved: { album: AlbumSummary },
+  ClickedToggleArtistFollowed: { artist: ArtistSummary },
   ClickedRemoveFromPlaylist: {
     playlistId: Schema.String,
     videoId: Schema.String,

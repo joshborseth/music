@@ -127,9 +127,17 @@ const backButton = (h: HtmlBuilder<Message>): Html =>
     [icon(h, ChevronLeft, 'size-6 -ml-0.5')],
   )
 
-/** A round button for the top right of a detail page, matching Back. */
+/**
+ * A round button for the top right of a detail page, matching Back. An
+ * `isOn` button shows its icon in the accent color.
+ */
 export const navBarButton = (
-  config: Readonly<{ onClick: Message; iconNode: IconNode; label: string }>,
+  config: Readonly<{
+    onClick: Message
+    iconNode: IconNode
+    label: string
+    isOn?: boolean
+  }>,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.button(
@@ -138,7 +146,10 @@ export const navBarButton = (
       h.OnClick(config.onClick),
       h.AriaLabel(config.label),
       h.Class(
-        'pressable floating pointer-events-auto flex size-10 items-center justify-center rounded-full',
+        cn(
+          'pressable floating pointer-events-auto flex size-10 items-center justify-center rounded-full',
+          config.isOn === true && 'text-primary',
+        ),
       ),
     ],
     [icon(h, config.iconNode, 'size-[22px]')],
@@ -161,7 +172,7 @@ export const detailNavBar = (
       h.AriaHidden(true),
       h.DataAttribute(TITLE_BAR_ATTRIBUTE, ''),
       h.Class(
-        'reveal-on-scroll pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height)+0.5rem)] items-end justify-center px-16 pb-3 [--reveal-end:240px] [--reveal-start:180px]',
+        'reveal-on-scroll pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height)+0.5rem)] items-end justify-center px-[6.5rem] pb-3 [--reveal-end:240px] [--reveal-start:180px]',
       ),
     ],
     [

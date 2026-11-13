@@ -16,6 +16,8 @@ import {
 } from 'effect'
 
 import {
+  AlbumSummary,
+  ArtistSummary,
   type Artwork,
   LIKED_PLAYLIST_ID,
   MAX_PLAYLIST_TITLE_LENGTH,
@@ -72,6 +74,19 @@ const MIGRATIONS: ReadonlyArray<string> = [
 
   CREATE INDEX play_history_by_time ON play_history (played_at);
   `,
+  `
+  CREATE TABLE saved_albums (
+    album_id TEXT PRIMARY KEY,
+    album TEXT NOT NULL,
+    saved_at INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE followed_artists (
+    artist_id TEXT PRIMARY KEY,
+    artist TEXT NOT NULL,
+    followed_at INTEGER NOT NULL
+  ) STRICT;
+  `,
 ]
 
 /** Songs the play history keeps; older plays drop off. */
@@ -84,6 +99,15 @@ const SongJson = Schema.fromJsonString(Schema.toCodecJson(Song))
 const encodeSong = Schema.encodeSync(SongJson)
 const decodeSong = Schema.decodeUnknownOption(SongJson)
 
+/** Saved albums and followed artists are kept whole too, as JSON. */
+const AlbumJson = Schema.fromJsonString(Schema.toCodecJson(AlbumSummary))
+const encodeAlbum = Schema.encodeSync(AlbumJson)
+const decodeAlbum = Schema.decodeUnknownOption(AlbumJson)
+
+const ArtistJson = Schema.fromJsonString(Schema.toCodecJson(ArtistSummary))
+const encodeArtist = Schema.encodeSync(ArtistJson)
+const decodeArtist = Schema.decodeUnknownOption(ArtistJson)
+
 const SummaryRow = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
@@ -94,6 +118,8 @@ const SummaryRow = Schema.Struct({
 type SummaryRow = typeof SummaryRow.Type
 
 const SongRow = Schema.Struct({ song: Schema.String })
+const AlbumRow = Schema.Struct({ album: Schema.String })
+const ArtistRow = Schema.Struct({ artist: Schema.String })
 const VideoIdRow = Schema.Struct({ video_id: Schema.String })
 const PositionRow = Schema.Struct({ position: Schema.NullOr(Schema.Number) })
 const VersionRow = Schema.Struct({ user_version: Schema.Number })
@@ -158,8 +184,8 @@ export interface PlaylistStoreShape {
 }
 
 /**
- * The playlists made in the app, Liked songs, and what played lately, kept
- * in one SQLite file on the server.
+ * The playlists made in the app, Liked songs, the albums saved and artists
+ * followed, and what played lately, kept in one SQLite file on the server.
  */
 export class PlaylistStore extends Context.Service<
   PlaylistStore,
@@ -244,6 +270,31 @@ export const makePlaylistStore = (
       Option.map(toSummary),
     )
 
+  const readAlbums = (): ReadonlyArray<AlbumSummary> =>
+    pipe(
+      db
+        .query(
+          'SELECT album FROM saved_albums ORDER BY saved_at DESC, rowid DESC',
+        )
+        .all(),
+      decodeRows(AlbumRow),
+      Array.map(row => decodeAlbum(row.album)),
+      Array.getSomes,
+    )
+
+  const readArtists = (): ReadonlyArray<ArtistSummary> =>
+    pipe(
+      db
+        .query(
+          `SELECT artist FROM followed_artists
+           ORDER BY followed_at DESC, rowid DESC`,
+        )
+        .all(),
+      decodeRows(ArtistRow),
+      Array.map(row => decodeArtist(row.artist)),
+      Array.getSomes,
+    )
+
   const readLibrary = (): MyLibrary => ({
     playlists: pipe(
       db
@@ -265,6 +316,8 @@ export const makePlaylistStore = (
       decodeRows(VideoIdRow),
       Array.map(row => row.video_id),
     ),
+    albums: readAlbums(),
+    artists: readArtists(),
   })
 
   const readDetails = (playlistId: string): Option.Option<MyPlaylistDetails> =>
@@ -335,12 +388,12 @@ export const makePlaylistStore = (
 
   const whenExists =
     (playlistId: string, change: () => void) =>
-    (): Result.Result<string, MusicNotFoundError> => {
+    (): Result.Result<Option.Option<string>, MusicNotFoundError> => {
       if (!exists(playlistId)) {
         return Result.fail(notFound(playlistId))
       }
       change()
-      return Result.succeed(playlistId)
+      return Result.succeed(Option.some(playlistId))
     }
 
   const removeSong = (playlistId: string, videoId: string): void => {
@@ -349,10 +402,46 @@ export const makePlaylistStore = (
     ).run(playlistId, videoId)
   }
 
-  /** Changes the database, returning the id of the playlist it changed. */
+  /** Saving again moves the album to the top, with its latest details. */
+  const setAlbumSaved = (album: AlbumSummary, isSaved: boolean): void => {
+    if (isSaved) {
+      db.query(
+        `INSERT INTO saved_albums (album_id, album, saved_at) VALUES (?, ?, ?)
+         ON CONFLICT (album_id) DO UPDATE SET
+           album = excluded.album,
+           saved_at = excluded.saved_at`,
+      ).run(album.id, encodeAlbum(album), options.now())
+    } else {
+      db.query('DELETE FROM saved_albums WHERE album_id = ?').run(album.id)
+    }
+  }
+
+  const setArtistFollowed = (
+    artist: ArtistSummary,
+    isFollowed: boolean,
+  ): void => {
+    if (isFollowed) {
+      db.query(
+        `INSERT INTO followed_artists (artist_id, artist, followed_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT (artist_id) DO UPDATE SET
+           artist = excluded.artist,
+           followed_at = excluded.followed_at`,
+      ).run(artist.id, encodeArtist(artist), options.now())
+    } else {
+      db.query('DELETE FROM followed_artists WHERE artist_id = ?').run(
+        artist.id,
+      )
+    }
+  }
+
+  /**
+   * Changes the database, returning the id of the playlist it changed, if
+   * it changed one.
+   */
   const change = (
     edit: PlaylistEdit,
-  ): (() => Result.Result<string, MusicNotFoundError>) =>
+  ): (() => Result.Result<Option.Option<string>, MusicNotFoundError>) =>
     Match.valueTags(edit, {
       Create:
         ({ title, songs }) =>
@@ -364,7 +453,7 @@ export const makePlaylistStore = (
              VALUES (?, ?, ?, ?)`,
           ).run(id, normalizeTitle(title), now, now)
           insertSongs(id, songs, 'End')
-          return Result.succeed(id)
+          return Result.succeed(Option.some(id))
         },
       Rename: ({ playlistId, title }) =>
         whenExists(playlistId, () => {
@@ -402,7 +491,19 @@ export const makePlaylistStore = (
             removeSong(LIKED_PLAYLIST_ID, song.videoId)
           }
           touch(LIKED_PLAYLIST_ID)
-          return Result.succeed(LIKED_PLAYLIST_ID)
+          return Result.succeed(Option.some(LIKED_PLAYLIST_ID))
+        },
+      SetAlbumSaved:
+        ({ album, isSaved }) =>
+        () => {
+          setAlbumSaved(album, isSaved)
+          return Result.succeed(Option.none())
+        },
+      SetArtistFollowed:
+        ({ artist, isFollowed }) =>
+        () => {
+          setArtistFollowed(artist, isFollowed)
+          return Result.succeed(Option.none())
         },
     })
 
@@ -410,9 +511,9 @@ export const makePlaylistStore = (
   const applyEdit = (
     edit: PlaylistEdit,
   ): Result.Result<PlaylistEditResult, MusicNotFoundError> =>
-    Result.map(db.transaction(change(edit))(), changedId => ({
+    Result.map(db.transaction(change(edit))(), maybeChangedId => ({
       library: readLibrary(),
-      maybePlaylist: readDetails(changedId),
+      maybePlaylist: Option.flatMap(maybeChangedId, readDetails),
     }))
 
   /** Moves the song to the top of the history and drops the oldest plays. */

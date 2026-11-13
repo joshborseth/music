@@ -4,7 +4,7 @@ import { Command, Dom } from 'foldkit'
 import { back, load, pushUrl, replaceUrl } from 'foldkit/navigation'
 
 import { BrowserKeyValueStore } from '@effect/platform-browser'
-import { PlaylistEdit, Session, Song } from '@music/shared'
+import { PlaylistEdit, Song } from '@music/shared'
 
 import {
   PAGE_SELECTOR,
@@ -15,13 +15,7 @@ import {
   SEARCH_INPUT_ID,
   SEARCH_RESULTS_SELECTOR,
 } from './constant'
-import {
-  LibraryItem,
-  RECENTLY_PLAYED_KEY,
-  RECENTLY_VIEWED_KEY,
-  RecentlyPlayedJson,
-  RecentlyViewedJson,
-} from './library'
+import { LibraryItem, RECENTLY_VIEWED_KEY, RecentlyViewedJson } from './library'
 import { Message } from './message'
 import { withRequestError } from './query'
 import { MusicClient } from './rpc'
@@ -265,16 +259,11 @@ const readStored = <A>(key: string, codec: Schema.Codec<A, string>) =>
 export const LoadLibrary = Command.define('LoadLibrary', {
   messages: [Message.CompletedLoadLibrary],
   execute: Effect.gen(function* () {
-    const maybeRecentlyPlayed = yield* readStored(
-      RECENTLY_PLAYED_KEY,
-      RecentlyPlayedJson,
-    )
     const maybeRecentlyViewed = yield* readStored(
       RECENTLY_VIEWED_KEY,
       RecentlyViewedJson,
     )
     return Message.CompletedLoadLibrary({
-      recentlyPlayed: Option.getOrElse(maybeRecentlyPlayed, () => []),
       recentlyViewed: Option.getOrElse(maybeRecentlyViewed, () => []),
     })
   }).pipe(Effect.provide(BrowserKeyValueStore.layerLocalStorage)),
@@ -290,15 +279,6 @@ const writeStored = <A>(
     const json = yield* Schema.encodeEffect(codec)(value)
     yield* store.set(key, json)
   }).pipe(Effect.ignore, Effect.provide(BrowserKeyValueStore.layerLocalStorage))
-
-export const SaveRecentlyPlayed = Command.define('SaveRecentlyPlayed', {
-  args: { recentlyPlayed: Schema.Array(Session.QueueTrack) },
-  messages: [Message.CompletedSaveRecentlyPlayed],
-  execute: ({ recentlyPlayed }) =>
-    writeStored(RECENTLY_PLAYED_KEY, RecentlyPlayedJson, recentlyPlayed).pipe(
-      Effect.as(Message.CompletedSaveRecentlyPlayed()),
-    ),
-})
 
 export const SaveRecentlyViewed = Command.define('SaveRecentlyViewed', {
   args: { recentlyViewed: Schema.Array(LibraryItem) },

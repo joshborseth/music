@@ -1059,6 +1059,41 @@ export const sectionWithAction = (
     ],
   )
 
+/**
+ * A section whose title is a name, such as a song's, led by a small line
+ * saying what the section is: "More like" over the song. A long name takes
+ * one line.
+ */
+export const namedSection = (
+  eyebrow: string,
+  name: string,
+  children: ReadonlyArray<Html>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.section(
+    [h.Class('flex flex-col gap-2')],
+    [
+      h.h2(
+        [h.Class('flex flex-col px-4')],
+        [
+          h.span(
+            [h.Class('text-muted-foreground text-[13px] font-semibold')],
+            [`${eyebrow} `],
+          ),
+          h.span(
+            [
+              h.Class(
+                'line-clamp-1 text-[22px] leading-tight font-bold tracking-tight',
+              ),
+            ],
+            [name],
+          ),
+        ],
+      ),
+      ...children,
+    ],
+  )
+
 const horizontalScrollerClass =
   'no-scrollbar flex snap-x snap-mandatory scroll-px-4 gap-3 overflow-x-auto overscroll-x-contain px-4 pb-1'
 
@@ -1104,6 +1139,8 @@ const SONGS_PER_GRID_COLUMN = 4
 export const songGridShelf = (
   config: Readonly<{
     title: string
+    /** A small line over the title, which then reads as a name. */
+    maybeEyebrow?: Option.Option<string>
     songs: ReadonlyArray<Song>
     playing: NowPlaying
   }>,
@@ -1111,55 +1148,56 @@ export const songGridShelf = (
 ): Html =>
   Array.match(uniqueSongs(config.songs), {
     onEmpty: () => h.empty,
-    onNonEmpty: songs =>
-      section(
-        config.title,
-        [
-          h.div(
-            [
-              h.Role('list'),
-              h.Class(
-                cn(
-                  'no-scrollbar grid snap-x snap-mandatory grid-flow-col overflow-x-auto overscroll-x-contain',
-                  songs.length > SONGS_PER_GRID_COLUMN
-                    ? 'auto-cols-[88%]'
-                    : 'auto-cols-[100%]',
-                ),
-              ),
-              h.Style({
-                gridTemplateRows: `repeat(${Math.min(SONGS_PER_GRID_COLUMN, songs.length)}, auto)`,
-              }),
-            ],
-            Array.map(songs, (song, index) =>
-              h.keyed('div')(
-                song.videoId,
-                [
-                  h.Role('listitem'),
-                  h.Class(
-                    index % SONGS_PER_GRID_COLUMN === 0 ? 'snap-start' : '',
-                  ),
-                ],
-                [
-                  songRow(
-                    {
-                      song,
-                      playlist: songs,
-                      maybeTrackNumber: Option.none(),
-                      isAlbumHidden: false,
-                      isTitleWrapped: false,
-                      maybeAlbumContext: Option.none(),
-                      playing: config.playing,
-                      maybeSwipe: Option.none(),
-                    },
-                    h,
-                  ),
-                ],
+    onNonEmpty: songs => {
+      const grid = [
+        h.div(
+          [
+            h.Role('list'),
+            h.Class(
+              cn(
+                'no-scrollbar grid snap-x snap-mandatory grid-flow-col overflow-x-auto overscroll-x-contain',
+                songs.length > SONGS_PER_GRID_COLUMN
+                  ? 'auto-cols-[88%]'
+                  : 'auto-cols-[100%]',
               ),
             ),
+            h.Style({
+              gridTemplateRows: `repeat(${Math.min(SONGS_PER_GRID_COLUMN, songs.length)}, auto)`,
+            }),
+          ],
+          Array.map(songs, (song, index) =>
+            h.keyed('div')(
+              song.videoId,
+              [
+                h.Role('listitem'),
+                h.Class(
+                  index % SONGS_PER_GRID_COLUMN === 0 ? 'snap-start' : '',
+                ),
+              ],
+              [
+                songRow(
+                  {
+                    song,
+                    playlist: songs,
+                    maybeTrackNumber: Option.none(),
+                    isAlbumHidden: false,
+                    isTitleWrapped: false,
+                    maybeAlbumContext: Option.none(),
+                    playing: config.playing,
+                    maybeSwipe: Option.none(),
+                  },
+                  h,
+                ),
+              ],
+            ),
           ),
-        ],
-        h,
-      ),
+        ),
+      ]
+      return Option.match(config.maybeEyebrow ?? Option.none(), {
+        onNone: () => section(config.title, grid, h),
+        onSome: eyebrow => namedSection(eyebrow, config.title, grid, h),
+      })
+    },
   })
 
 /** A titled vertical list, hidden when there is nothing in it. */
