@@ -10,9 +10,11 @@
 //! the first 16-bar phrase past 45 seconds (32 bars at most tempos), and
 //! every 8 bars (or at a section's start) once it has shown for two
 //! minutes. Never in a section's last 8 bars, where its own end is coming,
-//! and never back to the scene just before. Calm parts get calm scenes: how wild a part looks is its
-//! intensity, which the song's drive caps (`music.rs`), so a ballad never
-//! gets the tunnel.
+//! and never back to the scene just before. A new pick prefers scenes the
+//! song hasn't shown yet, while any suit the music, so a song of a few
+//! sections doesn't show two scenes twice each. Calm parts get calm
+//! scenes: how wild a part looks is its intensity, which the song's drive
+//! caps (`music.rs`), so a ballad never gets the tunnel.
 //!
 //! Without an analysis, scenes change when the music surges, or after a
 //! while on a kick.
@@ -29,7 +31,7 @@ pub struct SceneSpec {
 }
 
 /// Every scene, in the order of `gpu::SCENE_SHADERS`.
-pub const SCENES: [SceneSpec; 5] = [
+pub const SCENES: [SceneSpec; 7] = [
     SceneSpec {
         name: "Silk",
         energy: 0.1,
@@ -49,6 +51,14 @@ pub const SCENES: [SceneSpec; 5] = [
     SceneSpec {
         name: "Tunnel",
         energy: 0.92,
+    },
+    SceneSpec {
+        name: "Aurora",
+        energy: 0.2,
+    },
+    SceneSpec {
+        name: "Stars",
+        energy: 0.82,
     },
 ];
 
@@ -95,6 +105,9 @@ pub struct Director {
     /// The scene and look each group of sections got.
     by_group: HashMap<u32, (usize, f32)>,
     recent: Vec<usize>,
+    /// Every scene this song has shown, so it moves on to new ones while
+    /// others fit.
+    shown: Vec<usize>,
     section: Option<usize>,
     /// Bars since the latest scene came on.
     bars_on_scene: u32,
@@ -113,6 +126,7 @@ impl Director {
             next: None,
             by_group: HashMap::new(),
             recent: Vec::new(),
+            shown: Vec::new(),
             section: None,
             bars_on_scene: 0,
             random: seed | 1,
@@ -136,7 +150,8 @@ impl Director {
     }
 
     /// The best scene for music this intense, other than the one showing,
-    /// avoiding the last two where another fits nearly as well.
+    /// avoiding those this song has shown, the last two most, where
+    /// another fits nearly as well.
     fn pick(&mut self, target: f32) -> usize {
         self.pick_avoiding(target, None)
     }
@@ -148,12 +163,18 @@ impl Director {
         let jitter: Vec<f32> = (0..SCENES.len()).map(|_| self.unit() * 0.12).collect();
         let fit = |scene: usize| (SCENES[scene].energy - target).abs() + jitter[scene];
         let recent: Vec<usize> = self.recent.iter().rev().take(2).copied().collect();
-        // A recent scene costs a little, not everything: a calm song has
-        // only a couple of scenes that suit it. One far wilder than the
-        // music is a last resort.
+        // A scene this song has shown costs a little, a recent one a little
+        // more, not everything: a calm song has only a few scenes that
+        // suit it, and a chorus coming back keeps its own. One far wilder
+        // than the music is a last resort.
         let cost = |scene: usize| {
             let energy = SCENES[scene].energy;
             fit(scene)
+                + if self.shown.contains(&scene) {
+                    0.3
+                } else {
+                    0.0
+                }
                 + if recent.contains(&scene) { 0.15 } else { 0.0 }
                 + if Some(scene) == avoid { 1.0 } else { 0.0 }
                 + if energy > target + 0.3 { 10.0 } else { 0.0 }
@@ -178,6 +199,9 @@ impl Director {
             self.recent.remove(0);
         }
         self.bars_on_scene = 0;
+        if !self.shown.contains(&scene) {
+            self.shown.push(scene);
+        }
         let showing = Showing {
             scene,
             seed,
@@ -242,6 +266,7 @@ impl Director {
             // on it, with nothing before to dissolve from.
             let first_song = self.song.is_none();
             self.by_group.clear();
+            self.shown.clear();
             self.section = section_now;
             if song.is_some() {
                 let (scene, seed) = match music.section {
@@ -250,6 +275,7 @@ impl Director {
                 };
                 self.song = song.map(str::to_owned);
                 if first_song {
+                    self.shown.push(scene);
                     self.current = Showing {
                         scene,
                         seed,
@@ -427,6 +453,37 @@ mod tests {
             "{}",
             SCENES[chorus.scene].name
         );
+    }
+
+    #[test]
+    fn a_song_shows_new_scenes_before_any_comes_back() {
+        // Sections of a song, each its own group: while scenes that suit
+        // are left, none shows twice. "Too Long" showed Silk and Ink twice.
+        for seed in 1..30 {
+            // A calm song has four scenes that suit it, a wild one more.
+            let songs: [(&[f32], f32); 2] = [
+                (&[0.2, 0.42, 0.77, 1.0], 0.4),
+                (&[0.3, 0.6, 0.9, 0.5, 1.0], 1.0),
+            ];
+            for (energies, ceiling) in songs {
+                let mut director = Director::new(seed);
+                let mut seen = Vec::new();
+                for (index, &energy) in energies.iter().enumerate() {
+                    let mut frame = music(section(index, SectionKind::Verse, index as u32, energy));
+                    frame.ceiling = ceiling;
+                    let scene = settle(&mut director, &frame).current.scene;
+                    assert!(
+                        !seen.contains(&scene),
+                        "seed {seed}: {} again after {:?}",
+                        SCENES[scene].name,
+                        seen.iter()
+                            .map(|scene: &usize| SCENES[*scene].name)
+                            .collect::<Vec<_>>()
+                    );
+                    seen.push(scene);
+                }
+            }
+        }
     }
 
     #[test]

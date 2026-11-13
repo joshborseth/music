@@ -31,21 +31,21 @@ void main() {
   float isBar = step(mod(which, 4.0), 0.5);
   // A ring flares as it passes you, and more on a drop.
   float passing = exp(-max(depth - 0.6, 0.0) * 1.2);
-  rings *= (0.35 + 0.65 * isBar) * (0.5 + 0.5 * uEnergy) * (1.0 + 1.5 * passing * uKick);
+  rings *= (0.35 + 0.65 * isBar) * (0.5 + 0.5 * uEnergy) * (1.0 + 2.0 * passing * uHit);
 
   // Lines along the walls, each lit by its stretch of the spectrum.
   float sides = 12.0 + 4.0 * floor(mod(uSeed * 5.0, 3.0));
   float lane = abs(fract(around * sides) - 0.5) * 2.0;
   float lines = smoothstep(1.0 - 0.08 - 0.03 * depth, 1.0, lane);
   float band = spectrum(abs(around - 0.5) * 2.0);
-  lines *= 0.15 + 0.9 * band * band;
+  lines *= (0.15 + 0.9 * band * band) * (1.0 + 0.8 * uHit);
 
   // Fade into the distance.
   float fog = exp(-depth * 0.22);
   float level = (rings + lines) * fog;
   vec3 color = glow(clamp(level, 0.0, 0.92));
   // A light at the end, in the color itself, swelling with the bass and
-  // bursting on a drop.
-  color += uColorA * exp(-r * 9.0) * (0.25 + 0.5 * uBands.x + 0.9 * uDrop);
+  // the beat, and bursting on a drop.
+  color += uColorA * exp(-r * 9.0) * (0.25 + 0.5 * uBands.x + 0.6 * uHit + 0.9 * uDrop);
   fragColor = vec4(color, 1.0);
 }

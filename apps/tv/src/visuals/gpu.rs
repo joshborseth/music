@@ -37,7 +37,7 @@ use glow::HasContext;
 
 use super::director::{SCENES, Shot, Showing};
 use super::look::{COVER_SIDE, Cover, DEFAULT_COLORS};
-use super::motion::{Motion, Screen, hash, unit};
+use super::motion::{Motion, Screen, hash, hit, unit};
 use super::music::{BANDS, HISTORY_ROWS, LEVELS, Listener, Music, WAVE};
 use super::sizing::{Change, Sizing};
 
@@ -53,6 +53,8 @@ const SCENE_SHADERS: [(&str, &str); SCENES.len()] = [
     ("terrain.glsl", include_str!("shaders/terrain.glsl")),
     ("halo.glsl", include_str!("shaders/halo.glsl")),
     ("tunnel.glsl", include_str!("shaders/tunnel.glsl")),
+    ("aurora.glsl", include_str!("shaders/aurora.glsl")),
+    ("stars.glsl", include_str!("shaders/stars.glsl")),
 ];
 /// The scene whose land is drawn as a mesh on top of its sky.
 const TERRAIN: usize = 2;
@@ -565,6 +567,8 @@ impl Renderer {
             set_f32(gl, program, "uMix", mix);
             let look = Screen::new(music, self.colors[0]);
             set_f32(gl, program, "uPunch", look.punch);
+            set_f32(gl, program, "uBulge", look.bulge);
+            set_f32(gl, program, "uLift", look.lift);
             set_f32(gl, program, "uSplit", look.split);
             set_f32(gl, program, "uGlow", look.glow);
             set_vec3(gl, program, "uFlash", look.flash);
@@ -730,6 +734,7 @@ impl Renderer {
             f("uBeatPulse", music.beat_pulse);
             f("uBarPulse", music.bar_pulse);
             f("uKick", music.kick);
+            f("uHit", hit(music));
             f("uAccent", music.accent);
             f("uEnergy", music.energy);
             f("uTension", music.tension);

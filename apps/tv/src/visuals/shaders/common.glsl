@@ -32,6 +32,10 @@ uniform float uBarPulse;
 // overall level (each 0 to 1).
 uniform float uKick;
 uniform float uAccent;
+// How hard the beat hits the picture, 0 to 1 (motion.rs, `hit`): the kick,
+// softened in calm music. What every scene punches, swells, and brightens
+// with on the beat, so a ballad's beat only nods.
+uniform float uHit;
 uniform vec4 uBands;
 // The spectrum in eight coarse bands, low to high: cheaper than the
 // texture inside loops.
