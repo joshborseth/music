@@ -87,8 +87,7 @@ export const fromSaved = (saved: SavedSession, now: number): Model => {
     unshuffled: saved.unshuffled ?? [],
     // NOTE: a pause the server made because the player went away, before
     // or during the restart, still yields to a player that played on.
-    pausedForLostPlayer:
-      saved.playing || (saved.pausedForLostPlayer ?? false),
+    pausedForLostPlayer: saved.playing || (saved.pausedForLostPlayer ?? false),
     // NOTE: a player that played on through the restart takes the session
     // back, and must still stop when its timer said. One whose time passed
     // while the server was down has nothing left to stop.
