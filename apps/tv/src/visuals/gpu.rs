@@ -11,13 +11,17 @@
 //!    While one scene dissolves into the next, the two take turns, one a
 //!    frame, so a change of scene costs no more than one scene. Terrain
 //!    draws its land on top, as a mesh over the sky.
-//! 2. The bright parts are cut out at a quarter size and blurred (bloom).
-//! 3. `final.glsl` dissolves one scene into the next and adds the glow and
-//!    the camera tricks, into a picture the scenes' size.
-//! 4. `present.glsl` stretches the picture to the screen, under the shade
-//!    the app's words need. It is the only pass at the screen's size, and
-//!    reads one pixel for each it draws: a full-size pass costs as much as
-//!    a whole scene on a small TV GPU.
+//! 2. The bright parts are cut out at an eighth of the scenes' size
+//!    (`bright.glsl`) and blurred there in one pass (`blur.glsl`): the glow,
+//!    drawn over a thirty-second as many pixels as a scene.
+//! 3. `final.glsl` dissolves one scene into the next and adds the glow, the
+//!    camera tricks, the tone, the vignette, and the shade the app's words
+//!    need, into a picture the scenes' size.
+//! 4. `present.glsl` stretches the picture to the screen, with a fine
+//!    grain. It is the only pass at the screen's size, and reads one pixel
+//!    for each it draws: a full-size pass costs as much as a whole scene on
+//!    a small TV GPU, so everything that can be is done at the scenes'
+//!    size, where a pixel costs a half to a fifth of one at the screen's.
 //!
 //! Each scene's size follows the TV (`sizing.rs`): it shrinks when its
 //! frames come late, and settles on the largest size it can hold.
@@ -33,7 +37,7 @@ use glow::HasContext;
 
 use super::director::{SCENES, Shot, Showing};
 use super::look::{COVER_SIDE, Cover, DEFAULT_COLORS};
-use super::motion::{Motion, hash, unit};
+use super::motion::{Motion, Screen, hash, unit};
 use super::music::{BANDS, HISTORY_ROWS, LEVELS, Listener, Music, WAVE};
 use super::sizing::{Change, Sizing};
 
@@ -61,6 +65,8 @@ const LAND_VERTICES: i32 = HISTORY_ROWS as i32 * (2 * LAND_COLUMNS + 2) - 2;
 
 /// The scenes' height at full size; the screen's own if it is smaller.
 const BASE_HEIGHT: u32 = 720;
+/// The glow is this many times smaller than the scenes, each way.
+const BLOOM_DIVISOR: i32 = 8;
 /// Frames a scene must show alone before its frames are counted: the
 /// first ones after a change of scene still carry the change's cost.
 const STEADY_AFTER: u32 = 3;
@@ -120,6 +126,8 @@ pub struct Renderer {
     picture: Target,
     /// False until `final` has drawn into the picture since it was resized.
     picture_drawn: bool,
+    /// The glow, which `final` reads, then the bright parts it is blurred
+    /// from, an eighth of the picture's size.
     bloom: [Target; 2],
     spectrum: glow::Texture,
     history: glow::Texture,
@@ -244,9 +252,9 @@ impl Renderer {
                 land,
                 bright,
                 blur,
-                final_pass,
                 present,
                 slots,
+                final_pass,
                 picture,
                 picture_drawn: false,
                 bloom,
@@ -449,7 +457,7 @@ impl Renderer {
                 self.draw_scene(gl, b, next, music, listener);
             }
             if draw_a || draw_b {
-                self.compose(gl, a, b, shot.current, mix, fade, music, listener);
+                self.compose(gl, a, b, shot.current, mix, fade, shade, music, listener);
             }
 
             // The screen. Skia cleared it and has moved on to our passes,
@@ -460,18 +468,14 @@ impl Renderer {
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
             gl.use_program(Some(self.present.program));
-            set_vec2(gl, &self.present, "uRes", width as f32, height as f32);
-            set_f32(gl, &self.present, "uTime", music.time);
-            set_f32(gl, &self.present, "uSide", shade.side);
-            set_f32(gl, &self.present, "uCentre", shade.centre);
             bind_texture(gl, &self.present, "uPicture", 0, self.picture.texture);
             fullscreen(gl);
         }
         saved.restore(gl);
     }
 
-    /// Bloom, then the picture: the scenes in slots `a` and `b` (if any)
-    /// put together at the larger one's size.
+    /// The glow, then the picture: the scenes in slots `a` and `b` (if
+    /// any) put together at the larger one's size.
     #[allow(clippy::too_many_arguments)]
     unsafe fn compose(
         &mut self,
@@ -481,6 +485,7 @@ impl Renderer {
         current: Showing,
         mix: f32,
         fade: f32,
+        shade: Shade,
         music: &Music,
         listener: &Listener,
     ) {
@@ -491,23 +496,27 @@ impl Renderer {
             let tall = out_a.height.max(out_b.height);
             if (self.picture.width, self.picture.height) != (wide, tall) {
                 resize(gl, &mut self.picture, wide, tall);
+                let (glow_wide, glow_tall) = (
+                    (wide / BLOOM_DIVISOR).max(1),
+                    (tall / BLOOM_DIVISOR).max(1),
+                );
                 for target in &mut self.bloom {
-                    resize(gl, target, (wide / 4).max(1), (tall / 4).max(1));
+                    resize(gl, target, glow_wide, glow_tall);
                 }
                 self.picture_drawn = false;
             }
             let out_a = &self.slots[a].targets[0];
             let out_b = &self.slots[b.unwrap_or(a)].targets[0];
 
-            // Bloom: bright parts at a quarter size, blurred across and down.
-            let [bloom_a, bloom_b] = &self.bloom;
-            begin_pass(gl, bloom_a);
+            // The bright parts, into the second glow target...
+            let [soft, bright] = &self.bloom;
+            begin_pass(gl, bright);
             gl.use_program(Some(self.bright.program));
             self.set_music(
                 gl,
                 &self.bright,
                 music,
-                (bloom_a.width, bloom_a.height),
+                (bright.width, bright.height),
                 None,
                 listener,
             );
@@ -522,36 +531,53 @@ impl Renderer {
                 1.0 / out_a.height as f32,
             );
             fullscreen(gl);
-            for (from, to, across) in [(bloom_a, bloom_b, true), (bloom_b, bloom_a, false)] {
-                begin_pass(gl, to);
-                gl.use_program(Some(self.blur.program));
-                bind_texture(gl, &self.blur, "uSource", 0, from.texture);
-                let (x, y) = if across {
-                    (1.0 / from.width as f32, 0.0)
-                } else {
-                    (0.0, 1.0 / from.height as f32)
-                };
-                set_vec2(gl, &self.blur, "uDirection", x, y);
-                fullscreen(gl);
-            }
 
-            // The picture, the scenes' size.
-            begin_pass(gl, &self.picture);
-            gl.use_program(Some(self.final_pass.program));
+            // ...blurred into the first...
+            begin_pass(gl, soft);
+            gl.use_program(Some(self.blur.program));
+            bind_texture(gl, &self.blur, "uSource", 0, bright.texture);
+            set_vec2(
+                gl,
+                &self.blur,
+                "uTexel",
+                1.0 / bright.width as f32,
+                1.0 / bright.height as f32,
+            );
+            fullscreen(gl);
+
+            // ...and the picture, the scenes' size.
+            let picture = &self.picture;
+            let program = &self.final_pass;
+            begin_pass(gl, picture);
+            gl.use_program(Some(program.program));
             self.set_music(
                 gl,
-                &self.final_pass,
+                program,
                 music,
-                (self.picture.width, self.picture.height),
+                (picture.width, picture.height),
                 Some(current),
                 listener,
             );
-            bind_texture(gl, &self.final_pass, "uSceneA", 0, out_a.texture);
-            bind_texture(gl, &self.final_pass, "uSceneB", 1, out_b.texture);
-            bind_texture(gl, &self.final_pass, "uBloom", 2, bloom_a.texture);
-            bind_texture(gl, &self.final_pass, "uNoise", 3, self.noise);
-            set_f32(gl, &self.final_pass, "uMix", mix);
-            set_f32(gl, &self.final_pass, "uFade", fade);
+            bind_texture(gl, program, "uSceneA", 0, out_a.texture);
+            bind_texture(gl, program, "uSceneB", 1, out_b.texture);
+            bind_texture(gl, program, "uBloom", 2, soft.texture);
+            bind_texture(gl, program, "uNoise", 3, self.noise);
+            set_f32(gl, program, "uMix", mix);
+            let look = Screen::new(music, self.colors[0]);
+            set_f32(gl, program, "uPunch", look.punch);
+            set_f32(gl, program, "uSplit", look.split);
+            set_f32(gl, program, "uGlow", look.glow);
+            set_vec3(gl, program, "uFlash", look.flash);
+            set_vec3(gl, program, "uVignette", look.vignette);
+            // The light shade the app's words always need (`final.glsl`).
+            set_f32(gl, program, "uKeep", fade * (1.0 - 0.227));
+            set_f32(gl, program, "uSide", shade.side);
+            set_f32(gl, program, "uCentre", shade.centre);
+            // Slint's radial gradient reaches half the diagonal; the pool
+            // behind the song fades out at 60% of that.
+            let (wide, tall) = (picture.width as f32, picture.height as f32);
+            let reach = 0.3 * wide.hypot(tall);
+            set_vec2(gl, program, "uPool", wide / reach, tall / reach);
             fullscreen(gl);
             self.picture_drawn = true;
         }
@@ -594,17 +620,17 @@ impl Renderer {
             if held.is_some() && sized {
                 return index;
             }
-            // A new scene, or a new size: it starts over from black.
+            // A new scene, or a new size: it starts over from black, since
+            // its first frame reads the one before.
             slot.scene = Some(showing.scene);
             slot.drawn = false;
             for target in &mut slot.targets {
-                if sized {
-                    bind_target(gl, target);
-                    gl.clear_color(0.0, 0.0, 0.0, 0.0);
-                    gl.clear(glow::COLOR_BUFFER_BIT);
-                } else {
+                if !sized {
                     resize(gl, target, wide, tall);
                 }
+                bind_target(gl, target);
+                gl.clear_color(0.0, 0.0, 0.0, 0.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
             }
             index
         }
@@ -1083,10 +1109,6 @@ unsafe fn resize(gl: &Gl, target: &mut Target, width: i32, height: i32) {
         );
         target.width = width;
         target.height = height;
-        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.framebuffer));
-        gl.viewport(0, 0, width, height);
-        gl.clear_color(0.0, 0.0, 0.0, 0.0);
-        gl.clear(glow::COLOR_BUFFER_BIT);
     }
 }
 
@@ -1119,6 +1141,14 @@ unsafe fn set_f32(gl: &Gl, program: &Program, name: &str, value: f32) {
     unsafe {
         if let Some(at) = program.uniforms.get(name) {
             gl.uniform_1_f32(Some(at), value);
+        }
+    }
+}
+
+unsafe fn set_vec3(gl: &Gl, program: &Program, name: &str, [x, y, z]: [f32; 3]) {
+    unsafe {
+        if let Some(at) = program.uniforms.get(name) {
+            gl.uniform_3_f32(Some(at), x, y, z);
         }
     }
 }

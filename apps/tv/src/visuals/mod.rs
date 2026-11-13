@@ -78,7 +78,7 @@ struct State {
     renderer: Option<Renderer>,
     /// Set when the GPU path could not start: the screen keeps its backdrop.
     failed: bool,
-    report: Box<dyn Fn(String)>,
+    report: Box<dyn Fn(log::Level, String)>,
     last_frame: Option<Instant>,
     fade: f32,
     song: Option<String>,
@@ -160,8 +160,13 @@ pub struct Visuals {
 
 impl Visuals {
     /// Hook into `app`'s rendering. `report` sends a line to the server's
-    /// log: the GPU found, shader errors, how fast frames come.
-    pub fn install(app: &App, clock: PlayClock, report: impl Fn(String) + 'static) -> Self {
+    /// log at a level: the GPU found and how fast frames come (information),
+    /// shaders that failed to compile (a warning), no visuals (an error).
+    pub fn install(
+        app: &App,
+        clock: PlayClock,
+        report: impl Fn(log::Level, String) + 'static,
+    ) -> Self {
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(1, |elapsed| {
@@ -280,18 +285,24 @@ impl State {
         self.failed = false;
         let GraphicsAPI::NativeOpenGL { get_proc_address } = api else {
             self.failed = true;
-            (self.report)("visuals: the UI is not drawn with OpenGL; no visuals".to_owned());
+            (self.report)(
+                log::Level::Error,
+                "visuals: the UI is not drawn with OpenGL; no visuals".to_owned(),
+            );
             return;
         };
         let gl = unsafe { glow::Context::from_loader_function_cstr(|name| get_proc_address(name)) };
         match Renderer::new(&gl) {
             Ok((renderer, report)) => {
                 let mut line = format!("visuals: GPU {} ({})", report.renderer, report.version);
-                if !report.errors.is_empty() {
+                let level = if report.errors.is_empty() {
+                    log::Level::Info
+                } else {
                     line.push_str(&format!("; scenes left out: {}", report.errors.join(" | ")));
-                }
-                log::info!("{line}");
-                (self.report)(line);
+                    log::Level::Warn
+                };
+                log::log!(level, "{line}");
+                (self.report)(level, line);
                 self.renderer = Some(renderer);
             }
             Err(report) => {
@@ -302,7 +313,7 @@ impl State {
                     report.errors.join(" | ")
                 );
                 log::error!("{line}");
-                (self.report)(line);
+                (self.report)(log::Level::Error, line);
                 self.failed = true;
             }
         }
@@ -409,7 +420,7 @@ impl State {
                     self.errors_reported.push((when, code));
                     let line = format!("visuals: GL error {code:#06x} {when}");
                     log::error!("{line}");
-                    (self.report)(line);
+                    (self.report)(log::Level::Error, line);
                 }
             }
         }
@@ -418,7 +429,7 @@ impl State {
             && let Some(line) = self.pace.frame(took, size, || renderer.sizes())
         {
             log::info!("{line}");
-            (self.report)(line);
+            (self.report)(log::Level::Info, line);
         }
         true
     }

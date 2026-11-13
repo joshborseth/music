@@ -303,8 +303,10 @@ impl Ui {
             .unwrap_or_default();
         let visuals = Visuals::install(app, clock.clone(), {
             let (http, server, runtime) = (http.clone(), server.clone(), runtime.clone());
-            move |line: String| {
-                let request = http.post(format!("{server}/tv-log")).body(line);
+            move |level: log::Level, line: String| {
+                let request = http
+                    .post(crate::server_log::url(&server, level))
+                    .body(line);
                 runtime.spawn(async move {
                     let _ = request.send().await;
                 });

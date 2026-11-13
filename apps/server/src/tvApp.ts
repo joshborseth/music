@@ -21,9 +21,54 @@ import { TvWaker } from './session/wake.ts'
 /** The most of a crash report worth keeping. */
 const MAX_REPORT_LENGTH = 16_384
 
+/** How loud a line from the TV is in this server's log. */
+export type TvLogLevel = 'Info' | 'Warning' | 'Error'
+
 /**
- * `POST /tv-log`: the TV app sends its crash reports here, since there is no
- * debugger attached to the TV. They land in this server's log.
+ * The level of a line the TV posts to `/tv-log`: what its `level` query
+ * names (`info`, `warning`, `error`). A line without one is a crash, or
+ * comes from a TV built before levels: those sent their visuals reports
+ * (the GPU found, how smoothly frames came) as plain lines starting
+ * `visuals: `, which are information unless the visuals could not start
+ * or GL failed.
+ */
+export const tvLogLevel = (
+  level: string | null,
+  report: string,
+): TvLogLevel => {
+  switch (level) {
+    case 'info':
+      return 'Info'
+    case 'warning':
+      return 'Warning'
+    case 'error':
+      return 'Error'
+  }
+  return report.startsWith('visuals: ') &&
+    !report.startsWith('visuals: could not start') &&
+    !report.startsWith('visuals: GL error')
+    ? 'Info'
+    : 'Error'
+}
+
+/** Put a line from the TV in this server's log, at its level. */
+export const logTvReport = (level: string | null, report: string) => {
+  const line = report.slice(0, MAX_REPORT_LENGTH)
+  switch (tvLogLevel(level, report)) {
+    case 'Info':
+      return Effect.logInfo('TV app', line)
+    case 'Warning':
+      return Effect.logWarning('TV app', line)
+    case 'Error':
+      return Effect.logError('TV app', line)
+  }
+}
+
+/**
+ * `POST /tv-log[?level=info|warning|error]`: the TV app sends its crash
+ * reports here, since there is no debugger attached to the TV, and its
+ * reports on how the visuals run. They land in this server's log at the
+ * level the TV names; crashes, which name none, as errors.
  */
 const TvLogRoute = HttpRouter.add(
   'POST',
@@ -31,7 +76,8 @@ const TvLogRoute = HttpRouter.add(
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
     const report = yield* request.text.pipe(Effect.orElseSucceed(() => ''))
-    yield* Effect.logError('TV app', report.slice(0, MAX_REPORT_LENGTH))
+    const level = new URL(request.url, 'http://tv').searchParams.get('level')
+    yield* logTvReport(level, report)
     return HttpServerResponse.empty({ status: 204 })
   }),
 )

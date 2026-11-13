@@ -1,11 +1,12 @@
 //! Values a scene would otherwise work out again at every pixel: where Ink
-//! pours, how Tunnel and Terrain sway, how the picture shakes. They change
+//! pours, how Tunnel and Terrain sway, how the picture shakes, and how the
+//! screen pass punches, glows, flashes, and darkens its corners. They change
 //! once a frame, so they are worked out here once a frame and sent as
 //! uniforms. A TV's GPU has no time to spare for the same sines a million
 //! times over.
 //!
-//! The lab (`apps/tv/visuals-lab/lab.ts`, `motion`) works out the same
-//! values; keep the two in step.
+//! The lab (`apps/tv/visuals-lab/lab.ts`, `motion` and `screenLook`) works
+//! out the same values; keep the two in step.
 
 use std::f32::consts::PI;
 
@@ -77,6 +78,42 @@ impl Motion {
             turn,
             flight,
             shake,
+        }
+    }
+}
+
+/// One frame's values for the screen (`present.glsl`): the same at every
+/// one of its two million pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Screen {
+    /// How large the picture is read: below 1 punches in on the kick and
+    /// as a drop lands (`uPunch`).
+    pub punch: f32,
+    /// How far the colors split, at the corners, as a drop builds and
+    /// lands (`uSplit`).
+    pub split: f32,
+    /// How strong the glow is (`uGlow`).
+    pub glow: f32,
+    /// The flash in the cover's color the moment a drop lands (`uFlash`).
+    pub flash: [f32; 3],
+    /// The vignette: where its dark starts and where it ends, from the
+    /// middle out, and how dark its corners are, closing in as a drop
+    /// builds (`uVignette`).
+    pub vignette: [f32; 3],
+}
+
+impl Screen {
+    /// The values for `music`'s frame, flashing in `color`, the cover's.
+    pub fn new(music: &Music, color: [f32; 3]) -> Self {
+        let drop = music.drop;
+        let tension = music.tension;
+        let flash = drop.powi(10) * 0.55;
+        Self {
+            punch: 1.0 - 0.018 * music.kick * (0.4 + music.energy) - 0.03 * drop,
+            split: 0.006 * drop * drop * drop,
+            glow: 0.4 + 0.35 * music.energy + 0.5 * drop,
+            flash: color.map(|channel| (channel + 0.3 * (1.0 - channel)) * flash),
+            vignette: [1.05 - 0.4 * tension, 0.25 - 0.1 * tension, 0.55 - 0.25 * tension],
         }
     }
 }
@@ -160,6 +197,39 @@ mod tests {
                 motion.flight
             );
         }
+    }
+
+    #[test]
+    fn the_screen_punches_flashes_and_closes_in_with_the_drop() {
+        let quiet = Screen::new(
+            &Music {
+                kick: 0.0,
+                drop: 0.0,
+                tension: 0.0,
+                ..music()
+            },
+            [1.0, 0.5, 0.0],
+        );
+        assert_eq!(quiet.punch, 1.0);
+        assert_eq!(quiet.split, 0.0);
+        assert_eq!(quiet.flash, [0.0; 3]);
+        assert_eq!(quiet.vignette, [1.05, 0.25, 0.55]);
+        let landing = Screen::new(
+            &Music {
+                drop: 1.0,
+                tension: 1.0,
+                ..music()
+            },
+            [1.0, 0.5, 0.0],
+        );
+        assert!(landing.punch < 0.96);
+        assert!((landing.split - 0.006).abs() < 1e-6);
+        // The cover's color, a third of the way to white.
+        let expected = [1.0, 0.65, 0.3].map(|channel: f32| channel * 0.55);
+        for (got, want) in landing.flash.iter().zip(expected) {
+            assert!((got - want).abs() < 1e-5, "{:?}", landing.flash);
+        }
+        assert!(landing.vignette[2] < quiet.vignette[2]);
     }
 
     #[test]

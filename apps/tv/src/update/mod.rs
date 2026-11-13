@@ -334,7 +334,7 @@ impl Reporter {
         if !repeated {
             let request = self
                 .client
-                .post(format!("{}/tv-log", self.server))
+                .post(crate::server_log::url(&self.server, log::Level::Warn))
                 .header("content-type", "text/plain; charset=utf-8")
                 .body(format!("update (build {BUILD}): {message}"))
                 .timeout(Duration::from_secs(10));

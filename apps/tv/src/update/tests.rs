@@ -428,7 +428,7 @@ async fn a_failed_install_waits_for_another_press() {
     // The failure reached the server's log, and the announcement was taken
     // back, so the server never reopens (or turns on) a TV whose app never
     // closed.
-    assert_eq!(count(&server, "POST /tv-log"), 1);
+    assert_eq!(count(&server, "POST /tv-log?level=warning"), 1);
     assert_eq!(count(&server, "POST /tv/updating"), 1);
     assert_eq!(count(&server, "DELETE /tv/updating"), 1);
     // Downloaded once, kept for the next press.

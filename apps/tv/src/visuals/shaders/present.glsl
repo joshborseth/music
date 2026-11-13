@@ -1,36 +1,15 @@
 // THE SCREEN, last of all: the finished picture, drawn smaller by
-// `final.glsl`, stretched to the TV's size. One read a pixel, because on a
-// small TV GPU every full-size pass costs as much as a whole scene.
-//
-// It also lays down the shade the app's words need, which the UI would
-// otherwise paint as three more full-screen layers on top: a light shade
-// everywhere, then either a band behind the lyrics on the right (`uSide`)
-// or a pool behind the song in the middle (`uCentre`). The stops match
-// the Slint gradients they replace (`ui/app.slint`, NOW PLAYING).
+// `final.glsl`, stretched to the TV's size, with a fine grain. It is the
+// only pass at the screen's size, two million pixels, so it does as little
+// as a pass can: one read and a few sums a pixel. Everything else, the
+// shade the app's words need included, is in the picture already.
 
 uniform sampler2D uPicture;
-uniform float uSide;
-uniform float uCentre;
-
-// The lyrics band's opacity across the screen, left to right.
-float sideShade(float x) {
-  if (x < 0.30) return mix(0.40, 0.078, x / 0.30);
-  if (x < 0.46) return mix(0.078, 0.50, (x - 0.30) / 0.16);
-  return mix(0.50, 0.60, (x - 0.46) / 0.54);
-}
 
 void main() {
   vec3 color = texture(uPicture, vUv).rgb;
-  // Each shade covers what is under it, as the UI's layers did.
-  float keep = 1.0 - 0.227;
-  keep *= 1.0 - uSide * sideShade(vUv.x);
-  // Slint's radial gradient reaches half the diagonal.
-  float r = length(gl_FragCoord.xy - 0.5 * uRes) / (0.5 * length(uRes));
-  keep *= 1.0 - uCentre * 0.50 * max(0.0, 1.0 - r / 0.6);
-  color *= keep;
   // Fine grain at full size, so dark gradients never band: interleaved
   // gradient noise, a few sums a pixel where a hash took a dozen.
   highp float grain = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-  color += (float(grain) - 0.5) * 0.012;
-  fragColor = vec4(color, 1.0);
+  fragColor = vec4(color + (float(grain) - 0.5) * 0.012, 1.0);
 }
