@@ -40,6 +40,10 @@ pub enum UiAction {
     Remove(String),
     /// Move playback from another device to this TV.
     PlayHere,
+    /// Shuffle the songs to come, or put them back.
+    ToggleShuffle,
+    /// Step repeat off → all → one → off.
+    CycleRepeat,
 }
 
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -295,6 +299,20 @@ impl Controller {
                 self.play_here();
                 return;
             }
+            UiAction::ToggleShuffle => {
+                if let Some(state) = &self.state {
+                    let enabled = !state.shuffle;
+                    self.send(ClientMessage::SetShuffle { enabled });
+                }
+                return;
+            }
+            UiAction::CycleRepeat => {
+                if let Some(state) = &self.state {
+                    let mode = state.repeat.next();
+                    self.send(ClientMessage::SetRepeat { mode });
+                }
+                return;
+            }
             _ => {}
         }
         let Some(state) = &self.state else { return };
@@ -415,6 +433,8 @@ impl Controller {
             loading,
             notice,
             utc_offset_minutes: self.utc_offset_minutes,
+            repeat: state.repeat,
+            shuffle: state.shuffle,
         }
     }
 }

@@ -13,8 +13,11 @@ import {
   Music,
   Pause,
   Play,
+  Repeat,
+  Repeat1,
   RotateCcw,
   RotateCw,
+  Shuffle,
   SkipBack,
   SkipForward,
   Smartphone,
@@ -706,9 +709,64 @@ const lyricsPanel = (
   )
 }
 
+/** A switch in the queue's header: shuffle or repeat. */
+const queueToggle = (
+  config: Readonly<{
+    label: string
+    isOn: boolean
+    iconNode: Parameters<typeof icon>[1]
+    message: Message
+  }>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(config.message),
+      h.AriaPressed(config.isOn ? 'true' : 'false'),
+      h.Class(
+        cn(
+          'flex h-10 flex-1 items-center justify-center gap-2 rounded-xl text-[15px] font-semibold transition-colors active:scale-95',
+          config.isOn ? 'bg-white text-neutral-900' : 'bg-white/10 text-white',
+        ),
+      ),
+    ],
+    [icon(h, config.iconNode, 'size-[18px]'), config.label],
+  )
+
+/** Shuffle and repeat, above the songs to come. */
+const queueControls = (
+  state: Session.SessionState,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex gap-3 pt-4')],
+    [
+      queueToggle(
+        {
+          label: 'Shuffle',
+          isOn: state.shuffle,
+          iconNode: Shuffle,
+          message: Message.ClickedToggleShuffle(),
+        },
+        h,
+      ),
+      queueToggle(
+        {
+          label: state.repeat === 'One' ? 'Repeat One' : 'Repeat',
+          isOn: state.repeat !== 'Off',
+          iconNode: state.repeat === 'One' ? Repeat1 : Repeat,
+          message: Message.ClickedCycleRepeat(),
+        },
+        h,
+      ),
+    ],
+  )
+
 /**
  * The songs to come: first the ones someone queued, then the similar songs
- * autoplay added, under a switch that turns autoplay on or off.
+ * autoplay added, under a switch that turns autoplay on or off. Shuffle and
+ * repeat sit above them.
  */
 const queuePanel = (
   model: Model,
@@ -727,6 +785,7 @@ const queuePanel = (
       ),
     ],
     [
+      queueControls(snapshot.state, h),
       Array.match(queued, {
         onEmpty: () => h.empty,
         onNonEmpty: entries =>

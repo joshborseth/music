@@ -33,8 +33,10 @@ import {
   SEEK_TOLERANCE_SECONDS,
   type SessionSnapshot,
   currentEntry,
+  followingEntry,
   loadedEntry,
   sessionPosition,
+  skippedToEntry,
   upcomingEntries,
 } from './domain'
 import { displayedPosition, playbackPosition } from './position'
@@ -601,7 +603,7 @@ export const endPhoneAudio = (
     return { model }
   }
   const maybeNext = Option.flatMap(playingHere(model), here =>
-    Option.map(Array.get(here.snapshot.state.queue, here.index + 1), next => ({
+    Option.map(followingEntry(here.snapshot.state), next => ({
       here,
       next,
     })),
@@ -860,10 +862,10 @@ export const clickTogglePlayback = (model: Model): PlaybackReturn =>
 export const skipToNext = (model: Model): PlaybackReturn =>
   Option.match(
     Option.flatMap(playingHere(model), here =>
-      Option.map(
-        Array.get(here.snapshot.state.queue, here.index + 1),
-        next => ({ here, next }),
-      ),
+      Option.map(skippedToEntry(here.snapshot.state), next => ({
+        here,
+        next,
+      })),
     ),
     {
       onNone: () => sendCommand(model, { _tag: 'Next' }),
@@ -879,7 +881,13 @@ export const skipToPrevious = (model: Model): PlaybackReturn =>
   Option.match(playingHere(model), {
     onNone: () => sendCommand(model, { _tag: 'Previous' }),
     onSome: here => {
-      const maybePrevious = Array.get(here.snapshot.state.queue, here.index - 1)
+      const { queue, repeat } = here.snapshot.state
+      // With repeat on, back from the first song goes to the last, as on
+      // the server.
+      const maybePrevious =
+        here.index === 0 && repeat !== 'Off'
+          ? Array.last(queue)
+          : Array.get(queue, here.index - 1)
       // NOTE: paused, the session's position is exactly the server's, which
       // decides a Previous the phone sends; playing, the phone's own clock
       // is truer, and the phone names what it chose.
@@ -1011,6 +1019,12 @@ export const sendCommand = (
   model: Model,
   message: Session.ClientMessage,
 ): PlaybackReturn => ({ model, commands: [send(message)] })
+
+/** Shuffle the songs to come, or put them back in order. */
+export const setShuffle = (model: Model, enabled: boolean): PlaybackReturn =>
+  Option.exists(model.maybeSession, ({ state }) => state.shuffle === enabled)
+    ? { model }
+    : sendCommand(model, { _tag: 'SetShuffle', enabled })
 
 /** The page underneath stays put while the player covers it. */
 export const openPlayer = (model: Model): PlaybackReturn =>

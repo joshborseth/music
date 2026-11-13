@@ -18,6 +18,13 @@ export interface Model {
   readonly seekSeq: number
   /** Add similar songs as the queue runs out. */
   readonly autoplay: boolean
+  readonly repeat: Session.RepeatMode
+  readonly shuffle: boolean
+  /**
+   * While shuffled: every entry id in the order it had before, so turning
+   * shuffle off can put the songs back. Empty when not shuffled.
+   */
+  readonly unshuffled: ReadonlyArray<string>
   /**
    * The last `seekSeq` from a jump the player did not make itself. A
    * reconnecting player that followed it may report jumps of its own since.
@@ -42,6 +49,9 @@ export const initialModel: Model = {
   positionAt: 0,
   seekSeq: 0,
   autoplay: true,
+  repeat: 'Off',
+  shuffle: false,
+  unshuffled: [],
   foreignSeekSeq: 0,
   pausedForLostPlayer: false,
   waking: [],
@@ -66,6 +76,8 @@ export interface Context {
   readonly isOnline: (deviceId: string) => boolean
   readonly isWakeable: (deviceId: string) => boolean
   readonly makeEntryId: () => string
+  /** A number from 0 up to 1, for shuffling. */
+  readonly random: () => number
 }
 
 /** What a transition asks the hub to do besides storing the new model. */
@@ -121,6 +133,8 @@ export const toSessionState = (
   positionAt: model.positionAt,
   seekSeq: model.seekSeq,
   autoplay: model.autoplay,
+  repeat: model.repeat,
+  shuffle: model.shuffle,
 })
 
 export const currentPosition = (model: Model, now: number): number =>
@@ -202,12 +216,112 @@ const isFollowedReport = (
   report.seekSeq <= model.seekSeq &&
   indexOf(model, report.entryId) !== -1
 
-/** Move past the current entry after it ended or failed on the player. */
-const finishCurrent = (model: Model, now: number): Model => {
-  const maybeNext = entryAt(model, indexOf(model, model.currentEntryId) + 1)
-  return maybeNext === null
-    ? { ...jumpTo(model, model.currentEntryId, 0, now), playing: false }
-    : jumpTo(model, maybeNext, 0, now)
+/**
+ * Move past the current entry after it ended on the player, as `repeat`
+ * says, or after it failed (`Off`: a song that can't play is never tried
+ * again in a loop).
+ */
+const finishCurrent = (
+  model: Model,
+  now: number,
+  repeat: Session.RepeatMode = model.repeat,
+): Model => {
+  const maybeNext = Option.flatMap(
+    Session.followingIndex(
+      model.queue.length,
+      indexOf(model, model.currentEntryId),
+      repeat,
+    ),
+    index => Option.fromNullishOr(entryAt(model, index)),
+  )
+  return Option.match(maybeNext, {
+    onNone: () => ({
+      ...jumpTo(model, model.currentEntryId, 0, now),
+      playing: false,
+    }),
+    onSome: next => jumpTo(model, next, 0, now),
+  })
+}
+
+/** `items` in a random order (Fisher–Yates). */
+const shuffled = <A>(
+  items: ReadonlyArray<A>,
+  random: () => number,
+): ReadonlyArray<A> => {
+  const result = [...items]
+  for (let index = result.length - 1; index > 0; index--) {
+    const other = Math.floor(random() * (index + 1))
+    const swap = result[index]!
+    result[index] = result[other]!
+    result[other] = swap
+  }
+  return result
+}
+
+/**
+ * Shuffle the songs after the current one. Autoplay's songs stay last,
+ * since they only follow on from the songs someone chose.
+ */
+const shuffleUpcoming = (model: Model, random: () => number): Model => {
+  const after = indexOf(model, model.currentEntryId) + 1
+  const upcoming = model.queue.slice(after)
+  return {
+    ...model,
+    shuffle: true,
+    unshuffled: model.queue.map(entry => entry.entryId),
+    queue: [
+      ...model.queue.slice(0, after),
+      ...shuffled(
+        upcoming.filter(entry => !entry.autoplay),
+        random,
+      ),
+      ...upcoming.filter(entry => entry.autoplay),
+    ],
+  }
+}
+
+/**
+ * Put the queue back in the order it had before shuffling, around the song
+ * playing now: the songs that came before it in that order become what has
+ * played, and the ones after it play next. Songs added while shuffled keep
+ * their side of the current song, the ones still to come first (an added
+ * "Play next" still plays next). Autoplay's songs stay last.
+ */
+const unshuffleUpcoming = (model: Model): Model => {
+  const rank = new Map(model.unshuffled.map((id, index) => [id, index]))
+  const current = indexOf(model, model.currentEntryId)
+  const currentRank = rank.get(model.currentEntryId ?? '')
+  const plain = { ...model, shuffle: false, unshuffled: [] }
+  if (current === -1 || currentRank === undefined) return plain
+  const byRank = (
+    left: Session.QueueEntry,
+    right: Session.QueueEntry,
+  ): number => (rank.get(left.entryId) ?? 0) - (rank.get(right.entryId) ?? 0)
+  const chosen = model.queue.filter(entry => !entry.autoplay)
+  const known = chosen.filter(entry => rank.has(entry.entryId))
+  const addedBefore = model.queue
+    .slice(0, current)
+    .filter(entry => !entry.autoplay && !rank.has(entry.entryId))
+  const addedAfter = model.queue
+    .slice(current + 1)
+    .filter(entry => !entry.autoplay && !rank.has(entry.entryId))
+  const playedRank = (entry: Session.QueueEntry) =>
+    (rank.get(entry.entryId) ?? 0) < currentRank
+  return {
+    ...plain,
+    queue: [
+      ...known.filter(playedRank).sort(byRank),
+      ...addedBefore,
+      ...model.queue.slice(current, current + 1),
+      ...addedAfter,
+      ...known
+        .filter(
+          entry => entry.entryId !== model.currentEntryId && !playedRank(entry),
+        )
+        .sort(byRank),
+      ...model.queue.filter(entry => entry.autoplay),
+    ],
+  }
 }
 
 /**
@@ -336,17 +450,35 @@ const transition = (
           Math.max(0, Math.trunc(message.startIndex)),
           queue.length - 1,
         )
+        const started: Model = {
+          ...jumpTo(
+            { ...model, queue },
+            entryAt({ ...model, queue }, start),
+            0,
+            now,
+          ),
+          playing: queue.length > 0,
+          unshuffled: [],
+        }
+        // Shuffle on: the chosen song first, then the rest in a random order.
+        const ordered = model.shuffle
+          ? shuffleUpcoming(
+              {
+                ...started,
+                queue: [
+                  ...queue.slice(start, start + 1),
+                  ...queue.slice(0, start),
+                  ...queue.slice(start + 1),
+                ],
+              },
+              context.random,
+            )
+          : started
         return changed(
           claimIfIdle(
-            {
-              ...jumpTo(
-                { ...model, queue },
-                entryAt({ ...model, queue }, start),
-                0,
-                now,
-              ),
-              playing: queue.length > 0,
-            },
+            model.shuffle
+              ? { ...ordered, unshuffled: queue.map(entry => entry.entryId) }
+              : ordered,
             context,
           ),
         )
@@ -459,27 +591,47 @@ const transition = (
       },
 
       Next: () => {
-        const maybeNext = entryAt(
-          model,
-          indexOf(model, model.currentEntryId) + 1,
+        const maybeNext = Option.flatMap(
+          Session.skipIndex(
+            model.queue.length,
+            indexOf(model, model.currentEntryId),
+            model.repeat,
+          ),
+          index => Option.fromNullishOr(entryAt(model, index)),
         )
-        return maybeNext === null
-          ? quiet(model)
-          : changed(jumpTo(model, maybeNext, 0, now))
+        return Option.match(maybeNext, {
+          onNone: () => quiet(model),
+          onSome: next => changed(jumpTo(model, next, 0, now)),
+        })
       },
 
       Previous: () => {
         const index = indexOf(model, model.currentEntryId)
         if (index === -1) return quiet(model)
+        // With repeat on, back from the first song goes to the last.
+        const wraps = index === 0 && model.repeat !== 'Off'
         const restart =
-          currentPosition(model, now) > RESTART_THRESHOLD_SECONDS || index === 0
+          currentPosition(model, now) > RESTART_THRESHOLD_SECONDS ||
+          (index === 0 && !wraps)
+        const previous = wraps
+          ? entryAt(model, model.queue.length - 1)
+          : entryAt(model, index - 1)
         return changed(
-          jumpTo(
-            model,
-            restart ? model.currentEntryId : entryAt(model, index - 1),
-            0,
-            now,
-          ),
+          jumpTo(model, restart ? model.currentEntryId : previous, 0, now),
+        )
+      },
+
+      SetRepeat: message =>
+        message.mode === model.repeat
+          ? quiet(model)
+          : changed({ ...model, repeat: message.mode }),
+
+      SetShuffle: message => {
+        if (message.enabled === model.shuffle) return quiet(model)
+        return changed(
+          message.enabled
+            ? shuffleUpcoming(model, context.random)
+            : unshuffleUpcoming(model),
         )
       },
 
@@ -550,19 +702,26 @@ const transition = (
       Advanced: message => {
         if (!isFromPlayer(model, context, message.fromEntryId))
           return quiet(model)
-        const maybeNext = entryAt(
-          model,
-          indexOf(model, message.fromEntryId) + 1,
+        const maybeNext = Option.flatMap(
+          Session.followingIndex(
+            model.queue.length,
+            indexOf(model, message.fromEntryId),
+            model.repeat,
+          ),
+          index => Option.fromNullishOr(entryAt(model, index)),
         )
-        // The player already started the next entry, so seekSeq stays put.
-        return maybeNext === null
-          ? quiet(model)
-          : changed({
+        // The player already started the next entry (with repeat one, the
+        // same one again), so seekSeq stays put.
+        return Option.match(maybeNext, {
+          onNone: () => quiet(model),
+          onSome: next =>
+            changed({
               ...model,
-              currentEntryId: maybeNext,
+              currentEntryId: next,
               positionSeconds: 0,
               positionAt: now,
-            })
+            }),
+        })
       },
 
       TrackEnded: message => {
@@ -582,7 +741,7 @@ const transition = (
           }),
         )
         return {
-          ...changed(finishCurrent(model, now)),
+          ...changed(finishCurrent(model, now, 'Off')),
           maybeNotice: Option.some(
             `Couldn't play ${title}: ${message.message}`,
           ),
@@ -656,8 +815,11 @@ export const lookahead = (model: Model): Lookahead => {
       index + 1 + DOWNLOAD_AHEAD,
       index + 1 + DOWNLOAD_AHEAD + RESOLVE_AHEAD,
     ),
+    // A repeating queue never runs out.
     maybeAutoplayAfter:
-      model.autoplay && remaining <= AUTOPLAY_THRESHOLD
+      model.autoplay &&
+      model.repeat === 'Off' &&
+      remaining <= AUTOPLAY_THRESHOLD
         ? Option.fromNullishOr(videoIds.at(-1))
         : Option.none(),
   }

@@ -151,13 +151,17 @@ export const BlurSearchInput = Command.define('BlurSearchInput', {
   }).pipe(Effect.as(Message.CompletedBlurSearchInput())),
 })
 
+/**
+ * Pick the song a shuffled list starts from. The server shuffles the rest,
+ * and remembers the list's order for when shuffle is turned off.
+ */
 export const ShuffleSongs = Command.define('ShuffleSongs', {
   args: { songs: Schema.Array(Song) },
   messages: [Message.CompletedShuffleSongs],
   execute: ({ songs }) =>
-    Random.shuffle(songs).pipe(
-      Effect.map(shuffled =>
-        Message.CompletedShuffleSongs({ songs: shuffled }),
+    Random.nextIntBetween(0, Math.max(0, songs.length - 1)).pipe(
+      Effect.map(startIndex =>
+        Message.CompletedShuffleSongs({ songs, startIndex }),
       ),
     ),
 })

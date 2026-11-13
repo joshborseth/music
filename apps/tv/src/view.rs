@@ -67,6 +67,8 @@ pub struct View {
     /// The house's UTC offset in minutes, for the clock. `None` until the
     /// server says, and then the TV's own time zone is used.
     pub utc_offset_minutes: Option<i32>,
+    pub repeat: crate::protocol::RepeatMode,
+    pub shuffle: bool,
 }
 
 impl View {

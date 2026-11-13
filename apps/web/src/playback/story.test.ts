@@ -80,6 +80,8 @@ const sessionState = (
   playing: true,
   positionSeconds: 30,
   autoplay: true,
+  repeat: 'Off',
+  shuffle: false,
   positionAt: SERVER_NOW,
   seekSeq,
 })
@@ -627,6 +629,33 @@ describe('on the lock screen', () => {
     sentAs(2),
     Command.resolve(SaveRecentlyPlayed, Message.CompletedSaveRecentlyPlayed()),
   ]
+
+  test('with repeat on, the last song ending starts the first on its own', () => {
+    const repeating = modifyFields(playingQueue('e2'), {
+      maybeSession: maybeSession =>
+        Option.map(maybeSession, snapshot => ({
+          ...snapshot,
+          state: { ...snapshot.state, repeat: 'All' as const },
+        })),
+    })
+    story(
+      update,
+      given(repeating),
+      message(Message.EndedPhoneAudio({ entryId: 'e2' })),
+      model(model => {
+        expect(currentEntryId(model)).toEqual(Option.some('e0'))
+        expect(model.phoneAudioSeconds).toBe(0)
+      }),
+      Command.expectExact(
+        loads(0),
+        mediaSessionFor(0),
+        prefetchFrom(0),
+        SendLocalChange({ message: { _tag: 'Advanced', fromEntryId: 'e2' } }),
+        SaveRecentlyPlayed({ recentlyPlayed: [queue[0]!.track] }),
+      ),
+      ...resolveLoad(0),
+    )
+  })
 
   test('a song that ends starts the next one without waiting for the server', () => {
     story(

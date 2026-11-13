@@ -34,6 +34,7 @@ const context = (senderId: string, now: number): Context => {
     isOnline: id => id === senderId,
     isWakeable: () => false,
     makeEntryId: () => `e${(counter++).toString(36)}`,
+    random: () => 0,
   }
 }
 

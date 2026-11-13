@@ -68,7 +68,11 @@ import {
   initialNavigationModel,
 } from './navigation'
 import { LoadDeviceIdentity } from './playback/command'
-import { currentEntry, initialPlaybackModel } from './playback/domain'
+import {
+  currentEntry,
+  initialPlaybackModel,
+  nextRepeatMode,
+} from './playback/domain'
 import type { PlaybackServices } from './playback/resource'
 import * as Playback from './playback/update'
 import {
@@ -1337,8 +1341,11 @@ const updateMessage = (model: Model, message: Message) =>
         ShuffleSongs({ songs: songsToShuffle }),
       ],
     }),
-    CompletedShuffleSongs: ({ songs: shuffledSongs }) =>
-      Playback.playSongs(model, shuffledSongs, 0),
+    CompletedShuffleSongs: ({ songs, startIndex }) =>
+      Update.combine([
+        (stepModel: Model) => Playback.setShuffle(stepModel, true),
+        (stepModel: Model) => Playback.playSongs(stepModel, songs, startIndex),
+      ])(model),
 
     CompletedLoadDeviceIdentity: ({ deviceId, deviceName }) =>
       Playback.completeLoadDeviceIdentity(model, deviceId, deviceName),
@@ -1445,6 +1452,20 @@ const updateMessage = (model: Model, message: Message) =>
           Playback.sendCommand(model, {
             _tag: 'SetAutoplay',
             enabled: !state.autoplay,
+          }),
+      }),
+    ClickedToggleShuffle: () =>
+      Option.match(model.maybeSession, {
+        onNone: () => ({ model }),
+        onSome: ({ state }) => Playback.setShuffle(model, !state.shuffle),
+      }),
+    ClickedCycleRepeat: () =>
+      Option.match(model.maybeSession, {
+        onNone: () => ({ model }),
+        onSome: ({ state }) =>
+          Playback.sendCommand(model, {
+            _tag: 'SetRepeat',
+            mode: nextRepeatMode(state.repeat),
           }),
       }),
     ClickedOpenPlayer: () => Playback.openPlayer(model),

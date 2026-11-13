@@ -138,9 +138,56 @@ export const upcomingEntries = (
     }),
   )
 
-/** Next does nothing once the current song is the last one queued. */
+/** The entry at `index`'s place in the queue after a move, if any. */
+const entryAtIndex = (
+  state: Session.SessionState,
+  maybeIndex: Option.Option<number>,
+): Option.Option<Session.QueueEntry> =>
+  Option.flatMap(maybeIndex, index => Array.get(state.queue, index))
+
+const currentIndex = (state: Session.SessionState): number =>
+  Option.getOrElse(
+    Array.findFirstIndex(
+      state.queue,
+      entry => entry.entryId === state.currentEntryId,
+    ),
+    () => -1,
+  )
+
+/** What plays when the current song ends by itself, as `repeat` says. */
+export const followingEntry = (
+  state: Session.SessionState,
+): Option.Option<Session.QueueEntry> =>
+  entryAtIndex(
+    state,
+    Session.followingIndex(
+      state.queue.length,
+      currentIndex(state),
+      state.repeat,
+    ),
+  )
+
+/** Where Next goes: on, even with repeat one, and around with repeat on. */
+export const skippedToEntry = (
+  state: Session.SessionState,
+): Option.Option<Session.QueueEntry> =>
+  entryAtIndex(
+    state,
+    Session.skipIndex(state.queue.length, currentIndex(state), state.repeat),
+  )
+
+/** The repeat button steps off → all → one → off, as in Apple Music. */
+export const nextRepeatMode = (mode: Session.RepeatMode): Session.RepeatMode =>
+  Match.value(mode).pipe(
+    Match.when('Off', () => 'All' as const),
+    Match.when('All', () => 'One' as const),
+    Match.when('One', () => 'Off' as const),
+    Match.exhaustive,
+  )
+
+/** Next does nothing once the last song plays, unless the queue repeats. */
 export const hasNextEntry = (state: Session.SessionState): boolean =>
-  Array.isReadonlyArrayNonEmpty(upcomingEntries(state))
+  Option.isSome(skippedToEntry(state))
 
 export const activeDevice = (
   state: Session.SessionState,

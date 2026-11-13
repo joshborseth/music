@@ -32,7 +32,7 @@ use crate::nav::{
     self, COLLECTION_BUTTONS, CONTROLS, CollectionButton, Control, Effect, Focus, IDLE_BUTTONS,
     IdleButton, KEY_COLUMNS, KEYBOARD, Key, Load, Nav, Panel, PlayMode, RowRef, Tab, WIDE_KEYS,
 };
-use crate::protocol::Placement;
+use crate::protocol::{Placement, RepeatMode};
 use crate::update::{self, UpdateStatus};
 use crate::view::{PlayClock, View, clock};
 use crate::visuals::{Cover, Screenshot, Stage, Visuals};
@@ -1119,6 +1119,12 @@ impl Ui {
                     Control::PlayPause => ("play", "", false),
                     Control::Next => ("next", "", false),
                     Control::Like => (if liked { "heart" } else { "heart-outline" }, "", liked),
+                    Control::Shuffle => ("shuffle", "", session.shuffle),
+                    Control::Repeat => match session.repeat {
+                        RepeatMode::One => ("repeat-one", "", true),
+                        RepeatMode::All => ("repeat", "", true),
+                        RepeatMode::Off => ("repeat", "", false),
+                    },
                     Control::Queue => ("queue", "Queue", self.nav.panel == Panel::Queue),
                     Control::Lyrics => ("lyrics", "Lyrics", self.nav.show_lyrics),
                 };
