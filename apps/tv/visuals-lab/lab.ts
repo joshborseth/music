@@ -3,7 +3,8 @@
  * song (or a real audio file), so scenes can be tuned in a browser.
  *
  * The passes match `apps/tv/src/visuals/gpu.rs`: each scene draws into its
- * own pair of textures (feedback), the bright parts are blurred at a
+ * own pair of textures (feedback), Particles adding its grains as points
+ * and Terrain its land as a mesh, the bright parts are blurred at a
  * quarter size, `final.glsl` puts it together at the scenes' size, and
  * `present.glsl` stretches that to the screen under the app's shade. While
  * one scene dissolves into the next, the two take turns, one a frame. The
@@ -16,18 +17,21 @@ declare const MODE: string
 interface SceneDef {
   readonly name: string
   readonly file: string
+  /** Grains drawn as points on top (particles.vert). */
   readonly points: boolean
+  /** The land drawn as a mesh on top (terrain.vert). */
+  readonly land: boolean
 }
 
 const SCENES: ReadonlyArray<SceneDef> = [
-  { name: 'Liquid', file: 'liquid.glsl', points: false },
-  { name: 'Ink', file: 'ink.glsl', points: false },
-  { name: 'Kaleido', file: 'kaleido.glsl', points: false },
-  { name: 'Terrain', file: 'terrain.glsl', points: false },
-  { name: 'Chrome', file: 'chrome.glsl', points: false },
-  { name: 'Tunnel', file: 'tunnel.glsl', points: false },
-  { name: 'Halo', file: 'halo.glsl', points: false },
-  { name: 'Particles', file: 'particles.glsl', points: true },
+  { name: 'Liquid', file: 'liquid.glsl', points: false, land: false },
+  { name: 'Ink', file: 'ink.glsl', points: false, land: false },
+  { name: 'Kaleido', file: 'kaleido.glsl', points: false, land: false },
+  { name: 'Terrain', file: 'terrain.glsl', points: false, land: true },
+  { name: 'Chrome', file: 'chrome.glsl', points: false, land: false },
+  { name: 'Tunnel', file: 'tunnel.glsl', points: false, land: false },
+  { name: 'Halo', file: 'halo.glsl', points: false, land: false },
+  { name: 'Particles', file: 'particles.glsl', points: true, land: false },
 ]
 
 const BANDS = 48
@@ -36,6 +40,14 @@ const HISTORY_RATE = 32
 const WAVE = 512
 const COVER = 256
 const GRID = 160
+/**
+ * Terrain's mesh: a column on each band, the road and its edge, and five
+ * far columns, each side; a row for each history row and the far edge.
+ * Drawn as one triangle strip a pair of rows, joined by empty triangles:
+ * the TV's `LAND_VERTICES`, worked out the same way as `terrain.vert`.
+ */
+const LAND_COLUMNS = 2 * (1 + BANDS + 5) + 1
+const LAND_VERTICES = HISTORY_ROWS * (2 * LAND_COLUMNS + 2) - 2
 
 // MUSIC ----------------------------------------------------------------
 
@@ -100,11 +112,40 @@ const cross3 = (a: Vec3, b: Vec3): Vec3 => [
   a[2] * b[0] - a[0] * b[2],
   a[0] * b[1] - a[1] * b[0],
 ]
+const dot3 = (a: Vec3, b: Vec3): number =>
+  a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+/** Chrome's lens: the TV's `FOCAL`. */
+const FOCAL = 1.6
+
+/**
+ * A ball as the camera (where it is, then its right, up, and forward)
+ * sees it: its centre on the picture and its radius there. The TV's
+ * `project`.
+ */
+const project = (
+  centre: Vec3,
+  radius: number,
+  [eye, right, up, forward]: [Vec3, Vec3, Vec3, Vec3],
+): [number, number, number] => {
+  const away: Vec3 = [
+    centre[0] - eye[0],
+    centre[1] - eye[1],
+    centre[2] - eye[2],
+  ]
+  const ahead = dot3(away, forward)
+  const near = clamp01((ahead - 0.2) / 0.4)
+  const seen = Math.max(ahead, 0.2)
+  return [
+    (dot3(away, right) * FOCAL) / seen,
+    (dot3(away, up) * FOCAL) / seen,
+    ((radius * FOCAL) / seen) * near * near * (3 - 2 * near),
+  ]
+}
 
 interface Motion {
   readonly blobs: Array<number>
   readonly melt: number
-  readonly margin: number
   readonly camera: Array<number>
   readonly pour: Array<number>
   readonly turn: [number, number, number, number]
@@ -118,6 +159,17 @@ interface Motion {
  */
 const motion = (music: Music, seed: number): Motion => {
   const drive = music.drive
+  const punch = 1 + 0.06 * music.kick
+  const distance = 2.5 / punch
+  const eye: Vec3 = [
+    Math.sin(drive * 0.07) * distance,
+    0,
+    -Math.cos(drive * 0.07) * distance,
+  ]
+  const forward = normalize3([-eye[0], -eye[1], -eye[2]])
+  const right = normalize3([forward[2], 0, -forward[0]])
+  const up = cross3(forward, right)
+
   const gather =
     Math.pow(1 - fract(music.bar), 2) * 0.6 + 0.4 - 0.4 * music.drop
   const spread =
@@ -130,23 +182,10 @@ const motion = (music: Music, seed: number): Motion => {
       Math.sin(drive * (0.19 + i * 0.09) + i * 0.8) * spread,
     ]
     const radius = 0.27 + 0.16 * (music.levels[i] ?? 0) + 0.05 * music.kick
-    blobs.push(...centre, radius)
+    blobs.push(...project(centre, radius, [eye, right, up, forward]))
   }
-  const melt = 0.35 - 0.2 * music.drop
-  // Each blob melting into the others swells the shape by up to a quarter
-  // of `melt`; four in a row, by up to `melt`. Then the ripples and glow.
-  const margin = melt + 0.065 + 0.2
-
-  const punch = 1 + 0.06 * music.kick
-  const distance = 2.5 / punch
-  const eye: Vec3 = [
-    Math.sin(drive * 0.07) * distance,
-    0,
-    -Math.cos(drive * 0.07) * distance,
-  ]
-  const forward = normalize3([-eye[0], -eye[1], -eye[2]])
-  const right = normalize3([forward[2], 0, -forward[0]])
-  const up = cross3(forward, right)
+  // As far as the old 3D shape melted, seen at the middle's distance.
+  const melt = ((0.35 - 0.2 * music.drop) * FOCAL) / distance
 
   const pour: Array<number> = []
   for (let i = 0; i < 3; i++) {
@@ -168,7 +207,6 @@ const motion = (music: Music, seed: number): Motion => {
   return {
     blobs,
     melt,
-    margin,
     camera: [...eye, ...right, ...up, ...forward],
     pour,
     turn: [
@@ -491,6 +529,15 @@ const fragmentSource = (name: string): string =>
   shaderText('helpers.glsl') +
   shaderText(name)
 const VERTEX = VERSION + shaderText('fullscreen.vert')
+const LAND_VERTEX =
+  VERSION +
+  '#define TERRAIN_LAND\n' +
+  shaderText('common.glsl') +
+  shaderText('helpers.glsl') +
+  shaderText('terrain.glsl') +
+  shaderText('terrain.vert')
+const LAND_FRAGMENT =
+  VERSION + shaderText('common.glsl') + shaderText('terrain.frag')
 
 interface Program {
   readonly program: WebGLProgram
@@ -521,6 +568,7 @@ interface Scene {
   readonly def: SceneDef
   readonly main: Program | null
   readonly points: Program | null
+  readonly land: Program | null
   targets: [Target, Target]
   seed: number
   started: number
@@ -582,7 +630,8 @@ const noisePixels = (): Uint8Array => {
 
 /**
  * Fractal noise worked out ahead, the same numbers as the TV's
- * `fbm_pixels`: red is the value, green and blue its slope across and up.
+ * `fbm_pixels`: red is the value, green and blue its slope across and up,
+ * alpha the same noise turned a quarter and moved.
  */
 const FBM_SIDE = 256
 const FBM_UNITS = 8
@@ -622,32 +671,37 @@ const fbmPixels = (): Uint8Array => {
       dy * (c - a + twist * ux),
     ] as const
   }
+  const fbmAt = (x: number, y: number) => {
+    let value = 0
+    let across = 0
+    let up = 0
+    let amplitude = 0.5
+    turns.forEach(([a, b, c, d], octave) => {
+      const shift = octave * 0.37
+      const [n, nx, ny] = smooth(
+        octave,
+        a * x + b * y + shift,
+        c * x + d * y + shift * 1.7,
+      )
+      value += amplitude * n
+      across += amplitude * (a * nx + c * ny)
+      up += amplitude * (b * nx + d * ny)
+      amplitude *= 0.5
+    })
+    return [value / total, across / total, up / total] as const
+  }
   const pixels = new Uint8Array(FBM_SIDE * FBM_SIDE * 4)
   for (let row = 0; row < FBM_SIDE; row++) {
     for (let column = 0; column < FBM_SIDE; column++) {
       const x = (column + 0.5) / perUnit
       const y = (row + 0.5) / perUnit
-      let value = 0
-      let across = 0
-      let up = 0
-      let amplitude = 0.5
-      turns.forEach(([a, b, c, d], octave) => {
-        const shift = octave * 0.37
-        const [n, nx, ny] = smooth(
-          octave,
-          a * x + b * y + shift,
-          c * x + d * y + shift * 1.7,
-        )
-        value += amplitude * n
-        across += amplitude * (a * nx + c * ny)
-        up += amplitude * (b * nx + d * ny)
-        amplitude *= 0.5
-      })
+      const [value, across, up] = fbmAt(x, y)
+      const [turned] = fbmAt(8 - y + 3.3, x + 1.9)
       const at = (row * FBM_SIDE + column) * 4
-      pixels[at] = byte(value / total)
-      pixels[at + 1] = byte(0.5 + across / total / 8)
-      pixels[at + 2] = byte(0.5 + up / total / 8)
-      pixels[at + 3] = 255
+      pixels[at] = byte(value)
+      pixels[at + 1] = byte(0.5 + across / 8)
+      pixels[at + 2] = byte(0.5 + up / 8)
+      pixels[at + 3] = byte(turned)
     }
   }
   return pixels
@@ -684,6 +738,9 @@ const makeEngine = (
             shaderText('particles.vert'),
           VERSION + shaderText('common.glsl') + shaderText('particles.frag'),
         )
+      : null,
+    land: def.land
+      ? program(gl, 'terrain.vert', LAND_VERTEX, LAND_FRAGMENT)
       : null,
     targets: [makeTarget(gl, width, height), makeTarget(gl, width, height)],
     seed: (index * 0.137) % 1,
@@ -739,7 +796,6 @@ const makeEngine = (
   const coverTexture = dataTexture(gl, COVER, COVER, 'rgba', false)
   const history = new Uint8Array(BANDS * HISTORY_ROWS)
   let historyAge = 0
-  let historyPeak = 0
   // Joshify green in its three shades, until a cover loads.
   let colors: Array<Rgb> = [
     [0.13, 0.83, 0.44],
@@ -820,7 +876,6 @@ const makeEngine = (
     f('uSeed', scene?.seed ?? 0)
     f('uHasCover', hasCover)
     f('uHistoryAge', historyAge)
-    f('uHistoryPeak', historyPeak)
     f('uGrid', GRID)
     const bandsAt = at('uBands')
     if (bandsAt !== undefined) gl.uniform4f(bandsAt, ...music.bands)
@@ -834,9 +889,8 @@ const makeEngine = (
     })
     const moved = motion(music, scene?.seed ?? 0)
     f('uMelt', moved.melt)
-    f('uMargin', moved.margin)
     const blobsAt = at('uBlobs')
-    if (blobsAt !== undefined) gl.uniform4fv(blobsAt, moved.blobs)
+    if (blobsAt !== undefined) gl.uniform3fv(blobsAt, moved.blobs)
     const cameraAt = at('uCamera')
     if (cameraAt !== undefined) gl.uniform3fv(cameraAt, moved.camera)
     const pourAt = at('uPour')
@@ -851,10 +905,16 @@ const makeEngine = (
 
   const fullscreen = () => gl.drawArrays(gl.TRIANGLES, 0, 3)
 
+  /** Draw into `target`, all of it, as the TV's `begin_pass`. */
+  const beginPass = (target: Target) => {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer)
+    gl.viewport(0, 0, target.width, target.height)
+    gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.COLOR_ATTACHMENT0])
+  }
+
   const drawScene = (scene: Scene, music: Music) => {
     const [read, write] = scene.targets
-    gl.bindFramebuffer(gl.FRAMEBUFFER, write.framebuffer)
-    gl.viewport(0, 0, write.width, write.height)
+    beginPass(write)
     if (scene.main !== null) {
       gl.useProgram(scene.main.program)
       setMusic(scene.main, music, [write.width, write.height], scene)
@@ -869,6 +929,12 @@ const makeEngine = (
       bindTextures(scene.points, null)
       gl.drawArrays(gl.POINTS, 0, GRID * GRID)
       gl.disable(gl.BLEND)
+    }
+    if (scene.land !== null) {
+      gl.useProgram(scene.land.program)
+      setMusic(scene.land, music, [write.width, write.height], scene)
+      bindTextures(scene.land, null)
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, LAND_VERTICES)
     }
     scene.targets = [write, read]
   }
@@ -906,7 +972,6 @@ const makeEngine = (
         toBytes(music.spectrum, v => v),
         0,
       )
-      historyPeak = history.reduce((most, v) => Math.max(most, v), 0) / 255
       gl.bindTexture(gl.TEXTURE_2D, historyTexture)
       gl.texImage2D(
         gl.TEXTURE_2D,
@@ -946,8 +1011,7 @@ const makeEngine = (
     const outA = sceneA.targets[0]
     const outB = (sceneB ?? sceneA).targets[0]
     if (bright !== null && blur !== null) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, bloomA.framebuffer)
-      gl.viewport(0, 0, bloomA.width, bloomA.height)
+      beginPass(bloomA)
       gl.useProgram(bright.program)
       setMusic(bright, music, [bloomA.width, bloomA.height], null)
       const passes: Array<[string, Target]> = [
@@ -971,8 +1035,7 @@ const makeEngine = (
         to: Target,
         direction: [number, number],
       ) => {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, to.framebuffer)
-        gl.viewport(0, 0, to.width, to.height)
+        beginPass(to)
         gl.useProgram(blur.program)
         gl.activeTexture(gl.TEXTURE0)
         gl.bindTexture(gl.TEXTURE_2D, from.texture)
@@ -987,8 +1050,7 @@ const makeEngine = (
       blurPass(bloomB, bloomA, [0, 1])
     }
     if (final !== null) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, picture.framebuffer)
-      gl.viewport(0, 0, picture.width, picture.height)
+      beginPass(picture)
       gl.useProgram(final.program)
       setMusic(final, music, [picture.width, picture.height], sceneA)
       const inputs: Array<[string, WebGLTexture]> = [
@@ -1012,6 +1074,8 @@ const makeEngine = (
     if (present !== null) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null)
       gl.viewport(0, 0, screen[0], screen[1])
+      gl.clearColor(0, 0, 0, 1)
+      gl.clear(gl.COLOR_BUFFER_BIT)
       gl.useProgram(present.program)
       setMusic(present, music, screen, sceneA)
       gl.activeTexture(gl.TEXTURE0)
@@ -1027,7 +1091,16 @@ const makeEngine = (
     }
   }
 
-  return { frame, setCover, scenes }
+  /** Scene `index` alone, without bloom or the picture: for the bench. */
+  const sceneOnly = (music: Music, dt: number, index: number) => {
+    const scene = scenes[index]
+    if (scene === undefined) return
+    gl.bindVertexArray(vao)
+    update(music, dt)
+    drawScene(scene, music)
+  }
+
+  return { frame, sceneOnly, setCover, scenes }
 }
 
 // PAGE --------------------------------------------------------------------
@@ -1046,8 +1119,11 @@ const element = <K extends keyof HTMLElementTagNameMap>(
 const sheet = () => {
   const root = element('div', { id: 'sheet' })
   document.body.append(root)
-  const width = 320
-  const height = 180
+  // `?scale=2` draws each still larger, to look closely.
+  const scale = Number(new URLSearchParams(location.search).get('scale') ?? 1)
+  const width = Math.round(320 * scale)
+  const height = Math.round(180 * scale)
+  if (scale > 1) root.style.gridTemplateColumns = 'repeat(2, 1fr)'
   const canvas = element('canvas')
   canvas.width = width
   canvas.height = height
@@ -1093,14 +1169,18 @@ const sheet = () => {
 }
 
 /**
- * Times every scene, drawn alone through every pass, at the TV's full
- * scene size. In a software renderer the numbers only rank the scenes
- * against each other (and a change against the code before it): a TV's GPU
- * is far slower, and runs mediump at twice the rate, which this can't show.
+ * Times every scene, drawn alone, at the size the TV starts each scene at
+ * (1088 × 612) on a 1280 × 720 screen. In a software renderer the numbers
+ * only rank the scenes against each other (and a change against the code
+ * before it): a TV's GPU is far slower, and runs mediump at twice the
+ * rate, which this can't show.
  *
- * Each scene warms up in one animation frame and is timed over the next:
- * the time between that frame and the one after is the drawing (and at
- * most one display refresh of waiting).
+ * Two numbers a scene: the whole frame, every pass, and the scene's own
+ * pass alone (what differs between scenes). Each scene warms up in one
+ * animation frame and its whole frames are timed over the next: the time
+ * between that frame and the one after is the drawing (and at most one
+ * display refresh of waiting). Its own pass is timed the same way over
+ * the frame after that.
  */
 const bench = () => {
   const out = element('pre')
@@ -1115,7 +1195,7 @@ const bench = () => {
     out.textContent = 'No WebGL 2 here.'
     return
   }
-  const engine = makeEngine(gl, width, height)
+  const engine = makeEngine(gl, 1088, 612)
   engine.setCover(madeUpCover())
   const pixel = new Uint8Array(4)
   const finish = () =>
@@ -1132,29 +1212,48 @@ const bench = () => {
       ])
     finish()
   }
+  const drawAlone = (index: number) => {
+    const song = madeUpSong(124)
+    for (let step = 0; step < frames; step++)
+      engine.sceneOnly(song(at + step / 60), 1 / 60, index)
+    finish()
+  }
+  // Each scene steps through: warm up, time whole frames, time its pass.
   let index = 0
-  let warmed = false
+  let step: 'warm' | 'frames' | 'alone' = 'warm'
   let started = -1
+  let frameMs = 0
   const tick = (now: number) => {
-    if (started >= 0) {
-      const ms = (now - started) / frames
+    if (step === 'alone') {
+      frameMs = (now - started) / frames
+      started = now
+      drawAlone(index)
+      step = 'frames'
+      requestAnimationFrame(tick)
+      return
+    }
+    if (step === 'frames' && started >= 0) {
+      const alone = (now - started) / frames
       const name = SCENES[index]?.name ?? ''
-      lines.push(`${name.padEnd(10)} ${ms.toFixed(1).padStart(7)} ms a frame`)
+      lines.push(
+        `${name.padEnd(10)} ${frameMs.toFixed(1).padStart(7)} ms a frame ${alone.toFixed(1).padStart(7)} ms its own pass`,
+      )
       out.textContent = lines.join('\n')
       started = -1
+      step = 'warm'
       index++
     }
     if (index >= SCENES.length) {
       console.log(`bench\n${lines.join('\n')}`)
       return
     }
-    if (warmed) {
-      warmed = false
+    if (step === 'warm') {
+      draw(index, 0, 3)
+      step = 'frames'
+    } else {
       started = now
       draw(index, 3, frames)
-    } else {
-      warmed = true
-      draw(index, 0, 3)
+      step = 'alone'
     }
     requestAnimationFrame(tick)
   }

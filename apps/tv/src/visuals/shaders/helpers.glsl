@@ -37,18 +37,28 @@ float fbm(highp vec2 p) {
   return textureLod(uFbm, p / 8.0, 0.0).r;
 }
 
+// Two fractal noises at once, each 0 to 1: `fbm` and the same noise
+// turned a quarter and moved (`uFbm`'s alpha), so they don't follow each
+// other, and a point moving one way moves the second noise another.
+vec2 fbm2(highp vec2 p) {
+  return textureLod(uFbm, p / 8.0, 0.0).ra;
+}
+
 // How fast `fbm` rises across and up at `p`, per unit.
 vec2 fbmSlope(highp vec2 p) {
   return (textureLod(uFbm, p / 8.0, 0.0).gb - 0.5) * 8.0;
 }
 
-// The cover's color, swinging through its shades as t goes 0 to 1 and on.
+// The cover's color, swinging through its shades as t goes 0 to 1 and on:
+// A to B, B to C, C back to A, easing in and out of each. Only the pair it
+// is between is mixed, as every scene calls this at every pixel.
 vec3 palette(highp float t) {
   float s = fract(t) * 3.0;
-  vec3 a = mix(uColorA, uColorB, smoothstep(0.0, 1.0, s));
-  vec3 b = mix(uColorB, uColorC, smoothstep(1.0, 2.0, s));
-  vec3 c = mix(uColorC, uColorA, smoothstep(2.0, 3.0, s));
-  return s < 1.0 ? a : (s < 2.0 ? b : c);
+  float f = fract(s);
+  f = f * f * (3.0 - 2.0 * f);
+  vec3 from = s < 1.0 ? uColorA : (s < 2.0 ? uColorB : uColorC);
+  vec3 to = s < 1.0 ? uColorB : (s < 2.0 ? uColorC : uColorA);
+  return mix(from, to, f);
 }
 
 // 0 to 1 and back, so a picture repeats as mirror images instead of seams.

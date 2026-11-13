@@ -1,143 +1,115 @@
 // CHROME: a liquid-metal creature. Blobs of mirror metal orbit and melt
 // into each other, gathering into one on every bar's first beat; the
 // spectrum ripples its skin, it flinches on the kick, and a drop blows it
-// apart. It reflects a studio lit in the cover's colors.
+// apart. It mirrors a studio lit in the cover's colors: a bright sky over a
+// horizon, a dark floor, and a hard light that flares on the beat.
 //
-// Worked out once a frame (motion.rs): each blob's centre and radius, how
-// far they melt into each other, the camera (where it is, then its right,
-// up, and forward), and how much bigger than each blob a ball must be to
-// hold its share of the shape, its ripples, and its glow. A ray marches
-// only from the first such ball it enters to the last it leaves, at most
-// `STEPS`; the background around the creature takes no steps at all.
-//
-// Marching stays highp: positions run to about 3, where mediump only
-// tells apart steps of 0.002, as large as the distance that counts as a
-// hit, and the normals would come out as noise.
+// The blobs move in 3D, but motion.rs sees them through the camera once a
+// frame and hands over where each shows on the picture and how big
+// (`uBlobs`). Here each pixel finds how far it is from each blob's disc
+// and melts the five together (a smooth minimum), keeping which way is out
+// and how big the blob it is in is. Inside is metal: how deep in, and which
+// way is out, make the normal of a rounded surface, which reflects the
+// room. A few sums a blob, where marching the shape in 3D took up to thirty
+// steps against all five.
 
-uniform vec4 uBlobs[5];
-uniform float uMelt;
-uniform vec3 uCamera[4];
-uniform float uMargin;
+uniform vec3 uBlobs[5]; // centre on the picture (`centered()` units), radius
+uniform float uMelt;    // how far blobs melt into each other, the same units
+uniform vec3 uCamera[4]; // where the camera is, then its right, up, forward
 
-const int STEPS = 30;
+// Chrome's lens (motion.rs, `FOCAL`).
+const float FOCAL = 1.6;
 
-highp float blobs(highp vec3 p) {
-  highp float d = 1e3;
-  for (int i = 0; i < 5; i++) {
-    highp float sphere = length(p - uBlobs[i].xyz) - uBlobs[i].w;
-    // Melt together (smooth minimum).
-    highp float h = clamp(0.5 + 0.5 * (sphere - d) / uMelt, 0.0, 1.0);
-    d = mix(sphere, d, h) - uMelt * h * (1.0 - h);
-  }
-  return d;
-}
-
-// The most the skin ripples out, anywhere, this frame.
-float rippleReach() {
-  return 0.015 + 0.05 * max(uLevels[3], uLevels[7]) * uBands.w;
-}
-
-// Ripples on the skin, each direction its own band.
-highp float ripple(highp vec3 p) {
-  vec3 n = normalize(p + 1e-4);
-  float band = mix(uLevels[3], uLevels[7], n.y * 0.5 + 0.5);
-  float wave = sin(n.x * 9.0 + uDrive * 1.3) * sin(n.z * 9.0 - uDrive) * sin(n.y * 7.0 + uBeats * PI);
-  return wave * (0.015 + 0.05 * band * uBands.w);
-}
-
-highp float shape(highp vec3 p) {
-  return blobs(p) - ripple(p);
-}
-
-highp vec3 normalAt(highp vec3 p) {
-  const vec2 e = vec2(0.002, -0.002);
-  return normalize(
-    e.xyy * shape(p + e.xyy) + e.yyx * shape(p + e.yyx) +
-    e.yxy * shape(p + e.yxy) + e.xxx * shape(p + e.xxx)
-  );
-}
-
-// The studio the metal reflects: a dark room, bands of colored light, and a
-// floor glowing on the beat.
+// The studio the metal mirrors, by direction (y up): a sky that glows in
+// the cover's color at the horizon and darkens above, with wide soft
+// lights drifting across it; a sharp bright horizon; a dark floor that
+// glows on the beat. Only smooth light, so the metal shows its shape, not
+// a picture. No reads.
 vec3 studio(vec3 dir) {
-  float up = dir.y * 0.5 + 0.5;
-  vec3 color = mix(uColorC * 0.04, uColorB * 0.2, up);
-  float a = atan(dir.z, dir.x);
-  float strips = pow(max(0.0, sin(a * 3.0 + uDrive * 0.2)), 40.0) * smoothstep(0.1, 0.5, dir.y);
-  color += palette(a / TAU + uTime * 0.02) * strips * (1.5 + 2.0 * uBeatPulse);
-  color += uColorA * pow(max(dir.y, 0.0), 12.0) * 3.0;
-  color += palette(0.66) * smoothstep(-0.2, -0.9, dir.y) * (0.15 + 0.8 * uBeatPulse);
+  float y = dir.y;
+  vec3 sky = mix(uColorA * 0.85, uColorC * 0.1, smoothstep(0.0, 0.7, y));
+  float soft = 0.5 + 0.5 * sin(dir.x * 2.6 + dir.z * 1.7 + uDrive * 0.15);
+  sky += mix(uColorA, vec3(1.0), 0.25) * (soft * soft * 0.45 * smoothstep(0.08, 0.5, y));
+  vec3 ground = mix(uColorC * 0.1, uColorB * 0.4, smoothstep(-0.6, 0.0, y));
+  ground += uColorC * (1.0 - smoothstep(-0.9, -0.3, y)) * 0.6 * uBeatPulse;
+  vec3 color = mix(ground, sky, smoothstep(-0.015, 0.015, y));
+  color += mix(uColorA, vec3(1.0), 0.4) * exp(-abs(y) * 45.0) * 0.7;
   return color;
 }
 
 void main() {
   highp vec2 p = centered();
-  highp vec3 eye = uCamera[0];
-  highp vec3 dir = normalize(uCamera[3] * 1.6 + uCamera[1] * p.x + uCamera[2] * p.y);
 
-  // Where the ray first enters a blob's grown ball, and last leaves one.
-  highp float enter = 1e3;
-  highp float leave = -1.0;
+  // How far out of the metal (negative inside), which way is out, and how
+  // big the blob here is, each melted across the blobs. Kept highp: the
+  // edge is found to a fraction of a pixel.
+  highp float away = 1e3;
+  highp vec2 way = vec2(0.0);
+  highp float size = 0.0;
   for (int i = 0; i < 5; i++) {
-    highp vec3 from = eye - uBlobs[i].xyz;
-    highp float grown = uBlobs[i].w + uMargin;
-    highp float b = dot(from, dir);
-    highp float inside = b * b - dot(from, from) + grown * grown;
-    if (inside > 0.0) {
-      highp float span = sqrt(inside);
-      enter = min(enter, -b - span);
-      leave = max(leave, -b + span);
-    }
+    highp vec2 d = p - uBlobs[i].xy;
+    highp float len = max(length(d), 1e-4);
+    highp float disc = len - uBlobs[i].z;
+    // The smooth minimum, and the same blend for the rest: its slope is
+    // exactly the two slopes blended so.
+    highp float h = clamp(0.5 + 0.5 * (away - disc) / uMelt, 0.0, 1.0);
+    away = mix(away, disc, h) - uMelt * h * (1.0 - h);
+    way = mix(way, d / len, h);
+    size = mix(size, uBlobs[i].z, h);
   }
-  highp float d = 1.0;
-  highp float t = 0.0;
-  // How close the ray came to the metal, for its glow.
-  highp float nearest = 1.0;
-  if (leave > 0.0) {
-    t = max(enter, 0.0);
-    highp float end = leave;
-    float reach = rippleReach();
-    highp float last = 1e3;
-    for (int i = 0; i < STEPS; i++) {
-      highp vec3 at = eye + dir * t;
-      d = blobs(at);
-      // Away from the skin its ripples can't reach the ray: step past
-      // them in one go. Close to it, follow the skin itself, a little
-      // short of each step, as the shape is only roughly a distance.
-      highp float advance = d - reach;
-      if (advance < 0.04) {
-        d -= ripple(at);
-        advance = d * 0.9;
-        // Between this step and the last, the ray came closer than either
-        // (where it ran past the metal): estimate how close.
-        highp float y = d * d / (2.0 * last);
-        if (y < d) nearest = min(nearest, sqrt(d * d - y * y));
-      }
-      last = d;
-      nearest = min(nearest, d);
-      if (d < 0.002 || t > end) break;
-      t += advance;
-    }
-  }
+  // Which way is out, shorter where blobs meet and their ways cancel: the
+  // surface there faces you instead of flipping over.
+  vec2 outward = vec2(way);
 
-  vec3 color;
-  if (d < 0.01) {
-    highp vec3 at = eye + dir * t;
-    vec3 n = normalAt(at);
-    vec3 reflected = reflect(vec3(dir), n);
-    float fresnel = pow(1.0 - max(dot(-vec3(dir), n), 0.0), 3.0);
-    vec3 metal = studio(reflected) * mix(vec3(0.75), palette(n.y * 0.3 + 0.1), 0.35);
-    color = metal * (0.65 + 0.6 * fresnel);
-    color += palette(0.33) * fresnel * (0.2 + 0.8 * uAccent);
-  } else {
-    color = studio(vec3(dir)) * 0.35;
+  // Ripples on the skin, each way from the middle its own band. Right in
+  // the middle every way is near, so they calm there instead of spiking.
+  float middle = length(vec2(p));
+  vec2 around = vec2(p) / max(middle, 1e-3);
+  float band = mix(uLevels[3], uLevels[7], around.y * 0.5 + 0.5);
+  float wave = sin(around.x * 9.0 + uDrive * 1.3) * sin(around.y * 7.0 + uBeats * PI);
+  wave *= smoothstep(0.0, 0.25, middle);
+  away -= wave * (0.015 + 0.05 * band * uBands.w) * FOCAL / 2.5;
+
+  // The edge is smoothed over a pixel.
+  float solid = clamp(0.5 - away * uRes.y, 0.0, 1.0);
+
+  // The ray through this pixel, the camera's way: x right, y up, z back
+  // toward the viewer.
+  highp vec3 view = normalize(vec3(p, -FOCAL));
+  vec3 color = vec3(0.0);
+  if (solid < 1.0) {
+    // Behind it, the dark room, lighter toward the top.
+    color = mix(uColorC * 0.025, uColorB * 0.09, smoothstep(-0.5, 0.6, float(p.y)));
     // A halo around the metal in the cover's colors: a thin bright rim
-    // that fades quickly, by how close the ray passed. (It used to add up
-    // a little at every step, and steps crowd in where a ray grazes the
-    // metal, about one over the square root of how close it came.)
-    float near = max(nearest, 0.0002);
+    // that fades quickly, by how far the metal is (in the scene's units,
+    // about the middle's distance away).
+    float near = max(float(away) * 2.5 / FOCAL, 0.0002);
     float glow = min(0.024 * inversesqrt(near), 0.6) * exp(-near * 16.0);
     color += palette(uTime * 0.03) * glow * (0.6 + 1.5 * uEnergy);
+  }
+  if (solid > 0.0) {
+    // How far from the middle toward the edge, 0 to 1: a ball's normal.
+    float edge = clamp(1.0 + float(away) / max(float(size), 1e-3), 0.0, 1.0);
+    vec2 tilt = outward * edge;
+    vec3 n = vec3(tilt, sqrt(max(1.0 - dot(tilt, tilt), 0.0)));
+    vec3 reflected = reflect(vec3(view), n);
+    float grazing = 1.0 - max(dot(-vec3(view), n), 0.0);
+    float fresnel = grazing * grazing * grazing;
+    // The studio turns with the camera; the metal mirrors most of it, and
+    // all of it where it turns away.
+    vec3 room = studio(uCamera[1] * reflected.x + uCamera[2] * reflected.y - uCamera[3] * reflected.z);
+    vec3 metal = room * mix(vec3(0.8), mix(vec3(1.0), uColorA, 0.25), fresnel);
+    // A bright rim where the metal turns away, hotter on sharp hits.
+    metal += mix(uColorA, vec3(1.0), 0.35) * fresnel * grazing * (0.7 + 0.9 * uAccent);
+    // A hard light above and to the left: a crisp spot with a soft bloom
+    // round it, flaring on the beat.
+    float light = max(dot(reflected, vec3(-0.36, 0.62, 0.7)), 0.0);
+    float glint = light * light;
+    glint *= glint;
+    float spot = glint * glint * glint * glint;
+    spot *= spot;
+    metal += mix(vec3(1.0), uColorA, 0.15) * (spot * spot * (2.5 + 3.5 * uBeatPulse) + glint * 0.12);
+    color = mix(color, metal, solid);
   }
   fragColor = vec4(color, 1.0);
 }

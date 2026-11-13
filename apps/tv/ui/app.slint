@@ -1096,6 +1096,9 @@ export component App inherits Window {
             size: Metrics.u * 5;
             title: "Add songs";
             subtitle: "Scan with your phone\non this Wi-Fi";
+            // Over the visuals Skia redraws the screen every frame: keep
+            // this card, which never changes, as one cached picture.
+            cache-rendering-hint: true;
         }
     }
 

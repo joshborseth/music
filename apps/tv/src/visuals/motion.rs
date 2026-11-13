@@ -15,25 +15,21 @@ use super::music::Music;
 pub const BLOBS: usize = 5;
 /// Ink's pourers.
 pub const POURERS: usize = 3;
-/// How far past its blobs Chrome's glow shows (`chrome.glsl`): at 0.2 it
-/// is under 1% of its brightest.
-const GLOW_REACH: f32 = 0.2;
-/// The most Chrome's skin ripples out (`chrome.glsl`, `ripple`).
-const RIPPLE_REACH: f32 = 0.065;
+/// Chrome's lens: a point `d` ahead of the camera and `x` across shows
+/// `x * FOCAL / d` from the middle of the picture, in `centered()` units.
+const FOCAL: f32 = 1.6;
 
 /// One frame's values for one scene showing (some depend on its seed).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Motion {
-    /// Chrome: each blob's centre and radius (`uBlobs`).
-    pub blobs: [[f32; 4]; BLOBS],
-    /// Chrome: how far the blobs melt into each other (`uMelt`).
+    /// Chrome: each blob as the camera sees it: its centre on the
+    /// picture, in `centered()` units, and its radius there (`uBlobs`).
+    pub blobs: [[f32; 3]; BLOBS],
+    /// Chrome: how far the blobs melt into each other, on the picture
+    /// (`uMelt`).
     pub melt: f32,
-    /// Chrome: how much bigger than each blob a ball must be to hold its
-    /// share of the shape, with melting, ripples, and glow (`uMargin`).
-    /// A ray marches only through these balls.
-    pub margin: f32,
     /// Chrome: the camera: where it is, then its right, up, and forward
-    /// (`uCamera`).
+    /// (`uCamera`). The room the metal reflects turns with it.
     pub camera: [[f32; 3]; 4],
     /// Ink: each pourer's place, size, and how much it pours (`uPour`).
     pub pour: [[f32; 4]; POURERS],
@@ -52,25 +48,7 @@ impl Motion {
     pub fn new(music: &Music, seed: f32) -> Self {
         let drive = music.drive;
 
-        // Chrome: blobs orbit, gathering on each bar's first beat.
-        let gather = (1.0 - music.bar.fract()).powi(2) * 0.6 + 0.4 - 0.4 * music.drop;
-        let spread = (0.55 + 0.25 * music.intensity + 1.1 * music.drop) * (1.0 - 0.35 * gather);
-        let mut blobs = [[0.0; 4]; BLOBS];
-        for (index, blob) in blobs.iter_mut().enumerate() {
-            let i = index as f32;
-            let centre = [
-                (drive * (0.31 + i * 0.07) + i * 1.9).sin() * spread,
-                (drive * (0.27 + i * 0.05) + i * 2.7).cos() * 0.7 * spread,
-                (drive * (0.19 + i * 0.09) + i * 0.8).sin() * spread,
-            ];
-            let radius = 0.27 + 0.16 * music.levels[index] + 0.05 * music.kick;
-            *blob = [centre[0], centre[1], centre[2], radius];
-        }
-        let melt = 0.35 - 0.2 * music.drop;
-        // Each blob melting into the others swells the shape by up to a
-        // quarter of `melt` past them; four in a row, by up to `melt`.
-        let margin = melt + RIPPLE_REACH + GLOW_REACH;
-
+        // Chrome: the camera circles the middle, pushing in on the kick.
         let punch = 1.0 + 0.06 * music.kick;
         let (sin, cos) = (drive * 0.07).sin_cos();
         let distance = 2.5 / punch;
@@ -79,6 +57,25 @@ impl Motion {
         // cross(up, forward), with up = (0, 1, 0).
         let right = normalize([forward[2], 0.0, -forward[0]]);
         let up = cross(forward, right);
+
+        // Chrome: blobs orbit, gathering on each bar's first beat, and are
+        // seen through the camera. A blob flung past the camera on a drop
+        // shrinks away before it gets there.
+        let gather = (1.0 - music.bar.fract()).powi(2) * 0.6 + 0.4 - 0.4 * music.drop;
+        let spread = (0.55 + 0.25 * music.intensity + 1.1 * music.drop) * (1.0 - 0.35 * gather);
+        let mut blobs = [[0.0; 3]; BLOBS];
+        for (index, blob) in blobs.iter_mut().enumerate() {
+            let i = index as f32;
+            let centre = [
+                (drive * (0.31 + i * 0.07) + i * 1.9).sin() * spread,
+                (drive * (0.27 + i * 0.05) + i * 2.7).cos() * 0.7 * spread,
+                (drive * (0.19 + i * 0.09) + i * 0.8).sin() * spread,
+            ];
+            let radius = 0.27 + 0.16 * music.levels[index] + 0.05 * music.kick;
+            *blob = project(centre, radius, [eye, right, up, forward]);
+        }
+        // As far as the old 3D shape melted, seen at the middle's distance.
+        let melt = (0.35 - 0.2 * music.drop) * FOCAL / distance;
 
         // Ink: three pourers circling, each fed by its slice of the music.
         let mut pour = [[0.0; 4]; POURERS];
@@ -121,7 +118,6 @@ impl Motion {
         Self {
             blobs,
             melt,
-            margin,
             camera: [eye, right, up, forward],
             pour,
             turn,
@@ -129,6 +125,26 @@ impl Motion {
             shake,
         }
     }
+}
+
+/// A ball at `centre` with `radius` as `camera` (where it is, then its
+/// right, up, and forward) sees it: its centre on the picture and its
+/// radius there. Nothing shows of a ball at or behind the camera.
+fn project(centre: [f32; 3], radius: f32, [eye, right, up, forward]: [[f32; 3]; 4]) -> [f32; 3] {
+    let away = [centre[0] - eye[0], centre[1] - eye[1], centre[2] - eye[2]];
+    let ahead = dot(away, forward);
+    // Shrink away between 0.6 and 0.2 ahead, rather than fill the screen.
+    let near = ((ahead - 0.2) / 0.4).clamp(0.0, 1.0);
+    let ahead = ahead.max(0.2);
+    [
+        dot(away, right) * FOCAL / ahead,
+        dot(away, up) * FOCAL / ahead,
+        radius * FOCAL / ahead * near * near * (3.0 - 2.0 * near),
+    ]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn length(v: [f32; 3]) -> f32 {
@@ -206,37 +222,52 @@ mod tests {
         }
     }
 
-    /// The shape `chrome.glsl` marches: the blobs melted together.
-    fn shape(motion: &Motion, p: [f32; 3]) -> f32 {
-        let mut d = 1e3;
-        for blob in motion.blobs {
-            let sphere = length([p[0] - blob[0], p[1] - blob[1], p[2] - blob[2]]) - blob[3];
-            let h = (0.5 + 0.5 * (sphere - d) / motion.melt).clamp(0.0, 1.0);
-            d = sphere + (d - sphere) * h - motion.melt * h * (1.0 - h);
-        }
-        d
+    #[test]
+    fn blobs_show_where_the_camera_sees_them() {
+        let camera = Motion::new(&music(), 0.3).camera;
+        let [eye, right, up, forward] = camera;
+        // The middle of the scene, straight ahead: the middle of the picture.
+        let [x, y, radius] = project([0.0, 0.0, 0.0], 0.3, camera);
+        assert!(x.abs() < 1e-5 && y.abs() < 1e-5, "{x} {y}");
+        let distance = length(eye);
+        assert!((radius - 0.3 * FOCAL / distance).abs() < 1e-5);
+        // Up and to the right of it shows up and to the right.
+        let moved = [
+            right[0] * 0.2 + up[0] * 0.1,
+            right[1] * 0.2 + up[1] * 0.1,
+            right[2] * 0.2 + up[2] * 0.1,
+        ];
+        let [x, y, _] = project(moved, 0.3, camera);
+        assert!((x - 0.2 * FOCAL / distance).abs() < 1e-4, "{x}");
+        assert!((y - 0.1 * FOCAL / distance).abs() < 1e-4, "{y}");
+        // Nearer is bigger, and a ball behind the camera shows nothing.
+        let nearer = [-forward[0], -forward[1], -forward[2]];
+        assert!(project(nearer, 0.3, camera)[2] > radius);
+        let behind = [
+            eye[0] - forward[0],
+            eye[1] - forward[1],
+            eye[2] - forward[2],
+        ];
+        assert_eq!(project(behind, 0.3, camera)[2], 0.0);
     }
 
     #[test]
-    fn the_margin_holds_the_melted_shape() {
-        // Wherever the shape (and its ripples) comes near, some blob's
-        // grown ball holds the spot: calm, and as a drop lands.
-        for drop in [0.0, 0.4, 1.0] {
-            let motion = Motion::new(&Music { drop, ..music() }, 0.3);
-            for x in -30..=30 {
-                for y in -30..=30 {
-                    for z in -30..=30 {
-                        let p = [x as f32 * 0.1, y as f32 * 0.1, z as f32 * 0.1];
-                        if shape(&motion, p) - RIPPLE_REACH > GLOW_REACH {
-                            continue;
-                        }
-                        let held = motion.blobs.iter().any(|blob| {
-                            let away = length([p[0] - blob[0], p[1] - blob[1], p[2] - blob[2]]);
-                            away < blob[3] + motion.margin
-                        });
-                        assert!(held, "{p:?} is outside every ball");
-                    }
+    fn blobs_stay_finite_as_a_drop_flings_them() {
+        for drop in [0.0, 0.5, 1.0] {
+            for step in 0..400 {
+                let motion = Motion::new(
+                    &Music {
+                        drop,
+                        drive: step as f32 * 0.37,
+                        ..music()
+                    },
+                    0.3,
+                );
+                for [x, y, radius] in motion.blobs {
+                    assert!(x.is_finite() && y.is_finite() && radius.is_finite());
+                    assert!((0.0..10.0).contains(&radius), "{radius}");
                 }
+                assert!(motion.melt > 0.05 && motion.melt < 0.5, "{}", motion.melt);
             }
         }
     }

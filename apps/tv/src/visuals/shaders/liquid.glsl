@@ -2,8 +2,8 @@
 // The currents swell with the bass and glint on sharp hits. For quiet
 // stretches: intros, breakdowns, ballads.
 //
-// Each `fbm` is one read of noise worked out ahead (`uFbm`), so the five
-// here cost five reads, not twenty.
+// Noise is worked out ahead (`uFbm`), and `fbm2` reads two at once, so
+// the three noises and the cover here cost four reads, not twenty-four.
 
 void main() {
   // Kept highp: the noise is read at sums of p and the warps, up to about
@@ -12,11 +12,9 @@ void main() {
   highp float t = uDrive * 0.06 + uSeed * 17.0;
 
   // Warp the plane twice over (domain warping) for folds within folds.
-  vec2 q = vec2(fbm(p * 1.2 + vec2(0.0, t)), fbm(p * 1.2 + vec2(5.2, 1.3 - t * 0.8)));
-  vec2 r = vec2(
-    fbm(p * 1.5 + 3.2 * q + vec2(1.7, 9.2) + t * 0.7),
-    fbm(p * 1.5 + 3.2 * q + vec2(8.3, 2.8) - t * 0.6)
-  );
+  // Each warp's two halves drift different ways as the clock moves it.
+  vec2 q = fbm2(p * 1.2 + vec2(0.0, t));
+  vec2 r = fbm2(p * 1.5 + 3.2 * q + vec2(1.7, 9.2) + t * 0.7);
   float f = fbm(p * 1.8 + 4.0 * r);
 
   float swell = 1.0 + uBands.x * 0.3 + uBeatPulse * 0.08 * (0.4 + uEnergy);
