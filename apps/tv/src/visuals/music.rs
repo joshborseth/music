@@ -94,9 +94,6 @@ pub struct Listener {
     pub history: Vec<u8>,
     /// 0 to 1: time since the last history row, in rows.
     pub history_age: f32,
-    /// The loudest band anywhere in the history, 0 to 1: how high
-    /// `terrain.glsl`'s mountains can reach.
-    pub history_peak: f32,
     history_changed: bool,
 
     // Live hearing.
@@ -146,7 +143,6 @@ impl Listener {
             wave: [128; WAVE],
             history: vec![0; BANDS * HISTORY_ROWS],
             history_age: 0.0,
-            history_peak: 0.0,
             history_changed: true,
             bass_average: 0.0,
             last_bass: 0.0,
@@ -258,8 +254,6 @@ impl Listener {
                 .copy_within(0..BANDS * (HISTORY_ROWS - 1), BANDS);
             self.history[..BANDS].copy_from_slice(&self.spectrum);
             self.history_changed = true;
-            let peak = self.history.iter().copied().max().unwrap_or(0);
-            self.history_peak = f32::from(peak) / 255.0;
         }
 
         // The mood, and surges, as heard.

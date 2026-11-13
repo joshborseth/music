@@ -21,16 +21,19 @@ void main() {
   // Fade, with a floor step so the last traces clear in 8-bit color.
   ink = max(ink * (0.988 - 0.01 * uDrop) - 0.8 / 255.0, 0.0);
   // Fresh ink: three pourers circling, each fed by its slice of the music.
+  // Most of the picture is far from all three: it skips their colors.
   highp float shade = floor(uBeats / 4.0) * 0.13 + uSeed;
   for (int i = 0; i < 3; i++) {
     vec4 pourer = uPour[i];
     vec2 d = p - pourer.xy;
     float pour = exp(-dot(d, d) / (pourer.z * pourer.z)) * pourer.w;
-    ink += palette(float(i) / 3.0 + shade) * pour;
+    if (pour > 0.001) ink += palette(float(i) / 3.0 + shade) * pour;
   }
-  // A ring of the waveform at each bar.
-  float ring = abs(length(p) - (0.05 + 0.6 * fract(uBar)));
-  ink += palette(uBar + 0.5) * uBarPulse * 0.25 * exp(-ring * 90.0);
+  // A ring of the waveform at each bar, gone a moment after it.
+  if (uBarPulse > 0.004) {
+    float ring = abs(length(p) - (0.05 + 0.6 * fract(uBar)));
+    ink += palette(uBar + 0.5) * uBarPulse * 0.25 * exp(-ring * 90.0);
+  }
   // Keep the darks from banding in 8 bits.
   ink += (hash12(gl_FragCoord.xy + uTime) - 0.5) / 255.0;
   fragColor = vec4(min(ink, vec3(1.4)), 1.0);

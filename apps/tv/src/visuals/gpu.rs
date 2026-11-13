@@ -9,7 +9,9 @@
 //! 1. Each scene showing draws into its own pair of textures at a reduced
 //!    size, reading its last frame from the other (trails, ink, echoes).
 //!    While one scene dissolves into the next, the two take turns, one a
-//!    frame, so a change of scene costs no more than one scene.
+//!    frame, so a change of scene costs no more than one scene. Two scenes
+//!    draw more on top: Particles its grains as points, and Terrain its
+//!    land as a mesh over the sky.
 //! 2. The bright parts are cut out at a quarter size and blurred (bloom).
 //! 3. `final.glsl` dissolves one scene into the next and adds the glow and
 //!    the camera tricks, into a picture the scenes' size.
@@ -20,6 +22,10 @@
 //!
 //! Each scene's size follows the TV (`sizing.rs`): it shrinks when its
 //! frames come late, and settles on the largest size it can hold.
+//!
+//! Every pass covers its whole target, and says so before it draws
+//! (`begin_pass`): a tiled GPU like the TV's Mali then skips loading the
+//! target's old pixels from memory, a full read of it each time.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,6 +58,14 @@ const SCENE_SHADERS: [(&str, &str); 8] = [
 const PARTICLES: usize = 7;
 /// Grains along each side of the particle cover.
 const GRID: i32 = 160;
+/// The scene whose land is drawn as a mesh on top of its sky.
+const TERRAIN: usize = 3;
+/// Terrain's mesh (`terrain.vert`, which works out the same): a column on
+/// each band of the history, the road's middle and edge, and five far
+/// columns (`FAR_COLUMNS`), each side; a row for each history row and the
+/// far edge. One triangle strip a pair of rows, joined by empty triangles.
+const LAND_COLUMNS: i32 = 2 * (1 + BANDS as i32 + 5) + 1;
+const LAND_VERTICES: i32 = HISTORY_ROWS as i32 * (2 * LAND_COLUMNS + 2) - 2;
 
 /// The scenes' height at full size; the screen's own if it is smaller.
 const BASE_HEIGHT: u32 = 720;
@@ -105,6 +119,7 @@ pub struct Renderer {
     vao: glow::VertexArray,
     scenes: Vec<Option<Program>>,
     points: Option<Program>,
+    land: Option<Program>,
     bright: Program,
     blur: Program,
     final_pass: Program,
@@ -183,6 +198,18 @@ impl Renderer {
                     include_str!("shaders/particles.frag")
                 ),
             );
+            let terrain = SCENE_SHADERS[TERRAIN].1;
+            let land = compile(
+                "terrain.vert",
+                &format!(
+                    "#version 300 es\n#define TERRAIN_LAND\n{COMMON}\n{HELPERS}\n#line 1\n{terrain}\n#line 1\n{}",
+                    include_str!("shaders/terrain.vert")
+                ),
+                &format!(
+                    "#version 300 es\n{COMMON}\n#line 1\n{}",
+                    include_str!("shaders/terrain.frag")
+                ),
+            );
             let bright = compile(
                 "bright.glsl",
                 &vertex,
@@ -235,6 +262,7 @@ impl Renderer {
                 vao,
                 scenes,
                 points,
+                land,
                 bright,
                 blur,
                 final_pass,
@@ -264,6 +292,7 @@ impl Renderer {
     pub fn can_draw(&self, scene: usize) -> bool {
         self.scenes.get(scene).is_some_and(Option::is_some)
             && (scene != PARTICLES || self.points.is_some())
+            && (scene != TERRAIN || self.land.is_some())
     }
 
     /// Each scene shown so far and its size, for the server's log:
@@ -449,9 +478,13 @@ impl Renderer {
                 self.compose(gl, a, b, shot.current, mix, fade, music, listener);
             }
 
-            // The screen.
+            // The screen. Skia cleared it and has moved on to our passes,
+            // so a tiled GPU would load it back from memory before this
+            // draw: clearing it again says the picture covers it all.
             gl.bind_framebuffer(glow::FRAMEBUFFER, saved.framebuffer);
             gl.viewport(0, 0, width as i32, height as i32);
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
             gl.use_program(Some(self.present.program));
             set_vec2(gl, &self.present, "uRes", width as f32, height as f32);
             set_f32(gl, &self.present, "uTime", music.time);
@@ -494,7 +527,7 @@ impl Renderer {
 
             // Bloom: bright parts at a quarter size, blurred across and down.
             let [bloom_a, bloom_b] = &self.bloom;
-            bind_target(gl, bloom_a);
+            begin_pass(gl, bloom_a);
             gl.use_program(Some(self.bright.program));
             self.set_music(
                 gl,
@@ -516,7 +549,7 @@ impl Renderer {
             );
             fullscreen(gl);
             for (from, to, across) in [(bloom_a, bloom_b, true), (bloom_b, bloom_a, false)] {
-                bind_target(gl, to);
+                begin_pass(gl, to);
                 gl.use_program(Some(self.blur.program));
                 bind_texture(gl, &self.blur, "uSource", 0, from.texture);
                 let (x, y) = if across {
@@ -529,7 +562,7 @@ impl Renderer {
             }
 
             // The picture, the scenes' size.
-            bind_target(gl, &self.picture);
+            begin_pass(gl, &self.picture);
             gl.use_program(Some(self.final_pass.program));
             self.set_music(
                 gl,
@@ -627,7 +660,7 @@ impl Renderer {
         unsafe {
             let scene = showing.scene;
             let [read, write] = &self.slots[slot].targets;
-            bind_target(gl, write);
+            begin_pass(gl, write);
             if let Some(Some(program)) = self.scenes.get(scene) {
                 gl.use_program(Some(program.program));
                 self.set_music(
@@ -660,6 +693,21 @@ impl Renderer {
                 self.bind_inputs(gl, points, None);
                 gl.draw_arrays(glow::POINTS, 0, GRID * GRID);
                 gl.disable(glow::BLEND);
+            }
+            if scene == TERRAIN
+                && let Some(land) = &self.land
+            {
+                gl.use_program(Some(land.program));
+                self.set_music(
+                    gl,
+                    land,
+                    music,
+                    (write.width, write.height),
+                    Some(showing),
+                    listener,
+                );
+                self.bind_inputs(gl, land, None);
+                gl.draw_arrays(glow::TRIANGLE_STRIP, 0, LAND_VERTICES);
             }
             let slot = &mut self.slots[slot];
             slot.targets.swap(0, 1);
@@ -710,7 +758,6 @@ impl Renderer {
             f("uSeed", seed);
             f("uHasCover", if self.has_cover { 1.0 } else { 0.0 });
             f("uHistoryAge", listener.history_age);
-            f("uHistoryPeak", listener.history_peak);
             if let Some(at) = program.uniforms.get("uBands") {
                 let [bass, mid, treble, level] = music.bands;
                 gl.uniform_4_f32(Some(at), bass, mid, treble, level);
@@ -727,9 +774,8 @@ impl Renderer {
 
             let motion = Motion::new(music, seed);
             f("uMelt", motion.melt);
-            f("uMargin", motion.margin);
             if let Some(at) = program.uniforms.get("uBlobs") {
-                gl.uniform_4_f32_slice(Some(at), motion.blobs.as_flattened());
+                gl.uniform_3_f32_slice(Some(at), motion.blobs.as_flattened());
             }
             if let Some(at) = program.uniforms.get("uCamera") {
                 gl.uniform_3_f32_slice(Some(at), motion.camera.as_flattened());
@@ -778,12 +824,13 @@ impl Renderer {
     /// Free every GL object.
     pub fn delete(self, gl: &Gl) {
         unsafe {
-            let programs = self.scenes.into_iter().flatten().chain(self.points).chain([
-                self.bright,
-                self.blur,
-                self.final_pass,
-                self.present,
-            ]);
+            let programs = self
+                .scenes
+                .into_iter()
+                .flatten()
+                .chain(self.points)
+                .chain(self.land)
+                .chain([self.bright, self.blur, self.final_pass, self.present]);
             for program in programs {
                 gl.delete_program(program.program);
             }
@@ -1104,6 +1151,14 @@ unsafe fn bind_target(gl: &Gl, target: &Target) {
     }
 }
 
+/// Draw into `target`, all of it: what it held is not needed.
+unsafe fn begin_pass(gl: &Gl, target: &Target) {
+    unsafe {
+        bind_target(gl, target);
+        gl.invalidate_framebuffer(glow::FRAMEBUFFER, &[glow::COLOR_ATTACHMENT0]);
+    }
+}
+
 unsafe fn bind_texture(gl: &Gl, program: &Program, name: &str, unit: u32, texture: glow::Texture) {
     unsafe {
         if let Some(at) = program.uniforms.get(name) {
@@ -1168,13 +1223,38 @@ const FBM_UNITS: usize = 8;
 
 /// Fractal noise worked out ahead, so a scene reads in one go what took it
 /// four reads and a loop: red is the value (0 to 1), green and blue its
-/// slope across and up (0.5 is flat, ±8 at the ends). Four octaves of
-/// smooth noise, each finer and turned from the last, as `fbm` used to
-/// make them at every pixel: 2.24 times finer and 26.6° round, then twice
-/// as fine and a quarter turn, twice. The turns have whole numbers in them,
-/// so every octave still repeats with the texture and it tiles without
-/// seams. The same numbers as the lab's `fbmPixels`.
+/// slope across and up (0.5 is flat, ±8 at the ends), and alpha a second
+/// value: the same noise turned a quarter and moved, so one read gives two
+/// that don't follow each other (`fbm2`). Four octaves of smooth noise,
+/// each finer and turned from the last, as `fbm` used to make them at
+/// every pixel: 2.24 times finer and 26.6° round, then twice as fine and a
+/// quarter turn, twice. The turns have whole numbers in them, so every
+/// octave still repeats with the texture and it tiles without seams. The
+/// same numbers as the lab's `fbmPixels`.
 pub fn fbm_pixels() -> Vec<u8> {
+    let per_unit = (FBM_SIDE / FBM_UNITS) as f64;
+    let byte = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut pixels = vec![0u8; FBM_SIDE * FBM_SIDE * 4];
+    for row in 0..FBM_SIDE {
+        for column in 0..FBM_SIDE {
+            let x = (column as f64 + 0.5) / per_unit;
+            let y = (row as f64 + 0.5) / per_unit;
+            let (value, across, up) = fbm_at(x, y);
+            // A quarter turn (x, y → −y, x), moved; the 8 keeps it positive
+            // and changes nothing, as the noise repeats every 8.
+            let (turned, _, _) = fbm_at(8.0 - y + 3.3, x + 1.9);
+            let at = (row * FBM_SIDE + column) * 4;
+            pixels[at] = byte(value);
+            pixels[at + 1] = byte(0.5 + across / 8.0);
+            pixels[at + 2] = byte(0.5 + up / 8.0);
+            pixels[at + 3] = byte(turned);
+        }
+    }
+    pixels
+}
+
+/// `fbm_pixels`' noise at (x, y), 0 to 1, and its slope across and up.
+fn fbm_at(x: f64, y: f64) -> (f64, f64, f64) {
     // Each octave's turn from the first, as rows: (2 −1; 1 2), then
     // (0 −2; 2 0) times the one before, twice.
     const TURNS: [[[f64; 2]; 2]; 4] = [
@@ -1184,36 +1264,22 @@ pub fn fbm_pixels() -> Vec<u8> {
         [[-8.0, 4.0], [-4.0, -8.0]],
     ];
     const TOTAL: f64 = 0.5 + 0.25 + 0.125 + 0.0625;
-    let per_unit = (FBM_SIDE / FBM_UNITS) as f64;
-    let byte = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-    let mut pixels = vec![0u8; FBM_SIDE * FBM_SIDE * 4];
-    for row in 0..FBM_SIDE {
-        for column in 0..FBM_SIDE {
-            let x = (column as f64 + 0.5) / per_unit;
-            let y = (row as f64 + 0.5) / per_unit;
-            let (mut value, mut across, mut up) = (0.0, 0.0, 0.0);
-            let mut amplitude = 0.5;
-            for (octave, [[a, b], [c, d]]) in TURNS.into_iter().enumerate() {
-                // A different offset each octave, so their grids don't line up.
-                let shift = octave as f64 * 0.37;
-                let (n, nx, ny) = smooth_noise(
-                    octave as u32,
-                    a * x + b * y + shift,
-                    c * x + d * y + shift * 1.7,
-                );
-                value += amplitude * n;
-                across += amplitude * (a * nx + c * ny);
-                up += amplitude * (b * nx + d * ny);
-                amplitude *= 0.5;
-            }
-            let at = (row * FBM_SIDE + column) * 4;
-            pixels[at] = byte(value / TOTAL);
-            pixels[at + 1] = byte(0.5 + across / TOTAL / 8.0);
-            pixels[at + 2] = byte(0.5 + up / TOTAL / 8.0);
-            pixels[at + 3] = 255;
-        }
+    let (mut value, mut across, mut up) = (0.0, 0.0, 0.0);
+    let mut amplitude = 0.5;
+    for (octave, [[a, b], [c, d]]) in TURNS.into_iter().enumerate() {
+        // A different offset each octave, so their grids don't line up.
+        let shift = octave as f64 * 0.37;
+        let (n, nx, ny) = smooth_noise(
+            octave as u32,
+            a * x + b * y + shift,
+            c * x + d * y + shift * 1.7,
+        );
+        value += amplitude * n;
+        across += amplitude * (a * nx + c * ny);
+        up += amplitude * (b * nx + d * ny);
+        amplitude *= 0.5;
     }
-    pixels
+    (value / TOTAL, across / TOTAL, up / TOTAL)
 }
 
 /// Smooth value noise for `fbm_pixels`, repeating every `FBM_UNITS`: the
@@ -1271,9 +1337,9 @@ mod tests {
         let pixels = fbm_pixels();
         assert_eq!(pixels.len(), FBM_SIDE * FBM_SIDE * 4);
         // Spot values the lab's `fbmPixels` gives.
-        assert_eq!(&pixels[..4], &[56, 147, 119, 255]);
+        assert_eq!(&pixels[..4], &[56, 147, 119, 95]);
         let middle = (128 * FBM_SIDE + 77) * 4;
-        assert_eq!(&pixels[middle..middle + 4], &[182, 104, 150, 255]);
+        assert_eq!(&pixels[middle..middle + 4], &[182, 104, 150, 149]);
     }
 
     #[test]
