@@ -26,7 +26,6 @@ use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 pub use look::Cover;
 
 use crate::App;
-use crate::audio::scope::SCOPE;
 use crate::catalog::Analysis;
 use crate::view::PlayClock;
 use director::{Director, Shot};
@@ -260,13 +259,12 @@ impl State {
             self.listener.new_song();
         }
         renderer.set_cover(gl, stage.cover.as_ref());
-        // Where the song is as heard: the clock counts what the device was
-        // handed, which plays a little later.
+        // The clock already counts what is heard.
         let seconds = self
             .clock
             .seconds()
             .filter(|(entry, _)| *entry == stage.entry_id)
-            .map(|(_, seconds)| seconds - SCOPE.latency().as_secs_f64());
+            .map(|(_, seconds)| seconds);
         let song = stage
             .analysis
             .as_deref()
