@@ -8,10 +8,17 @@ import {
   ArtistSummary,
   PlaylistEdit,
   PlaylistEditResult,
+  RadioStation,
   Session,
   Song,
 } from '@music/shared'
 
+import {
+  DownloadFailure,
+  DownloadKind,
+  DownloadedCollection,
+  StorageEstimate,
+} from './downloads/domain'
 import { LibraryFilter, LibraryItem } from './library'
 import { MediaKey } from './playback/domain'
 import { SwipeTarget } from './playback/swipe'
@@ -82,6 +89,37 @@ export const Message = defineMessageUnion({
   ClickedShuffleSongs: { songs: Schema.Array(Song) },
   ClickedSongActions: { song: Song },
   ClickedDevices: {},
+  ClickedSleepTimer: {},
+
+  /** Download on an album or playlist page. */
+  ClickedDownload: { collection: DownloadedCollection },
+  /** Remove a download, after confirming it. */
+  ClickedRemoveDownload: {
+    kind: DownloadKind,
+    id: Schema.String,
+    title: Schema.String,
+  },
+  ConfirmedRemoveDownload: { kind: DownloadKind, id: Schema.String },
+  SucceededLoadDownloads: {
+    collections: Schema.Array(DownloadedCollection),
+    savedBytes: Schema.Record(Schema.String, Schema.Number),
+    maybeStorage: Schema.Option(StorageEstimate),
+  },
+  FailedLoadDownloads: {},
+  CompletedSaveDownloads: {},
+  SucceededDownloadSong: {
+    videoId: Schema.String,
+    bytes: Schema.Number,
+    maybeStorage: Schema.Option(StorageEstimate),
+  },
+  FailedDownloadSong: {
+    videoId: Schema.String,
+    failure: DownloadFailure,
+    maybeStorage: Schema.Option(StorageEstimate),
+  },
+  CompletedRemoveDownloadedSongs: {
+    maybeStorage: Schema.Option(StorageEstimate),
+  },
   ClickedCloseSheet: {},
   SwipedDownSheet: {},
   SwipedDownPlayer: {},
@@ -209,6 +247,10 @@ export const Message = defineMessageUnion({
 
   ClickedPlaySongs: { songs: Schema.Array(Song), startIndex: Schema.Number },
   ClickedStartRadio: { song: Song },
+  /** Radio on an album or artist page. */
+  ClickedStartStationRadio: { station: RadioStation },
+  SucceededFetchRadio: { songs: Schema.Array(Song) },
+  FailedFetchRadio: {},
   ClickedEnqueueSongs: {
     songs: Schema.Array(Song),
     placement: Session.Placement,
@@ -219,6 +261,8 @@ export const Message = defineMessageUnion({
   ChangedSeekPosition: { seconds: Schema.Number },
   ClickedDevice: { deviceId: Schema.String },
   ClickedWakeDevice: { deviceId: Schema.String },
+  /** A sleep timer was picked in its sheet, or turned off with null. */
+  SelectedSleepTimer: { timer: Schema.NullOr(Session.SleepTimerChoice) },
   ClickedQueueEntry: { entryId: Schema.String },
   ClickedToggleAutoplay: {},
   ClickedToggleShuffle: {},

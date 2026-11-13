@@ -1,6 +1,7 @@
 import { Option } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
 
+import { downloadStatus } from '../downloads/domain'
 import { Message } from '../message'
 import { albumQuery } from '../query'
 import { collectionView } from './collection'
@@ -32,6 +33,7 @@ export const albumView = (
         maybeLengthSummary,
         tracks,
         explicitVideoIds,
+        maybeRadio,
       }) =>
         collectionView(
           {
@@ -43,6 +45,7 @@ export const albumView = (
               Option.getOrElse(album.maybeYear, () => ''),
             ]),
             maybeDescription,
+            download: downloadStatus(model.downloads, 'Album', album.id),
           },
           {
             tracks,
@@ -57,6 +60,7 @@ export const albumView = (
               artistNames: artistNames(album.artists),
               explicitVideoIds,
             }),
+            maybeRadio,
           },
           h,
         ),

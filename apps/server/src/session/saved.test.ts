@@ -105,6 +105,27 @@ describe('saved session', () => {
     expect(resumed.positionSeconds).toBe(12)
   })
 
+  test('a sleep timer still to come survives a restart, and a passed one does not', () => {
+    const timed: Model = {
+      ...playing(),
+      sleepTimer: { _tag: 'At', endsAt: 60_000 },
+    }
+    expect(restart(timed, 20_000, 30_000).sleepTimer).toEqual({
+      _tag: 'At',
+      endsAt: 60_000,
+    })
+    expect(restart(timed, 20_000, 60_000).sleepTimer).toBeNull()
+    const endOfSong: Model = { ...playing(), sleepTimer: { _tag: 'EndOfSong' } }
+    expect(restart(endOfSong, 20_000, 90_000).sleepTimer).toEqual({
+      _tag: 'EndOfSong',
+    })
+  })
+
+  test('a file saved before the sleep timer reads as none', () => {
+    const { sleepTimer: _sleepTimer, ...older } = toSaved(playing(), 2_000)
+    expect(fromSaved(older, 3_000).sleepTimer).toBeNull()
+  })
+
   test('the position never runs past the song', () => {
     const after = restart(playing(), 900_000, 900_000)
     expect(currentPosition(after, 900_000)).toBe(200)

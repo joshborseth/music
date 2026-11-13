@@ -11,7 +11,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,16 +22,15 @@ use slint::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::catalog::{
-    self, Analysis, Card, CardKind, CollectionKind, LIKED_PLAYLIST_ID, LikeRequest, SaveKind,
-    SaveRequest,
+    self, Analysis, Card, CardKind, CollectionKind, LIKED_PLAYLIST_ID, LikeRequest,
 };
 use crate::controller::UiAction;
 use crate::images::Shape;
 use crate::local_time::LocalTime;
 use crate::lyrics::{self, RowKind};
 use crate::nav::{
-    self, CONTROLS, CollectionButton, Control, Effect, Focus, IDLE_BUTTONS, IdleButton,
-    KEY_COLUMNS, KEYBOARD, Key, Load, Nav, Panel, PlayMode, RowRef, Tab, WIDE_KEYS,
+    self, COLLECTION_BUTTONS, CONTROLS, CollectionButton, Control, Effect, Focus, IDLE_BUTTONS,
+    IdleButton, KEY_COLUMNS, KEYBOARD, Key, Load, Nav, Panel, PlayMode, RowRef, Tab, WIDE_KEYS,
 };
 use crate::protocol::{Placement, RepeatMode};
 use crate::update::{self, UpdateStatus};
@@ -120,7 +118,6 @@ struct Models {
     shelf_titles: Vec<String>,
     offsets: Rc<VecModel<i32>>,
     keys: Rc<VecModel<KeyData>>,
-    recent_searches: Rc<VecModel<RowData>>,
     col_buttons: Rc<VecModel<ButtonData>>,
     col_rows: Rc<VecModel<RowData>>,
     menu_items: Rc<VecModel<MenuItemData>>,
@@ -141,7 +138,6 @@ impl Models {
             shelf_titles: Vec::new(),
             offsets: Rc::default(),
             keys: Rc::default(),
-            recent_searches: Rc::default(),
             col_buttons: Rc::default(),
             col_rows: Rc::default(),
             menu_items: Rc::default(),
@@ -159,7 +155,6 @@ impl Models {
         app.set_shelves(ModelRc::from(self.shelves.clone()));
         app.set_shelf_offsets(ModelRc::from(self.offsets.clone()));
         app.set_keys(ModelRc::from(self.keys.clone()));
-        app.set_recent_searches(ModelRc::from(self.recent_searches.clone()));
         app.set_col_buttons(ModelRc::from(self.col_buttons.clone()));
         app.set_col_rows(ModelRc::from(self.col_rows.clone()));
         app.set_menu_items(ModelRc::from(self.menu_items.clone()));
@@ -212,12 +207,8 @@ fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
     }
 }
 
-/// What the screen's updater hooks do, and where the TV keeps what it
-/// remembers; filled in by `lib.rs`.
+/// What the screen's updater hooks do; filled in by `lib.rs`.
 pub struct Hooks {
-    /// The file that keeps the recent searches. Without one they last only
-    /// until the app closes.
-    pub recent_searches: Option<PathBuf>,
     pub open_update_settings: Box<dyn Fn()>,
     /// Look for an update now, from the settings menu.
     pub check_for_updates: Box<dyn Fn()>,
@@ -348,11 +339,6 @@ impl Ui {
             .start(TimerMode::Repeated, CAPTURE_POLL, || {
                 with(Ui::poll_capture);
             });
-        if let Some(path) = &ui.hooks.recent_searches {
-            let recent = std::fs::read_to_string(path).unwrap_or_default();
-            ui.nav
-                .set_recent_searches(recent.lines().map(str::to_owned).collect());
-        }
         let effects = ui.nav.start();
         UI.with(|cell| *cell.borrow_mut() = Some(ui));
         with(|ui| {
@@ -616,45 +602,6 @@ impl Ui {
                             }
                         },
                     );
-                }
-                Effect::LoadSaved { kind, id } => {
-                    let catalog = self.catalog.clone();
-                    let wanted = id.clone();
-                    self.spawn(
-                        async move { catalog.saved(kind, &wanted).await },
-                        move |ui, result| {
-                            if let Ok(saved) = result {
-                                ui.nav.on_saved(kind, &id, saved);
-                            }
-                        },
-                    );
-                }
-                Effect::SetSaved { kind, id, saved } => {
-                    let catalog = self.catalog.clone();
-                    let request = SaveRequest {
-                        kind,
-                        id: id.clone(),
-                        saved,
-                    };
-                    self.spawn(
-                        async move { catalog.set_saved(&request).await },
-                        move |ui, result| match result {
-                            Ok(now_saved) => ui.nav.on_saved(kind, &id, now_saved),
-                            Err(message) => {
-                                ui.nav.on_saved(kind, &id, !saved);
-                                ui.nav.on_failure(&message, Instant::now());
-                            }
-                        },
-                    );
-                }
-                Effect::SaveSearches(recent) => {
-                    if let Some(path) = self.hooks.recent_searches.clone() {
-                        self.runtime.spawn_blocking(move || {
-                            if let Err(error) = std::fs::write(&path, recent.join("\n")) {
-                                log::warn!("couldn't keep the recent searches: {error}");
-                            }
-                        });
-                    }
                 }
                 Effect::OpenUpdateSettings => (self.hooks.open_update_settings)(),
                 Effect::OpenSettings => {
@@ -1268,9 +1215,7 @@ impl Ui {
                         has_image: image.is_some(),
                         image: image.unwrap_or_default(),
                         round: false,
-                        selected: selectable
-                            && !self.nav.queue_on_clear
-                            && index == self.nav.queue_row,
+                        selected: selectable && index == self.nav.queue_row,
                         current: Some(index) == session.current,
                     }
                 })
@@ -1281,14 +1226,6 @@ impl Ui {
             let upcoming = session.queue.get(after..).unwrap_or_default();
             let autoplay = upcoming.iter().filter(|entry| entry.autoplay).count();
             app.set_queue_summary(queue_summary(upcoming.len(), autoplay).into());
-            app.set_queue_clear_shown(self.nav.clearable() > 0);
-            app.set_queue_clear(ButtonData {
-                icon: "remove".into(),
-                label: "Clear".into(),
-                selected: selectable && self.nav.queue_on_clear,
-                active: false,
-                primary: false,
-            });
             app.set_queue_shuffle(session.shuffle);
             app.set_queue_repeat(match session.repeat {
                 RepeatMode::Off => 0,
@@ -1434,10 +1371,7 @@ impl Ui {
         let selectable = self.content_focused();
         self.draw_shelf_models(app, tab, selectable);
         let (title, subtitle) = match tab {
-            Tab::Library => (
-                "Your library",
-                "Your playlists, saved albums, and followed artists",
-            ),
+            Tab::Library => ("Your library", "Your playlists, saved albums, and followed artists"),
             _ => (time.greeting(), "Pick something to play on this TV"),
         };
         app.set_page_title(title.into());
@@ -1446,7 +1380,7 @@ impl Ui {
 
     fn draw_search(&mut self, app: &App) {
         let search = self.nav.search.clone();
-        let in_keyboard = self.content_focused() && !search.in_results && !search.in_recent;
+        let in_keyboard = self.content_focused() && !search.in_results;
         app.set_query(search.query.clone().into());
         app.set_keyboard_focused(in_keyboard);
         let mut keys: Vec<KeyData> = KEYBOARD
@@ -1471,23 +1405,6 @@ impl Ui {
         }));
         debug_assert_eq!(KEYBOARD.len() % KEY_COLUMNS, 0);
         sync(&self.models.keys, keys);
-        let recent = if search.showing_recent() {
-            let in_recent = self.content_focused() && search.in_recent;
-            search
-                .recent
-                .iter()
-                .enumerate()
-                .map(|(index, query)| RowData {
-                    kind: "search".into(),
-                    title: query.clone().into(),
-                    selected: in_recent && index == search.recent_row,
-                    ..RowData::default()
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        sync(&self.models.recent_searches, recent);
         let selectable = self.content_focused() && search.in_results;
         self.draw_shelf_models(app, Tab::Search, selectable);
         if search.query.trim().is_empty() {
@@ -1561,31 +1478,30 @@ impl Ui {
         };
         app.set_col_has_artwork(cover.is_some());
         app.set_col_artwork(cover.unwrap_or_default());
-        let saved = SaveKind::from_collection(page.kind)
-            .is_some_and(|kind| self.nav.is_saved(kind, &page.id));
-        let buttons = page
-            .buttons()
-            .iter()
-            .enumerate()
-            .map(|(index, button)| {
-                // Only Play has a label, so all four fit beside the cover;
-                // the hints say what the others do.
-                let (icon, label) = match button {
-                    CollectionButton::Play => ("play", "Play"),
-                    CollectionButton::Shuffle => ("shuffle", ""),
-                    CollectionButton::Queue => ("queue", ""),
-                    CollectionButton::Save if saved => ("check", ""),
-                    CollectionButton::Save => ("add", ""),
-                };
-                ButtonData {
-                    icon: icon.into(),
-                    label: label.into(),
-                    selected: focused && !page.in_list && page.button == index,
-                    active: *button == CollectionButton::Save && saved,
-                    primary: false,
-                }
-            })
-            .collect();
+        let has_tracks = collection.as_ref().is_some_and(|c| !c.tracks.is_empty());
+        let buttons = if has_tracks {
+            COLLECTION_BUTTONS
+                .iter()
+                .enumerate()
+                .map(|(index, button)| {
+                    // Only Play has a label, so all three fit beside the cover.
+                    let (icon, label) = match button {
+                        CollectionButton::Play => ("play", "Play"),
+                        CollectionButton::Shuffle => ("shuffle", ""),
+                        CollectionButton::Queue => ("queue", ""),
+                    };
+                    ButtonData {
+                        icon: icon.into(),
+                        label: label.into(),
+                        selected: focused && !page.in_list && page.button == index,
+                        active: false,
+                        primary: false,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         sync(&self.models.col_buttons, buttons);
         let Some(collection) = collection else {
             sync(&self.models.col_rows, Vec::new());
@@ -1682,40 +1598,14 @@ impl Ui {
     }
 
     fn draw_hints(&mut self, page: i32) {
-        let search = &self.nav.search;
-        let search_keyboard = page == 3 && !search.in_results && !search.in_recent;
-        let on_save = self.nav.collection().and_then(|page| {
-            let button = page.buttons().get(page.button).copied();
-            let kind = SaveKind::from_collection(page.kind)?;
-            (!page.in_list && button == Some(CollectionButton::Save))
-                .then(|| (kind, self.nav.is_saved(kind, &page.id)))
-        });
-        let save_label = match on_save {
-            Some((SaveKind::Album, false)) => "Save to your library",
-            Some((SaveKind::Album, true)) => "Remove from your library",
-            Some((SaveKind::Artist, false)) => "Follow",
-            Some((SaveKind::Artist, true)) => "Unfollow",
-            None => "",
-        };
-        let save_hints = [("OK", save_label), ("Back", "Go back")];
+        let search_keyboard = page == 3 && !self.nav.search.in_results;
         let hints: &[(&str, &str)] = match page {
             2 => &[
                 ("OK", "Play or open"),
                 ("Hold OK", "More options"),
                 ("Back", "Menu bar"),
             ],
-            3 if search_keyboard && search.showing_recent() => &[
-                ("OK", "Type"),
-                ("▶", "Recent searches"),
-                ("Back", "Menu bar"),
-            ],
             3 if search_keyboard => &[("OK", "Type"), ("▶", "Results"), ("Back", "Menu bar")],
-            3 if search.in_recent => &[
-                ("OK", "Search again"),
-                ("Hold OK", "More options"),
-                ("◀", "Keyboard"),
-            ],
-            4 if on_save.is_some() => &save_hints,
             3 => &[
                 ("OK", "Play or open"),
                 ("Hold OK", "More options"),

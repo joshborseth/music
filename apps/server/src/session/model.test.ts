@@ -15,6 +15,7 @@ import {
   lookahead,
   missingDurations,
   playerLost,
+  sleepTimerRang,
   toSessionState,
   update,
   wakeTimedOut,
@@ -1172,11 +1173,166 @@ describe('clearing the songs to come', () => {
   })
 })
 
+describe('sleep timer', () => {
+  const set = (
+    model: Model,
+    message: SessionMessage,
+    at = 2_000,
+    from = 'phone',
+  ) => update(model, message, makeContext(from, at))
+
+  test('minutes become a moment by the server clock, which every device sees', () => {
+    const outcome = set(
+      playing(),
+      { _tag: 'SetSleepTimer', timer: { _tag: 'Minutes', minutes: 15 } },
+      2_000,
+      'tv',
+    )
+    expect(outcome.broadcast).toBe(true)
+    expect(outcome.model.sleepTimer).toEqual({
+      _tag: 'At',
+      endsAt: 2_000 + 15 * 60_000,
+    })
+    expect(toSessionState(outcome.model, []).sleepTimer).toEqual(
+      outcome.model.sleepTimer,
+    )
+  })
+
+  test('a timer set again starts over, and null turns it off', () => {
+    const first = set(playing(), {
+      _tag: 'SetSleepTimer',
+      timer: { _tag: 'Minutes', minutes: 30 },
+    }).model
+    const again = set(
+      first,
+      { _tag: 'SetSleepTimer', timer: { _tag: 'Minutes', minutes: 5 } },
+      60_000,
+    ).model
+    expect(again.sleepTimer).toEqual({ _tag: 'At', endsAt: 360_000 })
+    const off = set(again, { _tag: 'SetSleepTimer', timer: null })
+    expect(off.model.sleepTimer).toBeNull()
+    expect(off.broadcast).toBe(true)
+    expect(
+      set(off.model, { _tag: 'SetSleepTimer', timer: null }).broadcast,
+    ).toBe(false)
+  })
+
+  test('nonsense minutes set nothing, and a day is the most', () => {
+    for (const minutes of [0, -5, Number.NaN]) {
+      expect(
+        set(playing(), {
+          _tag: 'SetSleepTimer',
+          timer: { _tag: 'Minutes', minutes },
+        }).model.sleepTimer,
+      ).toBeNull()
+    }
+    expect(
+      set(playing(), {
+        _tag: 'SetSleepTimer',
+        timer: { _tag: 'Minutes', minutes: 100_000 },
+      }).model.sleepTimer,
+    ).toEqual({
+      _tag: 'At',
+      endsAt: 2_000 + Session.MAX_SLEEP_MINUTES * 60_000,
+    })
+  })
+
+  test('its time pauses the music where it got to, wherever it plays', () => {
+    const onTv = set(playing(), { _tag: 'Transfer', deviceId: 'tv' }).model
+    const timed = set(onTv, {
+      _tag: 'SetSleepTimer',
+      timer: { _tag: 'Minutes', minutes: 1 },
+    }).model
+    expect(sleepTimerRang(timed, 61_999).broadcast).toBe(false)
+    const rang = sleepTimerRang(timed, 62_000)
+    expect(rang.broadcast).toBe(true)
+    expect(rang.model.playing).toBe(false)
+    expect(rang.model.sleepTimer).toBeNull()
+    expect(rang.model.activeDeviceId).toBe('tv')
+    expect(currentPosition(rang.model, 90_000)).toBe(61)
+    // Nobody reloads: the player only pauses.
+    expect(rang.model.seekSeq).toBe(timed.seekSeq)
+  })
+
+  test('a timer for the end of the song pauses on the next song when it ends', () => {
+    const timed = set(playing(), {
+      _tag: 'SetSleepTimer',
+      timer: { _tag: 'EndOfSong' },
+    }).model
+    expect(timed.sleepTimer).toEqual({ _tag: 'EndOfSong' })
+    expect(sleepTimerRang(timed, 10_000_000).broadcast).toBe(false)
+    const ended = set(
+      timed,
+      { _tag: 'TrackEnded', entryId: 'e0' },
+      201_000,
+    ).model
+    expect(ended.currentEntryId).toBe('e1')
+    expect(ended.playing).toBe(false)
+    expect(ended.positionSeconds).toBe(0)
+    expect(ended.sleepTimer).toBeNull()
+    expect(ended.seekSeq).toBe(timed.seekSeq + 1)
+  })
+
+  test('a player that moved on anyway goes back to the start of the next song, paused', () => {
+    const timed = set(playing(), {
+      _tag: 'SetSleepTimer',
+      timer: { _tag: 'EndOfSong' },
+    }).model
+    const advanced = set(
+      timed,
+      { _tag: 'Advanced', fromEntryId: 'e0' },
+      201_000,
+    ).model
+    expect(advanced.currentEntryId).toBe('e1')
+    expect(advanced.playing).toBe(false)
+    expect(advanced.sleepTimer).toBeNull()
+    // The player already started it, so it reloads it at its start.
+    expect(advanced.seekSeq).toBe(timed.seekSeq + 1)
+  })
+
+  test('the end of the song stops on the last song too, and repeat one', () => {
+    const atLast = set(playing(), { _tag: 'SkipTo', entryId: 'e2' }).model
+    const timed = set(atLast, {
+      _tag: 'SetSleepTimer',
+      timer: { _tag: 'EndOfSong' },
+    }).model
+    const ended = set(
+      timed,
+      { _tag: 'TrackEnded', entryId: 'e2' },
+      300_000,
+    ).model
+    expect(ended.currentEntryId).toBe('e2')
+    expect(ended.playing).toBe(false)
+    const one = set(set(playing(), { _tag: 'SetRepeat', mode: 'One' }).model, {
+      _tag: 'SetSleepTimer',
+      timer: { _tag: 'EndOfSong' },
+    }).model
+    const looped = set(
+      one,
+      { _tag: 'TrackEnded', entryId: 'e0' },
+      300_000,
+    ).model
+    expect(looped.currentEntryId).toBe('e0')
+    expect(looped.playing).toBe(false)
+    expect(looped.sleepTimer).toBeNull()
+  })
+
+  test('the TV and the phone stop after the song by the same rule', () => {
+    const state = toSessionState(
+      { ...playing(), sleepTimer: { _tag: 'EndOfSong' } },
+      [],
+    )
+    expect(Session.stopsAfterSong(state)).toBe(true)
+    expect(Session.stopsAfterSong({ ...state, sleepTimer: null })).toBe(false)
+  })
+})
+
 describe('protocol fixtures shared with the TV app', () => {
   const read = (name: string) => Bun.file(new URL(name, FIXTURES)).text()
 
   test.each([
     'server-state.json',
+    'server-state-sleep-end-of-song.json',
     'server-notice.json',
     'server-set-volume.json',
   ])('%s decodes as a server message', async name => {
@@ -1207,6 +1363,9 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-set-autoplay.json',
     'client-set-repeat.json',
     'client-set-shuffle.json',
+    'client-set-sleep-timer.json',
+    'client-set-sleep-timer-end-of-song.json',
+    'client-cancel-sleep-timer.json',
   ])('%s decodes as a client message', async name => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(
       await read(name),

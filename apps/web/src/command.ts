@@ -4,7 +4,7 @@ import { Command, Dom } from 'foldkit'
 import { back, load, pushUrl, replaceUrl } from 'foldkit/navigation'
 
 import { BrowserKeyValueStore } from '@effect/platform-browser'
-import { PlaylistEdit, Song } from '@music/shared'
+import { PlaylistEdit, RadioStation, Song } from '@music/shared'
 
 import {
   PAGE_SELECTOR,
@@ -188,6 +188,17 @@ export const EditPlaylists = Command.define('EditPlaylists', {
       withRequestError,
       Effect.result,
       Effect.map(result => Message.CompletedEditPlaylists({ edit, result })),
+    ),
+})
+
+/** The songs of an album's or artist's radio, to play. */
+export const FetchRadio = Command.define('FetchRadio', {
+  args: { station: RadioStation },
+  messages: [Message.SucceededFetchRadio, Message.FailedFetchRadio],
+  execute: ({ station }) =>
+    MusicClient.use(client => client.getRadio({ station })).pipe(
+      Effect.map(songs => Message.SucceededFetchRadio({ songs })),
+      Effect.catch(() => Effect.succeed(Message.FailedFetchRadio())),
     ),
 })
 

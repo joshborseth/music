@@ -26,6 +26,7 @@ export const SavedSession = Schema.Struct({
   repeat: Schema.optionalKey(Session.RepeatMode),
   shuffle: Schema.optionalKey(Schema.Boolean),
   unshuffled: Schema.optionalKey(Schema.Array(Schema.String)),
+  sleepTimer: Schema.optionalKey(Schema.NullOr(Session.SleepTimer)),
 })
 export type SavedSession = typeof SavedSession.Type
 
@@ -46,6 +47,7 @@ export const toSaved = (model: Model, now: number): SavedSession => ({
   repeat: model.repeat,
   shuffle: model.shuffle,
   unshuffled: model.unshuffled,
+  sleepTimer: model.sleepTimer,
 })
 
 /**
@@ -77,6 +79,13 @@ export const fromSaved = (saved: SavedSession, now: number): Model => {
     shuffle: saved.shuffle ?? false,
     unshuffled: saved.unshuffled ?? [],
     pausedForLostPlayer: saved.playing,
+    // NOTE: a player that played on through the restart takes the session
+    // back, and must still stop when its timer said. One whose time passed
+    // while the server was down has nothing left to stop.
+    sleepTimer:
+      saved.sleepTimer?._tag === 'At' && saved.sleepTimer.endsAt <= now
+        ? null
+        : (saved.sleepTimer ?? null),
   }
 }
 

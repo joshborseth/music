@@ -11,11 +11,13 @@ import {
   ListPlus,
   ListStart,
   MicVocal,
+  Moon,
   Pencil,
   Plus,
   Power,
   Radio,
   SquareArrowUpRightExit,
+  TimerOff,
   Trash2,
 } from 'lucide'
 
@@ -29,13 +31,18 @@ import {
 } from '@music/shared'
 
 import { PLAYLIST_TITLE_INPUT_ID } from '../constant'
+import { type DownloadKind } from '../downloads/domain'
 import { Message } from '../message'
 import { type Model } from '../model'
 import { DragToDismiss } from '../mount'
 import {
+  SLEEP_TIMER_MINUTES,
+  SleepCountdown,
+  countdownText,
   deviceStatus,
   deviceStatusText,
   playbackOutput,
+  sleepCountdown,
 } from '../playback/domain'
 import { myLibraryQuery, myPlaylistQuery } from '../query'
 import { AppRoute } from '../route'
@@ -414,6 +421,91 @@ const devicePicker = (model: Model, h: HtmlBuilder<Message>): Html =>
     ],
   )
 
+// SLEEP TIMER
+
+const minutesLabel = (minutes: number): string =>
+  minutes === 60 ? '1 hour' : `${minutes} minutes`
+
+/** What the sleep timer sheet says under its title. */
+const sleepTimerSubtitle = (model: Model): string =>
+  Option.match(
+    Option.flatMap(model.maybeSession, snapshot =>
+      sleepCountdown(snapshot, model.now),
+    ),
+    {
+      onNone: () => 'Stop the music after a while, wherever it plays.',
+      onSome: countdown =>
+        SleepCountdown.match(countdown, {
+          Remaining: ({ seconds }) =>
+            `The music stops in ${countdownText(seconds)}.`,
+          EndOfSong: () => 'The music stops when this song ends.',
+        }),
+    },
+  )
+
+const sleepTimerPicker = (model: Model, h: HtmlBuilder<Message>): Html => {
+  const maybeTimer = Option.flatMap(model.maybeSession, ({ state }) =>
+    Option.fromNullishOr(state.sleepTimer),
+  )
+  const isEndOfSong = Option.exists(
+    maybeTimer,
+    timer => timer._tag === 'EndOfSong',
+  )
+  return h.div(
+    [h.Class('flex flex-col')],
+    [
+      sheetHeading('Sleep Timer', Option.some(sleepTimerSubtitle(model)), h),
+      h.div(
+        [h.Class('flex flex-col border-t py-2')],
+        [
+          ...Array.map(SLEEP_TIMER_MINUTES, minutes =>
+            h.keyed('button')(
+              `${minutes}`,
+              [
+                h.Type('button'),
+                h.OnClick(
+                  Message.SelectedSleepTimer({
+                    timer: { _tag: 'Minutes', minutes },
+                  }),
+                ),
+                h.Class(actionClass),
+              ],
+              [
+                icon(h, Moon, 'text-primary size-[22px]'),
+                minutesLabel(minutes),
+              ],
+            ),
+          ),
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(
+                Message.SelectedSleepTimer({ timer: { _tag: 'EndOfSong' } }),
+              ),
+              h.AriaPressed(isEndOfSong ? 'true' : 'false'),
+              h.Class(actionClass),
+            ],
+            [
+              icon(h, Moon, 'text-primary size-[22px] fill-current'),
+              h.span([h.Class('flex-1')], ['End of song']),
+              isEndOfSong ? icon(h, Check, 'text-primary size-5') : h.empty,
+            ],
+          ),
+          Option.isSome(maybeTimer)
+            ? actionButton(
+                Message.SelectedSleepTimer({ timer: null }),
+                TimerOff,
+                'Turn Off Timer',
+                h,
+                true,
+              )
+            : h.empty,
+        ],
+      ),
+    ],
+  )
+}
+
 // PLAYLISTS
 
 const pickerRowClass =
@@ -687,6 +779,46 @@ const confirmClearRecentlyViewed = (h: HtmlBuilder<Message>): Html =>
     ],
   )
 
+const confirmRemoveDownload = (
+  kind: DownloadKind,
+  id: string,
+  title: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex flex-col gap-4 pb-2')],
+    [
+      sheetHeading(
+        `Remove “${title}” from Downloads?`,
+        Option.some(
+          'Its songs leave this phone, unless another download has them. You can still play it with a connection.',
+        ),
+        h,
+      ),
+      h.div(
+        [h.Class('flex gap-3 px-5')],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ClickedCloseSheet()),
+              h.Class(cn(sheetButtonClass, 'bg-secondary text-primary')),
+            ],
+            ['Cancel'],
+          ),
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ConfirmedRemoveDownload({ kind, id })),
+              h.Class(cn(sheetButtonClass, 'bg-destructive text-white')),
+            ],
+            ['Remove'],
+          ),
+        ],
+      ),
+    ],
+  )
+
 const sheetContent = (
   model: Model,
   content: SheetContent,
@@ -695,6 +827,7 @@ const sheetContent = (
   SheetContent.match(content, {
     SongActions: ({ song }) => songActions(model, song, h),
     Devices: () => devicePicker(model, h),
+    SleepTimer: () => sleepTimerPicker(model, h),
     AddToPlaylist: ({ songs, suggestedTitle }) =>
       playlistPicker(model, songs, suggestedTitle, h),
     NewPlaylist: ({ songs }) =>
@@ -724,18 +857,22 @@ const sheetContent = (
     ConfirmDeletePlaylist: ({ playlistId, title }) =>
       confirmDeletePlaylist(playlistId, title, h),
     ConfirmClearRecentlyViewed: () => confirmClearRecentlyViewed(h),
+    ConfirmRemoveDownload: ({ kind, id, title }) =>
+      confirmRemoveDownload(kind, id, title, h),
   })
 
 const sheetLabel = (content: SheetContent): string =>
   SheetContent.match(content, {
     SongActions: ({ song }) => song.title,
     Devices: () => 'Play on',
+    SleepTimer: () => 'Sleep timer',
     AddToPlaylist: () => 'Add to a playlist',
     NewPlaylist: () => 'New playlist',
     PlaylistActions: ({ title }) => title,
     RenamePlaylist: () => 'Rename playlist',
     ConfirmDeletePlaylist: () => 'Delete playlist',
     ConfirmClearRecentlyViewed: () => 'Clear recently viewed',
+    ConfirmRemoveDownload: () => 'Remove download',
   })
 
 const sheetFrame = (

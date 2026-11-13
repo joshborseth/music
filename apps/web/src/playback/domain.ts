@@ -336,6 +336,47 @@ export const loadedEntry = (audio: PhoneAudio): Option.Option<LoadedEntry> =>
     Blocked: ({ entry }) => Option.some(entry),
   })
 
+/** What the sleep timer waits for, as the player shows it. */
+export const SleepCountdown = defineTaggedUnion({
+  Remaining: { seconds: Schema.Number },
+  EndOfSong: {},
+})
+export type SleepCountdown = typeof SleepCountdown.Type
+
+/** The sleep timer, with the whole seconds left by this device's clock. */
+export const sleepCountdown = (
+  snapshot: SessionSnapshot,
+  now: number,
+): Option.Option<SleepCountdown> => {
+  const timer = snapshot.state.sleepTimer
+  if (timer === null) {
+    return Option.none()
+  }
+  return Option.some(
+    timer._tag === 'EndOfSong'
+      ? SleepCountdown.EndOfSong()
+      : SleepCountdown.Remaining({
+          seconds: Math.max(
+            0,
+            Math.ceil((timer.endsAt - (now + snapshot.clockOffsetMs)) / 1000),
+          ),
+        }),
+  )
+}
+
+/** Seconds left as a clock: "4:05", or "1:00:00" from an hour up. */
+export const countdownText = (seconds: number): string => {
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const rest = (seconds % 60).toString().padStart(2, '0')
+  return hours > 0
+    ? `${hours}:${minutes.toString().padStart(2, '0')}:${rest}`
+    : `${minutes}:${rest}`
+}
+
+/** The sleep timer's choices, as Apple Music and Spotify offer them. */
+export const SLEEP_TIMER_MINUTES: ReadonlyArray<number> = [5, 15, 30, 45, 60]
+
 /** A readable name for this device, from its user agent. */
 export const deviceNameFromUserAgent = (userAgent: string): string => {
   if (/iPhone/.test(userAgent)) {

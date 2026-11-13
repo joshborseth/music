@@ -846,6 +846,7 @@ describe('lyrics that fail to load', () => {
           autoplay: true,
           repeat: 'Off',
           shuffle: false,
+          sleepTimer: null,
           positionAt: 0,
           seekSeq: 0,
         },

@@ -20,25 +20,37 @@ import {
   type ArtistSummary,
   type MyLibrary,
   type MyPlaylistSummary,
+  type RadioStation,
+  type Session,
   type Song,
 } from '@music/shared'
 
 import {
   EditPlaylists,
+  FetchRadio,
   LockScroll,
   ReplaceSearchUrl,
   SaveRecentSearches,
   ScrollSearchResultsToTop,
   UnlockScroll,
 } from './command'
+import { DownloadSong, SaveDownloads } from './downloads/command'
+import { type DownloadedCollection, Downloads } from './downloads/domain'
 import { Message } from './message'
 import { type Model } from './model'
-import { DragToDismiss, RestoreScroll, SyncTitleBarReveal } from './mount'
+import {
+  DragToDismiss,
+  FollowSeekBarDrags,
+  Marquee,
+  RestoreScroll,
+  SyncTitleBarReveal,
+} from './mount'
 import {
   SendToSession,
   UnlockPhoneAudio,
   WaitBeforeHideNotice,
 } from './playback/command'
+import { PlayerSheet } from './playback/domain'
 import { toQueueTrack } from './playback/queueTrack'
 import {
   type RequestError,
@@ -475,6 +487,7 @@ describe('album page', () => {
             maybeLengthSummary: Option.none(),
             tracks,
             explicitVideoIds: [],
+            maybeRadio: Option.none(),
           }),
         }),
       }),
@@ -562,6 +575,12 @@ const instantCrush: Song = {
   artwork: [],
 }
 
+const ARTIST_RADIO: RadioStation = {
+  playlistId: 'RDEMdaftpunk',
+  maybeParams: Option.some('wAEB'),
+  maybeVideoId: Option.some('instant-crush'),
+}
+
 /** A page opened at `path`, which starts loading what it shows. */
 const openedAt = (route: AppRoute, path: string): Model =>
   update(
@@ -599,12 +618,42 @@ const artistModel = (route: AppRoute, path: string): Model =>
               artwork: [],
             },
           ],
+          maybeRadio: Option.some(ARTIST_RADIO),
         }),
       }),
     }),
   ).model
 
 describe('artist page', () => {
+  test("Radio plays the artist's radio, with autoplay after it", () => {
+    const radioSongs = [instantCrush, { ...instantCrush, videoId: 'other' }]
+    scene(
+      { update, view },
+      given(artistModel(AppRoute.Artist({ artistId: 'abc' }), '/artist/abc')),
+      pageScrolled,
+      titleBarFollowsScroll,
+      click(role('button', { name: 'Start radio' })),
+      Command.expectExact(
+        UnlockPhoneAudio(),
+        FetchRadio({ station: ARTIST_RADIO }),
+      ),
+      Command.resolveAll(
+        [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
+        [FetchRadio, Message.SucceededFetchRadio({ songs: radioSongs })],
+      ),
+      Command.expectExact(
+        SendToSession({
+          message: {
+            _tag: 'PlayQueue',
+            tracks: radioSongs.map(toQueueTrack),
+            startIndex: 0,
+          },
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
   test('names each top song’s album and plays, and links to every song', () => {
     scene(
       { update, view },
@@ -1025,6 +1074,7 @@ describe('saving to the Library', () => {
               maybeLengthSummary: Option.none(),
               tracks: [theChain],
               explicitVideoIds: [],
+              maybeRadio: Option.none(),
             }),
           }),
         ).model,
@@ -1087,6 +1137,7 @@ describe('saving to the Library', () => {
               albums: [rumours],
               singles: [],
               relatedArtists: [],
+              maybeRadio: Option.none(),
             }),
           }),
         ).model,
@@ -1116,6 +1167,249 @@ describe('saving to the Library', () => {
           }),
         }),
       ),
+    )
+  })
+})
+
+describe('downloads', () => {
+  const albumId = 'MPREb_1SbgcDGdrT4'
+  const rumoursPage = (downloads: Downloads): Model =>
+    modifyFields(
+      update(
+        update(
+          emptySearchModel,
+          Message.ChangedUrl({
+            url: urlOrThrow(`http://localhost/album/${albumId}`),
+          }),
+        ).model,
+        Message.GotAlbumMessage({
+          message: albumQuery.Message.CompletedFetch({
+            args: { albumId },
+            generation: FIRST_REQUEST_GENERATION,
+            result: Result.succeed({
+              album: {
+                id: albumId,
+                title: 'Rumours',
+                artists: theChain.artists,
+                maybeKind: Option.some('Album'),
+                maybeYear: Option.some('1977'),
+                artwork: [],
+              },
+              maybeDescription: Option.none(),
+              maybeLengthSummary: Option.none(),
+              tracks: [theChain],
+              explicitVideoIds: [],
+              maybeRadio: Option.none(),
+            }),
+          }),
+        }),
+      ).model,
+      { downloads: () => downloads },
+    )
+
+  const ready = (
+    collections: ReadonlyArray<DownloadedCollection>,
+    savedBytes: Readonly<Record<string, number>>,
+  ): Downloads =>
+    Downloads.Ready({
+      collections,
+      savedBytes,
+      failedVideoIds: [],
+      maybeDownloading: Option.none(),
+      maybeStorage: Option.none(),
+      isOutOfSpace: false,
+    })
+
+  const rumoursDownload: DownloadedCollection = {
+    kind: 'Album',
+    id: albumId,
+    title: 'Rumours',
+    subtitle: 'Fleetwood Mac',
+    maybeArtworkUrl: Option.none(),
+    videoIds: [theChain.videoId],
+  }
+
+  test('Download on an album keeps its songs on the phone', () => {
+    scene(
+      { update, view },
+      given(rumoursPage(ready([], {}))),
+      pageScrolled,
+      titleBarFollowsScroll,
+      click(role('button', { name: 'Download' })),
+      Command.expectExact(
+        SaveDownloads({ collections: [rumoursDownload] }),
+        DownloadSong({ videoId: theChain.videoId }),
+      ),
+      expect(role('button', { name: 'Downloading, 0 of 1 songs' })).toExist(),
+      expect(text('Downloading 0 of 1')).toExist(),
+      Command.resolveAll(
+        [SaveDownloads, Message.CompletedSaveDownloads()],
+        [
+          DownloadSong,
+          Message.SucceededDownloadSong({
+            videoId: theChain.videoId,
+            bytes: 5 * 1024 * 1024,
+            maybeStorage: Option.none(),
+          }),
+        ],
+      ),
+      expect(text('Downloaded · 5 MB')).toExist(),
+      expect(
+        role('button', { name: 'Downloaded. Remove from Downloads' }),
+      ).toExist(),
+    )
+  })
+
+  test('a phone that cannot download shows no Download button', () => {
+    scene(
+      { update, view },
+      given(rumoursPage(Downloads.Unavailable())),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(role('button', { name: 'Download' })).not.toExist(),
+    )
+  })
+
+  test('the Library lists downloads with the room they take', () => {
+    scene(
+      { update, view },
+      given(
+        modifyFields(initialModel(AppRoute.Library(), '/library'), {
+          libraryFilter: () => 'Downloaded',
+          downloads: () =>
+            ready([rumoursDownload], { [theChain.videoId]: 5 * 1024 * 1024 }),
+        }),
+      ),
+      pageScrolled,
+      expect(text('5 MB downloaded')).toExist(),
+      expect(text('1 song · 5 MB')).toExist(),
+      expect(role('link', { name: /Rumours/ })).toHaveAttr(
+        'href',
+        `/album/${albumId}`,
+      ),
+      click(role('button', { name: 'Remove Rumours from Downloads' })),
+      Command.expectExact(LockScroll()),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      expect(
+        role('heading', { name: 'Remove “Rumours” from Downloads?' }),
+      ).toExist(),
+    )
+  })
+})
+
+describe('sleep timer', () => {
+  const SERVER_NOW = 1_000_000
+  const playingOnTv = (sleepTimer: Session.SleepTimer | null): Model =>
+    modifyFields(initialModel(AppRoute.Library(), '/library'), {
+      maybeIdentity: () =>
+        Option.some({ deviceId: 'phone-1', deviceName: 'iPhone' }),
+      playerSheet: () => PlayerSheet.Open(),
+      now: () => SERVER_NOW,
+      maybeSession: () =>
+        Option.some({
+          clockOffsetMs: 0,
+          state: {
+            devices: [
+              {
+                id: 'tv',
+                name: 'TV',
+                kind: 'Tv',
+                online: true,
+                waking: false,
+                poweredOn: true,
+                volume: null,
+              },
+            ],
+            activeDeviceId: 'tv',
+            queue: [
+              {
+                entryId: 'e0',
+                track: toQueueTrack(theChain),
+                autoplay: false,
+              },
+            ],
+            currentEntryId: 'e0',
+            playing: true,
+            positionSeconds: 10,
+            positionAt: SERVER_NOW,
+            seekSeq: 1,
+            autoplay: true,
+            repeat: 'Off',
+            shuffle: false,
+            sleepTimer,
+          },
+        }),
+    })
+
+  const playerMounts = Mount.resolveAll(
+    [DragToDismiss, Message.CompletedFollowSheetDrags()],
+    [Marquee, Message.CompletedSyncMarquee()],
+    [FollowSeekBarDrags, Message.CompletedFollowSeekBarDrags()],
+  )
+
+  test('the moon sets a timer on the server, which stops the TV too', () => {
+    scene(
+      { update, view },
+      given(playingOnTv(null)),
+      pageScrolled,
+      playerMounts,
+      click(role('button', { name: 'Sleep timer' })),
+      Command.expectExact(LockScroll()),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      expect(role('heading', { name: 'Sleep Timer' })).toExist(),
+      expect(role('button', { name: 'Turn Off Timer' })).not.toExist(),
+      click(role('button', { name: '15 minutes' })),
+      Command.expectExact(
+        UnlockScroll(),
+        SendToSession({
+          message: {
+            _tag: 'SetSleepTimer',
+            timer: { _tag: 'Minutes', minutes: 15 },
+          },
+        }),
+      ),
+      Command.resolveAll(
+        [UnlockScroll, Message.CompletedUnlockScroll()],
+        [SendToSession, Message.CompletedSendToSession()],
+      ),
+    )
+  })
+
+  test('a timer shows the time left, and can be turned off', () => {
+    scene(
+      { update, view },
+      given(
+        playingOnTv({ _tag: 'At', endsAt: SERVER_NOW + 29 * 60_000 + 30_000 }),
+      ),
+      pageScrolled,
+      playerMounts,
+      expect(role('button', { name: 'Sleep timer: 29:30' })).toExist(),
+      click(role('button', { name: 'Sleep timer: 29:30' })),
+      Command.expectExact(LockScroll()),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      expect(text('The music stops in 29:30.')).toExist(),
+      click(role('button', { name: 'Turn Off Timer' })),
+      Command.expectExact(
+        UnlockScroll(),
+        SendToSession({ message: { _tag: 'SetSleepTimer', timer: null } }),
+      ),
+      Command.resolveAll(
+        [UnlockScroll, Message.CompletedUnlockScroll()],
+        [SendToSession, Message.CompletedSendToSession()],
+      ),
+    )
+  })
+
+  test('a timer for the end of the song says so', () => {
+    scene(
+      { update, view },
+      given(playingOnTv({ _tag: 'EndOfSong' })),
+      pageScrolled,
+      playerMounts,
+      expect(role('button', { name: 'Sleep timer: End of song' })).toExist(),
     )
   })
 })

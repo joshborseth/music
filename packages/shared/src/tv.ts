@@ -13,8 +13,8 @@ import { QueueTrack } from './session.ts'
  * test suites decode.
  *
  *   GET  /tv/home                          TvShelves  albums and songs played lately (on any device),
- *                                                    your playlists, your latest liked songs, and
- *                                                    the artists you follow
+ *                                                    then your latest liked songs; your playlists
+ *                                                    until anything has played
  *   GET  /tv/library                       TvShelves  your playlists, Liked songs first, then
  *                                                    saved albums and followed artists
  *   GET  /tv/search?q=…                    TvShelves  songs, artists, albums, playlists
@@ -23,8 +23,6 @@ import { QueueTrack } from './session.ts'
  *   GET  /tv/analysis?videoId=…            TvAnalysis the song's beats, bars, sections and drops
  *   GET  /tv/liked?videoId=…               TvLiked
  *   POST /tv/like   (TvLikeRequest)        TvLiked
- *   GET  /tv/saved?kind=…&id=…             TvSaved    whether an album is saved or an artist followed
- *   POST /tv/save   (TvSaveRequest)        TvSaved
  *   GET  /tv/version                       TvVersion
  *   POST /tv/updating                      204: the TV is installing an update; reopen it after
  *
@@ -133,29 +131,6 @@ export const TvLikeRequest = Schema.Struct({
   liked: Schema.Boolean,
 })
 export type TvLikeRequest = typeof TvLikeRequest.Type
-
-/** What can be saved to the library: an album, or an artist to follow. */
-export const TvSaveKind = Schema.Literals(['Album', 'Artist'])
-export type TvSaveKind = typeof TvSaveKind.Type
-
-/** Whether an album is saved to the library, or an artist followed. */
-export const TvSaved = Schema.Struct({
-  kind: TvSaveKind,
-  id: Schema.String,
-  saved: Schema.Boolean,
-})
-export type TvSaved = typeof TvSaved.Type
-
-/**
- * Save an album or follow an artist, or undo it. The server looks the album
- * or artist up itself, so the TV sends only its id.
- */
-export const TvSaveRequest = Schema.Struct({
-  kind: TvSaveKind,
-  id: Schema.String,
-  saved: Schema.Boolean,
-})
-export type TvSaveRequest = typeof TvSaveRequest.Type
 
 /** The TV app build the server has. Null when none is built. */
 export const TvVersion = Schema.Struct({

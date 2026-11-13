@@ -17,6 +17,7 @@ import {
   PlaylistEditResult,
   PlaylistStoreError,
   PlaylistSummary,
+  RadioStation,
   Song,
   SongDetails,
   TopResult,
@@ -130,6 +131,13 @@ export const getSongRadioRpc = Rpc.make('getSongRadio', {
   error: LookupError,
 })
 
+/** The songs of an artist's or album's radio, in the order it plays them. */
+export const getRadioRpc = Rpc.make('getRadio', {
+  payload: Schema.Struct({ station: RadioStation }),
+  success: Schema.Array(Song),
+  error: LookupError,
+})
+
 /**
  * The full player's background for a song's artwork: a dark version of the
  * color the cover reads as. Null when the artwork cannot be read.
@@ -160,6 +168,7 @@ export const MusicRpcs = RpcGroup.make(
   editPlaylistsRpc,
   getHomeRpc,
   getSongRadioRpc,
+  getRadioRpc,
   getArtworkBackdropRpc,
 )
 export type MusicRpcs = typeof MusicRpcs

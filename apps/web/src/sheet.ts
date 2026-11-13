@@ -3,10 +3,14 @@ import { defineTaggedUnion } from 'foldkit/schema'
 
 import { Song } from '@music/shared'
 
+import { DownloadKind } from './downloads/domain'
+
 /** What an action sheet offers. */
 export const SheetContent = defineTaggedUnion({
   SongActions: { song: Song },
   Devices: {},
+  /** Stop the music after a while, or at the end of the song. */
+  SleepTimer: {},
   /** Pick one of my playlists to add the songs to, or start a new one. */
   AddToPlaylist: { songs: Schema.Array(Song), suggestedTitle: Schema.String },
   /** Name a new playlist holding the songs. */
@@ -16,6 +20,12 @@ export const SheetContent = defineTaggedUnion({
   ConfirmDeletePlaylist: { playlistId: Schema.String, title: Schema.String },
   /** Forget the albums, artists, and playlists opened on this device. */
   ConfirmClearRecentlyViewed: {},
+  /** Take a download off the phone. */
+  ConfirmRemoveDownload: {
+    kind: DownloadKind,
+    id: Schema.String,
+    title: Schema.String,
+  },
 })
 export type SheetContent = typeof SheetContent.Type
 

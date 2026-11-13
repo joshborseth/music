@@ -1,6 +1,7 @@
 import { Array, Option } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
 
+import { downloadStatus } from '../downloads/domain'
 import { Message } from '../message'
 import { myPlaylistQuery } from '../query'
 import {
@@ -54,6 +55,11 @@ export const myPlaylistView = (
                 credits: [],
                 details: playlistLength(playlist),
                 maybeDescription: Option.none(),
+                download: downloadStatus(
+                  model.downloads,
+                  'MyPlaylist',
+                  playlist.id,
+                ),
               },
               {
                 tracks: songs,

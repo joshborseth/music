@@ -26,6 +26,7 @@ import {
 import {
   BlurSearchInput,
   EditPlaylists,
+  FetchRadio,
   FocusPlaylistTitleInput,
   FocusSearchInput,
   LoadExternal,
@@ -47,6 +48,9 @@ import {
   WaitBeforeSearch,
 } from './command'
 import { MAX_RECENT_SEARCHES } from './constant'
+import { LoadDownloads } from './downloads/command'
+import { Downloads } from './downloads/domain'
+import * as DownloadsUpdate from './downloads/update'
 import {
   LIBRARY_ARTWORK_WIDTH,
   type LibraryItem,
@@ -1186,6 +1190,7 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     actionSheet: ActionSheet.Hidden(),
     playerPanel: 'Artwork',
     maybeLyricsRetriedVideoId: Option.none(),
+    downloads: Downloads.Loading(),
     ...initialPlaybackModel,
   })
 }
@@ -1197,6 +1202,7 @@ const loadStoredState: UpdateStep = model => ({
     LoadRecentSearches(),
     LoadLibrary(),
     LoadDeviceIdentity(),
+    LoadDownloads(),
   ],
 })
 
@@ -1539,6 +1545,37 @@ const updateMessage = (model: Model, message: Message) =>
     ClickedSongActions: ({ song }) =>
       showSheet({ _tag: 'SongActions', song })(model),
     ClickedDevices: () => showSheet({ _tag: 'Devices' })(model),
+    ClickedSleepTimer: () => showSheet({ _tag: 'SleepTimer' })(model),
+
+    ClickedDownload: ({ collection }) =>
+      DownloadsUpdate.startDownload(model, collection),
+    ClickedRemoveDownload: ({ kind, id, title }) =>
+      showSheet({ _tag: 'ConfirmRemoveDownload', kind, id, title })(model),
+    ConfirmedRemoveDownload: ({ kind, id }) =>
+      Update.combine([
+        dismissSheet,
+        stepModel => DownloadsUpdate.removeDownload(stepModel, kind, id),
+      ])(model),
+    SucceededLoadDownloads: ({ collections, savedBytes, maybeStorage }) =>
+      DownloadsUpdate.succeedLoadDownloads(
+        model,
+        collections,
+        savedBytes,
+        maybeStorage,
+      ),
+    FailedLoadDownloads: () => DownloadsUpdate.failLoadDownloads(model),
+    CompletedSaveDownloads: () => ({ model }),
+    SucceededDownloadSong: ({ videoId, bytes, maybeStorage }) =>
+      DownloadsUpdate.succeedDownloadSong(model, videoId, bytes, maybeStorage),
+    FailedDownloadSong: ({ videoId, failure, maybeStorage }) =>
+      DownloadsUpdate.failDownloadSong(model, videoId, failure, maybeStorage),
+    CompletedRemoveDownloadedSongs: ({ maybeStorage }) =>
+      DownloadsUpdate.completeRemoveDownloadedSongs(model, maybeStorage),
+    SelectedSleepTimer: ({ timer }) =>
+      Update.combine([
+        dismissSheet,
+        stepModel => Playback.setSleepTimer(stepModel, timer),
+      ])(model),
     ClickedCloseSheet: () => dismissSheet(model),
     SwipedDownSheet: () => dismissSheet(model),
     SwipedDownPlayer: () => closePlayer(model),
@@ -1585,9 +1622,7 @@ const updateMessage = (model: Model, message: Message) =>
     ClickedDismissNotice: () => ({
       model: modifyFields(model, { maybeNotice: () => Option.none() }),
     }),
-    TickedClock: ({ now }) => ({
-      model: modifyFields(model, { now: () => now }),
-    }),
+    TickedClock: ({ now }) => Playback.tickClock(model, now),
 
     AcquiredPhoneAudio: () => Playback.acquirePhoneAudio(model),
     ReleasedPhoneAudio: () => Playback.releasePhoneAudio(model),
@@ -1623,6 +1658,14 @@ const updateMessage = (model: Model, message: Message) =>
         dismissSheet,
         stepModel => Playback.startRadio(stepModel, song),
       ])(model),
+    ClickedStartStationRadio: ({ station }) => ({
+      model,
+      commands: [...Playback.unlockIfIdle(model), FetchRadio({ station })],
+    }),
+    SucceededFetchRadio: ({ songs: radioSongs }) =>
+      Playback.playStationRadio(model, radioSongs),
+    FailedFetchRadio: () =>
+      Playback.receiveNotice(model, "Couldn't start the radio. Try again."),
     ClickedEnqueueSongs: ({ songs: songsToEnqueue, placement }) =>
       Update.combine([
         dismissSheet,

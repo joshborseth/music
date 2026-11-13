@@ -2,6 +2,14 @@ import { Array, Data, Effect, Option, Order, Schema } from 'effect'
 
 import { Session } from '@music/shared'
 
+import {
+  DOWNLOADS_KEY,
+  type DownloadedCollection,
+  DownloadsJson,
+  type StorageEstimate,
+  pinnedVideoIds,
+} from '../downloads/domain'
+
 /*
  * Songs this phone has played or is about to play, kept in Cache Storage.
  * A cached song plays from a local Blob, so it starts and seeks instantly
@@ -11,6 +19,10 @@ import { Session } from '@music/shared'
  * and last use. When the cache passes its size limit, songs played once or
  * twice go before favorites, least recently used first. The song playing
  * and the ones queued next are never dropped.
+ *
+ * Downloaded albums and playlists pin their songs: those are never trimmed
+ * and do not count toward the limit, which is for the songs kept on their
+ * own. The list of downloads lives here too, beside the index.
  */
 
 const CACHE_NAME = 'music-songs-v1'
@@ -85,20 +97,23 @@ export const recordPlay = (videoId: string): Effect.Effect<void> =>
   )
 
 /**
- * Which cached songs to delete so the cache fits: nothing protected, songs
- * that are not favorites first, then the least recently used.
+ * Which cached songs to delete so the cache fits: nothing protected or
+ * pinned, songs that are not favorites first, then the least recently used.
+ * Pinned songs (downloads) do not count toward `maxBytes` either.
  */
 export const songsToTrim = (
   videoIds: ReadonlyArray<string>,
   index: SongIndex,
   protectedIds: ReadonlySet<string>,
   maxBytes: number,
+  pinnedIds: ReadonlySet<string> = new Set(),
 ): ReadonlyArray<string> => {
   const bytes = (videoId: string) => index[videoId]?.bytes ?? ASSUMED_SONG_BYTES
-  const total = Array.reduce(videoIds, 0, (sum, id) => sum + bytes(id))
+  const unpinned = Array.filter(videoIds, id => !pinnedIds.has(id))
+  const total = Array.reduce(unpinned, 0, (sum, id) => sum + bytes(id))
   if (total <= maxBytes) return []
   const candidates = Array.sort(
-    Array.filter(videoIds, id => !protectedIds.has(id)),
+    Array.filter(unpinned, id => !protectedIds.has(id)),
     Order.combine(
       Order.mapInput(
         Order.Boolean,
@@ -115,6 +130,56 @@ export const songsToTrim = (
     return true
   })
 }
+
+// DOWNLOADS
+
+const decodeDownloads = Schema.decodeUnknownOption(DownloadsJson)
+const encodeDownloads = Schema.encodeUnknownOption(DownloadsJson)
+
+const readDownloadList = (): ReadonlyArray<DownloadedCollection> => {
+  try {
+    return Option.getOrElse(
+      decodeDownloads(globalThis.localStorage.getItem(DOWNLOADS_KEY) ?? '[]'),
+      () => [],
+    )
+  } catch {
+    return []
+  }
+}
+
+/** Remember which albums and playlists are downloaded. */
+export const saveDownloads = (
+  collections: ReadonlyArray<DownloadedCollection>,
+): Effect.Effect<void> =>
+  Effect.sync(() => {
+    try {
+      Option.match(encodeDownloads(collections), {
+        onNone: () => undefined,
+        onSome: json => globalThis.localStorage.setItem(DOWNLOADS_KEY, json),
+      })
+    } catch {
+      // Without storage the downloads last until the app closes.
+    }
+  })
+
+/** How much the browser lets the app keep, when it says. */
+export const storageEstimate: Effect.Effect<Option.Option<StorageEstimate>> =
+  Effect.tryPromise({
+    try: async () => {
+      const storage: StorageManager | undefined = globalThis.navigator.storage
+      if (storage === undefined || !('estimate' in storage)) {
+        return undefined
+      }
+      const { usage, quota } = await storage.estimate()
+      return usage === undefined || quota === undefined
+        ? undefined
+        : { usageBytes: usage, quotaBytes: quota }
+    },
+    catch: () => new SongCacheError({ message: 'Could not read storage' }),
+  }).pipe(
+    Effect.map(Option.fromNullishOr),
+    Effect.orElseSucceed(() => Option.none()),
+  )
 
 // CACHE STORAGE
 
@@ -196,11 +261,13 @@ const trim = (cache: Cache, protectedIds: ReadonlySet<string>) =>
       const urlById = new Map(
         Array.map(keys, key => [videoIdFromUrl(key.url), key] as const),
       )
+      const pinned = pinnedVideoIds(readDownloadList())
       const doomed = songsToTrim(
         [...urlById.keys()],
         index,
         protectedIds,
         MAX_BYTES,
+        pinned,
       )
       await Promise.all(
         Array.map(doomed, id => {
@@ -213,7 +280,11 @@ const trim = (cache: Cache, protectedIds: ReadonlySet<string>) =>
       const kept: Record<string, SongUse> = {}
       for (const [id, use] of Object.entries(index)) {
         if (urlById.has(id) && !doomed.includes(id)) kept[id] = use
-        else if (use.plays >= FAVORITE_PLAYS || protectedIds.has(id)) {
+        else if (
+          use.plays >= FAVORITE_PLAYS ||
+          protectedIds.has(id) ||
+          pinned.has(id)
+        ) {
           kept[id] = use
         }
       }
@@ -223,6 +294,37 @@ const trim = (cache: Cache, protectedIds: ReadonlySet<string>) =>
   })
 
 const downloading = new Set<string>()
+
+const isCachedIn = (cache: Cache, videoId: string) =>
+  Effect.tryPromise({
+    try: async () => (await cache.match(songUrl(videoId))) !== undefined,
+    catch: () => new SongCacheError({ message: 'Could not read the cache' }),
+  })
+
+/** Fetch a whole song into the cache, and note its size. */
+const fetchIntoCache = (cache: Cache, videoId: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(songUrl(videoId))
+      if (response.status !== 200) {
+        throw new SongCacheError({
+          message: `The server answered ${response.status}`,
+        })
+      }
+      const blob = await response.blob()
+      await cache.put(
+        songUrl(videoId),
+        new Response(blob, { headers: response.headers }),
+      )
+      updateUse(videoId, use => ({
+        ...use,
+        bytes: blob.size,
+        lastUsedAt: Math.max(use.lastUsedAt, Date.now()),
+      }))
+      return blob.size
+    },
+    catch: () => new SongCacheError({ message: 'Could not download the song' }),
+  })
 
 /** Download a whole song into the cache, unless it is there or on its way. */
 const cacheSong = (
@@ -234,38 +336,95 @@ const cacheSong = (
       return
     }
     const cache = yield* openCache
-    const isCached = yield* Effect.tryPromise({
-      try: async () => (await cache.match(songUrl(videoId))) !== undefined,
-      catch: () => new SongCacheError({ message: 'Could not read the cache' }),
-    })
-    if (isCached) {
+    if (yield* isCachedIn(cache, videoId)) {
       return
     }
     downloading.add(videoId)
-    yield* Effect.tryPromise({
-      try: async () => {
-        const response = await fetch(songUrl(videoId))
-        if (response.status !== 200) {
-          throw new SongCacheError({
-            message: `The server answered ${response.status}`,
-          })
-        }
-        const blob = await response.blob()
-        await cache.put(
-          songUrl(videoId),
-          new Response(blob, { headers: response.headers }),
-        )
-        updateUse(videoId, use => ({
-          ...use,
-          bytes: blob.size,
-          lastUsedAt: Math.max(use.lastUsedAt, Date.now()),
-        }))
-      },
-      catch: () =>
-        new SongCacheError({ message: 'Could not download the song' }),
-    }).pipe(Effect.ensuring(Effect.sync(() => downloading.delete(videoId))))
+    yield* fetchIntoCache(cache, videoId).pipe(
+      Effect.ensuring(Effect.sync(() => downloading.delete(videoId))),
+    )
     yield* trim(cache, protectedIds)
   }).pipe(Effect.ignore)
+
+/** The size a cached song was saved at, as the index remembers it. */
+const knownBytes = (videoId: string): number =>
+  readIndex()[videoId]?.bytes ?? ASSUMED_SONG_BYTES
+
+/**
+ * Download a song for an album or playlist downloaded on this phone, and
+ * say how much room it takes. A song already cached is only counted.
+ */
+export const downloadSong = (
+  videoId: string,
+): Effect.Effect<number, SongCacheError> =>
+  Effect.gen(function* () {
+    const cache = yield* openCache
+    if (yield* isCachedIn(cache, videoId)) {
+      return knownBytes(videoId)
+    }
+    yield* requestPersistence
+    return yield* fetchIntoCache(cache, videoId)
+  })
+
+/**
+ * The downloads, and which of their songs are already on this phone, with
+ * their size. None when the phone has no Cache Storage, so nothing can be
+ * downloaded.
+ */
+export const loadDownloads: Effect.Effect<
+  Option.Option<{
+    readonly collections: ReadonlyArray<DownloadedCollection>
+    readonly savedBytes: Readonly<Record<string, number>>
+  }>
+> = Effect.gen(function* () {
+  const cache = yield* openCache
+  const collections = readDownloadList()
+  const cachedIds = yield* Effect.tryPromise({
+    try: async () =>
+      new Set(Array.map(await cache.keys(), key => videoIdFromUrl(key.url))),
+    catch: () => new SongCacheError({ message: 'Could not read the cache' }),
+  })
+  const savedBytes: Record<string, number> = Object.fromEntries(
+    Array.map(
+      Array.filter([...pinnedVideoIds(collections)], videoId =>
+        cachedIds.has(videoId),
+      ),
+      videoId => [videoId, knownBytes(videoId)] as const,
+    ),
+  )
+  return Option.some({ collections, savedBytes })
+}).pipe(Effect.orElseSucceed(() => Option.none()))
+
+/**
+ * Delete the songs a removed download held, to give the room back. The song
+ * playing keeps playing: the audio element already holds it.
+ */
+export const removeSongs = (
+  videoIds: ReadonlyArray<string>,
+): Effect.Effect<void> =>
+  openCache.pipe(
+    Effect.flatMap(cache =>
+      Effect.tryPromise({
+        try: () =>
+          Promise.all(Array.map(videoIds, id => cache.delete(songUrl(id)))),
+        catch: () =>
+          new SongCacheError({ message: 'Could not delete the songs' }),
+      }),
+    ),
+    Effect.tap(() =>
+      Effect.sync(() => {
+        const removed = new Set(videoIds)
+        writeIndex(
+          Object.fromEntries(
+            Object.entries(readIndex()).filter(
+              ([id, use]) => !removed.has(id) || use.plays >= FAVORITE_PLAYS,
+            ),
+          ),
+        )
+      }),
+    ),
+    Effect.ignore,
+  )
 
 /**
  * Keep the playing song and the next ones cached, in play order. They are

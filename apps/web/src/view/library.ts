@@ -1,12 +1,21 @@
 import { Array, Match, Option } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
-import { Disc3, ListMusic, Plus, User } from 'lucide'
+import { Disc3, ListMusic, Plus, Trash2, User } from 'lucide'
 
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { type AlbumSummary, type MyLibrary } from '@music/shared'
 
+import {
+  type DownloadedCollection,
+  type ReadyDownloads,
+  downloadProgress,
+  downloadSummary,
+  findDownload,
+  formatBytes,
+  totalDownloadedBytes,
+} from '../downloads/domain'
 import {
   LIBRARY_ARTWORK_WIDTH,
   LIBRARY_FILTER_CHIPS,
@@ -26,9 +35,11 @@ import {
   artistNames,
   artistRow,
   artworkUrl,
+  downloadedMark,
   emptyState,
   list,
   loadingRows,
+  myPlaylistHref,
   myPlaylistRow,
   playlistHref,
   requestErrorAlert,
@@ -211,16 +222,201 @@ const filterChip = (
   )
 }
 
-/** Chips that narrow the Library to one kind of thing; tapped again, back to all. */
-const filterChips = (selected: LibraryFilter, h: HtmlBuilder<Message>): Html =>
+/**
+ * Chips that narrow the Library to one kind of thing; tapped again, back to
+ * all. Downloaded shows only where the phone can download.
+ */
+const filterChips = (
+  selected: LibraryFilter,
+  canDownload: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.div(
     [
       h.Role('group'),
       h.AriaLabel('Show'),
       h.Class('no-scrollbar flex gap-2 overflow-x-auto px-4'),
     ],
-    Array.map(LIBRARY_FILTER_CHIPS, filter => filterChip(filter, selected, h)),
+    Array.map(
+      Array.filter(
+        LIBRARY_FILTER_CHIPS,
+        filter => canDownload || filter !== 'Downloaded',
+      ),
+      filter => filterChip(filter, selected, h),
+    ),
   )
+
+// DOWNLOADS
+
+const downloadHref = (collection: DownloadedCollection): string =>
+  Match.value(collection.kind).pipe(
+    Match.when('Album', () => albumHref(collection.id)),
+    Match.when('Playlist', () => playlistHref(collection.id)),
+    Match.when('MyPlaylist', () => myPlaylistHref(collection.id)),
+    Match.exhaustive,
+  )
+
+/** Every song of the download is on the phone. */
+const isWhole = (
+  ready: ReadyDownloads,
+  collection: DownloadedCollection,
+): boolean => {
+  const { saved, total } = downloadProgress(ready, collection)
+  return saved === total
+}
+
+/**
+ * A download as a row: its cover, title, and how many songs it holds and
+ * how much room they take, with a button to take it off the phone.
+ */
+const downloadRow = (
+  ready: ReadyDownloads,
+  collection: DownloadedCollection,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex items-center')],
+    [
+      h.a(
+        [
+          h.Href(downloadHref(collection)),
+          h.Class(
+            'flex min-w-0 flex-1 items-center gap-3 py-1.5 pl-4 transition-colors active:bg-muted/70',
+          ),
+        ],
+        [
+          libraryItemArtwork(
+            {
+              kind: collection.kind === 'Album' ? 'Album' : 'Playlist',
+              id: collection.id,
+              title: collection.title,
+              subtitle: collection.subtitle,
+              maybeArtworkUrl: collection.maybeArtworkUrl,
+            },
+            'size-14',
+            'rounded-md',
+            h,
+          ),
+          h.span(
+            [h.Class('flex min-w-0 flex-1 flex-col')],
+            [
+              h.span(
+                [h.Class('line-clamp-1 text-[15px] leading-snug font-medium')],
+                [collection.title],
+              ),
+              h.span(
+                [
+                  h.Class(
+                    'text-muted-foreground flex items-center gap-1 text-[13px] leading-snug',
+                  ),
+                ],
+                [
+                  isWhole(ready, collection) ? downloadedMark(h) : h.empty,
+                  h.span(
+                    [h.Class('line-clamp-1')],
+                    [downloadSummary(ready, collection)],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(
+            Message.ClickedRemoveDownload({
+              kind: collection.kind,
+              id: collection.id,
+              title: collection.title,
+            }),
+          ),
+          h.AriaLabel(`Remove ${collection.title} from Downloads`),
+          h.Class(
+            'text-muted-foreground flex size-11 shrink-0 items-center justify-center rounded-full active:bg-muted mr-2',
+          ),
+        ],
+        [icon(h, Trash2, 'size-5')],
+      ),
+    ],
+  )
+
+/** How much room the downloads take, and how much the phone has left. */
+const storageLine = (ready: ReadyDownloads): string => {
+  const used = `${formatBytes(totalDownloadedBytes(ready))} downloaded`
+  return Option.match(ready.maybeStorage, {
+    onNone: () => used,
+    onSome: ({ usageBytes, quotaBytes }) =>
+      `${used} · ${formatBytes(Math.max(0, quotaBytes - usageBytes))} available`,
+  })
+}
+
+const downloadRows = (ready: ReadyDownloads, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.Role('list'), h.Class('flex flex-col')],
+    Array.map(ready.collections, collection =>
+      h.keyed('div')(
+        `${collection.kind}:${collection.id}`,
+        [h.Role('listitem')],
+        [downloadRow(ready, collection, h)],
+      ),
+    ),
+  )
+
+/** Everything downloaded on this phone, with the room it takes. */
+const downloadsSection = (
+  ready: ReadyDownloads,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.section(
+    [h.AriaLabel('Downloaded'), h.Class('flex flex-col gap-2')],
+    [
+      h.div(
+        [h.Class('flex flex-col px-4')],
+        [
+          h.h2(
+            [h.Class('text-[22px] leading-tight font-bold tracking-tight')],
+            ['Downloaded'],
+          ),
+          h.p(
+            [h.Class('text-muted-foreground text-[13px]')],
+            [storageLine(ready)],
+          ),
+          ready.isOutOfSpace
+            ? h.p(
+                [h.Class('text-destructive text-[13px] font-medium')],
+                [
+                  'This phone is nearly full. Remove a download, or free up space, then tap Download again.',
+                ],
+              )
+            : h.empty,
+        ],
+      ),
+      downloadRows(ready, h),
+    ],
+  )
+
+/** The Downloaded chip: every download, or how to make one. */
+const downloadsView = (model: PageModel, h: HtmlBuilder<Message>): Html =>
+  model.downloads._tag === 'Ready' &&
+  Array.isReadonlyArrayNonEmpty(model.downloads.collections)
+    ? downloadsSection(model.downloads, h)
+    : emptyState(
+        {
+          title: 'No downloads yet',
+          description:
+            'Open an album or playlist and tap the arrow at the top to keep its songs on this phone, to play without a connection.',
+          kind: 'Album',
+        },
+        h,
+      )
+
+const isDownloaded = (
+  model: PageModel,
+  kind: DownloadedCollection['kind'],
+  id: string,
+): boolean => Option.isSome(findDownload(model.downloads, kind, id))
 
 // PLAYLISTS
 
@@ -280,7 +476,13 @@ const playlistsSection = (model: PageModel, h: HtmlBuilder<Message>): Html =>
                 h.keyed('div')(
                   playlist.id,
                   [h.Role('listitem')],
-                  [myPlaylistRow(playlist, h)],
+                  [
+                    myPlaylistRow(
+                      playlist,
+                      h,
+                      isDownloaded(model, 'MyPlaylist', playlist.id),
+                    ),
+                  ],
                 ),
               ),
           }),
@@ -387,6 +589,10 @@ const libraryContent = (
         onNone: (): ReadonlyArray<Html> => [],
         onSome: library => [albumsShelf(library, h), artistsShelf(library, h)],
       }),
+      model.downloads._tag === 'Ready' &&
+      Array.isReadonlyArrayNonEmpty(model.downloads.collections)
+        ? downloadsSection(model.downloads, h)
+        : h.empty,
       recentlyViewedSection(model.recentlyViewed, h),
     ]),
     Match.when('Playlists', () => [playlistsSection(model, h)]),
@@ -396,6 +602,7 @@ const libraryContent = (
     Match.when('Artists', () => [
       whenLoaded(model, library => artistsList(library, h), h),
     ]),
+    Match.when('Downloaded', () => [downloadsView(model, h)]),
     Match.exhaustive,
   )
 
@@ -411,7 +618,7 @@ export const libraryView = (
   h.div(
     [h.Class('flex flex-col gap-6 pt-1 pb-6')],
     [
-      filterChips(model.libraryFilter, h),
+      filterChips(model.libraryFilter, model.downloads._tag === 'Ready', h),
       h.div([h.Class('flex flex-col gap-8')], libraryContent(model, h)),
     ],
   ),

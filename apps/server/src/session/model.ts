@@ -38,6 +38,8 @@ export interface Model {
   readonly pausedForLostPlayer: boolean
   /** Devices the server asked to wake that have not connected yet. */
   readonly waking: ReadonlyArray<string>
+  /** When the music stops by itself, if a sleep timer is set. */
+  readonly sleepTimer: Session.SleepTimer | null
 }
 
 export const initialModel: Model = {
@@ -55,6 +57,7 @@ export const initialModel: Model = {
   foreignSeekSeq: 0,
   pausedForLostPlayer: false,
   waking: [],
+  sleepTimer: null,
 }
 
 /**
@@ -135,6 +138,7 @@ export const toSessionState = (
   autoplay: model.autoplay,
   repeat: model.repeat,
   shuffle: model.shuffle,
+  sleepTimer: model.sleepTimer,
 })
 
 export const currentPosition = (model: Model, now: number): number =>
@@ -242,6 +246,36 @@ const finishCurrent = (
     onSome: next => jumpTo(model, next, 0, now),
   })
 }
+
+/**
+ * The song ended with the sleep timer set to stop at its end: go on to what
+ * follows, as `finishCurrent` does, but paused there, and the timer is done.
+ */
+const sleepAfterSong = (model: Model, now: number): Model => ({
+  ...finishCurrent(model, now),
+  playing: false,
+  sleepTimer: null,
+})
+
+/** The sleep timer `choice` asks for, set at `now`. */
+const sleepTimerFor = (
+  choice: Session.SleepTimerChoice,
+  now: number,
+): Session.SleepTimer | null =>
+  Match.value(choice).pipe(
+    Match.withReturnType<Session.SleepTimer | null>(),
+    Match.tagsExhaustive({
+      Minutes: ({ minutes }) =>
+        Number.isFinite(minutes) && minutes > 0
+          ? {
+              _tag: 'At',
+              endsAt:
+                now + Math.min(minutes, Session.MAX_SLEEP_MINUTES) * 60_000,
+            }
+          : null,
+      EndOfSong: () => ({ _tag: 'EndOfSong' }),
+    }),
+  )
 
 /** `items` in a random order (Fisher–Yates). */
 const shuffled = <A>(
@@ -667,6 +701,14 @@ const transition = (
         )
       },
 
+      SetSleepTimer: message => {
+        const sleepTimer =
+          message.timer === null ? null : sleepTimerFor(message.timer, now)
+        return sleepTimer === null && model.sleepTimer === null
+          ? quiet(model)
+          : changed({ ...model, sleepTimer })
+      },
+
       SetAutoplay: message => {
         if (message.enabled === model.autoplay) return quiet(model)
         if (message.enabled) return changed({ ...model, autoplay: true })
@@ -742,6 +784,12 @@ const transition = (
           ),
           index => Option.fromNullishOr(entryAt(model, index)),
         )
+        // NOTE: a player that moved on although the song should have been
+        // the last (a TV app built before the sleep timer) goes back to the
+        // start of the next song, paused there.
+        if (model.sleepTimer?._tag === 'EndOfSong') {
+          return changed(sleepAfterSong(model, now))
+        }
         // The player already started the next entry (with repeat one, the
         // same one again), so seekSeq stays put.
         return Option.match(maybeNext, {
@@ -757,9 +805,12 @@ const transition = (
       },
 
       TrackEnded: message => {
-        return isFromPlayer(model, context, message.entryId)
-          ? changed(finishCurrent(model, now))
-          : quiet(model)
+        if (!isFromPlayer(model, context, message.entryId)) return quiet(model)
+        return changed(
+          model.sleepTimer?._tag === 'EndOfSong'
+            ? sleepAfterSong(model, now)
+            : finishCurrent(model, now),
+        )
       },
 
       TrackFailed: message => {
@@ -796,6 +847,21 @@ export const playerLost = (
         pausedForLostPlayer: true,
       })
     : quiet(model)
+
+/**
+ * The sleep timer's time came: the music pauses wherever it plays, and the
+ * timer is done. A timer still to come, or one that waits for the song's
+ * end, stays as it is.
+ */
+export const sleepTimerRang = (model: Model, now: number): Outcome =>
+  model.sleepTimer?._tag === 'At' && now >= model.sleepTimer.endsAt
+    ? changed({
+        ...settle(model, now),
+        playing: false,
+        sleepTimer: null,
+        pausedForLostPlayer: false,
+      })
+    : unchanged(model)
 
 /** A device that was asked to wake never connected. */
 export const wakeTimedOut = (

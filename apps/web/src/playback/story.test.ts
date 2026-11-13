@@ -87,6 +87,7 @@ const sessionState = (
   autoplay: true,
   repeat: 'Off',
   shuffle: false,
+  sleepTimer: null,
   positionAt: SERVER_NOW,
   seekSeq,
 })
@@ -1683,6 +1684,232 @@ describe('on the lock screen', () => {
         }),
       ),
       Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+})
+
+describe('sleep timer', () => {
+  const withState = (
+    base: Model,
+    change: (state: Session.SessionState) => Session.SessionState,
+  ): Model =>
+    modifyFields(base, {
+      maybeSession: maybeSession =>
+        Option.map(maybeSession, snapshot => ({
+          ...snapshot,
+          state: change(snapshot.state),
+        })),
+    })
+
+  const sleepTimer = (model: Model) =>
+    Option.map(model.maybeSession, ({ state }) => state.sleepTimer)
+
+  const isPlayingHere = (model: Model): boolean =>
+    Option.exists(loadedEntry(model.phoneAudio), loaded => loaded.isPlaying)
+
+  const ENDS_AT = SERVER_NOW + 60_000
+  const timedHere = withState(playingHere(1), state => ({
+    ...state,
+    sleepTimer: { _tag: 'At', endsAt: ENDS_AT },
+  }))
+
+  test('picking a time asks the server, which owns the timer', () => {
+    story(
+      update,
+      given(playingHere(1)),
+      message(
+        Message.SelectedSleepTimer({ timer: { _tag: 'Minutes', minutes: 30 } }),
+      ),
+      Command.expectExact(
+        SendToSession({
+          message: {
+            _tag: 'SetSleepTimer',
+            timer: { _tag: 'Minutes', minutes: 30 },
+          },
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('nothing happens before its time', () => {
+    story(
+      update,
+      given(timedHere),
+      message(
+        Message.UpdatedPhoneAudioTime({
+          entryId: 'e0',
+          seconds: 41,
+          at: ENDS_AT - 1,
+        }),
+      ),
+      model(model => {
+        expect(sleepTimer(model)).toEqual(
+          Option.some({ _tag: 'At', endsAt: ENDS_AT }),
+        )
+        expect(isPlayingHere(model)).toBe(true)
+      }),
+      Command.expectExact(
+        SendToSession({
+          message: {
+            _tag: 'Progress',
+            entryId: 'e0',
+            positionSeconds: 41,
+            playing: true,
+          },
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('a locked phone that plays pauses itself when the time comes, without the server', () => {
+    story(
+      update,
+      given(
+        modifyFields(timedHere, {
+          connection: () => Connection.Disconnected(),
+          lastProgressAt: () => ENDS_AT,
+        }),
+      ),
+      message(
+        Message.UpdatedPhoneAudioTime({
+          entryId: 'e0',
+          seconds: 100,
+          at: ENDS_AT,
+        }),
+      ),
+      model(model => {
+        expect(isPlayingHere(model)).toBe(false)
+        expect(sleepTimer(model)).toEqual(Option.some(null))
+      }),
+      Command.expectExact(
+        SetPhoneAudioPlaying({ isPlaying: false }),
+        SendLocalChange({
+          message: {
+            _tag: 'Pause',
+            at: { entryId: 'e0', positionSeconds: 100, seekSeq: 1 },
+          },
+        }),
+      ),
+      Command.resolve(
+        SetPhoneAudioPlaying,
+        Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
+      ),
+      Command.resolve(
+        SendLocalChange,
+        Message.SentLocalChange({ maybeSeq: Option.none() }),
+      ),
+    )
+  })
+
+  test('the clock alone stops it too, by the server time', () => {
+    story(
+      update,
+      given(
+        modifyFields(timedHere, {
+          maybeSession: maybeSession =>
+            Option.map(maybeSession, snapshot => ({
+              ...snapshot,
+              clockOffsetMs: 5_000,
+            })),
+        }),
+      ),
+      message(Message.TickedClock({ now: ENDS_AT - 5_000 })),
+      model(model => {
+        expect(isPlayingHere(model)).toBe(false)
+      }),
+      Command.expectExact(
+        SetPhoneAudioPlaying({ isPlaying: false }),
+        SendLocalChange({
+          message: {
+            _tag: 'Pause',
+            at: { entryId: 'e0', positionSeconds: 40, seekSeq: 1 },
+          },
+        }),
+      ),
+      Command.resolve(
+        SetPhoneAudioPlaying,
+        Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
+      ),
+      sentAs(2),
+    )
+  })
+
+  test('a phone that is only the remote leaves stopping to the server', () => {
+    const remote = withState(
+      modifyFields(connectedModel, {
+        maybeSession: () =>
+          Option.some({ state: sessionState('tv', 1), clockOffsetMs: 0 }),
+      }),
+      state => ({ ...state, sleepTimer: { _tag: 'At', endsAt: ENDS_AT } }),
+    )
+    story(
+      update,
+      given(remote),
+      message(Message.TickedClock({ now: ENDS_AT + 1_000 })),
+      model(model => {
+        expect(model.now).toBe(ENDS_AT + 1_000)
+        expect(sleepTimer(model)).toEqual(
+          Option.some({ _tag: 'At', endsAt: ENDS_AT }),
+        )
+      }),
+    )
+  })
+
+  test('at the end of the song the next one waits paused, as the server will have it', () => {
+    const next: Session.QueueEntry = {
+      entryId: 'e1',
+      track: { ...entry.track, videoId: 'next-song', title: 'Next' },
+      autoplay: false,
+    }
+    story(
+      update,
+      given(
+        withState(playingHere(1), state => ({
+          ...state,
+          queue: [entry, next],
+          sleepTimer: { _tag: 'EndOfSong' },
+        })),
+      ),
+      message(Message.EndedPhoneAudio({ entryId: 'e0' })),
+      model(model => {
+        expect(
+          Option.map(model.maybeSession, ({ state }) => [
+            state.currentEntryId,
+            state.playing,
+            state.sleepTimer,
+          ]),
+        ).toEqual(Option.some(['e1', false, null]))
+        expect(isPlayingHere(model)).toBe(false)
+      }),
+      Command.expectExact(
+        LoadPhoneAudio({
+          entryId: 'e1',
+          videoId: 'next-song',
+          maybeDurationSeconds: Option.some(213),
+          startSeconds: 0,
+          isPlaying: false,
+        }),
+        UpdateMediaSession({
+          title: 'Next',
+          artist: entry.track.artists,
+          album: '',
+          maybeArtworkUrl: Option.none(),
+        }),
+        PrefetchSongs({ videoIds: ['next-song'] }),
+        SendLocalChange({ message: { _tag: 'TrackEnded', entryId: 'e0' } }),
+      ),
+      Command.resolve(
+        LoadPhoneAudio,
+        Message.CompletedLoadPhoneAudio({ entryId: 'e1', isBlocked: false }),
+      ),
+      Command.resolve(
+        UpdateMediaSession,
+        Message.CompletedUpdateMediaSession(),
+      ),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+      sentAs(2),
     )
   })
 })

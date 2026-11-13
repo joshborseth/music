@@ -1,10 +1,23 @@
 import { Array, Option } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Document, Html, HtmlBuilder } from 'foldkit/html'
-import { Check, Ellipsis, ListPlus, Plus } from 'lucide'
+import {
+  Check,
+  CircleArrowDown,
+  CircleCheck,
+  Ellipsis,
+  ListPlus,
+  Plus,
+} from 'lucide'
 
 import { type AlbumSummary, type MyLibrary, type Song } from '@music/shared'
 
+import {
+  DownloadStatus,
+  type DownloadedCollection,
+  downloadStatus,
+  progressRing,
+} from '../downloads/domain'
 import { isAlbumSaved } from '../library'
 import { Message } from '../message'
 import { Model } from '../model'
@@ -30,7 +43,7 @@ import { type PageModel, memoizedPage } from './page'
 import { hasMiniPlayer, playerView } from './player'
 import { playlistView } from './playlist'
 import { searchView } from './search'
-import { emptyState } from './shared'
+import { artistNames, artworkUrl, emptyState } from './shared'
 import { actionSheetView } from './sheet'
 import { songView } from './song'
 
@@ -123,6 +136,79 @@ const saveAlbumButton = (
     },
   })
 
+/** Artwork width kept for a download's row in the Library. */
+const DOWNLOAD_ARTWORK_WIDTH = 180
+
+/**
+ * Downloads an album or playlist to the phone, shows how far it has got as
+ * a ring that fills, and once it is all there, a check that offers to
+ * remove it. Hidden where nothing can be downloaded (no Cache Storage).
+ */
+const downloadButton = (
+  model: PageModel,
+  maybeCollection: Option.Option<DownloadedCollection>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(
+    Option.filter(maybeCollection, ({ videoIds }) =>
+      Array.isReadonlyArrayNonEmpty(videoIds),
+    ),
+    {
+      onNone: () => h.empty,
+      onSome: collection => {
+        const remove = Message.ClickedRemoveDownload({
+          kind: collection.kind,
+          id: collection.id,
+          title: collection.title,
+        })
+        return DownloadStatus.match(
+          downloadStatus(model.downloads, collection.kind, collection.id),
+          {
+            Unavailable: () => h.empty,
+            NotDownloaded: () =>
+              navBarButton(
+                {
+                  onClick: Message.ClickedDownload({ collection }),
+                  iconNode: CircleArrowDown,
+                  label: 'Download',
+                },
+                h,
+              ),
+            Downloading: ({ saved, total }) =>
+              navBarButton(
+                {
+                  onClick: remove,
+                  iconNode: progressRing(saved / total),
+                  label: `Downloading, ${saved} of ${total} songs`,
+                  isOn: true,
+                },
+                h,
+              ),
+            Incomplete: ({ saved, total }) =>
+              navBarButton(
+                {
+                  onClick: Message.ClickedDownload({ collection }),
+                  iconNode: progressRing(saved / total),
+                  label: `${saved} of ${total} songs downloaded. Download the rest`,
+                },
+                h,
+              ),
+            Downloaded: () =>
+              navBarButton(
+                {
+                  onClick: remove,
+                  iconNode: CircleCheck,
+                  label: 'Downloaded. Remove from Downloads',
+                  isOn: true,
+                },
+                h,
+              ),
+          },
+        )
+      },
+    },
+  )
+
 const navBarButtons = (
   buttons: ReadonlyArray<Html>,
   h: HtmlBuilder<Message>,
@@ -191,6 +277,24 @@ const routeParts = (
               })),
               h,
             ),
+            downloadButton(
+              model,
+              Option.map(
+                maybeAlbum,
+                ({ album, tracks }): DownloadedCollection => ({
+                  kind: 'Album',
+                  id: album.id,
+                  title: album.title,
+                  subtitle: artistNames(album.artists),
+                  maybeArtworkUrl: artworkUrl(
+                    album.artwork,
+                    DOWNLOAD_ARTWORK_WIDTH,
+                  ),
+                  videoIds: Array.map(tracks, ({ videoId }) => videoId),
+                }),
+              ),
+              h,
+            ),
           ],
           h,
         ),
@@ -204,43 +308,94 @@ const routeParts = (
         Option.map(maybePlaylist, ({ playlist }) => playlist.title),
         playlistView(model, playlistId, h),
         h,
-        addToPlaylistButton(
-          Option.map(maybePlaylist, ({ playlist, tracks }) => ({
-            title: playlist.title,
-            songs: tracks,
-          })),
+        navBarButtons(
+          [
+            addToPlaylistButton(
+              Option.map(maybePlaylist, ({ playlist, tracks }) => ({
+                title: playlist.title,
+                songs: tracks,
+              })),
+              h,
+            ),
+            downloadButton(
+              model,
+              Option.map(
+                maybePlaylist,
+                ({ playlist, maybeOwner, tracks }): DownloadedCollection => ({
+                  kind: 'Playlist',
+                  id: playlist.id,
+                  title: playlist.title,
+                  subtitle: Option.match(maybeOwner, {
+                    onNone: () =>
+                      Option.getOrElse(
+                        playlist.maybeSubtitle,
+                        () => 'Playlist',
+                      ),
+                    onSome: ({ name }) => name,
+                  }),
+                  maybeArtworkUrl: artworkUrl(
+                    playlist.artwork,
+                    DOWNLOAD_ARTWORK_WIDTH,
+                  ),
+                  videoIds: Array.map(tracks, ({ videoId }) => videoId),
+                }),
+              ),
+              h,
+            ),
+          ],
           h,
         ),
       )
     },
     MyPlaylist: ({ playlistId }) => {
-      const maybePlaylist = Option.map(
-        AsyncData.getData(
-          myPlaylistQuery.read(model.myPlaylists, { playlistId }),
-        ),
-        ({ playlist }) => playlist,
+      const maybeDetails = AsyncData.getData(
+        myPlaylistQuery.read(model.myPlaylists, { playlistId }),
       )
+      const maybePlaylist = Option.map(maybeDetails, ({ playlist }) => playlist)
       return detailPage(
         Option.map(maybePlaylist, ({ title }) => title),
         myPlaylistView(model, playlistId, h),
         h,
-        Option.match(
-          Option.filter(maybePlaylist, ({ isLiked }) => !isLiked),
-          {
-            onNone: () => h.empty,
-            onSome: ({ id, title }) =>
-              navBarButton(
-                {
-                  onClick: Message.ClickedPlaylistActions({
-                    playlistId: id,
-                    title,
-                  }),
-                  iconNode: Ellipsis,
-                  label: 'Playlist options',
-                },
-                h,
+        navBarButtons(
+          [
+            downloadButton(
+              model,
+              Option.map(
+                maybeDetails,
+                ({ playlist, songs }): DownloadedCollection => ({
+                  kind: 'MyPlaylist',
+                  id: playlist.id,
+                  title: playlist.title,
+                  subtitle: playlist.isLiked ? 'Your likes' : 'Your playlist',
+                  maybeArtworkUrl: Option.flatMap(
+                    Array.head(playlist.covers),
+                    cover => artworkUrl(cover, DOWNLOAD_ARTWORK_WIDTH),
+                  ),
+                  videoIds: Array.map(songs, ({ videoId }) => videoId),
+                }),
               ),
-          },
+              h,
+            ),
+            Option.match(
+              Option.filter(maybePlaylist, ({ isLiked }) => !isLiked),
+              {
+                onNone: () => h.empty,
+                onSome: ({ id, title }) =>
+                  navBarButton(
+                    {
+                      onClick: Message.ClickedPlaylistActions({
+                        playlistId: id,
+                        title,
+                      }),
+                      iconNode: Ellipsis,
+                      label: 'Playlist options',
+                    },
+                    h,
+                  ),
+              },
+            ),
+          ],
+          h,
         ),
       )
     },

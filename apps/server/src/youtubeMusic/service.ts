@@ -21,6 +21,7 @@ import {
   MusicNotFoundError,
   type PlaylistDetails,
   type PlaylistSummary,
+  type RadioStation,
   type ReleaseKind,
   type Song,
   type SongDetails,
@@ -167,6 +168,13 @@ export interface YouTubeMusicShape {
   readonly getPlaylist: (
     playlistId: string,
   ) => Effect.Effect<PlaylistDetails, MusicNotFoundError | YouTubeMusicError>
+  /** The songs an artist's or album's radio plays, in its order. */
+  readonly getRadio: (
+    station: RadioStation,
+  ) => Effect.Effect<
+    ReadonlyArray<Song>,
+    MusicNotFoundError | YouTubeMusicError
+  >
 }
 
 /** Read-only access to the YouTube Music catalog, mapped to shared Schemas. */
@@ -498,6 +506,39 @@ const make = Effect.gen(function* () {
     )
   })
 
+  const getRadio = Effect.fn('YouTubeMusic.getRadio')(function* (
+    station: RadioStation,
+  ) {
+    const response = yield* lookUp(station.playlistId, () =>
+      innertube.actions.execute('/next', {
+        playlistId: station.playlistId,
+        ...Option.match(station.maybeParams, {
+          onNone: () => ({}),
+          onSome: params => ({ params }),
+        }),
+        ...Option.match(station.maybeVideoId, {
+          onNone: () => ({}),
+          onSome: videoId => ({ videoId }),
+        }),
+        client: 'YTMUSIC',
+        parse: true,
+      }),
+    )
+    const songs = filterSome(
+      Array.flatMap(
+        response.contents_memo?.getType(YTNodes.PlaylistPanel) ?? [],
+        panel => Array.fromIterable(panel.contents),
+      ),
+      item =>
+        item.is(YTNodes.PlaylistPanelVideo)
+          ? songFromPlaylistPanelVideo(item.as(YTNodes.PlaylistPanelVideo))
+          : Option.none(),
+    )
+    return Array.isReadonlyArrayEmpty(songs)
+      ? yield* Effect.fail(new MusicNotFoundError({ id: station.playlistId }))
+      : Array.dedupeWith(songs, (left, right) => left.videoId === right.videoId)
+  })
+
   return YouTubeMusic.of({
     searchSongs,
     searchArtists,
@@ -512,6 +553,7 @@ const make = Effect.gen(function* () {
     getArtist,
     getAlbum,
     getPlaylist,
+    getRadio,
   })
 })
 
