@@ -286,7 +286,12 @@ describe('shelves', () => {
       ),
     ]
     expect(
-      homePlaylists({ playlists, likedVideoIds: [] }).map(({ id }) => id),
+      homePlaylists({
+        playlists,
+        likedVideoIds: [],
+        albums: [],
+        artists: [],
+      }).map(({ id }) => id),
     ).toEqual(
       Array.from({ length: HOME_PLAYLIST_SHELVES }, (_, index) => `p${index}`),
     )
