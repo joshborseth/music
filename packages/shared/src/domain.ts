@@ -81,6 +81,21 @@ export const SongDetails = Schema.Struct({
 })
 export type SongDetails = typeof SongDetails.Type
 
+// RADIO
+
+/**
+ * One of YouTube Music's radios: what an artist's "Radio" button or an
+ * album's "Start mix" plays, songs like theirs from many artists. The fields
+ * are YouTube's own, passed back as they came.
+ */
+export const RadioStation = Schema.Struct({
+  playlistId: Schema.String,
+  maybeParams: Schema.Option(Schema.String),
+  /** The song the radio starts from, when YouTube names one. */
+  maybeVideoId: Schema.Option(Schema.String),
+})
+export type RadioStation = typeof RadioStation.Type
+
 // ARTIST
 
 /** An artist as it appears in a list. */
@@ -117,6 +132,8 @@ export const AlbumDetails = Schema.Struct({
   tracks: Schema.Array(Song),
   /** The tracks YouTube Music marks explicit. */
   explicitVideoIds: Schema.Array(Schema.String),
+  /** The album's radio ("Start mix"), when YouTube Music offers one. */
+  maybeRadio: Schema.Option(RadioStation),
 })
 export type AlbumDetails = typeof AlbumDetails.Type
 
@@ -138,6 +155,8 @@ export const ArtistDetails = Schema.Struct({
   singles: Schema.Array(AlbumSummary),
   /** Artists their fans also listen to ("Fans might also like"). */
   relatedArtists: Schema.Array(ArtistSummary),
+  /** The artist's radio, when YouTube Music offers one. */
+  maybeRadio: Schema.Option(RadioStation),
 })
 export type ArtistDetails = typeof ArtistDetails.Type
 

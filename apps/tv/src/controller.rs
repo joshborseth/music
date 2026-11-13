@@ -44,8 +44,6 @@ pub enum UiAction {
     ToggleShuffle,
     /// Step repeat off → all → one → off.
     CycleRepeat,
-    /// Remove the songs queued after the current one; autoplay's stay.
-    ClearUpcoming,
 }
 
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -295,10 +293,6 @@ impl Controller {
             }
             UiAction::Remove(entry_id) => {
                 self.send(ClientMessage::RemoveEntry { entry_id });
-                return;
-            }
-            UiAction::ClearUpcoming => {
-                self.send(ClientMessage::ClearUpcoming {});
                 return;
             }
             UiAction::PlayHere => {

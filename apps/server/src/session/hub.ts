@@ -1,6 +1,7 @@
 import {
   Config,
   Context,
+  Duration,
   Effect,
   FiberMap,
   FileSystem,
@@ -37,6 +38,7 @@ import {
   missingDurations,
   playerLost,
   refresh,
+  sleepTimerRang,
   toSessionState,
   unchanged,
   update,
@@ -477,6 +479,40 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       )
     })
 
+    /** The moment the sleep timer's fiber waits for, if one waits. */
+    let maybeSleepAt = Option.none<number>()
+
+    /**
+     * Keep one fiber waiting for the sleep timer's time, and none when no
+     * timer is set or it waits for the song's end (the player says when a
+     * song ends). It pauses the session from outside itself, because pausing
+     * clears the timer, and clearing the timer removes this very fiber.
+     */
+    const syncSleepTimer = Effect.suspend(() => {
+      const timer = model.sleepTimer
+      if (timer === null || timer._tag !== 'At') {
+        if (Option.isNone(maybeSleepAt)) return Effect.void
+        maybeSleepAt = Option.none()
+        return FiberMap.remove(timers, 'sleep')
+      }
+      if (Option.contains(maybeSleepAt, timer.endsAt)) return Effect.void
+      maybeSleepAt = Option.some(timer.endsAt)
+      return FiberMap.run(
+        timers,
+        'sleep',
+        Effect.sleep(
+          Duration.millis(Math.max(0, timer.endsAt - Date.now())),
+        ).pipe(
+          Effect.andThen(
+            Effect.forkIn(
+              apply(current => sleepTimerRang(current, Date.now())),
+              hubScope,
+            ),
+          ),
+        ),
+      )
+    })
+
     /**
      * Run one transition under the lock and carry out what it asks for. A
      * transition that changes nothing still answers `replyTo`, whose `ack`
@@ -492,6 +528,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
           model = outcome.model
           if (outcome.broadcast) {
             yield* broadcastState
+            yield* syncSleepTimer
             yield* prepareAhead
             yield* FiberMap.run(
               timers,
@@ -541,6 +578,9 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       })
 
     const makeEntryId = () => `e${(nextEntryId++).toString(36)}`
+
+    // A timer saved before a restart still stops the music on time.
+    yield* lock.withPermits(1)(syncSleepTimer)
 
     const contextFor = (senderId: string) => ({
       now: Date.now(),

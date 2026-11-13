@@ -32,4 +32,21 @@ describe('songsToTrim', () => {
   test('assumes a size for songs the index does not know', () => {
     expect(songsToTrim(['a', 'b'], {}, new Set(), 9 * MB)).toEqual(['a'])
   })
+
+  test('never trims a downloaded song, and leaves it out of the limit', () => {
+    // Without the pin, 'old' and 'new' would go to fit 10 MB.
+    expect(
+      songsToTrim(ids, index, new Set(['next']), 10 * MB, new Set(['old'])),
+    ).toEqual(['new'])
+    // The pinned songs alone may pass the limit: nothing else goes for them.
+    expect(
+      songsToTrim(
+        ids,
+        index,
+        new Set(),
+        4 * MB,
+        new Set(['old', 'fav', 'new']),
+      ),
+    ).toEqual([])
+  })
 })

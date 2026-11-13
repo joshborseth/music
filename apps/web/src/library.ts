@@ -15,6 +15,7 @@ export const LibraryFilter = Schema.Literals([
   'Playlists',
   'Albums',
   'Artists',
+  'Downloaded',
 ])
 export type LibraryFilter = typeof LibraryFilter.Type
 
@@ -23,6 +24,7 @@ export const LIBRARY_FILTER_CHIPS: ReadonlyArray<LibraryFilter> = [
   'Playlists',
   'Albums',
   'Artists',
+  'Downloaded',
 ]
 
 /** Something the person opened, so the Library can take them back to it. */

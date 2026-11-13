@@ -85,6 +85,18 @@ export type Device = typeof Device.Type
 export const RepeatMode = Schema.Literals(['Off', 'All', 'One'])
 export type RepeatMode = typeof RepeatMode.Type
 
+/**
+ * When the music stops by itself: at a moment (`At`, server epoch ms), or
+ * as the song playing ends (`EndOfSong`), whichever song that is by then.
+ * The server pauses the session then, wherever it plays. A phone that plays
+ * stops on its own too, since a locked phone may not hear the server.
+ */
+export const SleepTimer = Schema.Union([
+  Schema.TaggedStruct('At', { endsAt: Schema.Number }),
+  Schema.TaggedStruct('EndOfSong', {}),
+])
+export type SleepTimer = typeof SleepTimer.Type
+
 export const SessionState = Schema.Struct({
   devices: Schema.Array(Device),
   activeDeviceId: Schema.NullOr(Schema.String),
@@ -102,6 +114,8 @@ export const SessionState = Schema.Struct({
    * off puts them back.
    */
   shuffle: Schema.Boolean,
+  /** Null when no sleep timer is set. */
+  sleepTimer: Schema.NullOr(SleepTimer),
 })
 export type SessionState = typeof SessionState.Type
 
@@ -216,6 +230,18 @@ export const SetShuffle = Schema.TaggedStruct('SetShuffle', {
   enabled: Schema.Boolean,
 })
 
+/** A sleep timer as someone picks it: after some minutes, or at the song's end. */
+export const SleepTimerChoice = Schema.Union([
+  Schema.TaggedStruct('Minutes', { minutes: Schema.Number }),
+  Schema.TaggedStruct('EndOfSong', {}),
+])
+export type SleepTimerChoice = typeof SleepTimerChoice.Type
+
+/** Set the sleep timer, or turn it off with null. */
+export const SetSleepTimer = Schema.TaggedStruct('SetSleepTimer', {
+  timer: Schema.NullOr(SleepTimerChoice),
+})
+
 /** Move playback to another device, waking it first if it can be woken. */
 export const Transfer = Schema.TaggedStruct('Transfer', {
   deviceId: Schema.String,
@@ -282,6 +308,7 @@ export const ClientMessage = Schema.Union([
   SetAutoplay,
   SetRepeat,
   SetShuffle,
+  SetSleepTimer,
   Transfer,
   Wake,
   Progress,
@@ -359,6 +386,16 @@ export const followingIndex = (
   if (index + 1 < length) return Option.some(index + 1)
   return repeat === 'All' ? Option.some(0) : Option.none()
 }
+
+/**
+ * The sleep timer stops the music when the song playing ends, so nothing
+ * follows it without a gap: the player lets it end (`TrackEnded`).
+ */
+export const stopsAfterSong = (state: SessionState): boolean =>
+  state.sleepTimer?._tag === 'EndOfSong'
+
+/** The longest sleep timer the server takes, in minutes. */
+export const MAX_SLEEP_MINUTES = 24 * 60
 
 /**
  * The queue index Next goes to from `index`. Next always moves on, even

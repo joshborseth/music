@@ -16,6 +16,7 @@ import {
   type PlaylistDetails,
   type PlaylistShelf,
   type PlaylistSummary,
+  type RadioStation,
   ReleaseKind,
   type Song,
   type Thumbnail,
@@ -88,6 +89,58 @@ const browseIdOf = (
     Option.fromNullishOr(maybeEndpoint),
     Option.flatMap(endpoint => decodeBrowsePayload(endpoint.payload)),
     Option.map(({ browseId }) => browseId),
+  )
+
+const RadioPayload = Schema.Struct({
+  playlistId: Schema.String,
+  params: Schema.optionalKey(Schema.String),
+  videoId: Schema.optionalKey(Schema.String),
+})
+
+const decodeRadioPayload = Schema.decodeUnknownOption(RadioPayload)
+
+/**
+ * The radio a button or menu item starts, if it starts one: YouTube Music's
+ * radios and mixes are playlists whose ids start with `RD`, played through
+ * a watch endpoint. Its other buttons (Play, Shuffle) play the songs
+ * themselves, which is not a radio.
+ */
+export const radioOf = (
+  maybeEndpoint: YTNodes.NavigationEndpoint | null | undefined,
+): Option.Option<RadioStation> =>
+  pipe(
+    Option.fromNullishOr(maybeEndpoint),
+    Option.flatMap(endpoint => decodeRadioPayload(endpoint.payload)),
+    Option.filter(({ playlistId }) => playlistId.startsWith('RD')),
+    Option.map(({ playlistId, params, videoId }) => ({
+      playlistId,
+      maybeParams: Option.fromNullishOr(params),
+      maybeVideoId: Option.fromNullishOr(videoId),
+    })),
+  )
+
+/**
+ * An album's radio, from the "Start mix" item in its header's menu: a mix
+ * of the album's playlist (`RDAMPL` and the album's playlist id).
+ */
+export const albumRadio = (
+  buttons: ReadonlyArray<Helpers.YTNode>,
+): Option.Option<RadioStation> =>
+  pipe(
+    buttons,
+    Array.filter(button => button.is(YTNodes.Menu)),
+    Array.flatMap(button => Array.fromIterable(button.as(YTNodes.Menu).items)),
+    Array.filter(item =>
+      item.is(YTNodes.MenuNavigationItem, YTNodes.MenuServiceItem),
+    ),
+    Array.findFirst(item =>
+      Option.filter(
+        radioOf(
+          item.as(YTNodes.MenuNavigationItem, YTNodes.MenuServiceItem).endpoint,
+        ),
+        ({ playlistId }) => playlistId.startsWith('RDAMPL'),
+      ),
+    ),
   )
 
 const PageTypePayload = Schema.Struct({
@@ -458,6 +511,7 @@ export const toAlbumDetails = (
           explicitVideoIds: filterSome(page.contents, item =>
             isExplicit(item) ? nonEmptyString(item.id) : Option.none(),
           ),
+          maybeRadio: albumRadio(Array.fromIterable(header.buttons)),
         }
       }),
     ),
@@ -501,6 +555,16 @@ const headerArtwork = (header: NonNullable<ArtistPage['header']>): Artwork => {
   }
   return []
 }
+
+/** The artist's radio, from the Radio button on their photo. */
+const headerRadio = (
+  header: NonNullable<ArtistPage['header']>,
+): Option.Option<RadioStation> =>
+  header.is(YTNodes.MusicImmersiveHeader)
+    ? radioOf(
+        header.as(YTNodes.MusicImmersiveHeader).start_radio_button?.endpoint,
+      )
+    : Option.none()
 
 const headerDescription = (header: NonNullable<ArtistPage['header']>) =>
   header.is(YTNodes.MusicImmersiveHeader)
@@ -661,6 +725,7 @@ export const toArtistDetails = (
             carouselItems(page.sections, ArtistShelfTitle.Related),
             artistFromTwoRowItem,
           ),
+          maybeRadio: headerRadio(header),
         }
       }),
     ),

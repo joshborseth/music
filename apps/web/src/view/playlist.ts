@@ -3,6 +3,7 @@ import { Html, HtmlBuilder } from 'foldkit/html'
 
 import { type PlaylistDetails } from '@music/shared'
 
+import { downloadStatus } from '../downloads/domain'
 import { Message } from '../message'
 import { playlistQuery } from '../query'
 import { collectionView } from './collection'
@@ -68,6 +69,11 @@ export const playlistView = (
             credits: lines.credits,
             details: lines.details,
             maybeDescription: details.maybeDescription,
+            download: downloadStatus(
+              model.downloads,
+              'Playlist',
+              details.playlist.id,
+            ),
           },
           {
             tracks: details.tracks,

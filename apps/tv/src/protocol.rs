@@ -70,6 +70,30 @@ pub struct SessionState {
     /// The songs after the current one were put in a random order.
     #[serde(default)]
     pub shuffle: bool,
+    /// When the music stops by itself, if a sleep timer is set.
+    #[serde(default)]
+    pub sleep_timer: Option<SleepTimer>,
+}
+
+/// When the music stops by itself. Mirrors `SleepTimer` in
+/// `packages/shared/src/session.ts`: the server pauses the session then.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "_tag")]
+pub enum SleepTimer {
+    /// At server epoch milliseconds `ends_at`.
+    #[serde(rename_all = "camelCase")]
+    At { ends_at: f64 },
+    /// As the song playing ends, so nothing follows it without a gap.
+    EndOfSong {},
+}
+
+/// A sleep timer as someone picks it, for `SetSleepTimer`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "_tag")]
+pub enum SleepTimerChoice {
+    /// After this many minutes.
+    Minutes { minutes: u32 },
+    EndOfSong {},
 }
 
 /// What happens at the end of a song. Mirrors `RepeatMode` and
@@ -121,11 +145,21 @@ impl SessionState {
     }
 
     /// What plays when the current song ends by itself, as `repeat` says:
-    /// with repeat one, the same entry again.
+    /// with repeat one, the same entry again. Nothing while the sleep timer
+    /// stops the music at the song's end: the song then ends (`TrackEnded`)
+    /// and the server pauses on what follows.
     pub fn next_after_current(&self) -> Option<&QueueEntry> {
+        if self.stops_after_song() {
+            return None;
+        }
         self.current_index()
             .and_then(|index| following_index(self.queue.len(), index, self.repeat))
             .and_then(|index| self.queue.get(index))
+    }
+
+    /// The sleep timer stops the music when the song playing ends.
+    pub fn stops_after_song(&self) -> bool {
+        matches!(self.sleep_timer, Some(SleepTimer::EndOfSong {}))
     }
 
     /// Where playback is at server time `server_now` (epoch ms).
@@ -222,6 +256,10 @@ pub enum ClientMessage {
     /// Shuffle the songs to come, or put them back in order.
     SetShuffle {
         enabled: bool,
+    },
+    /// Set the sleep timer, or turn it off with none.
+    SetSleepTimer {
+        timer: Option<SleepTimerChoice>,
     },
     #[serde(rename_all = "camelCase")]
     Transfer {
@@ -341,6 +379,40 @@ mod tests {
         assert!(server_now > state.position_at);
         assert_eq!(utc_offset_minutes, Some(-420));
         assert!((state.position_at(state.position_at + 1500.0) - 13.5).abs() < 1e-9);
+        assert_eq!(
+            state.sleep_timer,
+            Some(SleepTimer::At {
+                ends_at: 1794427800000.0
+            })
+        );
+        assert!(!state.stops_after_song());
+    }
+
+    #[test]
+    fn a_sleep_timer_at_the_end_of_the_song_lets_it_end() {
+        let ServerMessage::State { state, .. } =
+            serde_json::from_str(&fixture("server-state-sleep-end-of-song.json")).unwrap()
+        else {
+            panic!("expected State");
+        };
+        assert_eq!(state.sleep_timer, Some(SleepTimer::EndOfSong {}));
+        assert!(state.stops_after_song());
+        assert_eq!(state.next_after_current(), None);
+    }
+
+    #[test]
+    fn decodes_a_state_from_a_server_before_the_sleep_timer() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fixture("server-state.json")).unwrap();
+        value["state"]
+            .as_object_mut()
+            .unwrap()
+            .remove("sleepTimer");
+        let ServerMessage::State { state, .. } = serde_json::from_value(value).unwrap() else {
+            panic!("expected State");
+        };
+        assert_eq!(state.sleep_timer, None);
+        assert_eq!(state.next_after_current().unwrap().entry_id, "e1");
     }
 
     #[test]
@@ -504,6 +576,22 @@ mod tests {
             (
                 "client-set-shuffle.json",
                 ClientMessage::SetShuffle { enabled: true },
+            ),
+            (
+                "client-set-sleep-timer.json",
+                ClientMessage::SetSleepTimer {
+                    timer: Some(SleepTimerChoice::Minutes { minutes: 30 }),
+                },
+            ),
+            (
+                "client-set-sleep-timer-end-of-song.json",
+                ClientMessage::SetSleepTimer {
+                    timer: Some(SleepTimerChoice::EndOfSong {}),
+                },
+            ),
+            (
+                "client-cancel-sleep-timer.json",
+                ClientMessage::SetSleepTimer { timer: None },
             ),
             (
                 "client-set-device-volume.json",

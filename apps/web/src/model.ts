@@ -1,5 +1,6 @@
 import { Schema } from 'effect'
 
+import { Downloads } from './downloads/domain'
 import { LibraryFilter, LibraryItem } from './library'
 import { NavigationModel } from './navigation'
 import {
@@ -85,5 +86,7 @@ export const Model = Schema.Struct({
   /** Queue changes this phone made that the server has not confirmed. */
   queueEdits: Schema.Array(QueueEdit),
   swipe: Swipe,
+  /** Albums and playlists downloaded on this phone. */
+  downloads: Downloads,
 })
 export type Model = typeof Model.Type

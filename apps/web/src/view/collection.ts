@@ -1,9 +1,12 @@
 import { Array, Option } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
+import { CircleArrowDown, LoaderCircle } from 'lucide'
 
+import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { type Artwork, type Song } from '@music/shared'
+import { type Artwork, type RadioStation, type Song } from '@music/shared'
 
+import { DownloadStatus, formatBytes } from '../downloads/domain'
 import { Message } from '../message'
 import { SyncTitleBarReveal } from '../mount'
 import { type Swipe } from '../playback/swipe'
@@ -71,7 +74,42 @@ export type CollectionHeader = Readonly<{
   credits: ReadonlyArray<Html | string>
   details: string
   maybeDescription: Option.Option<string>
+  /** Whether it is downloaded on this phone, for the badge under the title. */
+  download?: DownloadStatus
 }>
+
+/**
+ * The download badge under the title: how far a download has got, or that
+ * it is all on the phone and how much room it takes.
+ */
+const downloadBadge = (
+  status: DownloadStatus,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const badge = (
+    iconNode: typeof CircleArrowDown,
+    text: string,
+    iconClass: string,
+  ) =>
+    h.p(
+      [
+        h.Class(
+          'text-primary mt-1 flex items-center gap-1.5 text-[13px] font-semibold',
+        ),
+      ],
+      [icon(h, iconNode, cn('size-4', iconClass)), text],
+    )
+  return DownloadStatus.match(status, {
+    Unavailable: () => h.empty,
+    NotDownloaded: () => h.empty,
+    Downloading: ({ saved, total }) =>
+      badge(LoaderCircle, `Downloading ${saved} of ${total}`, 'animate-spin'),
+    Incomplete: ({ saved, total }) =>
+      badge(CircleArrowDown, `${saved} of ${total} downloaded`, ''),
+    Downloaded: ({ bytes }) =>
+      badge(CircleArrowDown, `Downloaded · ${formatBytes(bytes)}`, ''),
+  })
+}
 
 /** An album or playlist: cover, title, who made it, and how to play it. */
 export const collectionView = (
@@ -83,6 +121,7 @@ export const collectionView = (
     playing: NowPlaying
     swipe: Swipe
     maybeAlbumContext?: Option.Option<AlbumContext>
+    maybeRadio?: Option.Option<RadioStation>
   }>,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -130,9 +169,12 @@ export const collectionView = (
                 [h.Class('text-muted-foreground text-[13px] font-medium')],
                 [header.details],
               ),
+          header.download === undefined
+            ? h.empty
+            : downloadBadge(header.download, h),
         ],
       ),
-      playActions(config.tracks, h),
+      playActions(config.tracks, h, config.maybeRadio ?? Option.none()),
       Option.match(header.maybeDescription, {
         onNone: () => h.empty,
         onSome: text => expandableText(text, h),

@@ -3,6 +3,7 @@ import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
   CircleAlert,
+  CircleArrowDown,
   Disc3,
   Ellipsis,
   Heart,
@@ -11,6 +12,7 @@ import {
   ListStart,
   Music,
   Play,
+  Radio,
   RotateCw,
   Shuffle,
   User,
@@ -26,6 +28,7 @@ import {
   type Artwork,
   type MyPlaylistSummary,
   type PlaylistSummary,
+  type RadioStation,
   type Song,
 } from '@music/shared'
 
@@ -803,6 +806,7 @@ const MY_PLAYLIST_ROW_ARTWORK_WIDTH = 56
 export const myPlaylistRow = (
   playlist: MyPlaylistSummary,
   h: HtmlBuilder<Message>,
+  isDownloaded: boolean = false,
 ): Html =>
   h.a(
     [h.Href(myPlaylistHref(playlist.id)), h.Class(linkRowClass)],
@@ -817,7 +821,19 @@ export const myPlaylistRow = (
         h,
       ),
       rowText(playlist.title, playlistLength(playlist), h),
+      isDownloaded ? downloadedMark(h) : h.empty,
     ],
+  )
+
+/** The small arrow that marks something downloaded on this phone. */
+export const downloadedMark = (h: HtmlBuilder<Message>): Html =>
+  h.span(
+    [
+      h.Role('img'),
+      h.AriaLabel('Downloaded'),
+      h.Class('text-primary shrink-0'),
+    ],
+    [icon(h, CircleArrowDown, 'size-4')],
   )
 
 /** Plain rows keyed by a stable id. */
@@ -842,22 +858,30 @@ export const list = <A>(
 
 // ACTIONS
 
-/** The two big buttons under a header: play in order, or shuffled. */
+const playActionClass =
+  'pressable bg-secondary text-primary flex h-12 items-center justify-center gap-2 rounded-xl text-[15px] font-semibold'
+
+/** Columns for one, two, or three play buttons. */
+const PLAY_ACTION_COLUMNS = ['grid-cols-1', 'grid-cols-2', 'grid-cols-3']
+
+/**
+ * The big buttons under a header: Play in order, Shuffle, and Radio when
+ * YouTube Music has a
+ * radio for the album or artist: songs like these from many artists.
+ */
 export const playActions = (
   songs: ReadonlyArray<Song>,
   h: HtmlBuilder<Message>,
-): Html =>
-  Array.isReadonlyArrayNonEmpty(songs)
-    ? h.div(
-        [h.Class('grid grid-cols-2 gap-3 px-4')],
-        [
+  maybeRadio: Option.Option<RadioStation> = Option.none(),
+): Html => {
+  const buttons = [
+    ...(Array.isReadonlyArrayNonEmpty(songs)
+      ? [
           h.button(
             [
               h.Type('button'),
               h.OnClick(Message.ClickedPlaySongs({ songs, startIndex: 0 })),
-              h.Class(
-                'pressable bg-secondary text-primary flex h-12 items-center justify-center gap-2 rounded-xl text-[15px] font-semibold',
-              ),
+              h.Class(playActionClass),
             ],
             [icon(h, Play, 'size-4 fill-current'), 'Play'],
           ),
@@ -865,15 +889,38 @@ export const playActions = (
             [
               h.Type('button'),
               h.OnClick(Message.ClickedShuffleSongs({ songs })),
-              h.Class(
-                'pressable bg-secondary text-primary flex h-12 items-center justify-center gap-2 rounded-xl text-[15px] font-semibold',
-              ),
+              h.Class(playActionClass),
             ],
             [icon(h, Shuffle, 'size-4'), 'Shuffle'],
           ),
+        ]
+      : []),
+    ...Option.match(maybeRadio, {
+      onNone: () => [],
+      onSome: station => [
+        h.button(
+          [
+            h.Type('button'),
+            h.OnClick(Message.ClickedStartStationRadio({ station })),
+            h.AriaLabel('Start radio'),
+            h.Class(playActionClass),
+          ],
+          [icon(h, Radio, 'size-4'), 'Radio'],
+        ),
+      ],
+    }),
+  ]
+  return Array.isReadonlyArrayNonEmpty(buttons)
+    ? h.div(
+        [
+          h.Class(
+            cn('grid gap-3 px-4', PLAY_ACTION_COLUMNS[buttons.length - 1]),
+          ),
         ],
+        buttons,
       )
     : h.empty
+}
 
 // CARDS
 

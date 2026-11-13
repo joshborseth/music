@@ -1,5 +1,5 @@
 import { Array, Option } from 'effect'
-import type { Update } from 'foldkit'
+import { Update } from 'foldkit'
 import { modifyFields } from 'foldkit/struct'
 
 import { Session, type Song } from '@music/shared'
@@ -709,10 +709,19 @@ export const updatePhoneAudioTime = (
   entryId: string,
   seconds: number,
   at: number,
+): PlaybackReturn =>
+  Option.isNone(loadedIfCurrent(model, entryId))
+    ? { model }
+    : Update.combine(model, [
+        stepModel => reportPhoneAudioTime(stepModel, seconds, at),
+        stopForSleepTimer,
+      ])
+
+const reportPhoneAudioTime = (
+  model: Model,
+  seconds: number,
+  at: number,
 ): PlaybackReturn => {
-  if (Option.isNone(loadedIfCurrent(model, entryId))) {
-    return { model }
-  }
   const nextModel = modifyFields(model, {
     phoneAudioSeconds: () => seconds,
     now: () => at,
@@ -737,6 +746,52 @@ export const updatePhoneAudioTime = (
   })
 }
 
+// SLEEP TIMER
+
+/** The session as this phone shows it, with the sleep timer done. */
+const withoutSleepTimer = (model: Model): Model =>
+  withOptimisticSession(model, state =>
+    modifyFields(state, { sleepTimer: () => null }),
+  )
+
+/** The sleep timer's time came, by the server's clock as this phone reads it. */
+const isSleepTimeDue = (model: Model): boolean =>
+  Option.exists(
+    model.maybeSession,
+    ({ state, clockOffsetMs }) =>
+      state.sleepTimer?._tag === 'At' &&
+      model.now + clockOffsetMs >= state.sleepTimer.endsAt,
+  )
+
+/**
+ * Pause this phone when the sleep timer's time comes while it plays. The
+ * server pauses the session at the same moment, but a locked phone may not
+ * hear it, so the phone stops on its own and says so like any pause it makes.
+ */
+export const stopForSleepTimer = (model: Model): PlaybackReturn => {
+  if (!isSleepTimeDue(model)) {
+    return { model }
+  }
+  const isPlayingHere =
+    Option.isSome(playingHere(model)) &&
+    Option.exists(loadedEntry(model.phoneAudio), loaded => loaded.isPlaying)
+  if (!isPlayingHere) {
+    return { model }
+  }
+  const paused = setPlaying(model, false)
+  return { model: withoutSleepTimer(paused.model), commands: paused.commands }
+}
+
+/** The clock moved on: show it, and stop the music if the timer says so. */
+export const tickClock = (model: Model, now: number): PlaybackReturn =>
+  stopForSleepTimer(modifyFields(model, { now: () => now }))
+
+/** Ask the server for a sleep timer, or to turn it off. */
+export const setSleepTimer = (
+  model: Model,
+  timer: Session.SleepTimerChoice | null,
+): PlaybackReturn => sendCommand(model, { _tag: 'SetSleepTimer', timer })
+
 /**
  * The song ended: start the next one right away and tell the server it
  * already did. Waiting for the server's answer leaves a locked phone silent,
@@ -755,11 +810,38 @@ export const endPhoneAudio = (
       next,
     })),
   )
+  if (
+    Option.exists(model.maybeSession, ({ state }) =>
+      Session.stopsAfterSong(state),
+    )
+  ) {
+    return sleepAfterSong(model, entryId, maybeNext)
+  }
   return Option.match(maybeNext, {
     onNone: () => stopAtQueueEnd(model, entryId),
     onSome: ({ here, next }) =>
       moveHere(model, here, next, { _tag: 'Advanced', fromEntryId: entryId }),
   })
+}
+
+/**
+ * The song ended with the sleep timer set for its end: the next song loads
+ * paused at its start, as the server will have it, and the timer is done.
+ */
+const sleepAfterSong = (
+  model: Model,
+  entryId: string,
+  maybeNext: Option.Option<{
+    readonly here: PlayingHere
+    readonly next: Session.QueueEntry
+  }>,
+): PlaybackReturn => {
+  const stopped = Option.match(maybeNext, {
+    onNone: () => stopAtQueueEnd(model, entryId),
+    onSome: ({ here, next }) =>
+      moveHere(model, here, next, { _tag: 'TrackEnded', entryId }, false),
+  })
+  return { model: withoutSleepTimer(stopped.model), commands: stopped.commands }
 }
 
 /**
@@ -1133,6 +1215,26 @@ export const clickPlaySongs = (
  */
 export const startRadio = (model: Model, song: Song): PlaybackReturn => {
   const play = clickPlaySongs(model, [song], 0)
+  return Option.exists(model.maybeSession, ({ state }) => !state.autoplay)
+    ? {
+        model: play.model,
+        commands: [
+          ...(play.commands ?? []),
+          send({ _tag: 'SetAutoplay', enabled: true }),
+        ],
+      }
+    : play
+}
+
+/**
+ * Play an album's or artist's radio, which came as songs. Like a song's
+ * radio, it turns autoplay on, so the music goes on after them.
+ */
+export const playStationRadio = (
+  model: Model,
+  songs: ReadonlyArray<Song>,
+): PlaybackReturn => {
+  const play = playSongs(model, songs, 0)
   return Option.exists(model.maybeSession, ({ state }) => !state.autoplay)
     ? {
         model: play.model,

@@ -217,7 +217,7 @@ export const artistView = (
                   AsyncData.getData(myLibraryQuery.read(model.myLibrary)),
                   h,
                 ),
-                playActions(details.topSongs, h),
+                playActions(details.topSongs, h, details.maybeRadio),
               ],
             ),
             songSection(

@@ -614,10 +614,11 @@ export const subscriptions = Subscription.make<
   clock: entry(
     { isPlaying: Schema.Boolean, isShowingLyrics: Schema.Boolean },
     {
+      // NOTE: a sleep timer counts down on screen even while paused.
       modelToDependencies: model => ({
         isPlaying: Option.exists(
           model.maybeSession,
-          ({ state }) => state.playing,
+          ({ state }) => state.playing || state.sleepTimer?._tag === 'At',
         ),
         isShowingLyrics:
           model.playerSheet._tag === 'Open' && model.playerPanel === 'Lyrics',

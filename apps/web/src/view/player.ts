@@ -11,6 +11,7 @@ import {
   Menu,
   MessageSquareQuote,
   Monitor,
+  Moon,
   Music,
   Pause,
   Play,
@@ -44,11 +45,14 @@ import {
   type Output,
   SKIP_SECONDS,
   type SessionSnapshot,
+  SleepCountdown,
+  countdownText,
   currentEntry,
   hasNextEntry,
   loadedEntry,
   outputText,
   playbackOutput,
+  sleepCountdown,
   upcomingEntries,
 } from '../playback/domain'
 import { displayedPosition } from '../playback/position'
@@ -1034,6 +1038,47 @@ const deviceButton = (
   )
 }
 
+/**
+ * The sleep timer, top right: a moon to set one, or a moon with the time
+ * left once one is set, wherever the music plays.
+ */
+const sleepTimerButton = (
+  model: Model,
+  snapshot: SessionSnapshot,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(sleepCountdown(snapshot, model.now), {
+    onNone: () =>
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedSleepTimer()),
+          h.AriaLabel('Sleep timer'),
+          h.Class(
+            'flex size-10 items-center justify-center rounded-full text-white/80 active:bg-white/10',
+          ),
+        ],
+        [icon(h, Moon, 'size-[22px]')],
+      ),
+    onSome: countdown => {
+      const text = SleepCountdown.match(countdown, {
+        Remaining: ({ seconds }) => countdownText(seconds),
+        EndOfSong: () => 'End of song',
+      })
+      return h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedSleepTimer()),
+          h.AriaLabel(`Sleep timer: ${text}`),
+          h.Class(
+            'flex h-8 items-center gap-1.5 rounded-full bg-white/15 px-3 text-[13px] font-semibold text-white tabular-nums active:bg-white/25',
+          ),
+        ],
+        [icon(h, Moon, 'size-3.5 fill-current'), text],
+      )
+    },
+  })
+
 /** The backdrop's color until the server sends the cover's own. */
 const NEUTRAL_BACKDROP = 'oklch(0.205 0 0)'
 
@@ -1145,7 +1190,7 @@ const playerSheet = (
         ],
         [
           h.div(
-            [h.Class('flex items-center justify-between')],
+            [h.Class('relative flex h-10 items-center justify-between')],
             [
               h.button(
                 [
@@ -1160,9 +1205,11 @@ const playerSheet = (
               ),
               h.span([
                 h.AriaHidden(true),
-                h.Class('h-[5px] w-10 rounded-full bg-white/35'),
+                h.Class(
+                  'absolute top-1/2 left-1/2 h-[5px] w-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/35',
+                ),
               ]),
-              h.span([h.Class('size-10')]),
+              sleepTimerButton(model, snapshot, h),
             ],
           ),
           panel === 'Artwork'

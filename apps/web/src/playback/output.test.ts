@@ -46,6 +46,7 @@ const session = (
   autoplay: true,
   repeat: 'Off',
   shuffle: false,
+  sleepTimer: null,
 })
 
 const me = Option.some('phone')

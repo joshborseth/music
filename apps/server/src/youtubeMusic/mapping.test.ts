@@ -5,6 +5,7 @@ import { YTNodes } from 'youtubei.js'
 import { type Song } from '@music/shared'
 
 import {
+  albumRadio,
   artistFromTwoRowItem,
   audioTrackFor,
   filterSome,
@@ -12,6 +13,7 @@ import {
   isExplicit,
   playlistOwnerFromResponse,
   playsFromListItem,
+  radioOf,
   secondsFromClock,
   songFromListItem,
   toArtwork,
@@ -544,5 +546,72 @@ describe('playlistOwnerFromResponse', () => {
   test('is None when the header names nobody', () => {
     expect(playlistOwnerFromResponse(page(undefined))).toEqual(Option.none())
     expect(playlistOwnerFromResponse({})).toEqual(Option.none())
+  })
+})
+
+describe('radios', () => {
+  const watch = (payload: object) =>
+    new YTNodes.NavigationEndpoint({ watchEndpoint: payload })
+
+  test("an artist's Radio button starts the artist's radio", () => {
+    expect(
+      radioOf(
+        watch({
+          videoId: 'r7mN9BLr4jU',
+          playlistId: 'RDEMk8jEIzOyB2trfXZrSEVz_Q',
+          params: 'wAEB',
+        }),
+      ),
+    ).toEqual(
+      Option.some({
+        playlistId: 'RDEMk8jEIzOyB2trfXZrSEVz_Q',
+        maybeParams: Option.some('wAEB'),
+        maybeVideoId: Option.some('r7mN9BLr4jU'),
+      }),
+    )
+  })
+
+  test('playing the songs themselves is no radio', () => {
+    expect(radioOf(watch({ playlistId: 'OLAK5uy_album' }))).toEqual(
+      Option.none(),
+    )
+    expect(radioOf(undefined)).toEqual(Option.none())
+  })
+
+  const menuItem = (text: string, payload: object) => ({
+    menuNavigationItemRenderer: {
+      text: { runs: [{ text }] },
+      navigationEndpoint: { watchEndpoint: payload },
+    },
+  })
+
+  test("an album's radio is the Start mix in its menu", () => {
+    const menu = new YTNodes.Menu({
+      items: [
+        menuItem('Shuffle play', {
+          playlistId: 'OLAK5uy_album',
+          params: 'wAEB8gECKAE%3D',
+        }),
+        menuItem('Start mix', {
+          playlistId: 'RDAMPLOLAK5uy_album',
+          params: 'wAEB',
+        }),
+      ],
+    })
+    expect(albumRadio([menu])).toEqual(
+      Option.some({
+        playlistId: 'RDAMPLOLAK5uy_album',
+        maybeParams: Option.some('wAEB'),
+        maybeVideoId: Option.none(),
+      }),
+    )
+  })
+
+  test('an album with no mix in its menu has no radio', () => {
+    const menu = new YTNodes.Menu({
+      items: [menuItem('Shuffle play', { playlistId: 'OLAK5uy_album' })],
+    })
+    expect(albumRadio([menu])).toEqual(Option.none())
+    expect(albumRadio([])).toEqual(Option.none())
   })
 })

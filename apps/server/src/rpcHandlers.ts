@@ -83,6 +83,7 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
         youTubeMusic
           .getUpNext(videoId)
           .pipe(Effect.map(songs => Array.take(songs, RADIO_SONGS))),
+      getRadio: ({ station }) => youTubeMusic.getRadio(station),
       getArtworkBackdrop: ({ artworkUrl }) =>
         artworkPalette.backdropFor(artworkUrl),
     }
