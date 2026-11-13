@@ -1902,10 +1902,10 @@ const updateMessage = (model: Model, message: Message) =>
     ClickedDevices: () => showSheet({ _tag: 'Devices' })(model),
     ClickedSleepTimer: () => showSheet({ _tag: 'SleepTimer' })(model),
 
-    ClickedDownload: ({ collection }) =>
+    ClickedDownload: ({ collection, copy }) =>
       Update.combine([
         dismissSheet,
-        stepModel => DownloadsUpdate.startDownload(stepModel, collection),
+        stepModel => DownloadsUpdate.startDownload(stepModel, collection, copy),
       ])(model),
     ClickedRemoveDownload: ({ kind, id, title }) =>
       showSheet({ _tag: 'ConfirmRemoveDownload', kind, id, title })(model),
@@ -1914,15 +1914,26 @@ const updateMessage = (model: Model, message: Message) =>
         dismissSheet,
         stepModel => DownloadsUpdate.removeDownload(stepModel, kind, id),
       ])(model),
-    SucceededLoadDownloads: ({ collections, savedBytes, maybeStorage }) =>
+    SucceededLoadDownloads: ({
+      collections,
+      savedBytes,
+      copies,
+      maybeStorage,
+    }) =>
       DownloadsUpdate.succeedLoadDownloads(
         model,
         collections,
         savedBytes,
+        copies,
         maybeStorage,
       ),
     FailedLoadDownloads: () => DownloadsUpdate.failLoadDownloads(model),
     CompletedSaveDownloads: () => ({ model }),
+    CompletedSaveOfflineCopy: () => ({ model }),
+    SucceededFetchOfflineCopy: ({ copy }) =>
+      DownloadsUpdate.succeedFetchOfflineCopy(model, copy),
+    FailedFetchOfflineCopy: () => ({ model }),
+    CompletedRemoveOfflineCopy: () => ({ model }),
     SucceededDownloadSong: ({ videoId, bytes, maybeStorage }) =>
       DownloadsUpdate.succeedDownloadSong(model, videoId, bytes, maybeStorage),
     FailedDownloadSong: ({ videoId, failure, maybeStorage }) =>
@@ -1984,6 +1995,7 @@ const updateMessage = (model: Model, message: Message) =>
     ReceivedSessionNotice: ({ message }) =>
       Playback.receiveNotice(model, message),
     CompletedSendToSession: () => ({ model }),
+    CompletedSendHandOver: () => ({ model }),
     SentLocalChange: ({ maybeSeq }) =>
       Playback.completeSendLocalChange(model, maybeSeq),
     CompletedWaitBeforeHideNotice: ({ message }) =>

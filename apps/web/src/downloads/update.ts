@@ -6,20 +6,36 @@ import type { Message } from '../message'
 import type { Model } from '../model'
 import type { PlaybackServices } from '../playback/resource'
 import { receiveNotice } from '../playback/update'
-import { DownloadSong, RemoveDownloadedSongs, SaveDownloads } from './command'
+import { type MusicClient } from '../rpc'
+import {
+  DownloadSong,
+  FetchOfflineCopy,
+  RemoveDownloadedSongs,
+  RemoveOfflineCopy,
+  SaveDownloads,
+  SaveOfflineCopy,
+} from './command'
 import {
   type DownloadFailure,
   type DownloadKind,
   type DownloadedCollection,
   Downloads,
+  type OfflineCopy,
   type ReadyDownloads,
   type StorageEstimate,
+  copyKey,
+  copyOf,
   isSameCollection,
   nextToDownload,
+  offlineArtworkUrls,
   pinnedVideoIds,
 } from './domain'
 
-type DownloadsReturn = Update.Return<Model, Message, PlaybackServices>
+type DownloadsReturn = Update.Return<
+  Model,
+  Message,
+  MusicClient | PlaybackServices
+>
 
 // UPDATE
 
@@ -58,18 +74,24 @@ const continueDownloading = (model: Model): DownloadsReturn =>
     })
   })
 
+/**
+ * The downloads on the phone pick up where they left off. One made before
+ * downloads kept a copy of their page fetches it now.
+ */
 export const succeedLoadDownloads = (
   model: Model,
   collections: ReadonlyArray<DownloadedCollection>,
   savedBytes: Readonly<Record<string, number>>,
+  copies: Readonly<Record<string, OfflineCopy>>,
   maybeStorage: Option.Option<StorageEstimate>,
-): DownloadsReturn =>
-  continueDownloading(
+): DownloadsReturn => {
+  const continued = continueDownloading(
     modifyFields(model, {
       downloads: () =>
         Downloads.Ready({
           collections,
           savedBytes,
+          copies,
           failedVideoIds: [],
           maybeDownloading: Option.none(),
           maybeStorage,
@@ -77,6 +99,37 @@ export const succeedLoadDownloads = (
         }),
     }),
   )
+  const missingCopies = Array.filter(
+    collections,
+    ({ kind, id }) => !Record.has(copies, copyKey(kind, id)),
+  )
+  return {
+    model: continued.model,
+    commands: [
+      ...(continued.commands ?? []),
+      ...Array.map(missingCopies, ({ kind, id }) =>
+        FetchOfflineCopy({ kind, id }),
+      ),
+    ],
+  }
+}
+
+/** A download made before downloads kept a copy of their page has one now. */
+export const succeedFetchOfflineCopy = (
+  model: Model,
+  copy: OfflineCopy,
+): DownloadsReturn =>
+  withReady(model, ready => {
+    const { kind, id } = copyOf(copy)
+    return {
+      model: withDownloads(
+        model,
+        modifyFields(ready, {
+          copies: copies => Record.set(copies, copyKey(kind, id), copy),
+        }),
+      ),
+    }
+  })
 
 export const failLoadDownloads = (model: Model): DownloadsReturn => ({
   model: modifyFields(model, { downloads: () => Downloads.Unavailable() }),
@@ -89,6 +142,7 @@ export const failLoadDownloads = (model: Model): DownloadsReturn => ({
 export const startDownload = (
   model: Model,
   collection: DownloadedCollection,
+  copy: OfflineCopy,
 ): DownloadsReturn =>
   withReady(model, ready => {
     const collections = [
@@ -103,6 +157,8 @@ export const startDownload = (
         model,
         modifyFields(ready, {
           collections: () => collections,
+          copies: copies =>
+            Record.set(copies, copyKey(collection.kind, collection.id), copy),
           failedVideoIds: failed =>
             Array.filter(
               failed,
@@ -114,7 +170,11 @@ export const startDownload = (
     )
     return {
       model: started.model,
-      commands: [SaveDownloads({ collections }), ...(started.commands ?? [])],
+      commands: [
+        SaveDownloads({ collections }),
+        SaveOfflineCopy({ copy }),
+        ...(started.commands ?? []),
+      ],
     }
   })
 
@@ -196,11 +256,14 @@ export const removeDownload = (
             Array.dedupe(removed.videoIds),
             videoId => !stillPinned.has(videoId),
           )
+          const key = copyKey(removed.kind, removed.id)
+          const copies = Record.remove(ready.copies, key)
           const continued = continueDownloading(
             withDownloads(
               model,
               modifyFields(ready, {
                 collections: () => collections,
+                copies: () => copies,
                 savedBytes: saved =>
                   Record.filter(
                     saved,
@@ -215,6 +278,15 @@ export const removeDownload = (
             commands: [
               SaveDownloads({ collections }),
               RemoveDownloadedSongs({ videoIds: freed }),
+              RemoveOfflineCopy({
+                kind: removed.kind,
+                id: removed.id,
+                maybeCopy: Record.get(ready.copies, key),
+                keptArtworkUrls: Array.flatMap(
+                  Record.values(copies),
+                  offlineArtworkUrls,
+                ),
+              }),
               ...(continued.commands ?? []),
             ],
           }

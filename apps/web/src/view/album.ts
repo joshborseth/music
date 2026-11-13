@@ -3,8 +3,8 @@ import { Html, HtmlBuilder } from 'foldkit/html'
 
 import { downloadStatus } from '../downloads/domain'
 import { Message } from '../message'
-import { albumQuery } from '../query'
 import { collectionView } from './collection'
+import { albumData } from './offlineData'
 import { type PageModel } from './page'
 import {
   artistLinks,
@@ -24,8 +24,9 @@ export const albumView = (
   h: HtmlBuilder<Message>,
 ): Html =>
   remote(
-    albumQuery.read(model.albums, { albumId }),
+    albumData(model, albumId),
     {
+      missing: 'album',
       onLoading: () => loadingPage(h),
       onData: ({
         album,

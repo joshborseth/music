@@ -5,12 +5,12 @@ import { type MyPlaylistDetails } from '@music/shared'
 
 import { downloadStatus } from '../downloads/domain'
 import { Message } from '../message'
-import { myPlaylistQuery } from '../query'
 import {
   HERO_ARTWORK_CLASS,
   HERO_ARTWORK_WIDTH,
   collectionView,
 } from './collection'
+import { myPlaylistData } from './offlineData'
 import { type PageModel } from './page'
 import { editingPlaylistView } from './playlistEditor'
 import {
@@ -47,8 +47,9 @@ export const myPlaylistView = (
   h: HtmlBuilder<Message>,
 ): Html =>
   remote(
-    myPlaylistQuery.read(model.myPlaylists, { playlistId }),
+    myPlaylistData(model, playlistId),
     {
+      missing: 'playlist',
       onLoading: () => loadingPage(h),
       onData: details =>
         model.playlistEditor._tag === 'Editing' &&

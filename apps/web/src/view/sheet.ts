@@ -42,7 +42,6 @@ import { PLAYLIST_TITLE_INPUT_ID } from '../constant'
 import {
   type DownloadKind,
   DownloadStatus,
-  type DownloadedCollection,
   downloadStatus,
 } from '../downloads/domain'
 import { isAlbumSaved } from '../library'
@@ -68,7 +67,11 @@ import {
 import { AppRoute } from '../route'
 import { ActionSheet, type CollectionKind, SheetContent } from '../sheet'
 import { likedVideoIds } from '../update'
-import { albumDownload, playlistDownload } from './collectionDownload'
+import {
+  type DownloadRequest,
+  albumDownload,
+  playlistDownload,
+} from './collectionDownload'
 import { librarySortSheet } from './library'
 import { deviceIcon, thisDeviceName } from './player'
 import { addSongsSheet, chooseCoverSheet } from './playlistEditor'
@@ -360,9 +363,10 @@ const songActionsFor = (
 /** Download the songs, or take them off the phone once some are on it. */
 const downloadAction = (
   model: Model,
-  collection: DownloadedCollection,
+  request: DownloadRequest,
   h: HtmlBuilder<Message>,
 ): Html => {
+  const { collection } = request
   const remove = actionButton(
     Message.ClickedRemoveDownload({
       kind: collection.kind,
@@ -374,7 +378,7 @@ const downloadAction = (
     h,
   )
   const download = actionButton(
-    Message.ClickedDownload({ collection }),
+    Message.ClickedDownload(request),
     CircleArrowDown,
     'Download',
     h,

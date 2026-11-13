@@ -119,6 +119,20 @@ export const SendLocalChange = Command.define('SendLocalChange', {
     ),
 })
 
+/**
+ * Say Hello, then hand over the queue this phone played while the server
+ * could not be reached: one command, so the messages go out in order, as
+ * messages 1, 2, 3… of the new connection.
+ */
+export const SendHandOver = Command.define('SendHandOver', {
+  args: { messages: Schema.Array(Session.ClientMessage) },
+  messages: [Message.CompletedSendHandOver],
+  execute: ({ messages }) =>
+    Effect.forEach(messages, sendMessage, { discard: true }).pipe(
+      Effect.as(Message.CompletedSendHandOver()),
+    ),
+})
+
 /** Send a queue move this phone already shows (see `QueueEdit`). */
 export const SendQueueMove = Command.define('SendQueueMove', {
   args: { message: Session.MoveEntry },

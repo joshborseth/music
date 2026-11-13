@@ -109,6 +109,12 @@ export const Model = Schema.Struct({
   localChanges: LocalChanges,
   /** Queue changes this phone made that the server has not confirmed. */
   queueEdits: Schema.Array(QueueEdit),
+  /**
+   * The session was made on this phone while the server could not be
+   * reached (`offlineSessionState`): it plays on its own until the server
+   * is back, and then hands its queue over.
+   */
+  isOfflineSession: Schema.Boolean,
   swipe: Swipe,
   /** Albums and playlists downloaded on this phone. */
   downloads: Downloads,

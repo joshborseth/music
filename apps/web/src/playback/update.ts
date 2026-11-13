@@ -11,6 +11,7 @@ import {
   LoadPhoneAudio,
   PrefetchSongs,
   SeekPhoneAudio,
+  SendHandOver,
   SendLocalChange,
   SendQueueClear,
   SendQueueMove,
@@ -40,6 +41,7 @@ import {
   currentEntry,
   followingEntry,
   loadedEntry,
+  offlineSessionState,
   sessionPosition,
   skippedToEntry,
   upcomingEntries,
@@ -351,8 +353,8 @@ const playerReport = (model: Model): Session.PlayerReport | null =>
 export const acquireSessionSocket = (model: Model): PlaybackReturn =>
   Option.match(model.maybeIdentity, {
     onNone: () => ({ model }),
-    onSome: ({ deviceId, deviceName }) => ({
-      model: modifyFields(model, {
+    onSome: ({ deviceId, deviceName }) => {
+      const connected = modifyFields(model, {
         connection: () => Connection.Connected(),
         // NOTE: a new connection counts its messages from 1 again. What the
         // phone changed while it was away goes in the Hello's report.
@@ -361,18 +363,82 @@ export const acquireSessionSocket = (model: Model): PlaybackReturn =>
         // NOTE: an edit sent on the old connection may or may not have
         // arrived; the new connection's first state says which.
         queueEdits: () => [],
-      }),
-      commands: [
-        send({
-          _tag: 'Hello',
-          deviceId,
-          name: deviceName,
-          kind: 'Web',
-          player: playerReport(model),
+      })
+      const maybeHandOver = model.isOfflineSession
+        ? offlineHandOver(model, deviceId)
+        : Option.none()
+      return Option.match(maybeHandOver, {
+        onNone: () => ({
+          // NOTE: a queue the phone made offline and no longer plays is
+          // dropped: the server's session comes back as it was.
+          model: modifyFields(connected, { isOfflineSession: () => false }),
+          commands: [
+            send({
+              _tag: 'Hello',
+              deviceId,
+              name: deviceName,
+              kind: 'Web',
+              player: model.isOfflineSession ? null : playerReport(model),
+            }),
+          ],
         }),
-      ],
-    }),
+        onSome: messages => ({
+          // NOTE: on a new connection the Hello is message 1 and the
+          // hand-over follows it in one command, so the state that includes
+          // it all is known now: waiting for the command's answer instead
+          // could miss that state, if it came first.
+          model: modifyFields(connected, {
+            localChanges: () =>
+              modifyFields(connected.localChanges, {
+                untilAck: () => messages.length + 1,
+              }),
+          }),
+          commands: [
+            SendHandOver({
+              messages: [
+                {
+                  _tag: 'Hello',
+                  deviceId,
+                  name: deviceName,
+                  kind: 'Web',
+                  player: null,
+                },
+                ...messages,
+              ],
+            }),
+          ],
+        }),
+      })
+    },
   })
+
+/**
+ * What hands the queue this phone played offline to the server, while it
+ * still plays: this phone takes over as the player, the queue replaces the
+ * server's, from the song playing, at the spot it plays. The server has
+ * never seen this queue's entries, so the phone keeps playing its own until
+ * a state includes all of this (`keepLocalChanges`). A paused queue is not
+ * handed over: nothing is heard, and the server's session stands.
+ */
+const offlineHandOver = (
+  model: Model,
+  deviceId: string,
+): Option.Option<ReadonlyArray<Session.ClientMessage>> =>
+  Option.flatMap(playingHere(model), ({ snapshot, loaded, index }) =>
+    loaded.isPlaying
+      ? Option.some([
+          { _tag: 'Transfer', deviceId },
+          {
+            _tag: 'PlayQueue',
+            tracks: Array.map(snapshot.state.queue, ({ track }) => track),
+            startIndex: index,
+            playingFrom: snapshot.state.playingFrom,
+            shuffle: false,
+          },
+          { _tag: 'Seek', positionSeconds: model.phoneAudioSeconds },
+        ])
+      : Option.none(),
+  )
 
 export const loseSessionSocket = (model: Model): PlaybackReturn => ({
   model: modifyFields(model, { connection: () => Connection.Disconnected() }),
@@ -413,6 +479,19 @@ const keepLocalChanges = (
 } => {
   const { localChanges } = model
   const isServerBehind = localChanges.unsent > 0 || ack < localChanges.untilAck
+  if (model.isOfflineSession && isServerBehind) {
+    // The server has not taken the queue this phone played offline yet:
+    // keep playing it, with the server's devices.
+    return {
+      state: Option.match(model.maybeSession, {
+        onNone: () => state,
+        onSome: snapshot =>
+          modifyFields(snapshot.state, { devices: () => state.devices }),
+      }),
+      phoneAudio: model.phoneAudio,
+      localChanges,
+    }
+  }
   const isStillPlayer = Option.contains(
     myDeviceId(model),
     state.activeDeviceId ?? '',
@@ -495,6 +574,9 @@ export const receiveSessionState = (
   receivedAt: number,
 ): PlaybackReturn => {
   const kept = keepLocalChanges(model, state, serverNow, ack)
+  const isStillOffline =
+    model.isOfflineSession &&
+    (model.localChanges.unsent > 0 || ack < model.localChanges.untilAck)
   const queueEdits = Array.filter(model.queueEdits, edit =>
     Option.match(edit.maybeSeq, {
       onNone: () => true,
@@ -511,6 +593,7 @@ export const receiveSessionState = (
       phoneAudio: () => kept.phoneAudio,
       localChanges: () => kept.localChanges,
       queueEdits: () => queueEdits,
+      isOfflineSession: () => isStillOffline,
       now: () => receivedAt,
     }),
   )
@@ -890,13 +973,46 @@ export const failPhoneAudio = (
   model: Model,
   entryId: string,
   error: string,
-): PlaybackReturn =>
-  Option.isSome(loadedIfCurrent(model, entryId))
-    ? {
-        model: withPhoneAudio(model, PhoneAudio.Idle()),
-        commands: [send({ _tag: 'TrackFailed', entryId, message: error })],
-      }
-    : { model }
+): PlaybackReturn => {
+  if (Option.isNone(loadedIfCurrent(model, entryId))) {
+    return { model }
+  }
+  if (model.isOfflineSession) {
+    return skipFailedOffline(model, entryId)
+  }
+  return {
+    model: withPhoneAudio(model, PhoneAudio.Idle()),
+    commands: [send({ _tag: 'TrackFailed', entryId, message: error })],
+  }
+}
+
+/**
+ * Offline, a song that isn't on the phone can't play, and no server picks
+ * the next one: the phone goes on to the next song itself. Repeat is not
+ * followed here, so a queue with nothing on the phone stops at its end
+ * instead of trying it again and again.
+ */
+const skipFailedOffline = (model: Model, entryId: string): PlaybackReturn =>
+  Option.match(
+    Option.flatMap(playingHere(model), here =>
+      Option.map(
+        Option.flatMap(
+          Session.followingIndex(
+            here.snapshot.state.queue.length,
+            here.index,
+            'Off',
+          ),
+          index => Array.get(here.snapshot.state.queue, index),
+        ),
+        next => ({ here, next }),
+      ),
+    ),
+    {
+      onNone: () => stopAtQueueEnd(model, entryId),
+      onSome: ({ here, next }) =>
+        moveHere(model, here, next, { _tag: 'Advanced', fromEntryId: entryId }),
+    },
+  )
 
 /**
  * The system played or paused the song by itself: a call, Siri, unplugged
@@ -1192,6 +1308,9 @@ export const playSongs = (
   order: PlayOrder = 'KeepShuffle',
 ): PlaybackReturn => {
   const shuffle = SHUFFLE_FOR_ORDER[order]
+  if (Array.isReadonlyArrayNonEmpty(songs) && isServerOutOfReach(model)) {
+    return playOffline(model, songs, startIndex, maybePlayingFrom, shuffle)
+  }
   return Array.isReadonlyArrayNonEmpty(songs)
     ? {
         model:
@@ -1212,6 +1331,56 @@ export const playSongs = (
       }
     : { model }
 }
+
+/**
+ * The server can't be reached right now: no connection, or one still being
+ * made, and this phone can play. A play then happens on this phone alone.
+ */
+const isServerOutOfReach = (model: Model): boolean =>
+  (model.connection._tag === 'Connecting' ||
+    model.connection._tag === 'Disconnected') &&
+  model.phoneAudio._tag !== 'Unavailable'
+
+/**
+ * Play `songs` on this phone while the server can't be reached: the phone
+ * makes the session itself (`offlineSessionState`) and plays it from its
+ * downloaded and cached songs. Its own controls work as they do while it
+ * plays (`moveHere`), and when the server is back the phone hands the queue
+ * over (`offlineHandOver`).
+ */
+const playOffline = (
+  model: Model,
+  songs: ReadonlyArray<Song>,
+  startIndex: number,
+  maybePlayingFrom: Option.Option<Session.PlayingFrom>,
+  shuffle: boolean | null,
+): PlaybackReturn =>
+  Option.match(myDeviceId(model), {
+    onNone: () => ({ model }),
+    onSome: deviceId => {
+      const clockOffsetMs = Option.match(model.maybeSession, {
+        onNone: () => 0,
+        onSome: snapshot => snapshot.clockOffsetMs,
+      })
+      const previous = Option.map(model.maybeSession, ({ state }) => state)
+      const state = offlineSessionState(
+        previous,
+        deviceId,
+        Array.map(songs, toQueueTrack),
+        startIndex,
+        shuffle ?? Option.exists(previous, ({ shuffle: isOn }) => isOn),
+        Option.getOrNull(maybePlayingFrom),
+        model.now + clockOffsetMs,
+      )
+      return reconcilePhoneAudio(
+        modifyFields(model, {
+          maybeSession: () => Option.some({ state, clockOffsetMs }),
+          isOfflineSession: () => true,
+          maybeScrubSeconds: () => Option.none(),
+        }),
+      )
+    },
+  })
 
 export const clickPlaySongs = (
   model: Model,

@@ -29,6 +29,7 @@ import { Prefetcher } from '../prefetch.ts'
 import { songFromQueueTrack, toQueueTrack } from '../tvCatalog/mapping.ts'
 import { type MusicVideo } from '../youtubeMusic/mapping.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
+import { type Listening, hear } from './listening.ts'
 import {
   type Model,
   type Outcome,
@@ -318,7 +319,6 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         stateFor(connection, toSessionState(model, devices()), Date.now()),
       )
 
-    let maybeCountedEntryId = Option.none<string>()
     let maybeAutoplayAfter = Option.none<string>()
 
     /**
@@ -340,25 +340,47 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         Effect.asVoid,
       )
 
-    /** A song counts as played once it is current and playing. */
-    const countPlay = Effect.suspend(() => {
-      const entryId = model.currentEntryId
+    /**
+     * How much the player has played of the current entry. A song counts as
+     * played (`listening.ts`) once it has really played for 30 seconds, or
+     * half of it when shorter, so skipping through a queue counts nothing.
+     */
+    let maybeListening = Option.none<Listening>()
+
+    /**
+     * Follow a `Progress` report from the player, under the lock, and give
+     * the song when it has just become a play.
+     */
+    const listen = (
+      current: Model,
+      senderId: string,
+      report: Session.ClientMessage,
+    ): Option.Option<Session.QueueTrack> => {
       if (
-        !model.playing ||
-        entryId === null ||
-        Option.contains(maybeCountedEntryId, entryId)
+        report._tag !== 'Progress' ||
+        current.activeDeviceId !== senderId ||
+        current.currentEntryId !== report.entryId
       ) {
-        return Effect.void
+        return Option.none()
       }
-      maybeCountedEntryId = Option.some(entryId)
-      const entry = model.queue.find(queued => queued.entryId === entryId)
-      return entry === undefined
-        ? Effect.void
-        : Effect.andThen(
-            audioStore.markPlayed(entry.track.videoId),
-            rememberPlay(entry.track),
-          )
-    })
+      const entry = current.queue.find(
+        queued => queued.entryId === report.entryId,
+      )
+      if (entry === undefined) return Option.none()
+      const heard = hear(maybeListening, {
+        entryId: report.entryId,
+        positionSeconds: report.positionSeconds,
+        playing: report.playing,
+        durationSeconds: entry.track.durationSeconds,
+        at: Date.now(),
+      })
+      maybeListening = Option.some(heard.listening)
+      return heard.isNewPlay ? Option.some(entry.track) : Option.none()
+    }
+
+    /** Count a song that has played: the history, and the cache's favorites. */
+    const countPlay = (track: Session.QueueTrack) =>
+      Effect.andThen(audioStore.markPlayed(track.videoId), rememberPlay(track))
 
     /**
      * As the queue runs out with autoplay on, add the songs YouTube Music
@@ -473,7 +495,6 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       const ahead = lookahead(model)
       return Effect.all(
         [
-          countPlay,
           fillMissingDurations(ahead.download),
           warmLyrics(ahead.download),
           audioStore.protect(ahead.download),
@@ -763,7 +784,9 @@ export const SessionHubLive = Layer.effect(SessionHub)(
                 error: message.message,
               })
             }
+            let maybePlayed = Option.none<Session.QueueTrack>()
             yield* apply(current => {
+              maybePlayed = listen(current, from, message)
               // NOTE: a connection joins as its Hello is applied, and each
               // message is counted as it is applied, both under the lock. So
               // no state reaches a connection before it includes the Hello,
@@ -788,6 +811,9 @@ export const SessionHubLive = Layer.effect(SessionHub)(
                 ),
               )
             }, maybeReplyTo)
+            if (Option.isSome(maybePlayed)) {
+              yield* countPlay(maybePlayed.value)
+            }
           })
 
         yield* Effect.gen(function* () {

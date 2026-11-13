@@ -154,6 +154,7 @@ export const songView = (
   remote(
     songQuery.read(model.songs, { videoId }),
     {
+      missing: 'song',
       onLoading: () => loadingPage(h),
       onData: details =>
         h.div(

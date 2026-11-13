@@ -75,6 +75,7 @@ export const moodView = (
   remote(
     moodQuery.read(model.moods, { params }),
     {
+      missing: 'mood',
       onLoading: () => loadingPage(h),
       onData: details =>
         h.div(

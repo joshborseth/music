@@ -25,6 +25,24 @@ const LARGE_IMAGE =
   /^https:\/\/(lh3|yt3)\.googleusercontent\.com\/.*=w1080-h1080/
 const LARGE_IMAGE_CACHE_MAX_ENTRIES = 60
 
+/**
+ * A cover that can't be fetched (no connection) comes from the covers kept
+ * for downloads, at whatever size they were kept (`offlineCopies.ts`). The
+ * service worker runs this as source, so it names its cache and works out
+ * the image's key itself: keep both in step with `DOWNLOAD_ARTWORK_CACHE`
+ * and `artworkKey` in `src/downloads/domain.ts`.
+ */
+const downloadedArtworkFallback = {
+  handlerDidError: async ({ request }: { request: Request }) => {
+    const url = request.url
+    const key = /^https:\/\/(lh3|yt3)\.googleusercontent\.com\//.test(url)
+      ? (url.split('=')[0] ?? url)
+      : (url.split('?')[0] ?? url)
+    const cache = await caches.open('music-download-artwork-v1')
+    return cache.match(key)
+  },
+}
+
 export default defineConfig({
   plugins: [
     tailwindcss(),
@@ -61,6 +79,8 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // NOTE: every route, /album/… too, opens offline from the precached
+        // app shell, and a downloaded album then shows from its copy.
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/rpc/, /^\/audio\//, /^\/session/],
         runtimeCaching: [
@@ -74,6 +94,7 @@ export default defineConfig({
                 maxAgeSeconds: IMAGE_CACHE_MAX_AGE_SECONDS,
               },
               cacheableResponse: { statuses: [0, 200] },
+              plugins: [downloadedArtworkFallback],
             },
           },
           {
@@ -86,6 +107,7 @@ export default defineConfig({
                 maxAgeSeconds: IMAGE_CACHE_MAX_AGE_SECONDS,
               },
               cacheableResponse: { statuses: [0, 200] },
+              plugins: [downloadedArtworkFallback],
             },
           },
         ],

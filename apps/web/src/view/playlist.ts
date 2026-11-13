@@ -5,12 +5,12 @@ import { type Artwork, type PlaylistDetails, Session } from '@music/shared'
 
 import { downloadStatus } from '../downloads/domain'
 import { Message } from '../message'
-import { playlistQuery } from '../query'
 import {
   HERO_ARTWORK_CLASS,
   HERO_ARTWORK_WIDTH,
   collectionView,
 } from './collection'
+import { playlistData } from './offlineData'
 import { type PageModel } from './page'
 import {
   ArtworkShape,
@@ -102,8 +102,9 @@ export const playlistView = (
   h: HtmlBuilder<Message>,
 ): Html =>
   remote(
-    playlistQuery.read(model.playlists, { playlistId }),
+    playlistData(model, playlistId),
     {
+      missing: 'playlist',
       onLoading: () => loadingPage(h),
       onData: details => {
         const lines = playlistHeaderLines(details, h)

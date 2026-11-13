@@ -2,11 +2,13 @@ import { Array, Option, pipe } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
+  ChevronLeft,
   CircleAlert,
   CircleArrowDown,
   Disc3,
   Ellipsis,
   Heart,
+  type IconNode,
   ListEnd,
   ListMusic,
   ListStart,
@@ -14,6 +16,8 @@ import {
   Play,
   Radio,
   RotateCw,
+  Search,
+  SearchX,
   Shuffle,
   User,
 } from 'lucide'
@@ -1549,9 +1553,8 @@ export const loadingPage = (h: HtmlBuilder<Message>): Html =>
     ],
   )
 
-const requestErrorText = (error: RequestError): string =>
+const requestErrorText = (error: Exclude<RequestError, 'NotFound'>): string =>
   ({
-    NotFound: 'There is nothing at this address.',
     YouTubeUnavailable:
       'YouTube Music did not answer. It may be busy; try again in a moment.',
     ServerUnreachable:
@@ -1560,14 +1563,76 @@ const requestErrorText = (error: RequestError): string =>
       'The music server could not read your playlists. Try again in a moment.',
   })[error]
 
-/** An error message with a retry button. */
-export const requestErrorAlert = (
-  error: RequestError,
+/** What a page shows, for saying it isn't there. */
+export type MissingThing =
+  | 'album'
+  | 'playlist'
+  | 'artist'
+  | 'song'
+  | 'mood'
+  | 'page'
+
+const missingText: Readonly<
+  Record<MissingThing, { readonly title: string; readonly description: string }>
+> = {
+  album: {
+    title: "This album isn't available",
+    description:
+      'YouTube Music may have taken it down, or the link may be wrong.',
+  },
+  playlist: {
+    title: "This playlist isn't available",
+    description:
+      'It may have been deleted or made private, or the link may be wrong.',
+  },
+  artist: {
+    title: "This artist isn't available",
+    description:
+      'YouTube Music may have removed the page, or the link may be wrong.',
+  },
+  song: {
+    title: "This song isn't available",
+    description:
+      'YouTube Music may have taken it down, or the link may be wrong.',
+  },
+  mood: {
+    title: "This page isn't available",
+    description: 'YouTube Music no longer offers it. Try another one.',
+  },
+  page: {
+    title: "This page isn't available",
+    description: 'What was here may have moved, or the link may be wrong.',
+  },
+}
+
+const alertButton = (
+  label: string,
+  iconNode: IconNode,
+  message: Message,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(message),
+      h.Class(
+        'pressable bg-secondary text-primary flex h-10 items-center gap-2 rounded-full px-5 text-[15px] font-semibold',
+      ),
+    ],
+    [icon(h, iconNode, 'size-4'), label],
+  )
+
+/**
+ * Something a page asked for isn't there: a calm headline naming it, why
+ * that may be, and ways on, back or to Search. Not a failure, so no alarm.
+ */
+export const notFoundState = (
+  thing: MissingThing,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
     [
-      h.Role('alert'),
+      h.Role('status'),
       h.Class('flex flex-col items-center gap-3 px-8 py-16 text-center'),
     ],
     [
@@ -1577,27 +1642,64 @@ export const requestErrorAlert = (
             'bg-muted text-muted-foreground flex size-14 items-center justify-center rounded-full',
           ),
         ],
-        [icon(h, CircleAlert, 'size-6')],
+        [icon(h, SearchX, 'size-6')],
       ),
-      h.p([h.Class('text-lg font-semibold')], ['Something went wrong']),
+      h.p([h.Class('text-lg font-semibold')], [missingText[thing].title]),
       h.p(
         [h.Class('text-muted-foreground text-[15px]')],
-        [requestErrorText(error)],
+        [missingText[thing].description],
       ),
-      error === 'NotFound'
-        ? h.empty
-        : h.button(
-            [
-              h.Type('button'),
-              h.OnClick(Message.ClickedRetry()),
-              h.Class(
-                'pressable bg-secondary text-primary mt-2 flex h-10 items-center gap-2 rounded-full px-5 text-[15px] font-semibold',
-              ),
-            ],
-            [icon(h, RotateCw, 'size-4'), 'Retry'],
+      h.div(
+        [h.Class('mt-2 flex gap-3')],
+        [
+          alertButton('Back', ChevronLeft, Message.ClickedBack(), h),
+          alertButton(
+            'Search',
+            Search,
+            Message.ClickedTab({ tab: 'Search' }),
+            h,
           ),
+        ],
+      ),
     ],
   )
+
+/**
+ * An error message with a retry button, or for something that isn't
+ * there, `notFoundState`.
+ */
+export const requestErrorAlert = (
+  error: RequestError,
+  h: HtmlBuilder<Message>,
+  thing: MissingThing = 'page',
+): Html =>
+  error === 'NotFound'
+    ? notFoundState(thing, h)
+    : h.div(
+        [
+          h.Role('alert'),
+          h.Class('flex flex-col items-center gap-3 px-8 py-16 text-center'),
+        ],
+        [
+          h.span(
+            [
+              h.Class(
+                'bg-muted text-muted-foreground flex size-14 items-center justify-center rounded-full',
+              ),
+            ],
+            [icon(h, CircleAlert, 'size-6')],
+          ),
+          h.p([h.Class('text-lg font-semibold')], ['Something went wrong']),
+          h.p(
+            [h.Class('text-muted-foreground text-[15px]')],
+            [requestErrorText(error)],
+          ),
+          h.div(
+            [h.Class('mt-2')],
+            [alertButton('Retry', RotateCw, Message.ClickedRetry(), h)],
+          ),
+        ],
+      )
 
 /** Renders remote data with shared loading and error states. */
 export const remote = <A>(
@@ -1605,12 +1707,14 @@ export const remote = <A>(
   config: Readonly<{
     onLoading: () => Html
     onData: (data: A) => Html
+    /** What the page shows, for saying it isn't there. */
+    missing?: MissingThing
   }>,
   h: HtmlBuilder<Message>,
 ): Html =>
   AsyncData.matchData(asyncData, {
     onEmpty: config.onLoading,
-    onFailure: error => requestErrorAlert(error, h),
+    onFailure: error => requestErrorAlert(error, h, config.missing),
     onData: config.onData,
   })
 
