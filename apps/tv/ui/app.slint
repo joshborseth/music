@@ -635,14 +635,16 @@ export component App inherits Window {
         property <length> shift-y: root.drift-y * Metrics.u * 0.9;
         animate shift-x, shift-y { duration: 8s; easing: ease-in-out; }
 
-        // Quiet the visuals a little everywhere, and more behind the words.
-        Rectangle { background: #0000003a; }
-        Rectangle {
+        // Quiet the background a little everywhere, and more behind the
+        // words. Over the visuals, `present.glsl` draws this same shade on
+        // the GPU instead: three full-screen layers here cost the TV frames.
+        if !root.has-visuals: Rectangle { background: #0000003a; }
+        if !root.has-visuals: Rectangle {
             opacity: stage.side ? 1 : 0;
             animate opacity { duration: 700ms; }
             background: @linear-gradient(90deg, #00000066 0%, #00000014 30%, #00000080 46%, #00000099 100%);
         }
-        Rectangle {
+        if !root.has-visuals: Rectangle {
             opacity: stage.side ? 0 : 1;
             animate opacity { duration: 700ms; }
             background: @radial-gradient(circle, #00000080 0%, #00000000 60%);

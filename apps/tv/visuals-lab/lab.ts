@@ -4,7 +4,8 @@
  *
  * The passes match `apps/tv/src/visuals/gpu.rs`: each scene draws into its
  * own pair of textures (feedback), the bright parts are blurred at a
- * quarter size, and `final.glsl` puts it together on the screen.
+ * quarter size, `final.glsl` puts it together at the scenes' size, and
+ * `present.glsl` stretches that to the screen under the app's shade.
  */
 
 declare const SHADERS: Readonly<Record<string, string>>
@@ -489,6 +490,13 @@ const makeEngine = (
   )
   const blur = program(gl, 'blur.glsl', VERTEX, fragmentSource('blur.glsl'))
   const final = program(gl, 'final.glsl', VERTEX, fragmentSource('final.glsl'))
+  const present = program(
+    gl,
+    'present.glsl',
+    VERTEX,
+    fragmentSource('present.glsl'),
+  )
+  const picture = makeTarget(gl, width, height)
   const bloomA = makeTarget(gl, Math.ceil(width / 4), Math.ceil(height / 4))
   const bloomB = makeTarget(gl, Math.ceil(width / 4), Math.ceil(height / 4))
 
@@ -735,10 +743,10 @@ const makeEngine = (
       blurPass(bloomB, bloomA, [0, 1])
     }
     if (final !== null) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-      gl.viewport(0, 0, screen[0], screen[1])
+      gl.bindFramebuffer(gl.FRAMEBUFFER, picture.framebuffer)
+      gl.viewport(0, 0, picture.width, picture.height)
       gl.useProgram(final.program)
-      setMusic(final, music, screen, sceneA)
+      setMusic(final, music, [picture.width, picture.height], sceneA)
       const inputs: Array<[string, WebGLTexture]> = [
         ['uSceneA', outA.texture],
         ['uSceneB', outB.texture],
@@ -755,6 +763,22 @@ const makeEngine = (
       if (mixAt !== undefined) gl.uniform1f(mixAt, mix)
       const fadeAt = final.uniforms.get('uFade')
       if (fadeAt !== undefined) gl.uniform1f(fadeAt, 1)
+      fullscreen()
+    }
+    if (present !== null) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+      gl.viewport(0, 0, screen[0], screen[1])
+      gl.useProgram(present.program)
+      setMusic(present, music, screen, sceneA)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, picture.texture)
+      const pictureAt = present.uniforms.get('uPicture')
+      if (pictureAt !== undefined) gl.uniform1i(pictureAt, 0)
+      // The song alone in the middle, as the TV shows a song without lyrics.
+      const sideAt = present.uniforms.get('uSide')
+      if (sideAt !== undefined) gl.uniform1f(sideAt, 0)
+      const centreAt = present.uniforms.get('uCentre')
+      if (centreAt !== undefined) gl.uniform1f(centreAt, 1)
       fullscreen()
     }
   }

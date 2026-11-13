@@ -9,8 +9,12 @@
 //! 1. Each scene showing draws into its own pair of textures at a reduced
 //!    size, reading its last frame from the other (trails, ink, echoes).
 //! 2. The bright parts are cut out at a quarter size and blurred (bloom).
-//! 3. `final.glsl` dissolves one scene into the next, adds the glow and the
-//!    camera tricks, and draws the result at the screen's size.
+//! 3. `final.glsl` dissolves one scene into the next and adds the glow and
+//!    the camera tricks, into a picture the scenes' size.
+//! 4. `present.glsl` stretches the picture to the screen, under the shade
+//!    the app's words need. It is the only pass at the screen's size, and
+//!    reads one pixel for each it draws: a full-size pass costs as much as
+//!    a whole scene on a small TV GPU.
 //!
 //! The size of the scenes follows the TV: when frames come late, they get
 //! smaller; when there is room again, they grow back.
@@ -79,6 +83,16 @@ struct Slot {
     targets: [Target; 2],
 }
 
+/// How much of each shade the app's words need shows, 0 to 1: see
+/// `present.glsl`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Shade {
+    /// The band behind the lyrics on the right.
+    pub side: f32,
+    /// The pool behind the song alone in the middle.
+    pub centre: f32,
+}
+
 /// What happened when the renderer started, for the server's log.
 pub struct Report {
     pub renderer: String,
@@ -93,7 +107,10 @@ pub struct Renderer {
     bright: Program,
     blur: Program,
     final_pass: Program,
+    present: Program,
     slots: [Slot; 2],
+    /// The finished picture, the scenes' size, before `present` stretches it.
+    picture: Target,
     bloom: [Target; 2],
     spectrum: glow::Texture,
     history: glow::Texture,
@@ -174,7 +191,14 @@ impl Renderer {
                 &vertex,
                 &fragment(include_str!("shaders/final.glsl")),
             );
-            let (Some(bright), Some(blur), Some(final_pass)) = (bright, blur, final_pass) else {
+            let present = compile(
+                "present.glsl",
+                &vertex,
+                &fragment(include_str!("shaders/present.glsl")),
+            );
+            let (Some(bright), Some(blur), Some(final_pass), Some(present)) =
+                (bright, blur, final_pass, present)
+            else {
                 return None;
             };
 
@@ -199,6 +223,7 @@ impl Renderer {
                 },
             ];
             let bloom = [target(gl, 4, 4)?, target(gl, 4, 4)?];
+            let picture = target(gl, width, height)?;
             Some(Self {
                 vao,
                 scenes,
@@ -206,7 +231,9 @@ impl Renderer {
                 bright,
                 blur,
                 final_pass,
+                present,
                 slots,
+                picture,
                 bloom,
                 spectrum,
                 history,
@@ -298,6 +325,7 @@ impl Renderer {
     }
 
     /// Draw one frame onto the screen, `width` × `height` pixels.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         gl: &Gl,
@@ -305,6 +333,7 @@ impl Renderer {
         listener: &mut Listener,
         shot: &Shot,
         fade: f32,
+        shade: Shade,
         (width, height): (u32, u32),
     ) {
         if width == 0 || height == 0 {
@@ -398,16 +427,15 @@ impl Renderer {
                 fullscreen(gl);
             }
 
-            // The screen.
-            gl.bind_framebuffer(glow::FRAMEBUFFER, saved.framebuffer);
-            gl.viewport(0, 0, width as i32, height as i32);
+            // The picture, the scenes' size.
+            bind_target(gl, &self.picture);
             gl.use_program(Some(self.final_pass.program));
             let showing = Some(shot.current);
             self.set_music(
                 gl,
                 &self.final_pass,
                 music,
-                (width as i32, height as i32),
+                (self.picture.width, self.picture.height),
                 showing,
                 listener,
             );
@@ -417,6 +445,17 @@ impl Renderer {
             bind_texture(gl, &self.final_pass, "uNoise", 3, self.noise);
             set_f32(gl, &self.final_pass, "uMix", mix);
             set_f32(gl, &self.final_pass, "uFade", fade);
+            fullscreen(gl);
+
+            // The screen.
+            gl.bind_framebuffer(glow::FRAMEBUFFER, saved.framebuffer);
+            gl.viewport(0, 0, width as i32, height as i32);
+            gl.use_program(Some(self.present.program));
+            set_vec2(gl, &self.present, "uRes", width as f32, height as f32);
+            set_f32(gl, &self.present, "uTime", music.time);
+            set_f32(gl, &self.present, "uSide", shade.side);
+            set_f32(gl, &self.present, "uCentre", shade.centre);
+            bind_texture(gl, &self.present, "uPicture", 0, self.picture.texture);
             fullscreen(gl);
         }
         saved.restore(gl);
@@ -445,6 +484,7 @@ impl Renderer {
             for target in &mut self.bloom {
                 resize(gl, target, (wide / 4).max(1), (tall / 4).max(1));
             }
+            resize(gl, &mut self.picture, wide, tall);
         }
     }
 
@@ -633,6 +673,7 @@ impl Renderer {
                 self.bright,
                 self.blur,
                 self.final_pass,
+                self.present,
             ]);
             for program in programs {
                 gl.delete_program(program.program);
@@ -642,6 +683,7 @@ impl Renderer {
                 .into_iter()
                 .flat_map(|slot| slot.targets)
                 .chain(self.bloom)
+                .chain([self.picture])
             {
                 gl.delete_framebuffer(target.framebuffer);
                 gl.delete_texture(target.texture);

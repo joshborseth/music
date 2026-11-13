@@ -1,7 +1,8 @@
-// THE SCREEN: the scene (or two, while one dissolves into the next), glow,
+// THE PICTURE: the scene (or two, while one dissolves into the next), glow,
 // and the camera tricks that tie it all to the music: a punch in on the
 // kick, a shake and drained color as a drop builds, a flash and split
-// colors when it lands. Drawn at the TV's size under the app's own UI.
+// colors when it lands. Drawn at the scenes' size; `present.glsl` then
+// stretches it to the TV's.
 
 uniform sampler2D uSceneA;
 uniform sampler2D uSceneB;
@@ -55,9 +56,8 @@ void main() {
   // A soft curve so bright light rolls off instead of clipping.
   color = color / (1.0 + 0.32 * color);
   color *= 1.18;
-  // Dark corners, and fine grain so dark gradients never band.
+  // Dark corners. The grain comes later, at full size.
   float vignette = smoothstep(1.05, 0.25, length(c * vec2(1.0, 0.8)));
   color *= mix(0.55, 1.0, vignette);
-  color += (hash12(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5) * 0.012;
   fragColor = vec4(color * uFade, 1.0);
 }

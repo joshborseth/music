@@ -19,7 +19,7 @@ mod music;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
@@ -29,11 +29,18 @@ use crate::App;
 use crate::catalog::Analysis;
 use crate::view::PlayClock;
 use director::{Director, Shot};
-use gpu::Renderer;
+use gpu::{Renderer, Shade};
 use music::{Listener, Song};
 
 /// Seconds the visuals take to fade in.
 const FADE_IN: f32 = 1.2;
+/// Seconds the shade takes to move when the lyrics come or go, as the UI's
+/// layers did (`animate opacity { duration: 700ms; }`).
+const SHADE_MOVE: f32 = 0.7;
+/// How often to tell the server how smoothly frames come.
+const PACE_REPORT_EVERY: Duration = Duration::from_secs(300);
+/// The first report comes this soon, once the scenes have settled on a size.
+const FIRST_PACE_REPORT: Duration = Duration::from_secs(20);
 
 /// What the now-playing screen shows, for the visuals.
 #[derive(Clone)]
@@ -42,6 +49,8 @@ pub struct Stage {
     pub cover: Option<Arc<Cover>>,
     pub analysis: Option<Arc<Analysis>>,
     pub playing: bool,
+    /// The lyrics show on the right, beside the song.
+    pub side: bool,
 }
 
 /// A frame read back from the screen: RGBA, top row first.
@@ -67,9 +76,66 @@ struct State {
     fade: f32,
     song: Option<String>,
     capture: Option<Capture>,
-    frames: u32,
-    reported_pace: bool,
+    shade: Shade,
+    pace: Pace,
     shown_scene: Option<usize>,
+}
+
+/// How smoothly frames come, between two reports to the server.
+#[derive(Default)]
+struct Pace {
+    since: Option<Instant>,
+    frames: u32,
+    /// Frames that took longer than a frame and a half at 60 Hz: a stutter.
+    late: u32,
+    worst: f32,
+    reports: u32,
+}
+
+impl Pace {
+    /// Count a frame that took `dt` seconds. Returns a line for the server
+    /// when one is due.
+    fn frame(&mut self, dt: f32, size: (u32, u32), scale: f32) -> Option<String> {
+        let now = Instant::now();
+        let since = *self.since.get_or_insert(now);
+        self.frames += 1;
+        if dt > 1.5 / 60.0 {
+            self.late += 1;
+        }
+        self.worst = self.worst.max(dt);
+        let due = if self.reports == 0 {
+            FIRST_PACE_REPORT
+        } else {
+            PACE_REPORT_EVERY
+        };
+        let elapsed = now - since;
+        if elapsed < due {
+            return None;
+        }
+        let line = format!(
+            "visuals: {}×{} screen, scenes at {:.0}%, {:.1} fps, {:.1}% of frames late, worst {:.0} ms",
+            size.0,
+            size.1,
+            scale * 100.0,
+            f64::from(self.frames) / elapsed.as_secs_f64(),
+            f64::from(self.late) * 100.0 / f64::from(self.frames.max(1)),
+            self.worst * 1000.0,
+        );
+        *self = Self {
+            reports: self.reports + 1,
+            since: Some(now),
+            ..Self::default()
+        };
+        Some(line)
+    }
+
+    /// The visuals stopped: the next frames start a fresh count.
+    fn pause(&mut self) {
+        *self = Self {
+            reports: self.reports,
+            ..Self::default()
+        };
+    }
 }
 
 /// The running visuals. Cheap to clone.
@@ -100,8 +166,8 @@ impl Visuals {
             fade: 0.0,
             song: None,
             capture: None,
-            frames: 0,
-            reported_pace: false,
+            shade: Shade::default(),
+            pace: Pace::default(),
             shown_scene: None,
         }));
         let notified = state.clone();
@@ -153,6 +219,7 @@ impl Visuals {
         if stage.is_none() {
             state.fade = 0.0;
             state.last_frame = None;
+            state.pace.pause();
         }
         state.stage = stage;
         if starting {
@@ -246,10 +313,9 @@ impl State {
             return false;
         };
         let now = Instant::now();
-        let dt = self
-            .last_frame
-            .map_or(1.0 / 60.0, |last| (now - last).as_secs_f32())
-            .clamp(0.001, 0.1);
+        // How long the last frame really took; `None` on the first.
+        let took = self.last_frame.map(|last| (now - last).as_secs_f32());
+        let dt = took.unwrap_or(1.0 / 60.0).clamp(0.001, 0.1);
         self.last_frame = Some(now);
         self.fade = (self.fade + dt / FADE_IN).min(1.0);
         renderer.pace(dt);
@@ -265,6 +331,18 @@ impl State {
             .seconds()
             .filter(|(entry, _)| *entry == stage.entry_id)
             .map(|(_, seconds)| seconds);
+        let step = dt / SHADE_MOVE;
+        let toward = |value: f32, on: bool| {
+            if on {
+                (value + step).min(1.0)
+            } else {
+                (value - step).max(0.0)
+            }
+        };
+        self.shade = Shade {
+            side: toward(self.shade.side, stage.side),
+            centre: toward(self.shade.centre, !stage.side),
+        };
         let song = stage
             .analysis
             .as_deref()
@@ -298,17 +376,21 @@ impl State {
             );
         }
         renderer.release_unused(&shot);
-        renderer.draw(gl, &music, &mut self.listener, &shot, self.fade, size);
+        renderer.draw(
+            gl,
+            &music,
+            &mut self.listener,
+            &shot,
+            self.fade,
+            self.shade,
+            size,
+        );
 
-        self.frames += 1;
-        if !self.reported_pace && self.frames == 60 * 20 {
-            self.reported_pace = true;
-            (self.report)(format!(
-                "visuals: {}×{} screen, drawing scenes at {:.0}%",
-                size.0,
-                size.1,
-                renderer.scale() * 100.0
-            ));
+        if let Some(took) = took
+            && let Some(line) = self.pace.frame(took, size, renderer.scale())
+        {
+            log::info!("{line}");
+            (self.report)(line);
         }
         true
     }
