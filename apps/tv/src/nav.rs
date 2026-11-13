@@ -134,7 +134,7 @@ impl MenuAction {
             MenuAction::AddToQueue(_) => "Add to queue",
             MenuAction::Open(CollectionKind::Artist, _) => "Go to artist",
             MenuAction::Open(_, _) => "Open",
-            MenuAction::Like(_) => "Add to Liked songs",
+            MenuAction::Like(_) => "Add to Liked Songs",
             MenuAction::PlayEntry(_) => "Play now",
             MenuAction::RemoveEntry(_) => "Remove from queue",
             MenuAction::OpenUpdateSettings => "Open settings",
@@ -1255,9 +1255,9 @@ impl Nav {
                 self.liked = Some((video_id, !liked));
                 self.say(
                     if liked {
-                        "Removed from Liked songs"
+                        "Removed from Liked Songs"
                     } else {
-                        "Added to Liked songs"
+                        "Added to Liked Songs"
                     },
                     now,
                 );
@@ -1726,7 +1726,7 @@ impl Nav {
                     self.liked = Some((track.video_id.clone(), true));
                 }
                 effects.push(Effect::SetLiked { track, liked: true });
-                self.say("Added to Liked songs", now);
+                self.say("Added to Liked Songs", now);
             }
             MenuAction::PlayEntry(entry_id) => {
                 effects.push(Effect::Session(UiAction::SkipTo(entry_id)));
