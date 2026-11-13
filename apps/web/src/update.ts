@@ -501,6 +501,80 @@ const syncSearchInput = (model: Model): Model =>
         : modifyFields(model, { searchInput: () => query }),
   })
 
+const isSettled = <A, E>(data: AsyncData.AsyncData<A, E>): boolean =>
+  !AsyncData.isIdle(data) && !AsyncData.isLoading(data)
+
+type SearchQueries = Pick<
+  Model,
+  | 'songSearch'
+  | 'topResultSearch'
+  | 'artistSearch'
+  | 'albumSearch'
+  | 'playlistSearch'
+>
+
+/**
+ * Whether a search has answered enough to replace what the page shows: for
+ * Top, its songs and its top result, so the card does not push the songs
+ * down after they appear.
+ */
+export const isSearchSettled = (
+  queries: SearchQueries,
+  query: string,
+  kind: SearchKind,
+): boolean =>
+  Match.value(kind).pipe(
+    Match.withReturnType<boolean>(),
+    Match.when(
+      'Top',
+      () =>
+        isSettled(songSearchQuery.read(queries.songSearch, { query })) &&
+        isSettled(
+          topResultSearchQuery.read(queries.topResultSearch, { query }),
+        ),
+    ),
+    Match.when('Songs', () =>
+      isSettled(songSearchQuery.read(queries.songSearch, { query })),
+    ),
+    Match.when('Artists', () =>
+      isSettled(artistSearchQuery.read(queries.artistSearch, { query })),
+    ),
+    Match.when('Albums', () =>
+      isSettled(albumSearchQuery.read(queries.albumSearch, { query })),
+    ),
+    Match.when('Playlists', () =>
+      isSettled(playlistSearchQuery.read(queries.playlistSearch, { query })),
+    ),
+    Match.exhaustive,
+  )
+
+/**
+ * Remembers the results that were on screen when the search changes, so
+ * they stay there until the new ones arrive instead of a page of
+ * placeholders after every pause in typing. Leaving the search forgets them.
+ */
+const keepEarlierSearch =
+  (before: Model): UpdateStep =>
+  model => {
+    const maybeEarlierSearch = Option.match(routeQuery(model.route), {
+      onNone: () => Option.none<string>(),
+      onSome: query =>
+        Option.match(routeQuery(before.route), {
+          onNone: () => before.maybeEarlierSearch,
+          onSome: beforeQuery =>
+            beforeQuery !== query &&
+            isSearchSettled(before, beforeQuery, routeSearchKind(before.route))
+              ? Option.some(beforeQuery)
+              : before.maybeEarlierSearch,
+        }),
+    })
+    return {
+      model: modifyFields(model, {
+        maybeEarlierSearch: () => maybeEarlierSearch,
+      }),
+    }
+  }
+
 // LIBRARY
 
 const libraryArtworkUrl = (artwork: Parameters<typeof artworkUrl>[0]) =>
@@ -828,14 +902,25 @@ const leaveDeletedPlaylist =
 
 // ROUTE LOADING
 
+/**
+ * Top shows a little of every catalog, so it asks all of them at once, and
+ * picking another kind afterwards shows its results at once.
+ */
 const loadSearch = (query: string, kind: SearchKind): UpdateStep =>
   Match.value(kind).pipe(
     Match.withReturnType<UpdateStep>(),
-    Match.when('Songs', () =>
+    Match.when('Top', () =>
       Update.combine([
         model => songSearch.loadIfMissing(model, { query }),
         model => topResultSearch.loadIfMissing(model, { query }),
+        model => artistSearch.loadIfMissing(model, { query }),
+        model => albumSearch.loadIfMissing(model, { query }),
+        model => playlistSearch.loadIfMissing(model, { query }),
       ]),
+    ),
+    Match.when(
+      'Songs',
+      () => model => songSearch.loadIfMissing(model, { query }),
     ),
     Match.when(
       'Artists',
@@ -855,11 +940,18 @@ const loadSearch = (query: string, kind: SearchKind): UpdateStep =>
 const revalidateSearch = (query: string, kind: SearchKind): UpdateStep =>
   Match.value(kind).pipe(
     Match.withReturnType<UpdateStep>(),
-    Match.when('Songs', () =>
+    Match.when('Top', () =>
       Update.combine([
         model => songSearch.revalidateOrLoad(model, { query }),
         model => topResultSearch.revalidateOrLoad(model, { query }),
+        model => artistSearch.revalidateOrLoad(model, { query }),
+        model => albumSearch.revalidateOrLoad(model, { query }),
+        model => playlistSearch.revalidateOrLoad(model, { query }),
       ]),
+    ),
+    Match.when(
+      'Songs',
+      () => model => songSearch.revalidateOrLoad(model, { query }),
     ),
     Match.when(
       'Artists',
@@ -967,6 +1059,7 @@ export const initialModel = (route: AppRoute, path: string): Model => {
       tabUrls: tabUrls => withTabUrl(tabUrls, activeTab, path),
     }),
     searchInput: '',
+    maybeEarlierSearch: Option.none(),
     recentSearches: [],
     recentlyPlayed: [],
     recentlyViewed: [],
@@ -1050,7 +1143,11 @@ const changeUrl =
       maybePendingNavigation: () => Option.none(),
       lastNavigation: () => kind,
     })
-    return Update.combine([loadRoute(route), rememberViewed])(
+    return Update.combine([
+      loadRoute(route),
+      rememberViewed,
+      keepEarlierSearch(model),
+    ])(
       syncSearchInput(
         modifyFields(model, {
           route: () => route,
@@ -1408,6 +1505,11 @@ const updateMessage = (model: Model, message: Message) =>
 
     ClickedPlaySongs: ({ songs: songsToPlay, startIndex }) =>
       Playback.clickPlaySongs(model, songsToPlay, startIndex),
+    ClickedStartRadio: ({ song }) =>
+      Update.combine([
+        dismissSheet,
+        stepModel => Playback.startRadio(stepModel, song),
+      ])(model),
     ClickedEnqueueSongs: ({ songs: songsToEnqueue, placement }) =>
       Update.combine([
         dismissSheet,

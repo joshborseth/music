@@ -14,6 +14,7 @@ import {
   Pencil,
   Plus,
   Power,
+  Radio,
   SquareArrowUpRightExit,
   Trash2,
 } from 'lucide'
@@ -229,6 +230,12 @@ const songActionsFor = (
             Message.ClickedEnqueueSongs({ songs: [song], placement: 'Last' }),
             ListEnd,
             'Add to queue',
+            h,
+          ),
+          actionButton(
+            Message.ClickedStartRadio({ song }),
+            Radio,
+            'Start radio',
             h,
           ),
           ...playlistActions,

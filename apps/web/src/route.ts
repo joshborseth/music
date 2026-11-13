@@ -2,8 +2,12 @@ import { Option, Schema, SchemaTransformation, pipe } from 'effect'
 import { Route, type Url } from 'foldkit'
 import { defineRouteUnion, literal, slash, string } from 'foldkit/route'
 
-/** Which catalog a search looks through. */
+/**
+ * Which catalog a search looks through. `Top` mixes them: the best match,
+ * the first songs, then artists, albums, and playlists.
+ */
 export const SearchKind = Schema.Literals([
+  'Top',
   'Songs',
   'Artists',
   'Albums',
@@ -13,7 +17,7 @@ export type SearchKind = typeof SearchKind.Type
 
 export const SEARCH_KINDS: ReadonlyArray<SearchKind> = SearchKind.literals
 
-export const DEFAULT_SEARCH_KIND: SearchKind = 'Songs'
+export const DEFAULT_SEARCH_KIND: SearchKind = 'Top'
 
 const decodeSearchKind = Schema.decodeUnknownOption(SearchKind)
 

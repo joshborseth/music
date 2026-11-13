@@ -1,4 +1,14 @@
-import { Array, Context, Effect, Layer, Option, pipe } from 'effect'
+import {
+  Array,
+  Cache,
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  pipe,
+} from 'effect'
 import {
   type Helpers,
   Innertube,
@@ -27,6 +37,7 @@ import {
   type MoodShelf,
   albumFromListItem,
   artistFromListItem,
+  audioTrackFor,
   filterSome,
   playlistFromListItem,
   songFromListItem,
@@ -90,6 +101,13 @@ type PlaylistPage = YTMusic.Playlist
  * to this many, so the page, Play, and Save a copy see the whole list.
  */
 const MAX_PLAYLIST_SONGS = 500
+
+/**
+ * A song search is kept this long. The top result looks through the same
+ * search the web app asks for at the same moment, and this asks YouTube once.
+ */
+const SONG_SEARCH_TTL = Duration.minutes(1)
+const SONG_SEARCH_CAPACITY = 64
 
 const MOODS_AND_GENRES_BROWSE_ID = 'FEmusic_moods_and_genres'
 const MOOD_BROWSE_ID = 'FEmusic_moods_and_genres_category'
@@ -178,11 +196,24 @@ const make = Effect.gen(function* () {
       ),
     )
 
+  const songSearches = yield* Cache.makeWith(
+    (query: string) =>
+      Effect.map(searchShelf(query, 'song'), items =>
+        filterSome(items, songFromListItem),
+      ),
+    {
+      capacity: SONG_SEARCH_CAPACITY,
+      timeToLive: Exit.match({
+        onFailure: () => Duration.zero,
+        onSuccess: () => SONG_SEARCH_TTL,
+      }),
+    },
+  )
+
   const searchSongs = Effect.fn('YouTubeMusic.searchSongs')(function* (
     query: string,
   ) {
-    const items = yield* searchShelf(query, 'song')
-    return filterSome(items, songFromListItem)
+    return yield* Cache.get(songSearches, query)
   })
 
   const searchArtists = Effect.fn('YouTubeMusic.searchArtists')(function* (
@@ -210,11 +241,24 @@ const make = Effect.gen(function* () {
     query: string,
   ) {
     const search = yield* callYouTube(() => music.search(query))
-    return Option.flatMap(
+    const maybeTopResult = Option.flatMap(
       Option.fromNullishOr(
         search.contents?.firstOfType(YTNodes.MusicCardShelf),
       ),
       topResultFromCard,
+    )
+    if (Option.isNone(maybeTopResult)) return maybeTopResult
+    const topResult = maybeTopResult.value
+    if (topResult._tag !== 'Song') return maybeTopResult
+    // A song found as its music video plays as its audio track instead.
+    const songs = yield* searchSongs(query).pipe(
+      Effect.orElseSucceed((): ReadonlyArray<Song> => []),
+    )
+    return Option.some(
+      Option.match(audioTrackFor(topResult.song, songs), {
+        onNone: () => topResult,
+        onSome: song => ({ ...topResult, song }),
+      }),
     )
   })
 

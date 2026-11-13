@@ -710,6 +710,37 @@ const topResultFromPage = (
   return Option.none()
 }
 
+/** The labels a song or video subtitle starts with, before its credits. */
+const WATCH_LABELS: ReadonlyArray<string> = ['Song', 'Video']
+
+const COUNT = /\b(views|plays)$/
+
+/**
+ * The credits in a song or video subtitle. A video posted by a channel that
+ * is not an artist page links nowhere, so then its name is kept as plain
+ * text instead of leaving the song with no artist at all.
+ */
+const watchArtistLinks = (
+  subtitle: Misc.Text | null | undefined,
+): ReadonlyArray<ArtistLink> =>
+  Array.match(subtitleArtistLinks(subtitle), {
+    onNonEmpty: links => links,
+    onEmpty: () =>
+      pipe(
+        subtitleSegments(subtitle),
+        Array.findFirst(
+          segment =>
+            !Array.contains(WATCH_LABELS, segment) &&
+            !COUNT.test(segment) &&
+            Option.isNone(secondsFromClock(segment)),
+        ),
+        Option.match({
+          onNone: () => [],
+          onSome: name => [{ maybeId: Option.none(), name }],
+        }),
+      ),
+  })
+
 const topResultFromVideo = (
   card: TopResultCard,
   title: string,
@@ -719,7 +750,7 @@ const topResultFromVideo = (
   song: {
     videoId,
     title,
-    artists: subtitleArtistLinks(card.subtitle),
+    artists: watchArtistLinks(card.subtitle),
     maybeAlbum: Option.none(),
     maybeDurationSeconds: Array.findFirst(
       Array.reverse(subtitleSegments(card.subtitle)),
@@ -753,6 +784,76 @@ export const topResultFromCard = (
           topResultFromVideo(card, title, videoId),
         ),
     }),
+  )
+}
+
+/** Brackets that name a kind of video, not a version of the song. */
+const VIDEO_BRACKET =
+  /\s*[([][^)\]]*\b(official|video|audio|lyrics?|visuali[sz]er|m\/?v|hd|4k)\b[^)\]]*[)\]]/gi
+
+const NOT_LETTER_OR_DIGIT = /[^\p{L}\p{N}]+/gu
+
+const TITLE_ARTIST_SEPARATOR = ' - '
+
+/**
+ * A title cut down to what tells songs apart: no "(Official Music Video)",
+ * no "Artist - " in front, and no case or punctuation. "Taylor Swift -
+ * Anti-Hero (Official Music Video)" and "Anti-Hero" both become "antihero".
+ */
+const comparableTitle = (
+  title: string,
+  artists: ReadonlyArray<ArtistLink>,
+): string => {
+  const separator = title.indexOf(TITLE_ARTIST_SEPARATOR)
+  const prefix = title.slice(0, Math.max(0, separator)).toLowerCase()
+  const isArtistPrefix =
+    separator > 0 &&
+    Array.some(artists, ({ name }) => prefix.includes(name.toLowerCase()))
+  return (
+    isArtistPrefix
+      ? title.slice(separator + TITLE_ARTIST_SEPARATOR.length)
+      : title
+  )
+    .replace(VIDEO_BRACKET, '')
+    .replace(NOT_LETTER_OR_DIGIT, '')
+    .toLowerCase()
+}
+
+const isSameArtist = (left: ArtistLink, right: ArtistLink): boolean =>
+  Option.isSome(left.maybeId) && Option.isSome(right.maybeId)
+    ? left.maybeId.value === right.maybeId.value
+    : left.name.toLowerCase() === right.name.toLowerCase()
+
+/**
+ * The audio track of a song that YouTube Music found as its music video: the
+ * song among `songs` (a song search for the same words) with the same title
+ * by the same artist. The video plays with its intro and skits and shows a
+ * cropped frame for its cover, where Apple Music and Spotify would play the
+ * song. A video that credits no artist page matches on its title alone, so
+ * the song it becomes brings its artists along.
+ */
+export const audioTrackFor = (
+  video: Song,
+  songs: ReadonlyArray<Song>,
+): Option.Option<Song> => {
+  const title = comparableTitle(video.title, video.artists)
+  const hasLinkedArtist = Array.some(video.artists, ({ maybeId }) =>
+    Option.isSome(maybeId),
+  )
+  return pipe(
+    Array.findFirst(songs, song => song.videoId === video.videoId),
+    Option.orElse(() =>
+      Array.findFirst(
+        songs,
+        song =>
+          String.isNonEmpty(title) &&
+          comparableTitle(song.title, song.artists) === title &&
+          (!hasLinkedArtist ||
+            Array.some(song.artists, artist =>
+              Array.some(video.artists, other => isSameArtist(artist, other)),
+            )),
+      ),
+    ),
   )
 }
 

@@ -556,6 +556,58 @@ describe('swiping', () => {
   })
 })
 
+describe('starting a radio', () => {
+  const radioSong: Song = {
+    videoId: 'XFkzRNyygfk',
+    title: 'Creep',
+    artists: [{ maybeId: Option.some('UC2'), name: 'Radiohead' }],
+    maybeAlbum: Option.none(),
+    maybeDurationSeconds: Option.some(237),
+    artwork: [],
+  }
+
+  const playRadioSong = SendToSession({
+    message: {
+      _tag: 'PlayQueue',
+      tracks: [toQueueTrack(radioSong)],
+      startIndex: 0,
+    },
+  })
+
+  test('plays the song alone, and autoplay fills in after it', () => {
+    story(
+      update,
+      given(playingHere(1)),
+      message(Message.ClickedStartRadio({ song: radioSong })),
+      Command.expectExact(playRadioSong),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('turns autoplay back on when it was off', () => {
+    const autoplayOff = modifyFields(playingHere(1), {
+      maybeSession: maybeSession =>
+        Option.map(maybeSession, snapshot => ({
+          ...snapshot,
+          state: { ...snapshot.state, autoplay: false },
+        })),
+    })
+    story(
+      update,
+      given(autoplayOff),
+      message(Message.ClickedStartRadio({ song: radioSong })),
+      Command.expectExact(
+        playRadioSong,
+        SendToSession({ message: { _tag: 'SetAutoplay', enabled: true } }),
+      ),
+      Command.resolveAll(
+        [SendToSession, Message.CompletedSendToSession()],
+        [SendToSession, Message.CompletedSendToSession()],
+      ),
+    )
+  })
+})
+
 describe('moving a song in the queue', () => {
   const queued = (entryId: string, autoplay = false): Session.QueueEntry => ({
     entryId,

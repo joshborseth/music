@@ -619,7 +619,10 @@ const songRows = (
   })
 }
 
-/** Songs as a tappable list, each playing the whole list from itself. */
+/**
+ * Songs as a tappable list, each playing the whole list from itself, or with
+ * `playsAlone`, only itself.
+ */
 export const songList = (
   config: Readonly<{
     songs: ReadonlyArray<Song>
@@ -629,6 +632,12 @@ export const songList = (
     isAlbumHidden: boolean
     isTitleWrapped?: boolean
     maybeAlbumContext?: Option.Option<AlbumContext>
+    /**
+     * Tapping a row plays just its song, and autoplay follows it with similar
+     * ones. Search results are not a list anyone would play through: covers,
+     * karaoke, and other songs that only share some words.
+     */
+    playsAlone?: boolean
   }>,
   h: HtmlBuilder<Message>,
 ): Html => {
@@ -646,8 +655,10 @@ export const songList = (
           songRow(
             {
               song,
-              playlist: songs,
-              maybeIndex: Option.some(position),
+              playlist: config.playsAlone === true ? [song] : songs,
+              maybeIndex: Option.some(
+                config.playsAlone === true ? 0 : position,
+              ),
               maybeTrackNumber: config.isNumbered
                 ? Option.some(position + 1)
                 : Option.none(),
@@ -1012,6 +1023,42 @@ export const section = (
     [sectionHeading(title, h), ...children],
   )
 
+/** A button at the end of a section's heading, such as See All. */
+export type SectionAction = Readonly<{
+  label: string
+  accessibleLabel: string
+  onClick: Message
+}>
+
+/** A section whose heading ends in a button, as See All does in music apps. */
+export const sectionWithAction = (
+  title: string,
+  action: SectionAction,
+  children: ReadonlyArray<Html>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.section(
+    [h.Class('flex flex-col gap-2')],
+    [
+      h.div(
+        [h.Class('flex items-baseline justify-between gap-4 pr-4')],
+        [
+          sectionHeading(title, h),
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(action.onClick),
+              h.AriaLabel(action.accessibleLabel),
+              h.Class('text-primary shrink-0 text-[17px] active:opacity-50'),
+            ],
+            [action.label],
+          ),
+        ],
+      ),
+      ...children,
+    ],
+  )
+
 const horizontalScrollerClass =
   'no-scrollbar flex snap-x snap-mandatory scroll-px-4 gap-3 overflow-x-auto overscroll-x-contain px-4 pb-1'
 
@@ -1022,28 +1069,29 @@ export const shelf = <A>(
     items: ReadonlyArray<A>
     toKey: (item: A) => string
     toCard: (item: A, h: HtmlBuilder<Message>) => Html
+    maybeAction?: Option.Option<SectionAction>
   }>,
   h: HtmlBuilder<Message>,
 ): Html =>
   Array.match(config.items, {
     onEmpty: () => h.empty,
-    onNonEmpty: items =>
-      section(
-        config.title,
-        [
-          h.div(
-            [h.Class(horizontalScrollerClass)],
-            Array.map(items, item =>
-              h.keyed('div')(
-                config.toKey(item),
-                [h.Class('contents')],
-                [config.toCard(item, h)],
-              ),
-            ),
+    onNonEmpty: items => {
+      const scroller = h.div(
+        [h.Class(horizontalScrollerClass)],
+        Array.map(items, item =>
+          h.keyed('div')(
+            config.toKey(item),
+            [h.Class('contents')],
+            [config.toCard(item, h)],
           ),
-        ],
-        h,
-      ),
+        ),
+      )
+      return Option.match(config.maybeAction ?? Option.none(), {
+        onNone: () => section(config.title, [scroller], h),
+        onSome: action =>
+          sectionWithAction(config.title, action, [scroller], h),
+      })
+    },
   })
 
 const SONGS_PER_GRID_COLUMN = 4

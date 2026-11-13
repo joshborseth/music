@@ -31,8 +31,11 @@ import { SendToSession, UnlockPhoneAudio } from './playback/command'
 import { toQueueTrack } from './playback/queueTrack'
 import {
   albumQuery,
+  albumSearchQuery,
+  artistSearchQuery,
   myLibraryQuery,
   myPlaylistQuery,
+  playlistSearchQuery,
   songQuery,
   songSearchQuery,
   topResultSearchQuery,
@@ -70,6 +73,37 @@ const urlOrThrow = (raw: string) =>
     () => new Error(`Failed to parse url: ${raw}`),
   )
 
+/**
+ * Top asks every catalog. These answer the artist, album, and playlist
+ * searches with nothing, for stories about songs.
+ */
+const resolveOtherCatalogs = (query: string) => [
+  Command.resolve(
+    artistSearchQuery.Fetch,
+    artistSearchQuery.Message.CompletedFetch({
+      args: { query },
+      generation: FIRST_REQUEST_GENERATION,
+      result: Result.succeed([]),
+    }),
+  ),
+  Command.resolve(
+    albumSearchQuery.Fetch,
+    albumSearchQuery.Message.CompletedFetch({
+      args: { query },
+      generation: FIRST_REQUEST_GENERATION,
+      result: Result.succeed([]),
+    }),
+  ),
+  Command.resolve(
+    playlistSearchQuery.Fetch,
+    playlistSearchQuery.Message.CompletedFetch({
+      args: { query },
+      generation: FIRST_REQUEST_GENERATION,
+      result: Result.succeed([]),
+    }),
+  ),
+]
+
 const emptySearchModel: Model = initialModel(
   AppRoute.Search({ q: Option.none(), kind: Option.none() }),
   '/search',
@@ -88,13 +122,13 @@ const theChain: Song = {
 
 describe('search route', () => {
   test('omits the default kind and an empty query from the URL', () => {
-    expect(searchUrl('', 'Songs')).toBe('/search')
+    expect(searchUrl('', 'Top')).toBe('/search')
     expect(searchUrl('the chain', 'Artists')).toBe(
       '/search?q=the+chain&kind=Artists',
     )
   })
 
-  test('an unknown kind falls back to songs and still searches', () => {
+  test('an unknown kind falls back to Top and still searches', () => {
     story(
       update,
       given(emptySearchModel),
@@ -130,6 +164,7 @@ describe('search route', () => {
           result: Result.succeed(Option.none()),
         }),
       ),
+      ...resolveOtherCatalogs('rumours'),
     )
   })
 })
@@ -201,6 +236,7 @@ describe('typing a search', () => {
           result: Result.succeed(Option.none()),
         }),
       ),
+      ...resolveOtherCatalogs('fleetwood'),
     )
   })
 })
@@ -599,6 +635,7 @@ describe('top result', () => {
           ),
         }),
       ),
+      ...resolveOtherCatalogs('the chain'),
       model(model => {
         expect(
           topResultSearchQuery.read(model.topResultSearch, {
