@@ -19,7 +19,6 @@ mod look;
 mod motion;
 mod music;
 mod sizing;
-mod timing;
 
 #[cfg(test)]
 mod lab;
@@ -87,6 +86,8 @@ struct State {
     shade: Shade,
     pace: Pace,
     shown_scene: Option<usize>,
+    /// GL errors already sent to the server's log, so each goes once.
+    errors_reported: Vec<(&'static str, u32)>,
 }
 
 /// How smoothly frames come, between two reports to the server.
@@ -182,6 +183,7 @@ impl Visuals {
             shade: Shade::default(),
             pace: Pace::default(),
             shown_scene: None,
+            errors_reported: Vec::new(),
         }));
         let notified = state.clone();
         let window = app.as_weak();
@@ -390,6 +392,7 @@ impl State {
             );
         }
         renderer.release_unused(&shot);
+        let before = gl_errors(gl);
         renderer.draw(
             gl,
             &music,
@@ -399,19 +402,39 @@ impl State {
             self.shade,
             size,
         );
+        let after = gl_errors(gl);
+        for (when, codes) in [("before the visuals", before), ("in the visuals", after)] {
+            for code in codes {
+                if !self.errors_reported.contains(&(when, code)) {
+                    self.errors_reported.push((when, code));
+                    let line = format!("visuals: GL error {code:#06x} {when}");
+                    log::error!("{line}");
+                    (self.report)(line);
+                }
+            }
+        }
 
         if let Some(took) = took
-            && let Some(line) = self.pace.frame(took, size, || {
-                let sizes = renderer.sizes();
-                match renderer.timings() {
-                    Some(timings) => format!("{sizes}; {timings}"),
-                    None => sizes,
-                }
-            })
+            && let Some(line) = self.pace.frame(took, size, || renderer.sizes())
         {
             log::info!("{line}");
             (self.report)(line);
         }
         true
     }
+}
+
+/// The GL errors waiting to be read, at most a few. `GL_CONTEXT_LOST`
+/// (0x0507) means the GPU was reset and nothing draws any more.
+fn gl_errors(gl: &glow::Context) -> Vec<u32> {
+    use glow::HasContext;
+    let mut codes = Vec::new();
+    for _ in 0..4 {
+        let code = unsafe { gl.get_error() };
+        if code == glow::NO_ERROR {
+            break;
+        }
+        codes.push(code);
+    }
+    codes
 }
