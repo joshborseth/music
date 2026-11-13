@@ -28,7 +28,9 @@ void main() {
   float r = length(gl_FragCoord.xy - 0.5 * uRes) / (0.5 * length(uRes));
   keep *= 1.0 - uCentre * 0.50 * max(0.0, 1.0 - r / 0.6);
   color *= keep;
-  // Fine grain at full size, so dark gradients never band.
-  color += (hash12(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5) * 0.012;
+  // Fine grain at full size, so dark gradients never band: interleaved
+  // gradient noise, a few sums a pixel where a hash took a dozen.
+  highp float grain = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  color += (float(grain) - 0.5) * 0.012;
   fragColor = vec4(color, 1.0);
 }

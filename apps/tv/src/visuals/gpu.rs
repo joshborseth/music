@@ -9,9 +9,8 @@
 //! 1. Each scene showing draws into its own pair of textures at a reduced
 //!    size, reading its last frame from the other (trails, ink, echoes).
 //!    While one scene dissolves into the next, the two take turns, one a
-//!    frame, so a change of scene costs no more than one scene. Two scenes
-//!    draw more on top: Particles its grains as points, and Terrain its
-//!    land as a mesh over the sky.
+//!    frame, so a change of scene costs no more than one scene. Terrain
+//!    draws its land on top, as a mesh over the sky.
 //! 2. The bright parts are cut out at a quarter size and blurred (bloom).
 //! 3. `final.glsl` dissolves one scene into the next and adds the glow and
 //!    the camera tricks, into a picture the scenes' size.
@@ -37,6 +36,7 @@ use super::look::{COVER_SIDE, Cover, DEFAULT_COLORS};
 use super::motion::{Motion, hash, unit};
 use super::music::{BANDS, HISTORY_ROWS, LEVELS, Listener, Music, WAVE};
 use super::sizing::{Change, Sizing};
+use super::timing::{Part, Timer};
 
 const COMMON: &str = include_str!("shaders/common.glsl");
 const FRAGMENT: &str = include_str!("shaders/fragment.glsl");
@@ -44,22 +44,15 @@ const HELPERS: &str = include_str!("shaders/helpers.glsl");
 const FULLSCREEN: &str = include_str!("shaders/fullscreen.vert");
 
 /// Each scene's shader, in the order of `director::SCENES`.
-const SCENE_SHADERS: [(&str, &str); 8] = [
-    ("liquid.glsl", include_str!("shaders/liquid.glsl")),
+const SCENE_SHADERS: [(&str, &str); SCENES.len()] = [
+    ("silk.glsl", include_str!("shaders/silk.glsl")),
     ("ink.glsl", include_str!("shaders/ink.glsl")),
-    ("kaleido.glsl", include_str!("shaders/kaleido.glsl")),
     ("terrain.glsl", include_str!("shaders/terrain.glsl")),
-    ("chrome.glsl", include_str!("shaders/chrome.glsl")),
-    ("tunnel.glsl", include_str!("shaders/tunnel.glsl")),
     ("halo.glsl", include_str!("shaders/halo.glsl")),
-    ("particles.glsl", include_str!("shaders/particles.glsl")),
+    ("tunnel.glsl", include_str!("shaders/tunnel.glsl")),
 ];
-/// The scene whose grains are drawn as points on top of its shader.
-const PARTICLES: usize = 7;
-/// Grains along each side of the particle cover.
-const GRID: i32 = 160;
 /// The scene whose land is drawn as a mesh on top of its sky.
-const TERRAIN: usize = 3;
+const TERRAIN: usize = 2;
 /// Terrain's mesh (`terrain.vert`, which works out the same): a column on
 /// each band of the history, the road's middle and edge, and five far
 /// columns (`FAR_COLUMNS`), each side; a row for each history row and the
@@ -118,7 +111,6 @@ pub struct Report {
 pub struct Renderer {
     vao: glow::VertexArray,
     scenes: Vec<Option<Program>>,
-    points: Option<Program>,
     land: Option<Program>,
     bright: Program,
     blur: Program,
@@ -147,6 +139,8 @@ pub struct Renderer {
     /// The scene the last frame drew alone, and how many frames in a row.
     alone: Option<usize>,
     steady: u32,
+    /// GPU time for each part of a frame, where the GPU can tell.
+    timer: Option<Timer>,
 }
 
 impl Renderer {
@@ -187,17 +181,6 @@ impl Renderer {
                 .iter()
                 .map(|(name, body)| compile(name, &vertex, &fragment(body)))
                 .collect();
-            let points = compile(
-                "particles.vert",
-                &format!(
-                    "#version 300 es\n{COMMON}\n{HELPERS}\n#line 1\n{}",
-                    include_str!("shaders/particles.vert")
-                ),
-                &format!(
-                    "#version 300 es\n{COMMON}\n#line 1\n{}",
-                    include_str!("shaders/particles.frag")
-                ),
-            );
             let terrain = SCENE_SHADERS[TERRAIN].1;
             let land = compile(
                 "terrain.vert",
@@ -261,7 +244,6 @@ impl Renderer {
             Some(Self {
                 vao,
                 scenes,
-                points,
                 land,
                 bright,
                 blur,
@@ -284,6 +266,7 @@ impl Renderer {
                 frame: 0,
                 alone: None,
                 steady: 0,
+                timer: Timer::new(gl),
             })
         }
     }
@@ -291,12 +274,11 @@ impl Renderer {
     /// Whether `scene` compiled.
     pub fn can_draw(&self, scene: usize) -> bool {
         self.scenes.get(scene).is_some_and(Option::is_some)
-            && (scene != PARTICLES || self.points.is_some())
             && (scene != TERRAIN || self.land.is_some())
     }
 
     /// Each scene shown so far and its size, for the server's log:
-    /// "Liquid 100%, Chrome 60%, Terrain 35% at 30 fps".
+    /// "Silk 100%, Halo 60%, Terrain 35% at 30 fps".
     pub fn sizes(&self) -> String {
         let sizes: Vec<String> = self
             .sizing
@@ -313,6 +295,14 @@ impl Renderer {
         } else {
             sizes.join(", ")
         }
+    }
+
+    /// The GPU time each part of a frame took since the last call, for the
+    /// server's log; `None` where the GPU can't tell.
+    pub fn timings(&mut self) -> Option<String> {
+        self.timer
+            .as_mut()
+            .map(|timer| timer.report(|scene| SCENES[scene].name))
     }
 
     /// Show `cover` (or none) from now on.
@@ -342,10 +332,6 @@ impl Renderer {
             }
             saved.restore(gl);
         }
-    }
-
-    pub fn has_cover(&self) -> bool {
-        self.has_cover
     }
 
     /// The last frame took `dt` seconds: keep the size of the scene it drew
@@ -467,6 +453,10 @@ impl Renderer {
                 0
             };
             self.alone = alone;
+            if let Some(timer) = &mut self.timer {
+                timer.frame(gl, alone.filter(|_| draw_a));
+                timer.begin(gl, Part::Scenes);
+            }
 
             if draw_a {
                 self.draw_scene(gl, a, shot.current, music, listener);
@@ -474,8 +464,16 @@ impl Renderer {
             if draw_b && let (Some(b), Some((next, _))) = (b, shot.next) {
                 self.draw_scene(gl, b, next, music, listener);
             }
+            if let Some(timer) = &mut self.timer {
+                timer.end(gl);
+                timer.begin(gl, Part::Effects);
+            }
             if draw_a || draw_b {
                 self.compose(gl, a, b, shot.current, mix, fade, music, listener);
+            }
+            if let Some(timer) = &mut self.timer {
+                timer.end(gl);
+                timer.begin(gl, Part::Screen);
             }
 
             // The screen. Skia cleared it and has moved on to our passes,
@@ -492,6 +490,9 @@ impl Renderer {
             set_f32(gl, &self.present, "uCentre", shade.centre);
             bind_texture(gl, &self.present, "uPicture", 0, self.picture.texture);
             fullscreen(gl);
+            if let Some(timer) = &mut self.timer {
+                timer.end(gl);
+            }
         }
         saved.restore(gl);
     }
@@ -626,7 +627,7 @@ impl Renderer {
             for target in &mut slot.targets {
                 if sized {
                     bind_target(gl, target);
-                    gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                    gl.clear_color(0.0, 0.0, 0.0, 0.0);
                     gl.clear(glow::COLOR_BUFFER_BIT);
                 } else {
                     resize(gl, target, wide, tall);
@@ -673,26 +674,6 @@ impl Renderer {
                 );
                 self.bind_inputs(gl, program, Some(read.texture));
                 fullscreen(gl);
-            }
-            if scene == PARTICLES
-                && let Some(points) = &self.points
-            {
-                gl.enable(glow::BLEND);
-                gl.blend_equation(glow::FUNC_ADD);
-                gl.blend_func(glow::ONE, glow::ONE);
-                gl.use_program(Some(points.program));
-                self.set_music(
-                    gl,
-                    points,
-                    music,
-                    (write.width, write.height),
-                    Some(showing),
-                    listener,
-                );
-                set_f32(gl, points, "uGrid", GRID as f32);
-                self.bind_inputs(gl, points, None);
-                gl.draw_arrays(glow::POINTS, 0, GRID * GRID);
-                gl.disable(glow::BLEND);
             }
             if scene == TERRAIN
                 && let Some(land) = &self.land
@@ -773,13 +754,6 @@ impl Renderer {
             }
 
             let motion = Motion::new(music, seed);
-            f("uMelt", motion.melt);
-            if let Some(at) = program.uniforms.get("uBlobs") {
-                gl.uniform_3_f32_slice(Some(at), motion.blobs.as_flattened());
-            }
-            if let Some(at) = program.uniforms.get("uCamera") {
-                gl.uniform_3_f32_slice(Some(at), motion.camera.as_flattened());
-            }
             if let Some(at) = program.uniforms.get("uPour") {
                 gl.uniform_4_f32_slice(Some(at), motion.pour.as_flattened());
             }
@@ -824,13 +798,12 @@ impl Renderer {
     /// Free every GL object.
     pub fn delete(self, gl: &Gl) {
         unsafe {
-            let programs = self
-                .scenes
-                .into_iter()
-                .flatten()
-                .chain(self.points)
-                .chain(self.land)
-                .chain([self.bright, self.blur, self.final_pass, self.present]);
+            let programs = self.scenes.into_iter().flatten().chain(self.land).chain([
+                self.bright,
+                self.blur,
+                self.final_pass,
+                self.present,
+            ]);
             for program in programs {
                 gl.delete_program(program.program);
             }
@@ -855,6 +828,9 @@ impl Renderer {
                 gl.delete_texture(texture);
             }
             gl.delete_vertex_array(self.vao);
+            if let Some(timer) = self.timer {
+                timer.delete(gl);
+            }
         }
     }
 }
@@ -1139,7 +1115,7 @@ unsafe fn resize(gl: &Gl, target: &mut Target, width: i32, height: i32) {
         target.height = height;
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.framebuffer));
         gl.viewport(0, 0, width, height);
-        gl.clear_color(0.0, 0.0, 0.0, 1.0);
+        gl.clear_color(0.0, 0.0, 0.0, 0.0);
         gl.clear(glow::COLOR_BUFFER_BIT);
     }
 }

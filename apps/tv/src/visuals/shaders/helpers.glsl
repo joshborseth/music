@@ -61,6 +61,15 @@ vec3 palette(highp float t) {
   return mix(from, to, f);
 }
 
+// Light in the cover's color, 0 to 1: near black, through the deep shade
+// and the full color, to a pale, hot core. One hue throughout, so a scene
+// shaded with it looks lit rather than painted.
+vec3 glow(float x) {
+  vec3 color = mix(uColorC * 0.06, uColorB * 0.7, smoothstep(0.0, 0.45, x));
+  color = mix(color, uColorA, smoothstep(0.35, 0.8, x));
+  return mix(color, mix(uColorA, vec3(1.0), 0.3), smoothstep(0.8, 1.0, x));
+}
+
 // 0 to 1 and back, so a picture repeats as mirror images instead of seams.
 highp vec2 mirrored(highp vec2 uv) {
   return 1.0 - abs(1.0 - mod(uv, 2.0));

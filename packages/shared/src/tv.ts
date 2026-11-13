@@ -174,6 +174,8 @@ export type TvSection = typeof TvSection.Type
  * - `accents`: strong hits between beats (snares, stabs), at most a few a second.
  * - `energy`: loudness 0 to 1 every `energyStepSeconds`, smoothed, normalized
  *   to the song's own loudest moment.
+ * - `drive`: how driving the whole song is, 0 to 1, whatever its volume (its
+ *   hits and its grit), so a ballad's loudest part still looks calm.
  */
 export const TvAnalysis = Schema.Struct({
   videoId: Schema.String,
@@ -186,5 +188,6 @@ export const TvAnalysis = Schema.Struct({
   accents: Schema.Array(Schema.Number),
   energyStepSeconds: Schema.Number,
   energy: Schema.Array(Schema.Number),
+  drive: Schema.Number,
 })
 export type TvAnalysis = typeof TvAnalysis.Type

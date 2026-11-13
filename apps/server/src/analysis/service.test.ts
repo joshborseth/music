@@ -30,6 +30,7 @@ const analysisOf = (videoId: string, tempo = 120): Tv.TvAnalysis => ({
   accents: [],
   energyStepSeconds: 0.1,
   energy: [1],
+  drive: 0.5,
 })
 
 describe('the analysis cache', () => {

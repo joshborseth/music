@@ -10,7 +10,12 @@ import {
   tempoOf,
   trackBeats,
 } from './beats.ts'
-import { bandsBetween, spectrogram } from './spectrogram.ts'
+import {
+  MEL_BANDS,
+  type Spectrogram,
+  bandsBetween,
+  spectrogram,
+} from './spectrogram.ts'
 import { type Bar, analyzeStructure } from './structure.ts'
 
 /*
@@ -19,7 +24,7 @@ import { type Bar, analyzeStructure } from './structure.ts'
  */
 
 /** Bump when the analysis changes, so cached results are worked out again. */
-export const ANALYZER_VERSION = 1
+export const ANALYZER_VERSION = 2
 
 /** The sample rate the analysis expects (ffmpeg resamples to it). */
 export const SAMPLE_RATE = 22050
@@ -35,6 +40,57 @@ const BASS_HZ = [30, 150] as const
 const SNARE_HZ = [1500, 6000] as const
 
 const round3 = (value: number): number => Math.round(value * 1000) / 1000
+
+const smoothstep = (from: number, to: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - from) / (to - from)))
+  return t * t * (3 - 2 * t)
+}
+
+/** Mel bands from about 150 Hz to 7 kHz, where grit and noise show. */
+const FLATNESS_BANDS = [8, 80] as const
+/** Frames this far under the song's loudest count as silence. */
+const QUIET_DB = 40
+
+/**
+ * How driving the whole song is, 0 to 1, whatever its volume: the visuals
+ * use it to keep a ballad's loudest chorus calm and let a club track's drop
+ * go wild. Half is punch, the onset envelope's mean (how hard and how often
+ * new sound starts: drums, stabs); half is grit, the spectrum's flatness in
+ * dB (how noise-like the sound is: distorted guitars, cymbals, dense mixes,
+ * against a voice, a piano, or a pad). Both are ratios, so a quiet master
+ * scores as its loud copy would. Measured on real songs: piano and ambient
+ * pieces score under 0.15, rock around 0.5, house and hip-hop 0.6 to 0.9.
+ */
+export const songDrive = (spec: Spectrogram, onset: Float32Array): number => {
+  let loudest = 0
+  spec.power.forEach(power => {
+    loudest = Math.max(loudest, power)
+  })
+  const floor = loudest * 10 ** (-QUIET_DB / 10)
+  const [from, to] = FLATNESS_BANDS
+  const bands = to - from
+  let flatness = 0
+  let punch = 0
+  let frames = 0
+  for (let t = 0; t < spec.frames; t++) {
+    if ((spec.power[t] ?? 0) <= floor) continue
+    let meanDb = 0
+    let meanPower = 0
+    for (let band = from; band < to; band++) {
+      const db = spec.melDb[t * MEL_BANDS + band] ?? 0
+      meanDb += db / bands
+      meanPower += 10 ** (db / 10) / bands
+    }
+    flatness += meanDb - 10 * Math.log10(meanPower + 1e-12)
+    punch += onset[t] ?? 0
+    frames++
+  }
+  if (frames === 0) return 0
+  return round3(
+    0.5 * smoothstep(0.85, 1.6, punch / frames) +
+      0.5 * smoothstep(-14, -5, flatness / frames),
+  )
+}
 
 /**
  * Loudness every `ENERGY_STEP_SECONDS`: RMS, smoothed over about a third of
@@ -184,5 +240,6 @@ export const analyzeSamples = (
     ),
     energyStepSeconds: ENERGY_STEP_SECONDS,
     energy: energyCurve(samples, SAMPLE_RATE),
+    drive: songDrive(spec, onset),
   }
 }

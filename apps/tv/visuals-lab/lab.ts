@@ -3,8 +3,8 @@
  * song (or a real audio file), so scenes can be tuned in a browser.
  *
  * The passes match `apps/tv/src/visuals/gpu.rs`: each scene draws into its
- * own pair of textures (feedback), Particles adding its grains as points
- * and Terrain its land as a mesh, the bright parts are blurred at a
+ * own pair of textures (feedback), Terrain adding its land as a mesh on
+ * top, the bright parts are blurred at a
  * quarter size, `final.glsl` puts it together at the scenes' size, and
  * `present.glsl` stretches that to the screen under the app's shade. While
  * one scene dissolves into the next, the two take turns, one a frame. The
@@ -17,21 +17,16 @@ declare const MODE: string
 interface SceneDef {
   readonly name: string
   readonly file: string
-  /** Grains drawn as points on top (particles.vert). */
-  readonly points: boolean
   /** The land drawn as a mesh on top (terrain.vert). */
   readonly land: boolean
 }
 
 const SCENES: ReadonlyArray<SceneDef> = [
-  { name: 'Liquid', file: 'liquid.glsl', points: false, land: false },
-  { name: 'Ink', file: 'ink.glsl', points: false, land: false },
-  { name: 'Kaleido', file: 'kaleido.glsl', points: false, land: false },
-  { name: 'Terrain', file: 'terrain.glsl', points: false, land: true },
-  { name: 'Chrome', file: 'chrome.glsl', points: false, land: false },
-  { name: 'Tunnel', file: 'tunnel.glsl', points: false, land: false },
-  { name: 'Halo', file: 'halo.glsl', points: false, land: false },
-  { name: 'Particles', file: 'particles.glsl', points: true, land: false },
+  { name: 'Silk', file: 'silk.glsl', land: false },
+  { name: 'Ink', file: 'ink.glsl', land: false },
+  { name: 'Terrain', file: 'terrain.glsl', land: true },
+  { name: 'Halo', file: 'halo.glsl', land: false },
+  { name: 'Tunnel', file: 'tunnel.glsl', land: false },
 ]
 
 const BANDS = 48
@@ -39,7 +34,6 @@ const HISTORY_ROWS = 128
 const HISTORY_RATE = 32
 const WAVE = 512
 const COVER = 256
-const GRID = 160
 /**
  * Terrain's mesh: a column on each band, the road and its edge, and five
  * far columns, each side; a row for each history row and the far edge.
@@ -69,6 +63,13 @@ interface Music {
   spectrum: Float32Array
   wave: Float32Array
   section: string
+  /**
+   * From a real song (the song page): the history rows the TV added this
+   * frame, and how far toward the next it is. Without them, the lab keeps
+   * its own history at the TV's rate.
+   */
+  rows?: number
+  historyAge?: number
 }
 
 const fract = (x: number): number => x - Math.floor(x)
@@ -100,53 +101,7 @@ const smoothNoise = (x: number): number => {
   return a + (b - a) * u
 }
 
-type Vec3 = [number, number, number]
-
-const length3 = (v: Vec3): number => Math.hypot(v[0], v[1], v[2])
-const normalize3 = (v: Vec3): Vec3 => {
-  const l = Math.max(length3(v), 1e-6)
-  return [v[0] / l, v[1] / l, v[2] / l]
-}
-const cross3 = (a: Vec3, b: Vec3): Vec3 => [
-  a[1] * b[2] - a[2] * b[1],
-  a[2] * b[0] - a[0] * b[2],
-  a[0] * b[1] - a[1] * b[0],
-]
-const dot3 = (a: Vec3, b: Vec3): number =>
-  a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-/** Chrome's lens: the TV's `FOCAL`. */
-const FOCAL = 1.6
-
-/**
- * A ball as the camera (where it is, then its right, up, and forward)
- * sees it: its centre on the picture and its radius there. The TV's
- * `project`.
- */
-const project = (
-  centre: Vec3,
-  radius: number,
-  [eye, right, up, forward]: [Vec3, Vec3, Vec3, Vec3],
-): [number, number, number] => {
-  const away: Vec3 = [
-    centre[0] - eye[0],
-    centre[1] - eye[1],
-    centre[2] - eye[2],
-  ]
-  const ahead = dot3(away, forward)
-  const near = clamp01((ahead - 0.2) / 0.4)
-  const seen = Math.max(ahead, 0.2)
-  return [
-    (dot3(away, right) * FOCAL) / seen,
-    (dot3(away, up) * FOCAL) / seen,
-    ((radius * FOCAL) / seen) * near * near * (3 - 2 * near),
-  ]
-}
-
 interface Motion {
-  readonly blobs: Array<number>
-  readonly melt: number
-  readonly camera: Array<number>
   readonly pour: Array<number>
   readonly turn: [number, number, number, number]
   readonly flight: [number, number, number, number]
@@ -159,34 +114,6 @@ interface Motion {
  */
 const motion = (music: Music, seed: number): Motion => {
   const drive = music.drive
-  const punch = 1 + 0.06 * music.kick
-  const distance = 2.5 / punch
-  const eye: Vec3 = [
-    Math.sin(drive * 0.07) * distance,
-    0,
-    -Math.cos(drive * 0.07) * distance,
-  ]
-  const forward = normalize3([-eye[0], -eye[1], -eye[2]])
-  const right = normalize3([forward[2], 0, -forward[0]])
-  const up = cross3(forward, right)
-
-  const gather =
-    Math.pow(1 - fract(music.bar), 2) * 0.6 + 0.4 - 0.4 * music.drop
-  const spread =
-    (0.55 + 0.25 * music.intensity + 1.1 * music.drop) * (1 - 0.35 * gather)
-  const blobs: Array<number> = []
-  for (let i = 0; i < 5; i++) {
-    const centre: Vec3 = [
-      Math.sin(drive * (0.31 + i * 0.07) + i * 1.9) * spread,
-      Math.cos(drive * (0.27 + i * 0.05) + i * 2.7) * 0.7 * spread,
-      Math.sin(drive * (0.19 + i * 0.09) + i * 0.8) * spread,
-    ]
-    const radius = 0.27 + 0.16 * (music.levels[i] ?? 0) + 0.05 * music.kick
-    blobs.push(...project(centre, radius, [eye, right, up, forward]))
-  }
-  // As far as the old 3D shape melted, seen at the middle's distance.
-  const melt = ((0.35 - 0.2 * music.drop) * FOCAL) / distance
-
   const pour: Array<number> = []
   for (let i = 0; i < 3; i++) {
     const phase = drive * (0.21 + 0.07 * i) + i * 2.1 + seed * 5
@@ -205,9 +132,6 @@ const motion = (music: Music, seed: number): Motion => {
   const roll = 0.04 * Math.sin(drive * 0.09)
   const shake = music.tension * music.tension * 0.006
   return {
-    blobs,
-    melt,
-    camera: [...eye, ...right, ...up, ...forward],
     pour,
     turn: [
       Math.sin(drive * 0.23) * 0.08,
@@ -478,7 +402,7 @@ const makeTarget = (
     texture,
     0,
   )
-  gl.clearColor(0, 0, 0, 1)
+  gl.clearColor(0, 0, 0, 0)
   gl.clear(gl.COLOR_BUFFER_BIT)
   return { texture, framebuffer, width, height }
 }
@@ -567,7 +491,6 @@ const program = (
 interface Scene {
   readonly def: SceneDef
   readonly main: Program | null
-  readonly points: Program | null
   readonly land: Program | null
   targets: [Target, Target]
   seed: number
@@ -728,17 +651,6 @@ const makeEngine = (
   const scenes: Array<Scene> = SCENES.map((def, index) => ({
     def,
     main: program(gl, def.file, VERTEX, fragmentSource(def.file)),
-    points: def.points
-      ? program(
-          gl,
-          'particles.vert',
-          VERSION +
-            shaderText('common.glsl') +
-            shaderText('helpers.glsl') +
-            shaderText('particles.vert'),
-          VERSION + shaderText('common.glsl') + shaderText('particles.frag'),
-        )
-      : null,
     land: def.land
       ? program(gl, 'terrain.vert', LAND_VERTEX, LAND_FRAGMENT)
       : null,
@@ -876,7 +788,6 @@ const makeEngine = (
     f('uSeed', scene?.seed ?? 0)
     f('uHasCover', hasCover)
     f('uHistoryAge', historyAge)
-    f('uGrid', GRID)
     const bandsAt = at('uBands')
     if (bandsAt !== undefined) gl.uniform4f(bandsAt, ...music.bands)
     const levelsAt = at('uLevels')
@@ -888,11 +799,6 @@ const makeEngine = (
       if (c !== undefined && color !== undefined) gl.uniform3f(c, ...color)
     })
     const moved = motion(music, scene?.seed ?? 0)
-    f('uMelt', moved.melt)
-    const blobsAt = at('uBlobs')
-    if (blobsAt !== undefined) gl.uniform3fv(blobsAt, moved.blobs)
-    const cameraAt = at('uCamera')
-    if (cameraAt !== undefined) gl.uniform3fv(cameraAt, moved.camera)
     const pourAt = at('uPour')
     if (pourAt !== undefined) gl.uniform4fv(pourAt, moved.pour)
     const turnAt = at('uTurn')
@@ -921,15 +827,6 @@ const makeEngine = (
       bindTextures(scene.main, read)
       fullscreen()
     }
-    if (scene.points !== null) {
-      gl.enable(gl.BLEND)
-      gl.blendFunc(gl.ONE, gl.ONE)
-      gl.useProgram(scene.points.program)
-      setMusic(scene.points, music, [write.width, write.height], scene)
-      bindTextures(scene.points, null)
-      gl.drawArrays(gl.POINTS, 0, GRID * GRID)
-      gl.disable(gl.BLEND)
-    }
     if (scene.land !== null) {
       gl.useProgram(scene.land.program)
       setMusic(scene.land, music, [write.width, write.height], scene)
@@ -937,6 +834,30 @@ const makeEngine = (
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, LAND_VERTICES)
     }
     scene.targets = [write, read]
+  }
+
+  /** Start the spectrum's history from `rows`, as a song's window opens. */
+  const setHistory = (rows: Uint8Array, age: number) => {
+    history.set(rows.subarray(0, history.length))
+    historyAge = age
+    gl.bindTexture(gl.TEXTURE_2D, historyTexture)
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.R8,
+      BANDS,
+      HISTORY_ROWS,
+      0,
+      gl.RED,
+      gl.UNSIGNED_BYTE,
+      history,
+    )
+  }
+
+  /** The app's shade: lyrics on the right (`side`) or the song alone. */
+  let side = 0
+  const setSide = (on: boolean) => {
+    side = on ? 1 : 0
   }
 
   const update = (music: Music, dt: number) => {
@@ -964,14 +885,25 @@ const makeEngine = (
       gl.UNSIGNED_BYTE,
       toBytes(music.wave, v => v * 0.5 + 0.5),
     )
-    historyAge += dt * HISTORY_RATE
-    if (historyAge >= 1) {
-      historyAge = Math.min(historyAge - 1, 1)
+    let rows = 0
+    if (music.rows !== undefined && music.historyAge !== undefined) {
+      rows = music.rows
+      historyAge = music.historyAge
+    } else {
+      historyAge += dt * HISTORY_RATE
+      if (historyAge >= 1) {
+        historyAge = Math.min(historyAge - 1, 1)
+        rows = 1
+      }
+    }
+    for (let row = 0; row < rows; row++) {
       history.copyWithin(BANDS, 0, BANDS * (HISTORY_ROWS - 1))
       history.set(
         toBytes(music.spectrum, v => v),
         0,
       )
+    }
+    if (rows > 0) {
       gl.bindTexture(gl.TEXTURE_2D, historyTexture)
       gl.texImage2D(
         gl.TEXTURE_2D,
@@ -1082,11 +1014,11 @@ const makeEngine = (
       gl.bindTexture(gl.TEXTURE_2D, picture.texture)
       const pictureAt = present.uniforms.get('uPicture')
       if (pictureAt !== undefined) gl.uniform1i(pictureAt, 0)
-      // The song alone in the middle, as the TV shows a song without lyrics.
+      // The lyrics band on the right, or the song alone in the middle.
       const sideAt = present.uniforms.get('uSide')
-      if (sideAt !== undefined) gl.uniform1f(sideAt, 0)
+      if (sideAt !== undefined) gl.uniform1f(sideAt, side)
       const centreAt = present.uniforms.get('uCentre')
-      if (centreAt !== undefined) gl.uniform1f(centreAt, 1)
+      if (centreAt !== undefined) gl.uniform1f(centreAt, 1 - side)
       fullscreen()
     }
   }
@@ -1100,7 +1032,26 @@ const makeEngine = (
     drawScene(scene, music)
   }
 
-  return { frame, sceneOnly, setCover, scenes }
+  /** Every scene back to black, as a scene the TV brings on starts. */
+  const clearScenes = () => {
+    for (const scene of scenes) {
+      for (const target of scene.targets) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer)
+        gl.clearColor(0, 0, 0, 0)
+        gl.clear(gl.COLOR_BUFFER_BIT)
+      }
+    }
+  }
+
+  return {
+    frame,
+    sceneOnly,
+    setCover,
+    setHistory,
+    setSide,
+    clearScenes,
+    scenes,
+  }
 }
 
 // PAGE --------------------------------------------------------------------
@@ -1364,9 +1315,9 @@ const live = () => {
       lastSection = music.section
       const pool: Record<string, ReadonlyArray<number>> = {
         Intro: [0, 1],
-        Verse: [2, 3, 7],
-        Build: [7, 2],
-        Drop: [4, 5, 6, 3],
+        Verse: [1, 2],
+        Build: [2, 3],
+        Drop: [4, 3],
         Breakdown: [0, 1],
       }
       const options = pool[music.section] ?? [0]
@@ -1402,6 +1353,421 @@ const live = () => {
   requestAnimationFrame(tick)
 }
 
+// A REAL SONG ---------------------------------------------------------------
+
+/**
+ * One frame of a real song, as the TV's own listener and director saw it:
+ * written by `cargo test -p music-tv visuals::lab -- --ignored` (see
+ * `apps/tv/src/visuals/lab.rs`).
+ */
+interface SongFrame {
+  readonly t: number
+  readonly music: {
+    readonly time: number
+    readonly dt: number
+    readonly drive: number
+    readonly beats: number
+    readonly bar: number
+    readonly beatPulse: number
+    readonly barPulse: number
+    readonly kick: number
+    readonly accent: number
+    readonly bands: [number, number, number, number]
+    readonly levels: Array<number>
+    readonly energy: number
+    readonly tension: number
+    readonly drop: number
+    readonly intensity: number
+    readonly section: string | null
+  }
+  readonly shot: {
+    readonly scene: number
+    readonly seed: number
+    readonly age: number
+    readonly next: {
+      readonly scene: number
+      readonly seed: number
+      readonly age: number
+      readonly progress: number
+    } | null
+  }
+  readonly spectrum: string
+  readonly wave: string
+  readonly rows: number
+  readonly historyAge: number
+}
+
+interface SongWindow {
+  readonly start: number
+  readonly end: number
+  readonly history?: string
+  readonly frames: ReadonlyArray<SongFrame>
+}
+
+interface TimelinePoint {
+  readonly t: number
+  readonly scene: number
+  readonly energy: number
+  readonly intensity: number
+  readonly tension: number
+  readonly drop: number
+  readonly level: number
+}
+
+interface SongData {
+  readonly videoId: string
+  readonly title?: string
+  readonly tempo: number
+  readonly duration: number
+  readonly sections: ReadonlyArray<{
+    readonly start: number
+    readonly end: number
+    readonly kind: string
+    readonly energy: number
+  }>
+  readonly drops: ReadonlyArray<number>
+  readonly timeline: ReadonlyArray<TimelinePoint>
+  readonly windows: ReadonlyArray<SongWindow>
+}
+
+const fromHex = (hex: string): Uint8Array => {
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  return out
+}
+
+const songMusic = (frame: SongFrame): Music => {
+  const m = frame.music
+  return {
+    time: m.time,
+    drive: m.drive,
+    beats: m.beats,
+    bar: m.bar,
+    beatPulse: m.beatPulse,
+    barPulse: m.barPulse,
+    kick: m.kick,
+    accent: m.accent,
+    bands: m.bands,
+    levels: m.levels,
+    energy: m.energy,
+    tension: m.tension,
+    drop: m.drop,
+    intensity: m.intensity,
+    spectrum: Float32Array.from(fromHex(frame.spectrum), b => b / 255),
+    wave: Float32Array.from(fromHex(frame.wave), b => (b / 255) * 2 - 1),
+    section: m.section ?? '',
+    rows: frame.rows,
+    historyAge: frame.historyAge,
+  }
+}
+
+const SCENE_COLORS = ['#4f8cff', '#a46bff', '#38d39f', '#ffd23f', '#ff8a3d']
+
+/** Roughly the TV's words over the visuals, with lyrics, for judging them. */
+const drawOverlay = (
+  context: CanvasRenderingContext2D,
+  cover: CanvasImageSource | null,
+  width: number,
+  height: number,
+  title: string,
+) => {
+  const u = height / 36
+  const art = u * 15
+  const left = u * 5.5
+  const top = (height - art - u * 5) / 2
+  if (cover !== null) context.drawImage(cover, left, top, art, art)
+  context.fillStyle = '#ffffff'
+  context.font = `700 ${u * 2.2}px system-ui, sans-serif`
+  context.fillText(title.slice(0, 22), left, top + art + u * 2.8)
+  context.fillStyle = 'rgba(255,255,255,0.7)'
+  context.font = `${u * 1.25}px system-ui, sans-serif`
+  context.fillText('Artist', left, top + art + u * 4.6)
+  const lines = [
+    'the line before',
+    'every line runs down',
+    'the line being sung',
+    'the next line comes',
+    'and another after',
+  ]
+  lines.forEach((line, index) => {
+    const now = index === 2
+    context.fillStyle = now ? '#ffffff' : 'rgba(255,255,255,0.45)'
+    context.font = `${now ? 700 : 500} ${u * (now ? 2.2 : 1.7)}px system-ui, sans-serif`
+    context.fillText(line, u * 35, height * 0.32 + index * u * 3.2)
+  })
+}
+
+interface SheetOptions {
+  /** Which window of the song to play. */
+  readonly window: number
+  /** Song times to show, in seconds. */
+  readonly picks: ReadonlyArray<number>
+  /** A scene to show throughout; the director's choice when left out. */
+  readonly scene?: number
+  /** Several scenes, each through the whole window, one after another. */
+  readonly scenes?: ReadonlyArray<number>
+  readonly width?: number
+  readonly height?: number
+  readonly columns?: number
+  /** Draw the app's words on top, under the lyrics' shade. */
+  readonly overlay?: boolean
+  readonly title?: string
+}
+
+/**
+ * A real song: the frames the TV's own listener and director made from it
+ * (`apps/tv/src/visuals/lab.rs`), drawn here. A page script (Playwright)
+ * calls `labSong.load`, then `labSong.sheet` for contact sheets of chosen
+ * moments and `labSong.timeline` for the whole song.
+ */
+const song = () => {
+  const status = element('pre')
+  document.body.append(status)
+  const canvas = element('canvas')
+  const gl = canvas.getContext('webgl2', {
+    preserveDrawingBuffer: true,
+    antialias: false,
+  })
+  if (gl === null) {
+    status.textContent = 'No WebGL 2 here.'
+    return
+  }
+  let data: SongData | null = null
+  let cover: HTMLImageElement | null = null
+
+  const load = async (loaded: SongData, coverUrl?: string) => {
+    data = loaded
+    cover = null
+    if (coverUrl !== undefined) {
+      const image = new Image()
+      image.src = coverUrl
+      await image.decode()
+      cover = image
+    }
+    status.textContent = `${loaded.videoId}: ${loaded.windows.length} windows`
+  }
+
+  /** Play a window and return a contact sheet of the picked frames. */
+  const sheet = (options: SheetOptions): string => {
+    if (data === null) throw new Error('load a song first')
+    const played = data.windows[options.window]
+    if (played === undefined) throw new Error('no such window')
+    const song = data.title ?? data.videoId
+    const title = options.title ?? song
+    const width = options.width ?? 480
+    const height = options.height ?? 270
+    const overlay = options.overlay ?? true
+    canvas.width = width
+    canvas.height = height
+    // The scenes at the size the TV starts them at, against its screen.
+    const engine = makeEngine(
+      gl,
+      Math.round(width * 0.85),
+      Math.round(height * 0.85),
+    )
+    engine.setCover(cover ?? madeUpCover())
+    engine.setSide(overlay)
+    const tiles: Array<{
+      image: HTMLCanvasElement
+      frame: SongFrame
+      scene: string
+    }> = []
+    // Each scene asked for plays the whole window from black; without any,
+    // the director's choice does.
+    const runs: ReadonlyArray<number | undefined> = options.scenes ?? [
+      options.scene,
+    ]
+    for (const forced of runs) {
+      engine.clearScenes()
+      if (played.history !== undefined)
+        engine.setHistory(
+          fromHex(played.history),
+          played.frames[0]?.historyAge ?? 0,
+        )
+      played.frames.forEach((frame, index) => {
+        const music = songMusic(frame)
+        const shot = frame.shot
+        const a = forced ?? shot.scene
+        const next = forced === undefined ? shot.next : null
+        const b = next?.scene ?? a
+        const mix = next?.progress ?? 0
+        const sceneA = engine.scenes[a]
+        if (sceneA !== undefined) {
+          sceneA.seed = forced === undefined ? shot.seed : 0.37
+          sceneA.started =
+            music.time - (forced === undefined ? shot.age : frame.t)
+        }
+        const sceneB = engine.scenes[b]
+        if (next !== null && sceneB !== undefined) {
+          sceneB.seed = next.seed
+          sceneB.started = music.time - next.age
+        }
+        engine.frame(music, frame.music.dt, a, b, mix, [width, height])
+        const following = played.frames[index + 1]
+        const wanted = options.picks.filter(
+          pick =>
+            pick >= frame.t - 1e-6 &&
+            (following === undefined || pick < following.t - 1e-6),
+        )
+        for (const _ of wanted) {
+          const tile = element('canvas')
+          tile.width = width
+          tile.height = height
+          const context = tile.getContext('2d')
+          if (context === null) continue
+          context.drawImage(canvas, 0, 0)
+          if (overlay) drawOverlay(context, cover, width, height, song)
+          const into =
+            next === null
+              ? ''
+              : ` → ${SCENES[b]?.name ?? ''} ${Math.round(mix * 100)}%`
+          tiles.push({
+            image: tile,
+            frame,
+            scene: (SCENES[a]?.name ?? '') + into,
+          })
+        }
+      })
+    }
+
+    // The sheet: each frame, and under it the music that drove it.
+    const columns = options.columns ?? Math.min(tiles.length, 4)
+    const rows = Math.ceil(tiles.length / columns)
+    const gap = 8
+    const caption = 64
+    const header = 28
+    const out = element('canvas')
+    out.width = columns * (width + gap) + gap
+    out.height = header + rows * (height + caption + gap) + gap
+    const context = out.getContext('2d')
+    if (context === null) throw new Error('no 2D canvas')
+    context.fillStyle = '#0b0d12'
+    context.fillRect(0, 0, out.width, out.height)
+    context.fillStyle = '#ece9f5'
+    context.font = '600 15px system-ui, sans-serif'
+    context.fillText(title, gap, 19)
+    tiles.forEach(({ image, frame, scene }, index) => {
+      const x = gap + (index % columns) * (width + gap)
+      const y = header + Math.floor(index / columns) * (height + caption + gap)
+      context.drawImage(image, x, y)
+      const m = frame.music
+      const phase = m.beats - Math.floor(m.beats)
+      context.fillStyle = '#ece9f5'
+      context.font = '12px ui-monospace, monospace'
+      context.fillText(
+        `${frame.t.toFixed(2)}s  beat ${Math.floor(m.beats)}+${phase.toFixed(2)}  ${m.section ?? ''}  ${scene}`,
+        x,
+        y + height + 14,
+      )
+      const meters: Array<[string, number, string]> = [
+        ['kick', m.kick, '#ff6b6b'],
+        ['beat', m.beatPulse, '#ffd23f'],
+        ['energy', m.energy, '#38d39f'],
+        ['intens', m.intensity, '#4f8cff'],
+        ['tension', m.tension, '#ff8a3d'],
+        ['drop', m.drop, '#ff6bd5'],
+      ]
+      meters.forEach(([label, value, color], meter) => {
+        const mx = x + (meter % 3) * (width / 3)
+        const my = y + height + 22 + Math.floor(meter / 3) * 18
+        context.fillStyle = '#8c88a0'
+        context.font = '11px ui-monospace, monospace'
+        context.fillText(label, mx, my + 10)
+        context.fillStyle = '#2a2738'
+        const barWidth = width / 3 - 62
+        context.fillRect(mx + 54, my + 2, barWidth, 9)
+        context.fillStyle = color
+        context.fillRect(mx + 54, my + 2, barWidth * clamp01(value), 9)
+      })
+    })
+    return out.toDataURL('image/jpeg', 0.86)
+  }
+
+  /**
+   * The whole song: the level heard, energy, intensity, tension and drop
+   * over time, the sections and drops, and the scene the director chose.
+   */
+  const timeline = (width = 1600, height = 260): string => {
+    if (data === null) throw new Error('load a song first')
+    const played = data
+    const out = element('canvas')
+    out.width = width
+    out.height = height
+    const context = out.getContext('2d')
+    if (context === null) throw new Error('no 2D canvas')
+    const x = (t: number) => (t / played.duration) * width
+    const plot = height - 70
+    context.fillStyle = '#0b0d12'
+    context.fillRect(0, 0, width, height)
+    played.sections.forEach((section, index) => {
+      context.fillStyle = index % 2 === 0 ? '#14131c' : '#1f1d2b'
+      context.fillRect(
+        x(section.start),
+        20,
+        x(section.end) - x(section.start),
+        plot,
+      )
+      context.fillStyle = '#8c88a0'
+      context.font = '11px system-ui, sans-serif'
+      context.fillText(
+        `${section.kind} ${section.energy.toFixed(2)}`,
+        x(section.start) + 3,
+        32,
+      )
+    })
+    const line = (pick: (point: TimelinePoint) => number, color: string) => {
+      context.strokeStyle = color
+      context.lineWidth = 1.5
+      context.beginPath()
+      played.timeline.forEach((point, index) => {
+        const px = x(point.t)
+        const py = 20 + plot - pick(point) * (plot - 20)
+        if (index === 0) context.moveTo(px, py)
+        else context.lineTo(px, py)
+      })
+      context.stroke()
+    }
+    line(point => point.level, '#5a5670')
+    line(point => point.energy, '#38d39f')
+    line(point => point.intensity, '#4f8cff')
+    line(point => point.tension, '#ff8a3d')
+    line(point => point.drop, '#ff6bd5')
+    for (const drop of played.drops) {
+      context.fillStyle = '#ff6bd5'
+      context.fillRect(x(drop) - 1, 20, 2, plot)
+    }
+    let last = -1
+    played.timeline.forEach((point, index) => {
+      const end = played.timeline[index + 1]?.t ?? played.duration
+      context.fillStyle = SCENE_COLORS[point.scene] ?? '#ffffff'
+      context.fillRect(x(point.t), height - 44, x(end) - x(point.t) + 1, 14)
+      if (point.scene === last) return
+      last = point.scene
+      context.fillStyle = '#ece9f5'
+      context.font = '11px system-ui, sans-serif'
+      context.fillText(
+        SCENES[point.scene]?.name ?? '',
+        x(point.t) + 2,
+        height - 16,
+      )
+    })
+    context.fillStyle = '#ece9f5'
+    context.font = '600 13px system-ui, sans-serif'
+    context.fillText(
+      `${played.title ?? played.videoId}  ${played.tempo.toFixed(0)} BPM    grey level · green energy · blue intensity · orange tension · pink drop`,
+      6,
+      14,
+    )
+    return out.toDataURL('image/png')
+  }
+
+  Object.assign(globalThis, { labSong: { load, sheet, timeline } })
+  status.textContent =
+    'labSong: load(data, coverUrl), sheet(options), timeline()'
+}
+
 if (MODE.startsWith('sheet')) sheet()
 else if (MODE === 'bench') bench()
+else if (MODE === 'song') song()
 else live()

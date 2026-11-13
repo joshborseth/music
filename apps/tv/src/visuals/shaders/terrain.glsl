@@ -35,12 +35,12 @@ vec3 sky(highp vec3 dir) {
   float up = clamp(dir.y * 3.0, 0.0, 1.0);
   vec3 color = mix(uColorB * 0.35, uColorC * 0.04, pow(up, 0.6));
   // The sun: banded like an old poster, swelling on the bass.
-  vec2 s = vec2(dir.x, dir.y - 0.12) * 3.2;
-  float radius = 0.55 + 0.08 * uBands.x + 0.05 * uBeatPulse;
+  vec2 s = vec2(dir.x, dir.y - 0.1) * 3.2;
+  float radius = 0.36 + 0.05 * uBands.x + 0.03 * uBeatPulse;
   float d = length(s);
-  float bands = step(0.0, sin((s.y + uDrive * 0.05) * 38.0) + 0.85 + s.y * 3.5);
+  float bands = step(0.0, sin((s.y + uDrive * 0.05) * 30.0) + 0.85 + s.y * 4.0);
   float disc = smoothstep(radius, radius - 0.01, d) * bands;
-  vec3 sun = mix(uColorA, uColorB, clamp(0.5 - s.y * 1.2, 0.0, 1.0)) * 1.4;
+  vec3 sun = mix(uColorA, uColorB, clamp(0.5 - s.y * 1.2, 0.0, 1.0)) * 1.1;
   color = mix(color, sun, disc);
   color += sun * 0.35 * exp(-max(d - radius, 0.0) * 4.0) * (0.6 + 0.6 * uEnergy);
   // Stars, high up.

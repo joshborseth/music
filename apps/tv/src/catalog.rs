@@ -144,6 +144,14 @@ pub struct Analysis {
     pub accents: Vec<f64>,
     pub energy_step_seconds: f64,
     pub energy: Vec<f32>,
+    /// How driving the whole song is, 0 to 1, whatever its volume: its
+    /// hits and its grit. A server from before it existed sends none.
+    #[serde(default = "middling_drive")]
+    pub drive: f32,
+}
+
+fn middling_drive() -> f32 {
+    0.5
 }
 
 /// One timed line, sung until the next starts. Empty `text` marks a break.

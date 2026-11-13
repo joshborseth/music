@@ -65,6 +65,8 @@ const page = (mode: string) => `<!doctype html>
 await Bun.write(join(here, 'dist/index.html'), page('live'))
 await Bun.write(join(here, 'dist/sheet.html'), page('sheet'))
 await Bun.write(join(here, 'dist/bench.html'), page('bench'))
+// A real song, played through the TV's own listener: see `song` in lab.ts.
+await Bun.write(join(here, 'dist/song.html'), page('song'))
 // One moment of the made-up song each, quicker to render.
 for (const moment of ['verse', 'build', 'drop']) {
   await Bun.write(

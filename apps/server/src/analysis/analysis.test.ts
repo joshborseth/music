@@ -196,6 +196,26 @@ describe('structure', () => {
     expect(analysis.accents.some(accent => accent >= change - 0.1)).toBe(true)
   })
 
+  test('drive tells a soft, tonal song from a hard, gritty one at any volume', () => {
+    const { samples } = quietThenLoud()
+    // Slow, soft notes: tones that swell and fade, two seconds each.
+    const notes = beatTimes(30, 0.5, 40).map((at, i) => ({
+      at,
+      gain: 0.5,
+      hz: [220, 277, 330, 262][i % 4] ?? 220,
+      seconds: 1.9,
+    }))
+    const soft = analyzeSamples('soft', render(40, notes)).drive
+    const hard = analyzeSamples('hard', samples).drive
+    const quietHard = analyzeSamples(
+      'quiet hard',
+      samples.map(sample => sample * 0.1),
+    ).drive
+    expect(soft).toBeLessThan(0.2)
+    expect(hard).toBeGreaterThan(soft + 0.3)
+    expect(Math.abs(quietHard - hard)).toBeLessThan(0.05)
+  })
+
   test('silence and very short songs still get an answer', () => {
     for (const samples of [
       new Float32Array(SAMPLE_RATE * 3),

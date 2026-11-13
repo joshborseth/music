@@ -1,6 +1,10 @@
-// INK: colored ink poured into moving water. Each frame carries the last one
-// along a swirling current; the kick and the beat pour in fresh ink, and a
-// drop bursts it out from the middle.
+// INK: luminous ink poured into moving water. Each frame carries the last
+// one along a swirling current; the bass and the kick pour in fresh ink,
+// and a drop bursts it out from the middle.
+//
+// The ink is kept as one amount in the picture's alpha, and shown through
+// the cover's light (`glow`): thin ink is the deep shade, thick ink burns
+// to a pale core. One hue throughout, never muddy where colors pile up.
 
 // Each pourer's place, size, and how much it pours this frame (motion.rs).
 uniform vec4 uPour[3];
@@ -17,24 +21,21 @@ void main() {
   // Breathe outward on the bass and burst on a drop.
   flow += p * (0.002 * uBands.x + 0.02 * uDrop * uDrop);
   highp vec2 back = uv - flow * vec2(uRes.y / uRes.x, 1.0);
-  vec3 ink = texture(uPrev, back).rgb;
-  // Fade, with a floor step so the last traces clear in 8-bit color.
-  ink = max(ink * (0.988 - 0.01 * uDrop) - 0.8 / 255.0, 0.0);
+  float ink = texture(uPrev, back).a;
+  // Fade, with a floor step so the last traces clear in 8 bits.
+  ink = max(ink * (0.986 - 0.01 * uDrop) - 0.6 / 255.0, 0.0);
   // Fresh ink: three pourers circling, each fed by its slice of the music.
-  // Most of the picture is far from all three: it skips their colors.
-  highp float shade = floor(uBeats / 4.0) * 0.13 + uSeed;
   for (int i = 0; i < 3; i++) {
     vec4 pourer = uPour[i];
     vec2 d = p - pourer.xy;
-    float pour = exp(-dot(d, d) / (pourer.z * pourer.z)) * pourer.w;
-    if (pour > 0.001) ink += palette(float(i) / 3.0 + shade) * pour;
+    ink += exp(-dot(d, d) / (pourer.z * pourer.z)) * pourer.w * (0.5 - 0.1 * float(i));
   }
-  // A ring of the waveform at each bar, gone a moment after it.
+  // A ripple out from the middle on each bar, gone a moment after it.
   if (uBarPulse > 0.004) {
     float ring = abs(length(p) - (0.05 + 0.6 * fract(uBar)));
-    ink += palette(uBar + 0.5) * uBarPulse * 0.25 * exp(-ring * 90.0);
+    ink += uBarPulse * 0.12 * exp(-ring * 60.0);
   }
-  // Keep the darks from banding in 8 bits.
-  ink += (hash12(gl_FragCoord.xy + uTime) - 0.5) / 255.0;
-  fragColor = vec4(min(ink, vec3(1.4)), 1.0);
+  // Keep the thin ink from banding in 8 bits.
+  ink = clamp(ink + (hash12(gl_FragCoord.xy + uTime) - 0.5) / 255.0, 0.0, 1.0);
+  fragColor = vec4(glow(ink * 0.95), ink);
 }
