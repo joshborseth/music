@@ -703,8 +703,9 @@ fn map_key_event(key_event: &android_activity::input::KeyEvent) -> Option<Window
 }
 
 /// PATCHED for Joshify (see the root Cargo.toml): upstream Slint 1.18.1 maps
-/// the remote's media keys to nothing, so they never reach the app. They
-/// arrive as these private-use characters instead. `apps/tv/src/ui.rs`
+/// the remote's media keys, and its search and voice keys, to nothing, so
+/// they never reach the app. They arrive as these private-use characters
+/// instead. `apps/tv/src/ui.rs`
 /// (`map_key`) reads the same values.
 pub mod media_key {
     pub const PLAY_PAUSE: &str = "\u{E000}";
@@ -717,6 +718,8 @@ pub mod media_key {
     pub const FAST_FORWARD: &str = "\u{E006}";
     /// Rewind, and the skip-back and step-back keys.
     pub const REWIND: &str = "\u{E007}";
+    /// The search key, and the voice key where Android passes it to the app.
+    pub const SEARCH: &str = "\u{E008}";
 }
 
 fn map_key_code(code: android_activity::input::Keycode) -> Option<SharedString> {
@@ -805,7 +808,7 @@ fn map_key_code(code: android_activity::input::Keycode) -> Option<SharedString> 
         Keycode::Plus => Some("+".into()),
         Keycode::Menu => Some(Key::Menu.into()),
         Keycode::Notification => None,
-        Keycode::Search => None,
+        Keycode::Search => Some(media_key::SEARCH.into()),
         Keycode::MediaPlayPause => Some(media_key::PLAY_PAUSE.into()),
         Keycode::MediaStop => Some(media_key::STOP.into()),
         Keycode::MediaNext => Some(media_key::NEXT.into()),
@@ -952,7 +955,7 @@ fn map_key_code(code: android_activity::input::Keycode) -> Option<SharedString> 
         Keycode::Keycode12 => None,
         Keycode::LastChannel => None,
         Keycode::TvDataService => None,
-        Keycode::VoiceAssist => None,
+        Keycode::VoiceAssist => Some(media_key::SEARCH.into()),
         Keycode::TvRadioService => None,
         Keycode::TvTeletext => None,
         Keycode::TvNumberEntry => None,

@@ -15,6 +15,7 @@ use crate::controller::UiAction;
 use crate::lyrics::SongLyrics;
 use crate::protocol::{Placement, PlayingFrom, PlayingFromKind, QueueTrack};
 use crate::view::{View, clock};
+use crate::voice::VoiceEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
@@ -38,6 +39,8 @@ pub enum Key {
     Previous,
     FastForward,
     Rewind,
+    /// The remote's search or voice key: voice search, from any screen.
+    Voice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +130,12 @@ pub enum Effect {
     OpenSettings,
     CheckForUpdates,
     InstallUpdate,
+    /// Start voice search ([`Nav::on_voice`] hears how it goes).
+    StartVoice,
+    /// Stop listening and search for what was said so far.
+    FinishVoice,
+    /// Stop listening without searching.
+    CancelVoice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -754,6 +763,33 @@ pub struct SearchNav {
     /// The recent searches have the selection.
     pub in_recent: bool,
     pub recent_row: usize,
+    /// The mic button, at the end of the search field, has the selection.
+    pub on_mic: bool,
+    /// Voice search is under way.
+    pub voice: Option<Listening>,
+}
+
+/// Voice search, from the mic being pressed until the words arrive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listening {
+    /// Starting the recognizer.
+    Starting,
+    /// Android is asking whether Joshify may use the microphone.
+    Asking,
+    /// Listening, with the words heard so far.
+    Hearing(String),
+    /// The speaker stopped and the words are being made out.
+    Thinking(String),
+}
+
+impl Listening {
+    /// The words heard so far.
+    pub fn heard(&self) -> &str {
+        match self {
+            Listening::Hearing(heard) | Listening::Thinking(heard) => heard,
+            Listening::Starting | Listening::Asking => "",
+        }
+    }
 }
 
 /// How many recent searches the TV keeps, as many as the phone.
@@ -770,6 +806,8 @@ impl SearchNav {
             recent: Vec::new(),
             in_recent: false,
             recent_row: 0,
+            on_mic: false,
+            voice: None,
         }
     }
 
@@ -1046,6 +1084,9 @@ impl Nav {
         // New music from any device, or music moved to this TV: show it.
         // The remote can still leave for another tab afterwards.
         if starts_here {
+            if self.search.voice.take().is_some() {
+                effects.push(Effect::CancelVoice);
+            }
             self.show_now_playing();
         }
         if was_idle && !self.session.is_idle() && self.tab == Tab::NowPlaying {
@@ -1095,6 +1136,7 @@ impl Nav {
             && self.tab != Tab::NowPlaying
             && self.menu.is_none()
             && !self.scan_card
+            && self.search.voice.is_none()
         {
             self.show_now_playing();
         }
@@ -1261,7 +1303,13 @@ impl Nav {
         let seek = match key {
             Key::FastForward | Key::Rewind => !self.session.is_idle(),
             Key::Left | Key::Right => self.on_seek_bar(),
-            Key::PlayPause | Key::Play | Key::Pause | Key::Stop | Key::Next | Key::Previous => {
+            Key::PlayPause
+            | Key::Play
+            | Key::Pause
+            | Key::Stop
+            | Key::Next
+            | Key::Previous
+            | Key::Voice => {
                 return (true, Vec::new());
             }
             _ => false,
@@ -1509,6 +1557,10 @@ impl Nav {
         if let Some(used) = self.media_key(key, now, &mut effects) {
             return (used, effects);
         }
+        if key == Key::Voice {
+            self.voice_key(&mut effects);
+            return (true, effects);
+        }
         if self.scan_card {
             if matches!(key, Key::Ok | Key::Back) {
                 self.scan_card = false;
@@ -1517,6 +1569,10 @@ impl Nav {
         }
         if self.menu.is_some() {
             self.menu_key(key, now, &mut effects);
+            return (true, effects);
+        }
+        if self.search.voice.is_some() && self.tab == Tab::Search {
+            self.listening_key(key, &mut effects);
             return (true, effects);
         }
         if let Key::Char(_) | Key::Backspace = key {
@@ -2217,6 +2273,9 @@ impl Nav {
         if self.search.in_recent {
             return self.recent_key(key, effects);
         }
+        if self.search.on_mic {
+            return self.mic_key(key, effects);
+        }
         match key {
             Key::Up | Key::Down | Key::Left | Key::Right => {
                 let at_right_edge = key == Key::Right
@@ -2230,7 +2289,7 @@ impl Nav {
                         self.search.in_results = true;
                     }
                 } else if !self.search.move_key(key) && key == Key::Up {
-                    self.focus = Focus::Tabs;
+                    self.search.on_mic = true;
                 }
             }
             Key::Ok => {
@@ -2242,6 +2301,101 @@ impl Nav {
             _ => {}
         }
         true
+    }
+
+    /// The mic button, at the end of the search field above the keyboard.
+    fn mic_key(&mut self, key: Key, effects: &mut Vec<Effect>) -> bool {
+        match key {
+            Key::Ok => self.start_voice(effects),
+            Key::Down => self.search.on_mic = false,
+            Key::Up | Key::Back => self.focus = Focus::Tabs,
+            Key::Right if self.search.showing_recent() => {
+                self.search.clamp_recent();
+                self.search.on_mic = false;
+                self.search.in_recent = true;
+            }
+            Key::Right if self.search.browse.shelves.selected().is_some() => {
+                self.search.on_mic = false;
+                self.search.in_results = true;
+            }
+            _ => {}
+        }
+        true
+    }
+
+    // VOICE SEARCH
+
+    /// The remote's voice key: start voice search, or finish it early.
+    fn voice_key(&mut self, effects: &mut Vec<Effect>) {
+        if self.search.voice.is_some() && self.tab == Tab::Search {
+            effects.push(Effect::FinishVoice);
+        } else {
+            self.start_voice(effects);
+        }
+    }
+
+    /// Voice search runs on the Search tab, whatever was open.
+    fn start_voice(&mut self, effects: &mut Vec<Effect>) {
+        self.menu = None;
+        self.scan_card = false;
+        self.panel = Panel::None;
+        if self.tab != Tab::Search {
+            self.switch_tab(Tab::Search, effects);
+        }
+        self.focus = Focus::Content;
+        let search = &mut self.search;
+        search.browse.stack.clear();
+        search.in_results = false;
+        search.in_recent = false;
+        search.voice = Some(Listening::Starting);
+        effects.push(Effect::StartVoice);
+    }
+
+    /// While voice search listens: OK searches for what was said so far,
+    /// Back stops without searching.
+    fn listening_key(&mut self, key: Key, effects: &mut Vec<Effect>) {
+        match key {
+            Key::Back => {
+                self.search.voice = None;
+                effects.push(Effect::CancelVoice);
+            }
+            Key::Ok if !matches!(self.search.voice, Some(Listening::Asking)) => {
+                effects.push(Effect::FinishVoice);
+            }
+            _ => {}
+        }
+    }
+
+    /// The recognizer's progress. What was said becomes the search.
+    pub fn on_voice(&mut self, event: VoiceEvent, now: Instant) -> Vec<Effect> {
+        let Some(listening) = self.search.voice.take() else {
+            return Vec::new();
+        };
+        self.search.voice = match event {
+            VoiceEvent::Asking => Some(Listening::Asking),
+            VoiceEvent::Ready => Some(Listening::Hearing(String::new())),
+            VoiceEvent::Heard(heard) => Some(match listening {
+                Listening::Thinking(_) => Listening::Thinking(heard),
+                _ => Listening::Hearing(heard),
+            }),
+            VoiceEvent::Ended => Some(Listening::Thinking(listening.heard().to_owned())),
+            VoiceEvent::Done(said) => {
+                let said = said.trim();
+                if said.is_empty() {
+                    self.say(crate::voice::VoiceFailure::NoMatch.message(), now);
+                    return Vec::new();
+                }
+                self.search.query = said.to_owned();
+                self.search.in_results = false;
+                self.search.in_recent = false;
+                return self.query_changed();
+            }
+            VoiceEvent::Failed(failure) => {
+                self.say(failure.message(), now);
+                None
+            }
+        };
+        Vec::new()
     }
 
     /// The results of a search were used: keep it among the recent ones,
@@ -2699,6 +2853,7 @@ mod tests {
     use super::*;
     use crate::catalog::CardKind;
     use crate::protocol::QueueEntry;
+    use crate::voice::VoiceFailure;
 
     fn track(id: &str) -> QueueTrack {
         QueueTrack {
@@ -3691,6 +3846,97 @@ mod tests {
             (open.label().as_ref(), open.icon()),
             ("Go to album", "open")
         );
+    }
+
+    #[test]
+    fn up_from_the_keyboard_reaches_the_mic_then_the_tabs() {
+        let mut nav = Nav::new();
+        nav.tab = Tab::Search;
+        press(&mut nav, &[Key::Right, Key::Up]);
+        assert!(nav.search.on_mic);
+        assert_eq!(nav.focus, Focus::Content);
+        press(&mut nav, &[Key::Down]);
+        assert!(!nav.search.on_mic);
+        assert_eq!(nav.search.key, 1, "back on the key it left");
+        press(&mut nav, &[Key::Up, Key::Up]);
+        assert_eq!(nav.focus, Focus::Tabs);
+    }
+
+    #[test]
+    fn the_mic_searches_for_what_was_said() {
+        let mut nav = Nav::new();
+        nav.tab = Tab::Search;
+        assert_eq!(
+            press(&mut nav, &[Key::Up, Key::Ok]),
+            vec![Effect::StartVoice]
+        );
+        assert_eq!(nav.search.voice, Some(Listening::Starting));
+        let now = Instant::now();
+        assert!(nav.on_voice(VoiceEvent::Asking, now).is_empty());
+        assert_eq!(nav.search.voice, Some(Listening::Asking));
+        nav.on_voice(VoiceEvent::Ready, now);
+        nav.on_voice(VoiceEvent::Heard("daft".into()), now);
+        assert_eq!(nav.search.voice, Some(Listening::Hearing("daft".into())));
+        // Keys don't type or move while it listens; OK stops listening.
+        assert_eq!(press(&mut nav, &[Key::Left, Key::Char('x')]), vec![]);
+        assert_eq!(press(&mut nav, &[Key::Ok]), vec![Effect::FinishVoice]);
+        nav.on_voice(VoiceEvent::Ended, now);
+        assert_eq!(nav.search.voice, Some(Listening::Thinking("daft".into())));
+        let effects = nav.on_voice(VoiceEvent::Done(" Daft Punk ".into()), now);
+        assert_eq!(effects, vec![Effect::Search("Daft Punk".into())]);
+        assert_eq!(nav.search.query, "Daft Punk");
+        assert_eq!(nav.search.voice, None);
+        // A late report from the recognizer changes nothing.
+        assert!(
+            nav.on_voice(VoiceEvent::Done("other".into()), now)
+                .is_empty()
+        );
+        assert_eq!(nav.search.query, "Daft Punk");
+    }
+
+    #[test]
+    fn back_stops_voice_search_and_failures_say_why() {
+        let mut nav = Nav::new();
+        nav.tab = Tab::Search;
+        press(&mut nav, &[Key::Up, Key::Ok]);
+        assert_eq!(press(&mut nav, &[Key::Back]), vec![Effect::CancelVoice]);
+        assert_eq!(nav.search.voice, None);
+        assert!(nav.search.on_mic, "the mic keeps the selection");
+        press(&mut nav, &[Key::Ok]);
+        let now = Instant::now();
+        nav.on_voice(VoiceEvent::Failed(VoiceFailure::Unavailable), now);
+        assert_eq!(nav.search.voice, None);
+        assert_eq!(
+            nav.notice(now),
+            Some("Voice search isn't available on this TV")
+        );
+        press(&mut nav, &[Key::Ok]);
+        nav.on_voice(VoiceEvent::Done(String::new()), now);
+        assert_eq!(
+            nav.notice(now),
+            Some("Didn't catch that. Press the mic and try again")
+        );
+        assert_eq!(nav.search.query, "");
+    }
+
+    #[test]
+    fn the_remotes_voice_key_searches_from_any_screen() {
+        let mut nav = Nav::new();
+        nav.on_session(midway_view());
+        // Even with the controls hidden on now playing.
+        assert_eq!(press(&mut nav, &[Key::Voice]), vec![Effect::StartVoice]);
+        assert_eq!((nav.tab, nav.focus), (Tab::Search, Focus::Content));
+        assert_eq!(nav.search.voice, Some(Listening::Starting));
+        // Pressed again, it stops listening and searches.
+        assert_eq!(press(&mut nav, &[Key::Voice]), vec![Effect::FinishVoice]);
+        // Held, it acts once.
+        assert_eq!(nav.key_held(Key::Voice, Instant::now()).1, vec![]);
+        // Music starting elsewhere takes the screen, and stops listening.
+        let mut other = queue_from_phone("p");
+        other.current = Some(0);
+        let effects = nav.on_session(other);
+        assert!(effects.contains(&Effect::CancelVoice));
+        assert_eq!(nav.search.voice, None);
     }
 
     #[test]

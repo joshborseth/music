@@ -29,6 +29,7 @@ use slint::{ComponentHandle, PhysicalSize, Rgb8Pixel};
 use crate::catalog::Shelf;
 use crate::protocol::{PlayingFrom, PlayingFromKind, QueueEntry, QueueTrack};
 use crate::view::View;
+use crate::voice::VoiceEvent;
 use crate::{App, ui};
 
 type Job = Box<dyn FnOnce() + Send>;
@@ -77,6 +78,8 @@ pub enum Step {
     /// Rest on the now-playing screen. Its visuals need the GPU, so the
     /// screenshots show the cover backdrop in their place.
     Rest,
+    /// What the speech recognizer would report: there is none here.
+    Voice(VoiceEvent),
     /// Home as if the server had sent these shelves.
     Home(Vec<Shelf>),
     Shot(&'static str),
@@ -202,6 +205,10 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
             open_update_settings: Box::new(|| {}),
             check_for_updates: Box::new(|| {}),
             install_update: Box::new(|| {}),
+            // The steps play the recognizer's part (`Step::Voice`).
+            start_voice: Box::new(|| {}),
+            finish_voice: Box::new(|| {}),
+            cancel_voice: Box::new(|| {}),
         },
     );
     let runner = Runner {
@@ -237,6 +244,10 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
             Step::Wait(duration) => runner.pump(duration),
             Step::Rest => {
                 ui::with(ui::Ui::rest);
+                runner.pump(Duration::from_millis(60));
+            }
+            Step::Voice(event) => {
+                ui::with(|ui| ui.on_voice(event));
                 runner.pump(Duration::from_millis(60));
             }
             Step::Home(shelves) => {
