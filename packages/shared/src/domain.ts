@@ -193,7 +193,15 @@ export type PlaylistDetails = typeof PlaylistDetails.Type
  * artist, an album, a song, or a playlist.
  */
 export const TopResult = Schema.Union([
-  Schema.TaggedStruct('Artist', { artist: ArtistSummary }),
+  /**
+   * An artist, with their most played songs from their page, which the Top
+   * tab lists in place of the song search: a search for an artist means
+   * their hits, not every song that mentions them.
+   */
+  Schema.TaggedStruct('Artist', {
+    artist: ArtistSummary,
+    topSongs: Schema.Array(Song),
+  }),
   Schema.TaggedStruct('Album', { album: AlbumSummary }),
   Schema.TaggedStruct('Song', { song: Song }),
   Schema.TaggedStruct('Playlist', { playlist: PlaylistSummary }),
@@ -332,12 +340,29 @@ export type PlaylistEditResult = typeof PlaylistEditResult.Type
 
 // HOME
 
-/** What Home shows from the play history, which every device adds to. */
+/**
+ * What Home shows from the play history, which every device adds to, and
+ * from my likes. Each song played lately shows once: inside its album when
+ * more than one song of the album played, on its own otherwise.
+ */
 export const HomeFeed = Schema.Struct({
-  /** The albums of the songs played lately, the latest first, each once. */
+  /**
+   * The albums more than one song played from lately, the latest played
+   * first, each once.
+   */
   jumpBackIn: Schema.Array(AlbumSummary),
-  /** The songs played lately on any device, the latest first, each once. */
+  /**
+   * The other songs played lately on any device, the latest first, each
+   * once: those whose album is not in `jumpBackIn`.
+   */
   recentlyPlayed: Schema.Array(Song),
+  /** The song played last, on any device, which "More like" follows. */
+  maybeLastPlayed: Schema.Option(Song),
+  /**
+   * Mixes made from the artists I play and like most: each one YouTube
+   * Music's radio for one of their songs, opened as a playlist.
+   */
+  mixes: Schema.Array(PlaylistSummary),
 })
 export type HomeFeed = typeof HomeFeed.Type
 

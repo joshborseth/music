@@ -24,6 +24,7 @@ import {
   moodQuery,
   myLibraryQuery,
   myPlaylistQuery,
+  newReleasesQuery,
   playlistQuery,
   playlistSearchQuery,
   songQuery,
@@ -62,6 +63,8 @@ export const Model = Schema.Struct({
   myPlaylists: myPlaylistQuery.Model,
   /** What played lately on any device, from the server's history. */
   home: homeQuery.Model,
+  /** The latest releases of the artists I follow, for Home. */
+  newReleases: newReleasesQuery.Model,
   songRadios: songRadioQuery.Model,
   /** The full player's background color for each song's artwork. */
   artworkBackdrops: artworkBackdropQuery.Model,

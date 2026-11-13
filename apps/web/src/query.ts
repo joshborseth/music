@@ -203,6 +203,16 @@ export const homeQuery = Query.define({
   execute: MusicClient.use(client => client.getHome()).pipe(withRequestError),
 })
 
+/** The latest releases of the artists I follow, for Home. */
+export const newReleasesQuery = Query.define({
+  name: 'NewReleases',
+  data: Schema.Array(AlbumSummary),
+  error: RequestError,
+  execute: MusicClient.use(client => client.getNewReleases()).pipe(
+    withRequestError,
+  ),
+})
+
 /** YouTube Music's radio for a song: what it would play after it. */
 export const songRadioQuery = Query.define({
   name: 'SongRadio',

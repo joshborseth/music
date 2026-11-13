@@ -19,7 +19,6 @@ import {
   type MyPlaylistDetails,
   type PlaylistEdit,
   type PlaylistEditResult,
-  type Session,
   type Song,
 } from '@music/shared'
 
@@ -51,6 +50,7 @@ import { MAX_RECENT_SEARCHES } from './constant'
 import { LoadDownloads } from './downloads/command'
 import { Downloads } from './downloads/domain'
 import * as DownloadsUpdate from './downloads/update'
+import { withPlayedFirst } from './home'
 import {
   LIBRARY_ARTWORK_WIDTH,
   type LibraryItem,
@@ -62,7 +62,6 @@ import {
   isSameLibraryItem,
   playlistLibraryItem,
   rememberFirst,
-  songFromQueueTrack,
 } from './library'
 import { Message } from './message'
 import { Model } from './model'
@@ -93,6 +92,7 @@ import {
   moodQuery,
   myLibraryQuery,
   myPlaylistQuery,
+  newReleasesQuery,
   playlistQuery,
   playlistSearchQuery,
   songQuery,
@@ -178,6 +178,11 @@ const myPlaylists = myPlaylistQuery.lift<Model, Message>({
 const home = homeQuery.lift<Model, Message>({
   parentField: 'home',
   toParentMessage: message => Message.GotHomeMessage({ message }),
+})
+
+const newReleases = newReleasesQuery.lift<Model, Message>({
+  parentField: 'newReleases',
+  toParentMessage: message => Message.GotNewReleasesMessage({ message }),
 })
 
 const songRadios = songRadioQuery.lift<Model, Message>({
@@ -678,9 +683,6 @@ const followingCurrentSong =
       loadLyricsIfShown,
     ])(model)
 
-/** The most songs Home's Recently played keeps, as the server does. */
-const HOME_RECENT_SONGS = 20
-
 const mapHome = (model: Model, change: (feed: HomeFeed) => HomeFeed): Model =>
   modifyFields(model, {
     home: query =>
@@ -688,31 +690,6 @@ const mapHome = (model: Model, change: (feed: HomeFeed) => HomeFeed): Model =>
         data: data => AsyncData.map(data, change),
       }),
   })
-
-/**
- * Puts a song first in Recently played. The server's copy of it, which
- * links its album and artists, is kept when the list already holds it.
- */
-const withPlayedFirst =
-  (track: Session.QueueTrack) =>
-  (feed: HomeFeed): HomeFeed => {
-    const song = Option.getOrElse(
-      Array.findFirst(
-        feed.recentlyPlayed,
-        ({ videoId }) => videoId === track.videoId,
-      ),
-      () => songFromQueueTrack(track),
-    )
-    return {
-      ...feed,
-      recentlyPlayed: rememberFirst(
-        feed.recentlyPlayed,
-        song,
-        (left, right) => left.videoId === right.videoId,
-        HOME_RECENT_SONGS,
-      ),
-    }
-  }
 
 /**
  * Shows the song now playing first in Home's Recently played when it
@@ -740,7 +717,7 @@ const showPlayedEarly =
 const loadRadio: UpdateStep = model =>
   pipe(
     AsyncData.getData(homeQuery.read(model.home)),
-    Option.flatMap(feed => Array.head(feed.recentlyPlayed)),
+    Option.flatMap(feed => feed.maybeLastPlayed),
     Option.match({
       onNone: () => ({ model }),
       onSome: ({ videoId }) => songRadios.loadIfMissing(model, { videoId }),
@@ -1056,11 +1033,12 @@ const revalidateSearch = (query: string, kind: SearchKind): UpdateStep =>
   )
 
 /**
- * Home shows the play history, my playlists, and Liked songs, so it checks
- * each for changes.
+ * Home shows the play history, my playlists, Liked songs, and what the
+ * artists I follow released lately, so it checks each for changes.
  */
 const loadHome: UpdateStep = Update.combine([
   model => home.revalidateOrLoad(model),
+  model => newReleases.revalidateOrLoad(model),
   model => myLibrary.revalidateOrLoad(model),
   model =>
     myPlaylists.revalidateOrLoad(model, { playlistId: LIKED_PLAYLIST_ID }),
@@ -1184,6 +1162,7 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     myLibrary: myLibraryQuery.init(),
     myPlaylists: myPlaylistQuery.init(),
     home: homeQuery.init(),
+    newReleases: newReleasesQuery.init(),
     songRadios: songRadioQuery.init(),
     artworkBackdrops: artworkBackdropQuery.init(),
     playlistTitleInput: '',
@@ -1434,6 +1413,7 @@ const updateMessage = (model: Model, message: Message) =>
       Update.combine([stepModel => home.fold(stepModel, message), loadRadio])(
         model,
       ),
+    GotNewReleasesMessage: ({ message }) => newReleases.fold(model, message),
     GotSongRadioMessage: ({ message }) => songRadios.fold(model, message),
 
     ClickedAddToPlaylist: ({ songs: songsToAdd, suggestedTitle }) =>

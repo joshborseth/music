@@ -118,6 +118,11 @@ const SummaryRow = Schema.Struct({
 type SummaryRow = typeof SummaryRow.Type
 
 const SongRow = Schema.Struct({ song: Schema.String })
+
+const PlayedRow = Schema.Struct({
+  song: Schema.String,
+  play_count: Schema.Number,
+})
 const AlbumRow = Schema.Struct({ album: Schema.String })
 const ArtistRow = Schema.Struct({ artist: Schema.String })
 const VideoIdRow = Schema.Struct({ video_id: Schema.String })
@@ -181,7 +186,17 @@ export interface PlaylistStoreShape {
   readonly recentlyPlayed: (
     limit: number,
   ) => Effect.Effect<ReadonlyArray<Song>, PlaylistStoreError>
+  /**
+   * The songs played most often, with how many times, the most played
+   * first (the latest played first on a tie).
+   */
+  readonly mostPlayed: (
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<PlayedSong>, PlaylistStoreError>
 }
+
+/** A song from the play history and how many times it played. */
+export type PlayedSong = Readonly<{ song: Song; playCount: number }>
 
 /**
  * The playlists made in the app, Liked songs, the albums saved and artists
@@ -549,6 +564,24 @@ export const makePlaylistStore = (
       Array.getSomes,
     )
 
+  const readMostPlayed = (limit: number): ReadonlyArray<PlayedSong> =>
+    pipe(
+      db
+        .query(
+          `SELECT song, play_count FROM play_history
+           ORDER BY play_count DESC, played_at DESC LIMIT ?`,
+        )
+        .all(limit),
+      decodeRows(PlayedRow),
+      Array.map(row =>
+        Option.map(decodeSong(row.song), song => ({
+          song,
+          playCount: row.play_count,
+        })),
+      ),
+      Array.getSomes,
+    )
+
   const attempt = <A>(run: () => A) =>
     Effect.try({
       try: run,
@@ -579,6 +612,11 @@ export const makePlaylistStore = (
       limit: number,
     ) {
       return yield* attempt(() => readRecentlyPlayed(limit))
+    }),
+    mostPlayed: Effect.fn('PlaylistStore.mostPlayed')(function* (
+      limit: number,
+    ) {
+      return yield* attempt(() => readMostPlayed(limit))
     }),
   }
 }

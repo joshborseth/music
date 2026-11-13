@@ -16,6 +16,7 @@ import {
 
 import { LyricLine, type Song, type SongDetails } from '@music/shared'
 
+import { tidyLines } from './lrc.ts'
 import {
   type LrclibError,
   type LyricsQuery,
@@ -106,7 +107,7 @@ export const makeLyricsCache = (db: Database): LyricsCache => {
           ? now - row.fetched_at < MISS_RETRY_MS
             ? Option.some(Option.none())
             : Option.none()
-          : Option.map(decodeLines(row.lines), Option.some),
+          : Option.map(decodeLines(row.lines), tidyLines),
       ),
     put: (videoId, maybeLines, now) => {
       upsert.run(

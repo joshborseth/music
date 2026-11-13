@@ -14,8 +14,11 @@ import {
   playlistOwnerFromResponse,
   playsFromListItem,
   radioOf,
+  rankSongsForQuery,
+  searchNamesArtist,
   secondsFromClock,
   songFromListItem,
+  songFromPlaylistPanelVideo,
   toArtwork,
   toMoodGroups,
   topResultFromCard,
@@ -303,6 +306,112 @@ describe('audioTrackFor', () => {
     ])
 
     expect(audioTrackFor(video, [song])).toEqual(Option.some(song))
+  })
+})
+
+describe('rankSongsForQuery', () => {
+  const daftPunk = { maybeId: Option.some('UCdp'), name: 'Daft Punk' }
+  const remix = searchedSong('r', 'Life Is Sweet (Daft Punk Remix)', [
+    { maybeId: Option.some('UCcb'), name: 'The Chemical Brothers' },
+  ])
+  const theWeeknd = { maybeId: Option.some('UCw'), name: 'The Weeknd' }
+  const starboy = searchedSong('s', 'Starboy', [theWeeknd, daftPunk])
+  const veridis = searchedSong('v', 'Veridis Quo', [daftPunk])
+  const alive = searchedSong('a', 'Alive', [daftPunk])
+
+  test('puts the artist searched for first, then their features, then mentions', () => {
+    expect(
+      rankSongsForQuery('daft punk', [remix, starboy, veridis, alive]).map(
+        ({ videoId }) => videoId,
+      ),
+    ).toEqual(['v', 'a', 's', 'r'])
+  })
+
+  test('keeps YouTube’s order when the search names no artist', () => {
+    expect(
+      rankSongsForQuery('life is sweet', [remix, veridis, alive]).map(
+        ({ videoId }) => videoId,
+      ),
+    ).toEqual(['r', 'v', 'a'])
+  })
+
+  test('knows an artist by name with a song, and past case and punctuation', () => {
+    expect(searchNamesArtist('daft punk get lucky', daftPunk)).toBe(true)
+    expect(searchNamesArtist('get lucky daft punk', daftPunk)).toBe(true)
+    expect(searchNamesArtist('DAFTPUNK', daftPunk)).toBe(true)
+    expect(
+      searchNamesArtist('acdc', { maybeId: Option.none(), name: 'AC/DC' }),
+    ).toBe(true)
+    expect(
+      searchNamesArtist('beyonce', { maybeId: Option.none(), name: 'Beyoncé' }),
+    ).toBe(true)
+    expect(searchNamesArtist('daft punk remix', theWeeknd)).toBe(false)
+    expect(searchNamesArtist('daft punks', daftPunk)).toBe(false)
+  })
+})
+
+describe('songFromPlaylistPanelVideo', () => {
+  const panelVideo = (bylineRuns: ReadonlyArray<object>, shortByline: string) =>
+    new YTNodes.PlaylistPanelVideo({
+      title: { runs: [{ text: 'Instant Crush' }] },
+      videoId: 'bkx54KWeP9A',
+      lengthText: { runs: [{ text: '2:48' }] },
+      shortBylineText: { runs: [{ text: shortByline }] },
+      longBylineText: { runs: bylineRuns },
+      thumbnail: { thumbnails: [] },
+      navigationEndpoint: {},
+    })
+
+  const albumRun = {
+    text: 'Instant Crush',
+    navigationEndpoint: browseTo('MPREb_C3ULAN2cvXy', 'MUSIC_PAGE_TYPE_ALBUM'),
+  }
+
+  test('keeps an artist with no artist page, named only in the byline', () => {
+    const song = Option.getOrThrow(
+      songFromPlaylistPanelVideo(
+        panelVideo(
+          [
+            { text: 'Ruben Dunn' },
+            SEPARATOR,
+            albumRun,
+            SEPARATOR,
+            { text: '2022' },
+          ],
+          'Ruben Dunn',
+        ),
+      ),
+    )
+
+    expect(song.artists).toEqual([
+      { maybeId: Option.none(), name: 'Ruben Dunn' },
+    ])
+    expect(song.maybeAlbum).toEqual(
+      Option.some({ id: 'MPREb_C3ULAN2cvXy', name: 'Instant Crush' }),
+    )
+    expect(song.maybeDurationSeconds).toEqual(Option.some(168))
+  })
+
+  test('links the artists that have a page', () => {
+    const song = Option.getOrThrow(
+      songFromPlaylistPanelVideo(
+        panelVideo(
+          [
+            artistRun('Daft Punk', 'UCdp'),
+            { text: ' & ' },
+            artistRun('Julian Casablancas', 'UCjc'),
+            SEPARATOR,
+            albumRun,
+          ],
+          'Daft Punk & Julian Casablancas',
+        ),
+      ),
+    )
+
+    expect(song.artists).toEqual([
+      { maybeId: Option.some('UCdp'), name: 'Daft Punk' },
+      { maybeId: Option.some('UCjc'), name: 'Julian Casablancas' },
+    ])
   })
 })
 

@@ -29,6 +29,7 @@ import {
   YouTubeMusicError,
 } from '@music/shared'
 
+import { MIX_SONGS, mixDetails, mixSeedOf } from '../home.ts'
 import {
   ArtistShelfTitle,
   type DiscographyLink,
@@ -40,6 +41,7 @@ import {
   filterSome,
   playlistFromListItem,
   playlistOwnerFromResponse,
+  rankSongsForQuery,
   releasesFromItems,
   songFromListItem,
   songFromPlaylistPanelVideo,
@@ -111,6 +113,19 @@ const MAX_PLAYLIST_SONGS = 500
 const SONG_SEARCH_TTL = Duration.minutes(1)
 const SONG_SEARCH_CAPACITY = 64
 
+/**
+ * An artist page is kept this long. Search reads an artist's top songs from
+ * it, and Home the newest releases of every artist I follow.
+ */
+const ARTIST_PAGE_TTL = Duration.hours(1)
+const ARTIST_PAGE_CAPACITY = 128
+
+/**
+ * How long search waits for the top artist's page before listing the song
+ * search under it instead.
+ */
+const TOP_SONGS_WAIT = Duration.seconds(4)
+
 const MOODS_AND_GENRES_BROWSE_ID = 'FEmusic_moods_and_genres'
 const MOOD_BROWSE_ID = 'FEmusic_moods_and_genres_category'
 
@@ -162,6 +177,13 @@ export interface YouTubeMusicShape {
   readonly getArtist: (
     artistId: string,
   ) => Effect.Effect<ArtistDetails, MusicNotFoundError | YouTubeMusicError>
+  /**
+   * The artist page alone, kept for an hour: the few releases it lists
+   * stand in for the full discography `getArtist` reads.
+   */
+  readonly getArtistOverview: (
+    artistId: string,
+  ) => Effect.Effect<ArtistDetails, MusicNotFoundError | YouTubeMusicError>
   readonly getAlbum: (
     albumId: string,
   ) => Effect.Effect<AlbumDetails, MusicNotFoundError | YouTubeMusicError>
@@ -208,7 +230,7 @@ const make = Effect.gen(function* () {
   const songSearches = yield* Cache.makeWith(
     (query: string) =>
       Effect.map(searchShelf(query, 'song'), items =>
-        filterSome(items, songFromListItem),
+        rankSongsForQuery(query, filterSome(items, songFromListItem)),
       ),
     {
       capacity: SONG_SEARCH_CAPACITY,
@@ -246,6 +268,40 @@ const make = Effect.gen(function* () {
     return filterSome(items, playlistFromListItem)
   })
 
+  const artistPages = yield* Cache.makeWith(
+    (artistId: string) =>
+      Effect.gen(function* () {
+        const page = yield* lookUp(artistId, () => music.getArtist(artistId))
+        const details = yield* orNotFound(artistId)(
+          toArtistDetails(artistId, page),
+        )
+        return { page, details }
+      }),
+    {
+      capacity: ARTIST_PAGE_CAPACITY,
+      timeToLive: Exit.match({
+        onFailure: () => Duration.zero,
+        onSuccess: () => ARTIST_PAGE_TTL,
+      }),
+    },
+  )
+
+  const getArtistOverview = Effect.fn('YouTubeMusic.getArtistOverview')(
+    function* (artistId: string) {
+      const { details } = yield* Cache.get(artistPages, artistId)
+      return details
+    },
+  )
+
+  /** The top artist's most played songs, or none if their page is slow. */
+  const topSongsOf = (artistId: string) =>
+    getArtistOverview(artistId).pipe(
+      Effect.map(({ topSongs }) => topSongs),
+      Effect.timeoutOption(TOP_SONGS_WAIT),
+      Effect.map(Option.getOrElse((): ReadonlyArray<Song> => [])),
+      Effect.orElseSucceed((): ReadonlyArray<Song> => []),
+    )
+
   const searchTopResult = Effect.fn('YouTubeMusic.searchTopResult')(function* (
     query: string,
   ) {
@@ -258,6 +314,10 @@ const make = Effect.gen(function* () {
     )
     if (Option.isNone(maybeTopResult)) return maybeTopResult
     const topResult = maybeTopResult.value
+    if (topResult._tag === 'Artist') {
+      const topSongs = yield* topSongsOf(topResult.artist.id)
+      return Option.some({ ...topResult, topSongs })
+    }
     if (topResult._tag !== 'Song') return maybeTopResult
     // A song found as its music video plays as its audio track instead.
     const songs = yield* searchSongs(query).pipe(
@@ -435,8 +495,7 @@ const make = Effect.gen(function* () {
   const getArtist = Effect.fn('YouTubeMusic.getArtist')(function* (
     artistId: string,
   ) {
-    const page = yield* lookUp(artistId, () => music.getArtist(artistId))
-    const details = yield* orNotFound(artistId)(toArtistDetails(artistId, page))
+    const { page, details } = yield* Cache.get(artistPages, artistId)
     const artist = { id: artistId, name: details.artist.name }
     const fullList = (
       title: string,
@@ -481,9 +540,23 @@ const make = Effect.gen(function* () {
         )
       : Effect.succeed(items)
 
+  /** A mix made on Home: the seed song, then its radio. */
+  const getMix = (playlistId: string, seedVideoId: string) =>
+    upNextSongs(seedVideoId).pipe(
+      Effect.flatMap(songs =>
+        orNotFound(playlistId)(
+          mixDetails(seedVideoId, Array.take(songs, MIX_SONGS)),
+        ),
+      ),
+    )
+
   const getPlaylist = Effect.fn('YouTubeMusic.getPlaylist')(function* (
     playlistId: string,
   ) {
+    const maybeMixSeed = mixSeedOf(playlistId)
+    if (Option.isSome(maybeMixSeed)) {
+      return yield* getMix(playlistId, maybeMixSeed.value)
+    }
     // NOTE: the page is fetched raw, as `music.getPlaylist` does, because
     // the parsed header leaves out who made the playlist.
     const response = yield* lookUp(playlistId, () =>
@@ -551,6 +624,7 @@ const make = Effect.gen(function* () {
     getUpNext,
     getDurationSeconds,
     getArtist,
+    getArtistOverview,
     getAlbum,
     getPlaylist,
     getRadio,

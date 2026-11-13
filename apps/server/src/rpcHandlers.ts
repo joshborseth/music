@@ -1,8 +1,13 @@
-import { Array, Effect } from 'effect'
+import { Array, Clock, Effect } from 'effect'
 
-import { MusicRpcs, type Song } from '@music/shared'
+import {
+  LIKED_PLAYLIST_ID,
+  MusicRpcs,
+  type PlaylistStoreError,
+  type Song,
+} from '@music/shared'
 
-import { HOME_HISTORY_DEPTH, homeFeed } from './home.ts'
+import { HOME_HISTORY_DEPTH, homeFeed, newReleases } from './home.ts'
 import { TimedLyrics } from './lyrics/service.ts'
 import { ArtworkPalette } from './palette/service.ts'
 import { PlaylistStore } from './playlists/store.ts'
@@ -11,6 +16,14 @@ import { YouTubeMusic } from './youtubeMusic/service.ts'
 
 /** The most songs Home's "More like" shelf shows. */
 const RADIO_SONGS = 20
+
+/** How many of the most played songs Home's mixes are chosen from. */
+const MIX_CANDIDATES = 100
+
+/** The most followed artists whose pages Home reads for new releases. */
+const NEW_RELEASE_ARTISTS = 24
+/** How many artist pages Home reads at once. */
+const ARTIST_PAGE_CONCURRENCY = 4
 
 /**
  * Answers each MusicRpcs call from the YouTube Music catalog or the playlist
@@ -40,6 +53,15 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
           resolves,
         ),
       )
+
+    /** Liked songs, which the store always has. */
+    const likedSongs: Effect.Effect<
+      ReadonlyArray<Song>,
+      PlaylistStoreError
+    > = playlistStore.playlist(LIKED_PLAYLIST_ID).pipe(
+      Effect.map(({ songs }) => songs),
+      Effect.catchTag('MusicNotFoundError', () => Effect.succeed([])),
+    )
 
     return {
       searchSongs: ({ query }) =>
@@ -76,9 +98,29 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
           .pipe(Effect.tap(details => prepare(details.songs, 2, 3))),
       editPlaylists: ({ edit }) => playlistStore.edit(edit),
       getHome: () =>
-        playlistStore
-          .recentlyPlayed(HOME_HISTORY_DEPTH)
-          .pipe(Effect.map(homeFeed)),
+        Effect.all(
+          {
+            recentSongs: playlistStore.recentlyPlayed(HOME_HISTORY_DEPTH),
+            played: playlistStore.mostPlayed(MIX_CANDIDATES),
+            liked: likedSongs,
+          },
+          { concurrency: 'unbounded' },
+        ).pipe(Effect.map(homeFeed)),
+      getNewReleases: () =>
+        Effect.gen(function* () {
+          const library = yield* playlistStore.library()
+          const pages = yield* Effect.forEach(
+            Array.take(library.artists, NEW_RELEASE_ARTISTS),
+            artist =>
+              youTubeMusic.getArtistOverview(artist.id).pipe(Effect.option),
+            { concurrency: ARTIST_PAGE_CONCURRENCY },
+          )
+          const now = yield* Clock.currentTimeMillis
+          return newReleases(
+            Array.getSomes(pages),
+            new Date(now).getUTCFullYear(),
+          )
+        }),
       getSongRadio: ({ videoId }) =>
         youTubeMusic
           .getUpNext(videoId)

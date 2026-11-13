@@ -34,6 +34,7 @@ export type PageModel = Readonly<
     | 'myLibrary'
     | 'myPlaylists'
     | 'home'
+    | 'newReleases'
     | 'songRadios'
     | 'swipe'
     | 'downloads'
@@ -82,6 +83,7 @@ const renderPage = (
   myLibrary: Model['myLibrary'],
   myPlaylists: Model['myPlaylists'],
   home: Model['home'],
+  newReleases: Model['newReleases'],
   songRadios: Model['songRadios'],
   swipe: Model['swipe'],
   downloads: Model['downloads'],
@@ -113,6 +115,7 @@ const renderPage = (
       myLibrary,
       myPlaylists,
       home,
+      newReleases,
       songRadios,
       swipe,
       downloads,
@@ -162,6 +165,7 @@ export const memoizedPage = (
     model.myLibrary,
     model.myPlaylists,
     model.home,
+    model.newReleases,
     model.songRadios,
     rowSwipe(model.swipe),
     model.downloads,

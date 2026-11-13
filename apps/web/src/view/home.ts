@@ -18,6 +18,7 @@ import {
   homeQuery,
   myLibraryQuery,
   myPlaylistQuery,
+  newReleasesQuery,
   songRadioQuery,
 } from '../query'
 import { largeTitleHeader } from './chrome'
@@ -36,6 +37,7 @@ import {
   loadingShelf,
   myPlaylistCard,
   namedSection,
+  playlistCard,
   remote,
   shelf,
   songGridShelf,
@@ -113,7 +115,10 @@ const recentCard = (
 
 type RecentSong = Readonly<{ song: Song; index: number }>
 
-/** What played lately on any device, newest first. */
+/**
+ * The songs played lately on any device, newest first, that played on
+ * their own: an album more than one song played from is in Jump back in.
+ */
 const recentlyPlayedShelf = (
   songs: ReadonlyArray<Song>,
   playing: NowPlaying,
@@ -129,6 +134,7 @@ const recentlyPlayedShelf = (
     h,
   )
 
+/** The albums more than one song played from lately. */
 const jumpBackInShelf = (feed: HomeFeed, h: HtmlBuilder<Message>): Html =>
   shelf(
     {
@@ -141,13 +147,28 @@ const jumpBackInShelf = (feed: HomeFeed, h: HtmlBuilder<Message>): Html =>
   )
 
 /**
+ * Mixes made from the artists I play and like most. Each opens as a
+ * playlist: the radio of one of their songs.
+ */
+const mixesShelf = (feed: HomeFeed, h: HtmlBuilder<Message>): Html =>
+  shelf(
+    {
+      title: 'Your mixes',
+      items: feed.mixes,
+      toKey: ({ id }) => id,
+      toCard: playlistCard,
+    },
+    h,
+  )
+
+/**
  * The song YouTube Music's radio starts from: the latest song played whose
  * radio was asked for. A song that just started has not been asked for yet,
  * so the shelf keeps showing the one before it until Home reloads.
  */
 const radioSeed = (model: PageModel, feed: HomeFeed): Option.Option<Song> =>
   Array.findFirst(
-    feed.recentlyPlayed,
+    [...Option.toArray(feed.maybeLastPlayed), ...feed.recentlyPlayed],
     ({ videoId }) =>
       !AsyncData.isIdle(songRadioQuery.read(model.songRadios, { videoId })),
   )
@@ -185,7 +206,10 @@ const radioShelf = (
 
 const LIKED_SONGS_ON_HOME = 24
 
-/** My playlists as covers, Liked songs first. */
+/**
+ * My playlists as covers. Liked songs has its own shelf of songs on Home,
+ * so it is not repeated here.
+ */
 const playlistsShelf = (
   playlists: ReadonlyArray<MyPlaylistSummary>,
   h: HtmlBuilder<Message>,
@@ -193,7 +217,7 @@ const playlistsShelf = (
   shelf(
     {
       title: 'Your playlists',
-      items: playlists,
+      items: Array.filter(playlists, ({ isLiked }) => !isLiked),
       toKey: ({ id }) => id,
       toCard: myPlaylistCard,
     },
@@ -221,6 +245,22 @@ const likedSongsShelf = (model: PageModel, h: HtmlBuilder<Message>): Html =>
     },
   )
 
+/** The latest releases of the artists I follow. Hidden until they load. */
+const newReleasesShelf = (model: PageModel, h: HtmlBuilder<Message>): Html =>
+  Option.match(AsyncData.getData(newReleasesQuery.read(model.newReleases)), {
+    onNone: () => h.empty,
+    onSome: releases =>
+      shelf(
+        {
+          title: 'New from artists you follow',
+          items: releases,
+          toKey: ({ id }) => id,
+          toCard: albumCard,
+        },
+        h,
+      ),
+  })
+
 const followedArtistsShelf = (
   library: MyLibrary,
   h: HtmlBuilder<Message>,
@@ -235,7 +275,10 @@ const followedArtistsShelf = (
     h,
   )
 
-/** The shelves made from the play history, once it has loaded. */
+/**
+ * The shelves made from the play history and my likes, once they have
+ * loaded: what played lately, my mixes, and more like the last song.
+ */
 const historyShelves = (
   model: PageModel,
   h: HtmlBuilder<Message>,
@@ -246,6 +289,7 @@ const historyShelves = (
     onData: (feed): ReadonlyArray<Html> => [
       jumpBackInShelf(feed, h),
       recentlyPlayedShelf(feed.recentlyPlayed, model.playing, h),
+      mixesShelf(feed, h),
       radioShelf(model, feed, h),
     ],
   })
@@ -256,7 +300,7 @@ const historyShelves = (
  */
 const isNothingYet = (model: PageModel, library: MyLibrary): boolean =>
   Option.exists(AsyncData.getData(homeQuery.read(model.home)), feed =>
-    Array.isReadonlyArrayEmpty(feed.recentlyPlayed),
+    Option.isNone(feed.maybeLastPlayed),
   ) &&
   Array.isReadonlyArrayEmpty(library.likedVideoIds) &&
   Array.every(library.playlists, playlist => playlist.isLiked) &&
@@ -297,8 +341,9 @@ const playOnButton = (playOn: PlayOn, h: HtmlBuilder<Message>): Html =>
   )
 
 /**
- * Home: only my music. What played lately on any device and more like it,
- * my playlists, my likes, and the artists I follow.
+ * Home: only my music. What played lately on any device, mixes of what I
+ * play most, more like the last song, what the artists I follow released,
+ * my likes, my playlists, and the artists I follow.
  */
 export const homeView = (
   model: PageModel,
@@ -328,8 +373,9 @@ export const homeView = (
               [h.Class('flex flex-col gap-8 pt-2 pb-6')],
               [
                 ...historyShelves(model, h),
-                playlistsShelf(library.playlists, h),
+                newReleasesShelf(model, h),
                 likedSongsShelf(model, h),
+                playlistsShelf(library.playlists, h),
                 followedArtistsShelf(library, h),
               ],
             ),

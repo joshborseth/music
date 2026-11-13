@@ -4,7 +4,7 @@ import { Effect, Option } from 'effect'
 
 import type { LyricLine, Song, SongDetails } from '@music/shared'
 
-import { parseLrc } from './lrc.ts'
+import { isUnsung, parseLrc } from './lrc.ts'
 import { bestMatch, plainTitle, queryOf } from './lrclib.ts'
 import { makeLyricsCache, makeTimedLyrics } from './service.ts'
 
@@ -73,6 +73,54 @@ describe('parseLrc', () => {
     ).toEqual(
       Option.some([line(5, 'One'), line(9, ''), line(20, 'Two'), line(30, '')]),
     )
+  })
+
+  test('turns credits and instrumental markers into breaks', () => {
+    expect(
+      parseLrc(
+        [
+          '[00:00.00] 作词 : Thomas Bangalter',
+          '[00:00.50] 作曲 : Guy-Manuel de Homem-Christo',
+          '[00:01.00] Lyrics by: Daft Punk',
+          '[00:05.00] One',
+          '[00:09.00] Instrumentals',
+          '[00:15.00] Two',
+          '[00:20.00] ♪',
+          '[00:25.00] Three',
+          '[00:30.00] (Instrumental break)',
+          '[00:31.00] [Chorus]',
+          '[00:35.00] Four',
+          '[00:40.00] Produced by Pharrell Williams',
+        ].join('\n'),
+      ),
+    ).toEqual(
+      Option.some([
+        line(5, 'One'),
+        line(9, ''),
+        line(15, 'Two'),
+        line(20, ''),
+        line(25, 'Three'),
+        line(30, ''),
+        line(35, 'Four'),
+        line(40, ''),
+      ]),
+    )
+  })
+
+  test('keeps sung lines that only look like credits', () => {
+    const sung = [
+      'Music is my life',
+      'Written in the stars',
+      'Written by a fool in love',
+      'Music by the river',
+      'Instrumental to my heart',
+      'Lyrics on my mind',
+      'Produce something new',
+      '(Hoo!)',
+      '(I love my father)',
+      'Words: they never mean a thing',
+    ]
+    expect(sung.filter(isUnsung)).toEqual([])
   })
 
   test('none when nothing is sung', () => {
@@ -206,6 +254,23 @@ describe('timed lyrics', () => {
     )
     expect(second).toEqual(first)
     expect(calls).toEqual(['Song'])
+  })
+
+  test('takes credits out of copies kept before they were filtered', () => {
+    const cache = makeLyricsCache(new Database(':memory:', { strict: true }))
+    cache.put(
+      'a',
+      Option.some([
+        line(0, 'Instrumentals'),
+        line(5, 'One'),
+        line(9, 'Instrumentals'),
+        line(15, 'Two'),
+      ]),
+      0,
+    )
+    expect(cache.get('a', 1)).toEqual(
+      Option.some(Option.some([line(5, 'One'), line(9, ''), line(15, 'Two')])),
+    )
   })
 
   test('keeps plain lyrics on a miss, and asks again a week later', async () => {
