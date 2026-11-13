@@ -1,0 +1,24 @@
+# Installed to ~/.config/systemd/user by scripts/activate-release.sh, from the
+# release it switches to.
+[Unit]
+Description=Music: YouTube Music server for the phone PWA and the TV app
+After=network-online.target
+
+[Service]
+# The live release (scripts/deploy-main.sh builds it, and
+# scripts/activate-release.sh switches this link and restarts).
+WorkingDirectory=%h/.local/share/music/current/apps/server
+# The TV reaches the server over the home network.
+Environment=HOST=0.0.0.0
+Environment=PORT=4310
+Environment=WEB_DIST_DIR=%h/.local/share/music/current/apps/web/dist
+Environment=YTDLP_PATH=%h/.local/bin/yt-dlp
+Environment=TV_APK_PATH=%h/.local/share/music/current/dist/music-tv.apk
+# HA_TOKEN and TV_HA_ENTITY, for waking the TV.
+EnvironmentFile=-%h/.config/music/server.env
+ExecStart=/usr/local/bin/bun src/main.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

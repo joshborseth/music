@@ -105,17 +105,10 @@ impl Platform for Android {
         })
     }
 
-    fn install(
-        &self,
-        apk: &Path,
-        still_quiet: &(dyn Fn() -> bool + Send + Sync),
-    ) -> Result<(), String> {
+    fn install(&self, apk: &Path) -> Result<(), String> {
         let sdk = sdk_int()?;
         log::info!("update: installing on API {sdk}");
         if sdk >= 31 {
-            if !still_quiet() {
-                return Err("Music started playing, so the update waits".into());
-            }
             let session = with_context("the install session", |env, context| {
                 commit_session(env, context, apk)
             })?;
@@ -136,9 +129,6 @@ impl Platform for Android {
             return Err(format!(
                 "This TV (API {sdk}) can't update by itself. Install /tv.apk by hand."
             ));
-        }
-        if !still_quiet() {
-            return Err("Music started playing, so the update waits".into());
         }
         with_context("opening Android's installer", |env, context| {
             show_install_prompt(env, context, apk)

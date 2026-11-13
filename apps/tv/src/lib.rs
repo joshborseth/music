@@ -84,7 +84,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 let updater = updater.clone();
                 move || updater.check_now()
             }),
-            set_quiet: Box::new(move |quiet| updater.set_quiet(quiet)),
+            install_update: Box::new(move || updater.install_now()),
         },
     );
     app.on_key(|text, pressed, repeat| {

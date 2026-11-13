@@ -15,6 +15,7 @@ import {
   lookahead,
   missingDurations,
   playerLost,
+  quietSinceAfter,
   sleepTimerRang,
   toSessionState,
   update,
@@ -1379,5 +1380,15 @@ describe('protocol fixtures shared with the TV app', () => {
   ])('%s from a TV app built before the optional fields decodes', text => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(text)
     expect(decoded._tag).toBe('Success')
+  })
+})
+
+describe('quiet', () => {
+  test('quiet starts when the music stops and holds through other changes', () => {
+    const paused: Model = { ...playing(), playing: false }
+    expect(quietSinceAfter(null, playing(), 5_000)).toBeNull()
+    expect(quietSinceAfter(null, paused, 5_000)).toBe(5_000)
+    expect(quietSinceAfter(5_000, paused, 9_000)).toBe(5_000)
+    expect(quietSinceAfter(5_000, playing(), 9_000)).toBeNull()
   })
 })

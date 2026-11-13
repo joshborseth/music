@@ -834,6 +834,16 @@ const transition = (
   )
 }
 
+/**
+ * When the music last stopped, after a change: `null` while it plays, and
+ * otherwise the moment it stopped, which a further change keeps.
+ */
+export const quietSinceAfter = (
+  previous: number | null,
+  model: Model,
+  now: number,
+): number | null => (model.playing ? null : (previous ?? now))
+
 /** The active device went away for good: stop where it was. */
 export const playerLost = (
   model: Model,
