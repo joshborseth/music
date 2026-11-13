@@ -687,13 +687,17 @@ impl Ui {
         let Some(app) = self.app.upgrade() else {
             return;
         };
-        let stage = if self.on_stage() { self.stage() } else { None };
+        let stage = if self.on_stage() {
+            self.stage(app.get_lyrics_mode() != 0)
+        } else {
+            None
+        };
         self.visuals.set_stage(&app, stage);
         app.set_has_visuals(self.visuals.drawing());
     }
 
     /// What the visuals need about the song playing now.
-    fn stage(&mut self) -> Option<Stage> {
+    fn stage(&mut self, side: bool) -> Option<Stage> {
         let entry = self.nav.session.current_entry()?.clone();
         let analysis = self.analysis_for(&entry.track.video_id);
         Some(Stage {
@@ -701,6 +705,7 @@ impl Ui {
             cover: self.current_cover(),
             analysis,
             playing: self.nav.session.playing,
+            side,
         })
     }
 
