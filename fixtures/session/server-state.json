@@ -56,7 +56,6 @@
     "positionSeconds": 12,
     "positionAt": 1794426000000,
     "seekSeq": 3,
-    "autoplay": true,
-    "waitingToStart": false
+    "autoplay": true
   }
 }

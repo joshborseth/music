@@ -10,7 +10,6 @@ import { ArtworkRoutes } from './artwork.ts'
 import { AudioRoutes, AudioSourceLive } from './audio.ts'
 import { AudioStoreLive } from './audioStore.ts'
 import { TimedLyricsLive } from './lyrics/service.ts'
-import { NowPlayingFeedLive, NowPlayingRoutes } from './nowPlaying.ts'
 import { ArtworkPaletteLive } from './palette/service.ts'
 import { PlaylistStoreLive } from './playlists/store.ts'
 import { PrefetcherLive } from './prefetch.ts'
@@ -85,14 +84,11 @@ const WebAppRoutes = Layer.unwrap(
 const PlaybackRoutes = Layer.mergeAll(
   AudioRoutes,
   SessionRoutes,
-  NowPlayingRoutes,
   TvUpdatingRoute,
 ).pipe(
-  Layer.provide(NowPlayingFeedLive),
   Layer.provide(SessionHubLive.pipe(Layer.provide(BunServices.layer))),
   Layer.provide(YouTubeMusicLive),
   Layer.provide(LyricsLive),
-  Layer.provide(ArtworkPaletteLive),
   Layer.provide(TvWakerLive),
   Layer.provideMerge(AudioLive),
 )

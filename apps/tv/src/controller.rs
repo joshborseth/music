@@ -236,32 +236,6 @@ impl Controller {
                     self.loaded = Some((to_entry_id, state.seek_seq));
                 }
             }
-            // NOTE: a song held for the lights starts once the server hears
-            // this, so it waits for the audio as well as the lights.
-            Event::Ready { entry_id } => {
-                if let Some((loaded_entry, seek_seq)) = &self.loaded
-                    && *loaded_entry == entry_id
-                    && self.is_active()
-                {
-                    self.send(ClientMessage::Loaded {
-                        entry_id,
-                        seek_seq: *seek_seq,
-                    });
-                }
-            }
-            Event::Advancing {
-                from_entry_id,
-                to_entry_id,
-                in_seconds,
-            } => {
-                if self.is_active() {
-                    self.send(ClientMessage::Advancing {
-                        from_entry_id,
-                        to_entry_id,
-                        in_seconds,
-                    });
-                }
-            }
             Event::Ended { entry_id } => self.send(ClientMessage::TrackEnded { entry_id }),
             Event::Failed { entry_id, message } => {
                 log::warn!("playback failed for {entry_id}: {message}");
@@ -323,9 +297,7 @@ impl Controller {
         }
         match action {
             UiAction::PlayPause if !self.is_active() => self.play_here(),
-            UiAction::PlayPause if state.playing_or_starting() => {
-                self.send(ClientMessage::Pause { at: None })
-            }
+            UiAction::PlayPause if state.playing => self.send(ClientMessage::Pause { at: None }),
             UiAction::PlayPause => self.send(ClientMessage::Resume {}),
             UiAction::SeekBy(delta) => {
                 let duration = state
@@ -413,11 +385,10 @@ impl Controller {
                 state.current_entry_id.as_deref() == Some(entry_id.as_str())
                     && at.elapsed() < LOADING_GRACE
             });
-        // NOTE: a song held for the lights has audio ready, but it is still
-        // loading as far as anyone watching can tell.
         let loading = here
+            && state.playing
             && current.is_some()
-            && ((state.playing && !has_audio) || state.waiting_to_start)
+            && !has_audio
             && self
                 .load_started
                 .is_some_and(|at| at.elapsed() > Duration::from_millis(300));
@@ -425,7 +396,7 @@ impl Controller {
             connected: self.connected,
             queue: state.queue.clone(),
             current,
-            playing: state.playing_or_starting(),
+            playing: state.playing,
             position_seconds: self.position().max(0.0).floor(),
             duration_seconds: current
                 .and_then(|index| state.queue[index].track.duration_seconds)

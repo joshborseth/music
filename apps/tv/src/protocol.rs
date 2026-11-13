@@ -65,10 +65,6 @@ pub struct SessionState {
     /// Similar songs are added as the queue runs out.
     #[serde(default)]
     pub autoplay: bool,
-    /// The new song is loading here and waits at its start until the house
-    /// lights can change with it. `playing` is false meanwhile.
-    #[serde(default)]
-    pub waiting_to_start: bool,
 }
 
 impl SessionState {
@@ -84,11 +80,6 @@ impl SessionState {
     pub fn next_after_current(&self) -> Option<&QueueEntry> {
         self.current_index()
             .and_then(|index| self.queue.get(index + 1))
-    }
-
-    /// Playing, or about to: a song held for the lights counts as playing.
-    pub fn playing_or_starting(&self) -> bool {
-        self.playing || self.waiting_to_start
     }
 
     /// Where playback is at server time `server_now` (epoch ms).
@@ -204,20 +195,6 @@ pub enum ClientMessage {
         entry_id: String,
         message: String,
     },
-    /// The song the engine was told to load is ready, at this session jump.
-    #[serde(rename_all = "camelCase")]
-    Loaded {
-        entry_id: String,
-        seek_seq: u64,
-    },
-    /// The next song is queued right behind this one and starts with no gap
-    /// in `in_seconds`, so the lights can change with it.
-    #[serde(rename_all = "camelCase")]
-    Advancing {
-        from_entry_id: String,
-        to_entry_id: String,
-        in_seconds: f64,
-    },
     /// This TV's own volume (0 to 1), or none when the TV fixed it.
     Volume {
         level: Option<f64>,
@@ -289,7 +266,6 @@ mod tests {
         assert_eq!(state.devices[0].powered_on, None);
         assert_eq!(state.devices[1].powered_on, Some(false));
         assert!(state.autoplay);
-        assert!(!state.waiting_to_start);
         assert!(!state.queue[0].autoplay);
         assert!(state.queue[1].autoplay);
         assert!(server_now > state.position_at);
@@ -447,21 +423,6 @@ mod tests {
             (
                 "client-set-autoplay.json",
                 ClientMessage::SetAutoplay { enabled: false },
-            ),
-            (
-                "client-loaded.json",
-                ClientMessage::Loaded {
-                    entry_id: "e1".into(),
-                    seek_seq: 4,
-                },
-            ),
-            (
-                "client-advancing.json",
-                ClientMessage::Advancing {
-                    from_entry_id: "e0".into(),
-                    to_entry_id: "e1".into(),
-                    in_seconds: 0.45,
-                },
             ),
             (
                 "client-set-device-volume.json",

@@ -89,12 +89,11 @@ export const thisDeviceName = (model: Model): string =>
   })
 
 /**
- * Waiting for sound: this phone's audio is loading, the device that should
- * play is still turning on, or the TV holds the new song for the lights.
+ * Waiting for sound: this phone's audio is loading, or the device that
+ * should play is still turning on.
  */
 const isLoading = (model: Model, snapshot: SessionSnapshot): boolean =>
   isBuffering(model) ||
-  snapshot.state.waitingToStart ||
   Option.exists(
     elsewhere(model, snapshot),
     ({ status }) => status === 'TurningOn',
@@ -282,7 +281,7 @@ const miniPlayer = (
             ],
           ),
           playPauseButton(
-            Session.isPlayingOrStarting(snapshot.state),
+            snapshot.state.playing,
             isLoading(model, snapshot),
             { buttonClass: 'size-11', iconClass: 'size-6' },
             h,
@@ -417,7 +416,7 @@ const transportControls = (
         h,
       ),
       playPauseButton(
-        Session.isPlayingOrStarting(snapshot.state),
+        snapshot.state.playing,
         isLoading(model, snapshot),
         { buttonClass: 'size-20', iconClass: 'size-12' },
         h,
@@ -564,7 +563,7 @@ const artworkPanel = (
         entry.track,
         cn(
           'player-artwork aspect-square w-full max-w-[min(100%,24rem,44vh)] rounded-2xl',
-          Session.isPlayingOrStarting(snapshot.state)
+          snapshot.state.playing
             ? 'scale-100 shadow-2xl shadow-black/50'
             : 'scale-[0.8] shadow-lg shadow-black/30',
         ),

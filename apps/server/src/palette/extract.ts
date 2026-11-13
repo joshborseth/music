@@ -1,23 +1,18 @@
 /*
- * Finds the one color a piece of album art reads as, and gives it two ways:
- * as it is, for the lights, and dimmed, as the full player's backdrop.
+ * Finds the one color a piece of album art reads as, dimmed for the full
+ * player's backdrop.
  *
  * The pixels are clustered with k-means in OKLab, where distance follows how
  * different two colors look, and clusters that look alike are merged. The
  * cover's color is the cluster that fills the most of it, weighted toward
  * colorful ones, so a colored area beats a much larger black one. Greys can
- * win, so a black-and-white cover gets a dark grey backdrop; the lights get
- * no color then, because a bulb cannot show grey.
+ * win, so a black-and-white cover gets a dark grey backdrop.
  */
 
 const CLUSTERS = 8
 const ITERATIONS = 12
 /** Clusters closer than this in OKLab read as one color. */
 const MERGE_DISTANCE = 0.08
-/** Below this OKLCh chroma a color reads as grey, too pale for a bulb. */
-const MIN_CHROMA = 0.045
-/** Below this OKLab lightness the hue is mostly noise. */
-const MIN_LIGHTNESS = 0.22
 
 interface Lab {
   readonly l: number
@@ -236,12 +231,6 @@ const mainColor = (clusters: ReadonlyArray<Cluster>): Lab | undefined =>
       : winner
   }, undefined)?.center
 
-/** The cover's color for the lights, or null when it is grey or black. */
-const bulbColor = (center: Lab): string | null =>
-  chroma(center) >= MIN_CHROMA && center.l >= MIN_LIGHTNESS
-    ? hex(oklabToRgb(center))
-    : null
-
 /**
  * The full player's background: the cover's color, dimmed so white text sits
  * on it well. Its hue is kept; its chroma is lowered until sRGB can show it.
@@ -262,33 +251,13 @@ const backdropColor = (center: Lab): string => {
   return hex(oklabToRgb(at(c)))
 }
 
-export interface ArtworkColors {
-  /** See `colorFromPixels`. */
-  readonly color: string | null
-  /** See `backdropFromPixels`. */
-  readonly backdrop: string | null
-}
-
-/**
- * The `#rrggbb` the cover reads as, for the lights. Null for a cover that is
- * black, white, or grey.
- *
- * `rgb` holds packed 8-bit RGB pixels, three bytes each.
- */
-export const colorFromPixels = (rgb: Uint8Array): string | null =>
-  colorsFromPixels(rgb).color
-
 /**
  * A dark `#rrggbb` in the color the cover reads as, for the full player's
  * background. Null only when there are no pixels.
+ *
+ * `rgb` holds packed 8-bit RGB pixels, three bytes each.
  */
-export const backdropFromPixels = (rgb: Uint8Array): string | null =>
-  colorsFromPixels(rgb).backdrop
-
-/** Both, from one clustering of the pixels. */
-export const colorsFromPixels = (rgb: Uint8Array): ArtworkColors => {
+export const backdropFromPixels = (rgb: Uint8Array): string | null => {
   const center = mainColor(clusterPixels(rgb))
-  return center === undefined
-    ? { color: null, backdrop: null }
-    : { color: bulbColor(center), backdrop: backdropColor(center) }
+  return center === undefined ? null : backdropColor(center)
 }
