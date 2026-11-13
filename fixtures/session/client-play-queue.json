@@ -10,5 +10,10 @@
       "artworkUrl": null
     }
   ],
-  "startIndex": 0
+  "startIndex": 0,
+  "playingFrom": {
+    "kind": "Album",
+    "title": "Whenever You Need Somebody",
+    "id": "MPREb_example"
+  }
 }

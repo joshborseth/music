@@ -3,6 +3,8 @@ import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
   Check,
+  CircleArrowDown,
+  CircleX,
   Disc3,
   FileText,
   Heart,
@@ -17,6 +19,7 @@ import {
   Plus,
   Power,
   Radio,
+  Share,
   SquareArrowUpRightExit,
   TimerOff,
   Trash2,
@@ -25,14 +28,23 @@ import {
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
+  type AlbumDetails,
+  type Artwork,
   MAX_PLAYLIST_TITLE_LENGTH,
   type MyPlaylistSummary,
+  type PlaylistDetails,
   type Session,
   type Song,
 } from '@music/shared'
 
 import { PLAYLIST_TITLE_INPUT_ID } from '../constant'
-import { type DownloadKind } from '../downloads/domain'
+import {
+  type DownloadKind,
+  DownloadStatus,
+  type DownloadedCollection,
+  downloadStatus,
+} from '../downloads/domain'
+import { isAlbumSaved } from '../library'
 import { Message } from '../message'
 import { type Model } from '../model'
 import { DragToDismiss } from '../mount'
@@ -45,10 +57,16 @@ import {
   playbackOutput,
   sleepCountdown,
 } from '../playback/domain'
-import { myLibraryQuery, myPlaylistQuery } from '../query'
+import {
+  albumQuery,
+  myLibraryQuery,
+  myPlaylistQuery,
+  playlistQuery,
+} from '../query'
 import { AppRoute } from '../route'
-import { ActionSheet, SheetContent } from '../sheet'
+import { ActionSheet, type CollectionKind, SheetContent } from '../sheet'
 import { likedVideoIds } from '../update'
+import { albumDownload, playlistDownload } from './collectionDownload'
 import { librarySortSheet } from './library'
 import { deviceIcon, thisDeviceName } from './player'
 import { addSongsSheet, chooseCoverSheet } from './playlistEditor'
@@ -60,6 +78,7 @@ import {
   artworkImage,
   firstArtistId,
   playlistCover,
+  playlistHref,
   playlistLength,
   songHref,
 } from './shared'
@@ -192,6 +211,38 @@ const songActions = (
   )
 }
 
+/** The top of a sheet about one thing: its artwork, title, and who made it. */
+const itemHeading = (
+  artwork: Artwork,
+  title: string,
+  subtitle: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex items-center gap-3 border-b px-5 pt-1 pb-4')],
+    [
+      artworkImage(
+        {
+          artwork,
+          displayWidth: 56,
+          shape: ArtworkShape.Square,
+          className: 'size-14',
+        },
+        h,
+      ),
+      h.div(
+        [h.Class('flex min-w-0 flex-col')],
+        [
+          h.p([h.Class('line-clamp-1 text-[17px] font-semibold')], [title]),
+          h.p(
+            [h.Class('text-muted-foreground line-clamp-1 text-[15px]')],
+            [subtitle],
+          ),
+        ],
+      ),
+    ],
+  )
+
 const songActionsFor = (
   song: Song,
   playlistActions: ReadonlyArray<Html>,
@@ -200,33 +251,7 @@ const songActionsFor = (
   h.div(
     [h.Class('flex flex-col')],
     [
-      h.div(
-        [h.Class('flex items-center gap-3 border-b px-5 pt-1 pb-4')],
-        [
-          artworkImage(
-            {
-              artwork: song.artwork,
-              displayWidth: 56,
-              shape: ArtworkShape.Square,
-              className: 'size-14',
-            },
-            h,
-          ),
-          h.div(
-            [h.Class('flex min-w-0 flex-col')],
-            [
-              h.p(
-                [h.Class('line-clamp-1 text-[17px] font-semibold')],
-                [song.title],
-              ),
-              h.p(
-                [h.Class('text-muted-foreground line-clamp-1 text-[15px]')],
-                [artistNames(song.artists)],
-              ),
-            ],
-          ),
-        ],
-      ),
+      itemHeading(song.artwork, song.title, artistNames(song.artists), h),
       h.div(
         [h.Class('flex flex-col py-2')],
         [
@@ -264,6 +289,209 @@ const songActionsFor = (
       ),
     ],
   )
+
+/** Download the songs, or take them off the phone once some are on it. */
+const downloadAction = (
+  model: Model,
+  collection: DownloadedCollection,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const remove = actionButton(
+    Message.ClickedRemoveDownload({
+      kind: collection.kind,
+      id: collection.id,
+      title: collection.title,
+    }),
+    CircleX,
+    'Remove Download',
+    h,
+  )
+  const download = actionButton(
+    Message.ClickedDownload({ collection }),
+    CircleArrowDown,
+    'Download',
+    h,
+  )
+  return Array.isReadonlyArrayEmpty(collection.videoIds)
+    ? h.empty
+    : DownloadStatus.match(
+        downloadStatus(model.downloads, collection.kind, collection.id),
+        {
+          Unavailable: () => h.empty,
+          NotDownloaded: () => download,
+          Downloading: () => remove,
+          Incomplete: () => download,
+          Downloaded: () => remove,
+        },
+      )
+}
+
+/**
+ * The songs of an album or playlist, put after the current song or at the
+ * end of the queue. One message carries them all.
+ */
+const enqueueActions = (
+  songs: ReadonlyArray<Song>,
+  h: HtmlBuilder<Message>,
+): ReadonlyArray<Html> =>
+  Array.isReadonlyArrayEmpty(songs)
+    ? []
+    : [
+        actionButton(
+          Message.ClickedEnqueueSongs({ songs, placement: 'Next' }),
+          ListStart,
+          'Play Next',
+          h,
+        ),
+        actionButton(
+          Message.ClickedEnqueueSongs({ songs, placement: 'Last' }),
+          ListEnd,
+          'Add to Queue',
+          h,
+        ),
+      ]
+
+const addSongsToPlaylistAction = (
+  songs: ReadonlyArray<Song>,
+  title: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Array.isReadonlyArrayEmpty(songs)
+    ? h.empty
+    : actionButton(
+        Message.ClickedAddToPlaylist({ songs, suggestedTitle: title }),
+        ListPlus,
+        'Add to a Playlist…',
+        h,
+      )
+
+const goToArtistAction = (
+  maybeArtistId: Option.Option<string>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(maybeArtistId, {
+    onNone: () => h.empty,
+    onSome: artistId =>
+      actionLink(artistHref(artistId), MicVocal, 'Go to Artist', h),
+  })
+
+const shareAction = (
+  title: string,
+  href: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  actionButton(Message.ClickedShare({ title, href }), Share, 'Share', h)
+
+const albumActions = (
+  model: Model,
+  details: AlbumDetails,
+  h: HtmlBuilder<Message>,
+): ReadonlyArray<Html> => {
+  const { album, tracks, maybeRadio } = details
+  return [
+    ...enqueueActions(tracks, h),
+    Option.match(maybeRadio, {
+      onNone: () => h.empty,
+      onSome: station =>
+        actionButton(
+          Message.ClickedStartStationRadio({ station, title: album.title }),
+          Radio,
+          'Start Radio',
+          h,
+        ),
+    }),
+    downloadAction(model, albumDownload(details), h),
+    Option.match(AsyncData.getData(myLibraryQuery.read(model.myLibrary)), {
+      onNone: () => h.empty,
+      onSome: library => {
+        const isSaved = isAlbumSaved(library, album.id)
+        return actionButton(
+          Message.ClickedToggleAlbumSaved({ album }),
+          isSaved ? Check : Plus,
+          isSaved ? 'Remove from Library' : 'Save to Library',
+          h,
+        )
+      },
+    }),
+    addSongsToPlaylistAction(tracks, album.title, h),
+    goToArtistAction(firstArtistId(album.artists), h),
+    shareAction(album.title, albumHref(album.id), h),
+  ]
+}
+
+const playlistDetailsActions = (
+  model: Model,
+  details: PlaylistDetails,
+  h: HtmlBuilder<Message>,
+): ReadonlyArray<Html> => {
+  const { playlist, maybeOwner, tracks } = details
+  return [
+    ...enqueueActions(tracks, h),
+    downloadAction(model, playlistDownload(details), h),
+    addSongsToPlaylistAction(tracks, playlist.title, h),
+    goToArtistAction(
+      Option.flatMap(maybeOwner, ({ maybeId }) => maybeId),
+      h,
+    ),
+    shareAction(playlist.title, playlistHref(playlist.id), h),
+  ]
+}
+
+/**
+ * ⋯ on an album or playlist: queue all of its songs, start its radio,
+ * download, save, or copy it, go to its artist, or share it. Read from the
+ * page's own data, which is loaded whenever its ⋯ shows.
+ */
+const collectionActions = (
+  model: Model,
+  kind: CollectionKind,
+  id: string,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const maybeParts =
+    kind === 'Album'
+      ? Option.map(
+          AsyncData.getData(albumQuery.read(model.albums, { albumId: id })),
+          details => ({
+            heading: itemHeading(
+              details.album.artwork,
+              details.album.title,
+              artistNames(details.album.artists),
+              h,
+            ),
+            actions: albumActions(model, details, h),
+          }),
+        )
+      : Option.map(
+          AsyncData.getData(
+            playlistQuery.read(model.playlists, { playlistId: id }),
+          ),
+          details => ({
+            heading: itemHeading(
+              details.playlist.artwork,
+              details.playlist.title,
+              Option.match(details.maybeOwner, {
+                onNone: () =>
+                  Option.getOrElse(
+                    details.playlist.maybeSubtitle,
+                    () => 'Playlist',
+                  ),
+                onSome: ({ name }) => name,
+              }),
+              h,
+            ),
+            actions: playlistDetailsActions(model, details, h),
+          }),
+        )
+  return Option.match(maybeParts, {
+    onNone: () => h.empty,
+    onSome: ({ heading, actions }) =>
+      h.div(
+        [h.Class('flex flex-col')],
+        [heading, h.div([h.Class('flex flex-col py-2')], actions)],
+      ),
+  })
+}
 
 /** What a device row says under its name. */
 const deviceRowStatus = (
@@ -868,6 +1096,7 @@ const sheetContent = (
 ): Html =>
   SheetContent.match(content, {
     SongActions: ({ song }) => songActions(model, song, h),
+    CollectionActions: ({ kind, id }) => collectionActions(model, kind, id, h),
     Devices: () => devicePicker(model, h),
     SleepTimer: () => sleepTimerPicker(model, h),
     AddToPlaylist: ({ songs, suggestedTitle }) =>
@@ -910,6 +1139,8 @@ const sheetContent = (
 const sheetLabel = (content: SheetContent): string =>
   SheetContent.match(content, {
     SongActions: ({ song }) => song.title,
+    CollectionActions: ({ kind }) =>
+      kind === 'Album' ? 'Album Options' : 'Playlist Options',
     Devices: () => 'Play on',
     SleepTimer: () => 'Sleep Timer',
     AddToPlaylist: () => 'Add to a Playlist',

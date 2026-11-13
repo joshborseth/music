@@ -681,6 +681,74 @@ describe('session model', () => {
   })
 })
 
+describe('playing from', () => {
+  const album: Session.PlayingFrom = {
+    kind: 'Album',
+    title: 'Kid A Mnesia',
+    id: 'MPREb_kidamnesia',
+  }
+  const fromAlbum = (): Model =>
+    update(
+      initialModel,
+      {
+        _tag: 'PlayQueue',
+        tracks: [track('a'), track('b')],
+        startIndex: 0,
+        playingFrom: album,
+      },
+      makeContext('phone', 1_000),
+    ).model
+
+  test('a queue played from an album says so to every device', () => {
+    const model = fromAlbum()
+    expect(model.playingFrom).toEqual(album)
+    expect(toSessionState(model, []).playingFrom).toEqual(album)
+  })
+
+  test('queueing, skipping, and shuffling keep it', () => {
+    const context = makeContext('phone', 2_000)
+    const enqueued = update(
+      fromAlbum(),
+      { _tag: 'Enqueue', tracks: [track('x'), track('y')], placement: 'Next' },
+      context,
+    ).model
+    expect(enqueued.queue.map(entry => entry.track.videoId)).toEqual([
+      'a',
+      'x',
+      'y',
+      'b',
+    ])
+    const moved = update(enqueued, { _tag: 'Next' }, context).model
+    const shuffled = update(
+      moved,
+      { _tag: 'SetShuffle', enabled: true },
+      context,
+    ).model
+    expect(shuffled.playingFrom).toEqual(album)
+  })
+
+  test('a queue played from nothing with a page, or from a TV built before the field, has none', () => {
+    const model = update(
+      fromAlbum(),
+      { _tag: 'PlayQueue', tracks: [track('z')], startIndex: 0 },
+      makeContext('tv', 2_000),
+    ).model
+    expect(model.playingFrom).toBeNull()
+    expect(playing().playingFrom).toBeNull()
+  })
+
+  test('songs queued after the queue ended start over from nothing', () => {
+    const ended: Model = { ...fromAlbum(), currentEntryId: null }
+    const model = update(
+      ended,
+      { _tag: 'Enqueue', tracks: [track('z')], placement: 'Last' },
+      makeContext('phone', 2_000),
+    ).model
+    expect(model.currentEntryId).not.toBeNull()
+    expect(model.playingFrom).toBeNull()
+  })
+})
+
 describe('repeat and shuffle', () => {
   const ids = (model: Model) => model.queue.map(entry => entry.entryId)
   // Entries added in these tests are x0, x1, …, after playing()'s e0–e2.
@@ -1403,6 +1471,7 @@ describe('protocol fixtures shared with the TV app', () => {
   test.each([
     '{ "_tag": "Hello", "deviceId": "tv", "name": "TV", "kind": "Tv" }',
     '{ "_tag": "Pause" }',
+    '{ "_tag": "PlayQueue", "tracks": [], "startIndex": 0 }',
   ])('%s from a TV app built before the optional fields decodes', text => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(text)
     expect(decoded._tag).toBe('Success')

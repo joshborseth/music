@@ -59,7 +59,13 @@ const recentCard = (
       return h.button(
         [
           h.Type('button'),
-          h.OnClick(Message.ClickedPlaySongs({ songs, startIndex: index })),
+          h.OnClick(
+            Message.ClickedPlaySongs({
+              songs,
+              startIndex: index,
+              maybePlayingFrom: Option.none(),
+            }),
+          ),
           h.AriaLabel(`Play ${song.title}`),
           h.Class(
             'pressable flex w-[34vw] max-w-36 shrink-0 snap-start flex-col text-left',

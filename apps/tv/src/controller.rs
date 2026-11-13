@@ -270,6 +270,7 @@ impl Controller {
                 self.send(ClientMessage::PlayQueue {
                     tracks,
                     start_index: start,
+                    playing_from: None,
                 });
                 if !self.is_active() {
                     self.send(here);

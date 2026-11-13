@@ -73,6 +73,36 @@ pub struct SessionState {
     /// When the music stops by itself, if a sleep timer is set.
     #[serde(default)]
     pub sleep_timer: Option<SleepTimer>,
+    /// What the queue was started from, if anything with a page. Servers
+    /// before this field leave it out.
+    #[serde(default)]
+    pub playing_from: Option<PlayingFrom>,
+}
+
+/// What kind of thing a queue was started from. Mirrors `PlayingFromKind`
+/// in `packages/shared/src/session.ts`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlayingFromKind {
+    Album,
+    Playlist,
+    /// One of the playlists made in the app, Liked Songs among them.
+    MyPlaylist,
+    Artist,
+    /// One of the phone's Home mixes: YouTube Music's radio for a song.
+    Mix,
+    /// YouTube Music's radio for a song, an album, or an artist.
+    Radio,
+    Search,
+}
+
+/// What the queue was started from, for "Playing from <title>". `id` opens
+/// it: an album's browse id, a playlist's id (a mix's or a radio's is the
+/// radio playlist's), an artist's channel id, or the words searched for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlayingFrom {
+    pub kind: PlayingFromKind,
+    pub title: String,
+    pub id: String,
 }
 
 /// When the music stops by itself. Mirrors `SleepTimer` in
@@ -216,6 +246,9 @@ pub enum ClientMessage {
     PlayQueue {
         tracks: Vec<QueueTrack>,
         start_index: usize,
+        /// What the songs come from, when it has a page.
+        #[serde(default)]
+        playing_from: Option<PlayingFrom>,
     },
     #[serde(rename_all = "camelCase")]
     Enqueue {
@@ -386,6 +419,14 @@ mod tests {
             })
         );
         assert!(!state.stops_after_song());
+        assert_eq!(
+            state.playing_from,
+            Some(PlayingFrom {
+                kind: PlayingFromKind::Playlist,
+                title: "Road Trip".into(),
+                id: "PLexample".into(),
+            })
+        );
     }
 
     #[test]
@@ -396,6 +437,7 @@ mod tests {
             panic!("expected State");
         };
         assert_eq!(state.sleep_timer, Some(SleepTimer::EndOfSong {}));
+        assert_eq!(state.playing_from, None);
         assert!(state.stops_after_song());
         assert_eq!(state.next_after_current(), None);
     }
@@ -413,6 +455,54 @@ mod tests {
         };
         assert_eq!(state.sleep_timer, None);
         assert_eq!(state.next_after_current().unwrap().entry_id, "e1");
+    }
+
+    #[test]
+    fn decodes_a_state_from_a_server_before_playing_from() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fixture("server-state.json")).unwrap();
+        value["state"]
+            .as_object_mut()
+            .unwrap()
+            .remove("playingFrom");
+        let ServerMessage::State { state, .. } = serde_json::from_value(value).unwrap() else {
+            panic!("expected State");
+        };
+        assert_eq!(state.playing_from, None);
+    }
+
+    #[test]
+    fn every_playing_from_kind_is_named_as_the_server_names_it() {
+        for (kind, name) in [
+            (PlayingFromKind::Album, "Album"),
+            (PlayingFromKind::Playlist, "Playlist"),
+            (PlayingFromKind::MyPlaylist, "MyPlaylist"),
+            (PlayingFromKind::Artist, "Artist"),
+            (PlayingFromKind::Mix, "Mix"),
+            (PlayingFromKind::Radio, "Radio"),
+            (PlayingFromKind::Search, "Search"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), name);
+            assert_eq!(
+                serde_json::from_value::<PlayingFromKind>(name.into()).unwrap(),
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn decodes_a_play_queue_without_playing_from() {
+        let message: ClientMessage =
+            serde_json::from_str(r#"{ "_tag": "PlayQueue", "tracks": [], "startIndex": 0 }"#)
+                .unwrap();
+        assert_eq!(
+            message,
+            ClientMessage::PlayQueue {
+                tracks: vec![],
+                start_index: 0,
+                playing_from: None,
+            }
+        );
     }
 
     #[test]
@@ -514,6 +604,11 @@ mod tests {
                         artwork_url: None,
                     }],
                     start_index: 0,
+                    playing_from: Some(PlayingFrom {
+                        kind: PlayingFromKind::Album,
+                        title: "Whenever You Need Somebody".into(),
+                        id: "MPREb_example".into(),
+                    }),
                 },
             ),
             (

@@ -99,6 +99,11 @@ const playlistPage = (
           footer: '',
           playing: model.playing,
           swipe: model.swipe,
+          maybePlayingFrom: Option.some({
+            kind: 'MyPlaylist',
+            title: playlist.title,
+            id: playlist.id,
+          }),
         },
         h,
       ),

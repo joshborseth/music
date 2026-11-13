@@ -1,16 +1,9 @@
 import { Array, Option } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Document, Html, HtmlBuilder } from 'foldkit/html'
-import {
-  Check,
-  CircleArrowDown,
-  CircleCheck,
-  Ellipsis,
-  ListPlus,
-  Plus,
-} from 'lucide'
+import { Check, CircleArrowDown, CircleCheck, Ellipsis, Plus } from 'lucide'
 
-import { type AlbumSummary, type MyLibrary, type Song } from '@music/shared'
+import { type AlbumSummary, type MyLibrary } from '@music/shared'
 
 import {
   DownloadStatus,
@@ -32,10 +25,16 @@ import {
   songQuery,
 } from '../query'
 import { AppRoute } from '../route'
+import { type CollectionKind } from '../sheet'
 import { routeQuery } from '../update'
 import { albumView } from './album'
 import { ARTIST_RELEASE_TITLES, artistReleasesView, artistView } from './artist'
 import { detailNavBar, navBarButton, page, tabBar } from './chrome'
+import {
+  DOWNLOAD_ARTWORK_WIDTH,
+  albumDownload,
+  playlistDownload,
+} from './collectionDownload'
 import { homeView } from './home'
 import { libraryView } from './library'
 import { moodView } from './mood'
@@ -45,7 +44,7 @@ import { hasMiniPlayer, playerView } from './player'
 import { playlistView } from './playlist'
 import { doneEditingButton } from './playlistEditor'
 import { searchView } from './search'
-import { artistNames, artworkUrl, emptyState } from './shared'
+import { artworkUrl, emptyState } from './shared'
 import { actionSheetView } from './sheet'
 import { songView } from './song'
 
@@ -71,47 +70,44 @@ const pageTitle = (model: Model): string =>
     NotFound: () => `Not found · ${APP_NAME}`,
   })
 
+/**
+ * A detail page under its nav bar. `trailingButtons` is the most round
+ * buttons `trailing` can show, which the title bar keeps clear of.
+ */
 const detailPage = (
   maybeTitle: Option.Option<string>,
   content: Html,
   h: HtmlBuilder<Message>,
   trailing: Html = h.empty,
+  trailingButtons: number = 0,
 ): ReadonlyArray<Html> => [
   ...detailNavBar(
     Option.getOrElse(maybeTitle, () => ''),
     trailing,
     h,
+    trailingButtons,
   ),
   content,
 ]
 
-/** Opens the sheet to save an album's or playlist's songs to one of mine. */
-const addToPlaylistButton = (
-  maybeCollection: Option.Option<
-    Readonly<{ title: string; songs: ReadonlyArray<Song> }>
-  >,
+/** ⋯ on an album or playlist: everything else that can be done with it. */
+const collectionActionsButton = (
+  kind: CollectionKind,
+  maybeId: Option.Option<string>,
   h: HtmlBuilder<Message>,
 ): Html =>
-  Option.match(
-    Option.filter(maybeCollection, ({ songs }) =>
-      Array.isReadonlyArrayNonEmpty(songs),
-    ),
-    {
-      onNone: () => h.empty,
-      onSome: ({ title, songs }) =>
-        navBarButton(
-          {
-            onClick: Message.ClickedAddToPlaylist({
-              songs,
-              suggestedTitle: title,
-            }),
-            iconNode: ListPlus,
-            label: 'Add to a Playlist',
-          },
-          h,
-        ),
-    },
-  )
+  Option.match(maybeId, {
+    onNone: () => h.empty,
+    onSome: id =>
+      navBarButton(
+        {
+          onClick: Message.ClickedCollectionActions({ kind, id }),
+          iconNode: Ellipsis,
+          label: kind === 'Album' ? 'Album Options' : 'Playlist Options',
+        },
+        h,
+      ),
+  })
 
 /**
  * Saves the album to the Library, or takes it out. Shown once the Library
@@ -137,9 +133,6 @@ const saveAlbumButton = (
       )
     },
   })
-
-/** Artwork width kept for a download's row in the Library. */
-const DOWNLOAD_ARTWORK_WIDTH = 180
 
 /**
  * Downloads an album or playlist to the phone, shows how far it has got as
@@ -272,34 +265,16 @@ const routeParts = (
               AsyncData.getData(myLibraryQuery.read(model.myLibrary)),
               h,
             ),
-            addToPlaylistButton(
-              Option.map(maybeAlbum, ({ album, tracks }) => ({
-                title: album.title,
-                songs: tracks,
-              })),
-              h,
-            ),
-            downloadButton(
-              model,
-              Option.map(
-                maybeAlbum,
-                ({ album, tracks }): DownloadedCollection => ({
-                  kind: 'Album',
-                  id: album.id,
-                  title: album.title,
-                  subtitle: artistNames(album.artists),
-                  maybeArtworkUrl: artworkUrl(
-                    album.artwork,
-                    DOWNLOAD_ARTWORK_WIDTH,
-                  ),
-                  videoIds: Array.map(tracks, ({ videoId }) => videoId),
-                }),
-              ),
+            downloadButton(model, Option.map(maybeAlbum, albumDownload), h),
+            collectionActionsButton(
+              'Album',
+              Option.map(maybeAlbum, ({ album }) => album.id),
               h,
             ),
           ],
           h,
         ),
+        3,
       )
     },
     Playlist: ({ playlistId }) => {
@@ -312,41 +287,20 @@ const routeParts = (
         h,
         navBarButtons(
           [
-            addToPlaylistButton(
-              Option.map(maybePlaylist, ({ playlist, tracks }) => ({
-                title: playlist.title,
-                songs: tracks,
-              })),
-              h,
-            ),
             downloadButton(
               model,
-              Option.map(
-                maybePlaylist,
-                ({ playlist, maybeOwner, tracks }): DownloadedCollection => ({
-                  kind: 'Playlist',
-                  id: playlist.id,
-                  title: playlist.title,
-                  subtitle: Option.match(maybeOwner, {
-                    onNone: () =>
-                      Option.getOrElse(
-                        playlist.maybeSubtitle,
-                        () => 'Playlist',
-                      ),
-                    onSome: ({ name }) => name,
-                  }),
-                  maybeArtworkUrl: artworkUrl(
-                    playlist.artwork,
-                    DOWNLOAD_ARTWORK_WIDTH,
-                  ),
-                  videoIds: Array.map(tracks, ({ videoId }) => videoId),
-                }),
-              ),
+              Option.map(maybePlaylist, playlistDownload),
+              h,
+            ),
+            collectionActionsButton(
+              'Playlist',
+              Option.map(maybePlaylist, ({ playlist }) => playlist.id),
               h,
             ),
           ],
           h,
         ),
+        2,
       )
     },
     MyPlaylist: ({ playlistId }) => {
@@ -403,6 +357,7 @@ const routeParts = (
               ],
               h,
             ),
+        2,
       )
     },
     Mood: ({ params }) =>

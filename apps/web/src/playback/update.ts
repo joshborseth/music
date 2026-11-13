@@ -1177,11 +1177,15 @@ export const pressMediaKey = (model: Model, key: MediaKey): PlaybackReturn => {
   }
 }
 
-/** Replace the queue with `songs` and play from `startIndex`. */
+/**
+ * Replace the queue with `songs` and play from `startIndex`, saying what
+ * they are played from, if anything with a page.
+ */
 export const playSongs = (
   model: Model,
   songs: ReadonlyArray<Song>,
   startIndex: number,
+  maybePlayingFrom: Option.Option<Session.PlayingFrom>,
 ): PlaybackReturn =>
   Array.isReadonlyArrayNonEmpty(songs)
     ? {
@@ -1191,6 +1195,7 @@ export const playSongs = (
             _tag: 'PlayQueue',
             tracks: Array.map(songs, toQueueTrack),
             startIndex,
+            playingFrom: Option.getOrNull(maybePlayingFrom),
           }),
         ],
       }
@@ -1200,8 +1205,9 @@ export const clickPlaySongs = (
   model: Model,
   songs: ReadonlyArray<Song>,
   startIndex: number,
+  maybePlayingFrom: Option.Option<Session.PlayingFrom>,
 ): PlaybackReturn => {
-  const play = playSongs(model, songs, startIndex)
+  const play = playSongs(model, songs, startIndex, maybePlayingFrom)
   return {
     model: play.model,
     commands: [...unlockIfIdle(model), ...(play.commands ?? [])],
@@ -1214,7 +1220,16 @@ export const clickPlaySongs = (
  * for those songs, so it turns autoplay back on when it was off.
  */
 export const startRadio = (model: Model, song: Song): PlaybackReturn => {
-  const play = clickPlaySongs(model, [song], 0)
+  const play = clickPlaySongs(
+    model,
+    [song],
+    0,
+    Option.some({
+      kind: 'Radio',
+      title: song.title,
+      id: Session.songRadioPlaylistId(song.videoId),
+    }),
+  )
   return Option.exists(model.maybeSession, ({ state }) => !state.autoplay)
     ? {
         model: play.model,
@@ -1233,8 +1248,9 @@ export const startRadio = (model: Model, song: Song): PlaybackReturn => {
 export const playStationRadio = (
   model: Model,
   songs: ReadonlyArray<Song>,
+  playingFrom: Session.PlayingFrom,
 ): PlaybackReturn => {
-  const play = playSongs(model, songs, 0)
+  const play = playSongs(model, songs, 0, Option.some(playingFrom))
   return Option.exists(model.maybeSession, ({ state }) => !state.autoplay)
     ? {
         model: play.model,

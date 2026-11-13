@@ -29,6 +29,7 @@ import {
   type MyPlaylistSummary,
   type PlaylistSummary,
   type RadioStation,
+  type Session,
   type Song,
 } from '@music/shared'
 
@@ -433,6 +434,8 @@ type SongRowConfig = Readonly<{
    * something that scrolls sideways, which needs those drags itself.
    */
   maybeSwipe: Option.Option<Swipe>
+  /** The album, playlist, artist, or search `playlist` plays from. */
+  maybePlayingFrom?: Option.Option<Session.PlayingFrom>
 }>
 
 const songRowArtists = (config: SongRowConfig): string => {
@@ -485,6 +488,7 @@ const isExplicitIn = (
 export const playFrom = (
   songs: ReadonlyArray<Song>,
   videoId: string,
+  maybePlayingFrom: Option.Option<Session.PlayingFrom> = Option.none(),
 ): Message =>
   Message.ClickedPlaySongs({
     songs,
@@ -492,6 +496,7 @@ export const playFrom = (
       Array.findFirstIndex(songs, song => song.videoId === videoId),
       () => 0,
     ),
+    maybePlayingFrom,
   })
 
 const songRowMedia = (
@@ -559,11 +564,17 @@ export const songRow = (
           h.Type('button'),
           h.OnClick(
             Option.match(config.maybeIndex ?? Option.none(), {
-              onNone: () => playFrom(config.playlist, song.videoId),
+              onNone: () =>
+                playFrom(
+                  config.playlist,
+                  song.videoId,
+                  config.maybePlayingFrom,
+                ),
               onSome: startIndex =>
                 Message.ClickedPlaySongs({
                   songs: config.playlist,
                   startIndex,
+                  maybePlayingFrom: config.maybePlayingFrom ?? Option.none(),
                 }),
             }),
           ),
@@ -716,6 +727,7 @@ export const songList = (
      */
     playsAlone?: boolean
     maybeDetails?: Option.Option<(song: Song) => string>
+    maybePlayingFrom?: Option.Option<Session.PlayingFrom>
   }>,
   h: HtmlBuilder<Message>,
 ): Html => {
@@ -746,6 +758,7 @@ export const songList = (
               maybeDetails: config.maybeDetails ?? Option.none(),
               playing: config.playing,
               maybeSwipe: Option.some(config.swipe),
+              maybePlayingFrom: config.maybePlayingFrom ?? Option.none(),
             },
             h,
           ),
@@ -950,6 +963,7 @@ export const playActions = (
   songs: ReadonlyArray<Song>,
   h: HtmlBuilder<Message>,
   maybeRadio: Option.Option<RadioStation> = Option.none(),
+  maybePlayingFrom: Option.Option<Session.PlayingFrom> = Option.none(),
 ): Html => {
   const buttons = [
     ...(Array.isReadonlyArrayNonEmpty(songs)
@@ -957,7 +971,13 @@ export const playActions = (
           h.button(
             [
               h.Type('button'),
-              h.OnClick(Message.ClickedPlaySongs({ songs, startIndex: 0 })),
+              h.OnClick(
+                Message.ClickedPlaySongs({
+                  songs,
+                  startIndex: 0,
+                  maybePlayingFrom,
+                }),
+              ),
               h.Class(primaryPlayActionClass),
             ],
             [icon(h, Play, 'size-4 fill-current'), 'Play'],
@@ -965,7 +985,9 @@ export const playActions = (
           h.button(
             [
               h.Type('button'),
-              h.OnClick(Message.ClickedShuffleSongs({ songs })),
+              h.OnClick(
+                Message.ClickedShuffleSongs({ songs, maybePlayingFrom }),
+              ),
               h.Class(secondaryPlayActionClass),
             ],
             [icon(h, Shuffle, 'size-4'), 'Shuffle'],
@@ -978,7 +1000,15 @@ export const playActions = (
         h.button(
           [
             h.Type('button'),
-            h.OnClick(Message.ClickedStartStationRadio({ station })),
+            h.OnClick(
+              Message.ClickedStartStationRadio({
+                station,
+                title: Option.match(maybePlayingFrom, {
+                  onNone: () => '',
+                  onSome: ({ title }) => title,
+                }),
+              }),
+            ),
             h.AriaLabel('Start Radio'),
             h.Class(secondaryPlayActionClass),
           ],
@@ -1417,6 +1447,7 @@ export const songSection = (
     maybeDetails?: Option.Option<(song: Song) => string>
     /** At the end of the heading, such as See All. */
     maybeAction?: Option.Option<SectionAction>
+    maybePlayingFrom?: Option.Option<Session.PlayingFrom>
   }>,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -1433,6 +1464,7 @@ export const songSection = (
               isNumbered: false,
               isAlbumHidden: false,
               maybeDetails: config.maybeDetails ?? Option.none(),
+              maybePlayingFrom: config.maybePlayingFrom ?? Option.none(),
             },
             h,
           ),

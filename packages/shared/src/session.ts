@@ -97,6 +97,43 @@ export const SleepTimer = Schema.Union([
 ])
 export type SleepTimer = typeof SleepTimer.Type
 
+/** What kind of thing a queue was started from. */
+export const PlayingFromKind = Schema.Literals([
+  'Album',
+  'Playlist',
+  /** One of the playlists made in the app, Liked Songs among them. */
+  'MyPlaylist',
+  'Artist',
+  /** One of Home's mixes, a playlist of YouTube Music's radio for a song. */
+  'Mix',
+  /** YouTube Music's radio for a song, an album, or an artist. */
+  'Radio',
+  'Search',
+])
+export type PlayingFromKind = typeof PlayingFromKind.Type
+
+/**
+ * What the queue was started from, so players can say "Playing from
+ * <title>" and open it. `id` is what opens it: an album's browse id, a
+ * playlist's id (a mix's or a radio's is YouTube Music's radio playlist
+ * id, which opens as a playlist), an artist's channel id, or the words
+ * searched for.
+ */
+export const PlayingFrom = Schema.Struct({
+  kind: PlayingFromKind,
+  title: Schema.String,
+  id: Schema.String,
+})
+export type PlayingFrom = typeof PlayingFrom.Type
+
+/** YouTube Music's radio for a song, as a playlist id: it opens as a mix. */
+export const songRadioPlaylistId = (videoId: string): string =>
+  `RDAMVM${videoId}`
+
+/** A playlist id of one of YouTube Music's radios or mixes. */
+export const isRadioPlaylistId = (playlistId: string): boolean =>
+  playlistId.startsWith('RD')
+
 export const SessionState = Schema.Struct({
   devices: Schema.Array(Device),
   activeDeviceId: Schema.NullOr(Schema.String),
@@ -116,6 +153,12 @@ export const SessionState = Schema.Struct({
   shuffle: Schema.Boolean,
   /** Null when no sleep timer is set. */
   sleepTimer: Schema.NullOr(SleepTimer),
+  /**
+   * What the queue was started from (`PlayQueue`). Null when it was not
+   * started from anything with a page, such as one song, and in sessions
+   * saved before this field.
+   */
+  playingFrom: Schema.NullOr(PlayingFrom),
 })
 export type SessionState = typeof SessionState.Type
 
@@ -157,6 +200,11 @@ export const Hello = Schema.TaggedStruct('Hello', {
 export const PlayQueue = Schema.TaggedStruct('PlayQueue', {
   tracks: Schema.Array(QueueTrack),
   startIndex: Schema.Number,
+  /**
+   * What the songs come from. Null or missing when they come from nothing
+   * with a page (TV apps built before this field leave it out).
+   */
+  playingFrom: Schema.optionalKey(Schema.NullOr(PlayingFrom)),
 })
 
 export const Placement = Schema.Literals(['Next', 'Last'])

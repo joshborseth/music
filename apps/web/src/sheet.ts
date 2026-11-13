@@ -6,9 +6,18 @@ import { Song } from '@music/shared'
 import { DownloadKind } from './downloads/domain'
 import { SortableKind } from './library'
 
+/** A page whose ⋯ opens `CollectionActions`. */
+export const CollectionKind = Schema.Literals(['Album', 'Playlist'])
+export type CollectionKind = typeof CollectionKind.Type
+
 /** What an action sheet offers. */
 export const SheetContent = defineTaggedUnion({
   SongActions: { song: Song },
+  /**
+   * Everything that can be done with a whole album or playlist. The sheet
+   * reads it from the page's own data, so it stays as current as the page.
+   */
+  CollectionActions: { kind: CollectionKind, id: Schema.String },
   Devices: {},
   /** Stop the music after a while, or at the end of the song. */
   SleepTimer: {},

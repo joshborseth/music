@@ -33,6 +33,7 @@ import {
   ReplaceSearchUrl,
   SaveRecentSearches,
   ScrollSearchResultsToTop,
+  ShareLink,
   UnlockScroll,
 } from './command'
 import { DownloadSong, SaveDownloads } from './downloads/command'
@@ -400,6 +401,7 @@ describe('search page', () => {
             _tag: 'PlayQueue',
             tracks: [toQueueTrack(theChain)],
             startIndex: 0,
+            playingFrom: PLAYING_FROM_SEARCH,
           },
         }),
       ),
@@ -515,6 +517,7 @@ describe('search page', () => {
               positionAt: 0,
               seekSeq: 0,
               sleepTimer: null,
+              playingFrom: null,
             },
             clockOffsetMs: 0,
           }),
@@ -574,6 +577,11 @@ describe('search page', () => {
             _tag: 'PlayQueue',
             tracks: [toQueueTrack(theChain)],
             startIndex: 0,
+            playingFrom: {
+              kind: 'Radio',
+              title: 'The Chain',
+              id: `RDAMVM${theChain.videoId}`,
+            },
           },
         }),
       ),
@@ -596,12 +604,16 @@ describe('search page', () => {
   })
 })
 
+/** The searches above all look for "the chain". */
+const PLAYING_FROM_SEARCH: Session.PlayingFrom = {
+  kind: 'Search',
+  title: 'the chain',
+  id: 'the chain',
+}
+
 describe('album page', () => {
-  test('a song listed twice keeps both rows, each playing the album from its own place', () => {
-    // YouTube sometimes gives two tracks of an album the same video.
-    const interlude: Song = { ...theChain, title: 'The Chain (Interlude)' }
-    const tracks = [theChain, interlude]
-    const albumId = 'MPREb_1SbgcDGdrT4'
+  const albumId = 'MPREb_1SbgcDGdrT4'
+  const albumPageModel = (tracks: ReadonlyArray<Song>): Model => {
     const albumOpen = update(
       emptySearchModel,
       Message.ChangedUrl({
@@ -632,9 +644,16 @@ describe('album page', () => {
         }),
       }),
     ).model
+    return albumModel
+  }
+
+  test('a song listed twice keeps both rows, each playing the album from its own place', () => {
+    // YouTube sometimes gives two tracks of an album the same video.
+    const interlude: Song = { ...theChain, title: 'The Chain (Interlude)' }
+    const tracks = [theChain, interlude]
     scene(
       { update, view },
-      given(albumModel),
+      given(albumPageModel(tracks)),
       pageScrolled,
       Mount.resolve(SyncTitleBarReveal, Message.CompletedSyncTitleBarReveal()),
       expect(role('button', { name: 'The Chain' })).toExist(),
@@ -646,12 +665,83 @@ describe('album page', () => {
             _tag: 'PlayQueue',
             tracks: tracks.map(toQueueTrack),
             startIndex: 1,
+            playingFrom: { kind: 'Album', title: 'Rumours', id: albumId },
           },
         }),
       ),
       Command.resolveAll(
         [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
         [SendToSession, Message.CompletedSendToSession()],
+      ),
+    )
+  })
+
+  test('⋯ queues the whole album next in one message, and offers the rest', () => {
+    const dreams: Song = { ...theChain, videoId: 'dreams', title: 'Dreams' }
+    const tracks = [theChain, dreams]
+    scene(
+      { update, view },
+      given(albumPageModel(tracks)),
+      pageScrolled,
+      Mount.resolve(SyncTitleBarReveal, Message.CompletedSyncTitleBarReveal()),
+      click(role('button', { name: 'Album Options' })),
+      Command.expectExact(LockScroll()),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      expect(role('button', { name: 'Add to Queue' })).toExist(),
+      expect(role('button', { name: 'Add to a Playlist…' })).toExist(),
+      expect(role('button', { name: 'Share' })).toExist(),
+      expect(role('link', { name: 'Go to Artist' })).toHaveAttr(
+        'href',
+        '/artist/UCCzULu3prrEaPvM2ZtkJlYQ',
+      ),
+      click(role('button', { name: 'Play Next' })),
+      Command.expectExact(
+        UnlockScroll(),
+        UnlockPhoneAudio(),
+        SendToSession({
+          message: {
+            _tag: 'Enqueue',
+            tracks: tracks.map(toQueueTrack),
+            placement: 'Next',
+          },
+        }),
+        WaitBeforeHideNotice({ message: 'Playing next' }),
+      ),
+      Command.resolveAll(
+        [UnlockScroll, Message.CompletedUnlockScroll()],
+        [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
+        [SendToSession, Message.CompletedSendToSession()],
+        [
+          WaitBeforeHideNotice,
+          Message.CompletedWaitBeforeHideNotice({ message: 'Playing next' }),
+        ],
+      ),
+    )
+  })
+
+  test('⋯ shares the album page', () => {
+    scene(
+      { update, view },
+      given(albumPageModel([theChain])),
+      pageScrolled,
+      Mount.resolve(SyncTitleBarReveal, Message.CompletedSyncTitleBarReveal()),
+      click(role('button', { name: 'Album Options' })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      click(role('button', { name: 'Share' })),
+      Command.expectExact(
+        UnlockScroll(),
+        ShareLink({ title: 'Rumours', href: `/album/${albumId}` }),
+      ),
+      Command.resolveAll(
+        [UnlockScroll, Message.CompletedUnlockScroll()],
+        [ShareLink, Message.CompletedShareLink({ isCopied: true })],
+      ),
+      expect(text('Link copied')).toExist(),
+      Command.resolve(
+        WaitBeforeHideNotice,
+        Message.CompletedWaitBeforeHideNotice({ message: 'Link copied' }),
       ),
     )
   })
@@ -767,6 +857,11 @@ const artistModel = (route: AppRoute, path: string): Model =>
 describe('artist page', () => {
   test("Radio plays the artist's radio, with autoplay after it", () => {
     const radioSongs = [instantCrush, { ...instantCrush, videoId: 'other' }]
+    const daftPunkRadio: Session.PlayingFrom = {
+      kind: 'Radio',
+      title: 'Daft Punk',
+      id: ARTIST_RADIO.playlistId,
+    }
     scene(
       { update, view },
       given(artistModel(AppRoute.Artist({ artistId: 'abc' }), '/artist/abc')),
@@ -775,11 +870,17 @@ describe('artist page', () => {
       click(role('button', { name: 'Start Radio' })),
       Command.expectExact(
         UnlockPhoneAudio(),
-        FetchRadio({ station: ARTIST_RADIO }),
+        FetchRadio({ station: ARTIST_RADIO, playingFrom: daftPunkRadio }),
       ),
       Command.resolveAll(
         [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
-        [FetchRadio, Message.SucceededFetchRadio({ songs: radioSongs })],
+        [
+          FetchRadio,
+          Message.SucceededFetchRadio({
+            songs: radioSongs,
+            playingFrom: daftPunkRadio,
+          }),
+        ],
       ),
       Command.expectExact(
         SendToSession({
@@ -787,6 +888,7 @@ describe('artist page', () => {
             _tag: 'PlayQueue',
             tracks: radioSongs.map(toQueueTrack),
             startIndex: 0,
+            playingFrom: daftPunkRadio,
           },
         }),
       ),
@@ -1581,6 +1683,7 @@ describe('sleep timer', () => {
             repeat: 'Off',
             shuffle: false,
             sleepTimer,
+            playingFrom: null,
           },
         }),
     })
@@ -1590,6 +1693,32 @@ describe('sleep timer', () => {
     [Marquee, Message.CompletedSyncMarquee()],
     [FollowSeekBarDrags, Message.CompletedFollowSeekBarDrags()],
   )
+
+  test('the player says what it plays from, and opens it', () => {
+    const rumours: Session.PlayingFrom = {
+      kind: 'Album',
+      title: 'Rumours',
+      id: 'MPREb_1SbgcDGdrT4',
+    }
+    const model = modifyFields(playingOnTv(null), {
+      maybeSession: maybeSession =>
+        Option.map(maybeSession, session => ({
+          ...session,
+          state: { ...session.state, playingFrom: rumours },
+        })),
+    })
+    scene(
+      { update, view },
+      given(model),
+      pageScrolled,
+      playerMounts,
+      expect(text('Playing from Album')).toExist(),
+      expect(role('link', { name: 'Playing from album Rumours' })).toHaveAttr(
+        'href',
+        '/album/MPREb_1SbgcDGdrT4',
+      ),
+    )
+  })
 
   test('the moon sets a timer on the server, which stops the TV too', () => {
     scene(
