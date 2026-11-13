@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::catalog::{Card, Collection, CollectionKind, SaveKind, Shelf};
 use crate::controller::UiAction;
 use crate::lyrics::SongLyrics;
-use crate::protocol::{Placement, QueueTrack};
+use crate::protocol::{Placement, PlayingFrom, PlayingFromKind, QueueTrack};
 use crate::view::{View, clock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +150,8 @@ pub enum MenuAction {
     OpenUpdateSettings,
     CheckForUpdates,
     InstallUpdate,
+    /// Open what the queue plays from: its page, or its search.
+    GoTo(PlayingFrom),
     Close,
 }
 
@@ -178,6 +180,14 @@ impl MenuAction {
             MenuAction::OpenUpdateSettings => "Open settings",
             MenuAction::CheckForUpdates => "Check for updates",
             MenuAction::InstallUpdate => "Install update",
+            MenuAction::GoTo(from) => match from.kind {
+                PlayingFromKind::Album => "Go to album",
+                PlayingFromKind::Playlist | PlayingFromKind::MyPlaylist => "Go to playlist",
+                PlayingFromKind::Artist => "Go to artist",
+                PlayingFromKind::Mix => "Go to mix",
+                PlayingFromKind::Radio => "Go to radio",
+                PlayingFromKind::Search => "Go to search",
+            },
             MenuAction::Close => "Not now",
         }
     }
@@ -200,8 +210,44 @@ impl MenuAction {
             | MenuAction::ClearSearches => "remove",
             MenuAction::OpenUpdateSettings => "settings",
             MenuAction::CheckForUpdates | MenuAction::InstallUpdate => "update",
+            MenuAction::GoTo(from) => match from.kind {
+                PlayingFromKind::Album => "album",
+                PlayingFromKind::Artist => "artist",
+                PlayingFromKind::Search => "search",
+                PlayingFromKind::Playlist
+                | PlayingFromKind::MyPlaylist
+                | PlayingFromKind::Mix
+                | PlayingFromKind::Radio => "library",
+            },
             MenuAction::Close => "close",
         }
+    }
+}
+
+/// What a collection played from its page is, for the session's
+/// `playingFrom`. A playlist whose id is one of YouTube Music's radios (a
+/// mix made on Home) plays as a mix, as on the phone.
+pub fn playing_from(kind: CollectionKind, id: &str, title: &str) -> PlayingFrom {
+    let kind = match kind {
+        CollectionKind::Album => PlayingFromKind::Album,
+        CollectionKind::Artist => PlayingFromKind::Artist,
+        CollectionKind::MyPlaylist => PlayingFromKind::MyPlaylist,
+        CollectionKind::Playlist if id.starts_with("RD") => PlayingFromKind::Mix,
+        CollectionKind::Playlist => PlayingFromKind::Playlist,
+    };
+    PlayingFrom {
+        kind,
+        title: title.to_owned(),
+        id: id.to_owned(),
+    }
+}
+
+/// Songs played from search results say what was searched for.
+pub fn playing_from_search(query: &str) -> PlayingFrom {
+    PlayingFrom {
+        kind: PlayingFromKind::Search,
+        title: query.to_owned(),
+        id: query.to_owned(),
     }
 }
 
@@ -596,6 +642,12 @@ impl CollectionNav {
             .loaded()
             .map(|collection| collection.tracks.clone())
             .unwrap_or_default()
+    }
+
+    /// What songs played from this page come from.
+    fn playing_from(&self) -> Option<PlayingFrom> {
+        let collection = self.content.loaded()?;
+        Some(playing_from(self.kind, &self.id, &collection.title))
     }
 }
 
@@ -1474,12 +1526,59 @@ impl Nav {
 
     fn song_menu(&mut self) {
         if let Some(entry) = self.session.current_entry() {
+            let mut items = vec![MenuAction::Like(entry.track.clone())];
+            items.extend(self.go_to_item());
+            items.push(MenuAction::Close);
             self.menu = Some(Menu {
                 title: entry.track.title.clone(),
                 subtitle: entry.track.artists.clone(),
-                items: vec![MenuAction::Like(entry.track.clone()), MenuAction::Close],
+                items,
                 selected: 0,
             });
+        }
+    }
+
+    /// "Go to album" and the like, when the queue plays from something.
+    fn go_to_item(&self) -> Option<MenuAction> {
+        self.session.playing_from.clone().map(MenuAction::GoTo)
+    }
+
+    /// Open what the queue plays from where the phone would: your own
+    /// playlists under Library, the rest of YouTube Music under Search, and
+    /// a search as the words searched for.
+    fn go_to(&mut self, from: PlayingFrom, effects: &mut Vec<Effect>) {
+        self.panel = Panel::None;
+        self.queue_on_clear = false;
+        self.focus = Focus::Content;
+        let kind = match from.kind {
+            PlayingFromKind::Search => {
+                self.switch_tab(Tab::Search, effects);
+                let search = &mut self.search;
+                search.browse.stack.clear();
+                search.query = from.id;
+                search.in_results = false;
+                search.in_recent = false;
+                effects.extend(self.query_changed());
+                return;
+            }
+            PlayingFromKind::Album => CollectionKind::Album,
+            PlayingFromKind::Artist => CollectionKind::Artist,
+            PlayingFromKind::MyPlaylist => CollectionKind::MyPlaylist,
+            PlayingFromKind::Playlist | PlayingFromKind::Mix | PlayingFromKind::Radio => {
+                CollectionKind::Playlist
+            }
+        };
+        let tab = if kind == CollectionKind::MyPlaylist {
+            Tab::Library
+        } else {
+            Tab::Search
+        };
+        self.switch_tab(tab, effects);
+        let open = self
+            .collection()
+            .is_some_and(|page| page.kind == kind && page.id == from.id);
+        if !open {
+            self.open_collection(kind, from.id, effects);
         }
     }
 
@@ -1630,6 +1729,7 @@ impl Nav {
                     if self.clearable() > 0 {
                         items.push(MenuAction::AskClearUpcoming);
                     }
+                    items.extend(self.go_to_item());
                     items.push(MenuAction::Close);
                     self.menu = Some(Menu {
                         title: entry.track.title.clone(),
@@ -1677,7 +1777,7 @@ impl Nav {
                 let card = browse.shelves.selected_card().cloned();
                 let songs = browse.shelves.row_songs();
                 if let Some(card) = card {
-                    self.open_card(&card, songs, now, effects);
+                    self.open_card(&card, songs, None, now, effects);
                 }
             }
             Key::Hold => {
@@ -1691,16 +1791,22 @@ impl Nav {
         true
     }
 
-    /// OK on a card: a song plays its row from there; anything else opens.
+    /// OK on a card: a song plays its row from there, saying what the row
+    /// comes `from`; anything else opens.
     fn open_card(
         &mut self,
         card: &Card,
         (tracks, start): (Vec<QueueTrack>, usize),
+        from: Option<PlayingFrom>,
         now: Instant,
         effects: &mut Vec<Effect>,
     ) {
         if card.track.is_some() {
-            effects.push(Effect::Session(UiAction::PlayTracks { tracks, start }));
+            effects.push(Effect::Session(UiAction::PlayTracks {
+                tracks,
+                start,
+                from,
+            }));
             self.say(format!("Playing “{}”", card.title), now);
             return;
         }
@@ -1808,7 +1914,8 @@ impl Nav {
                     let songs = shelves.row_songs();
                     if let Some(card) = card {
                         self.remember_search(effects);
-                        self.open_card(&card, songs, now, effects);
+                        let from = playing_from_search(&self.search.results_for);
+                        self.open_card(&card, songs, Some(from), now, effects);
                     }
                 }
                 Key::Hold => {
@@ -1969,7 +2076,8 @@ impl Nav {
                     }
                     Some(button) => {
                         let tracks = page.tracks();
-                        self.play_tracks(tracks, button, now, effects);
+                        let from = page.playing_from();
+                        self.play_tracks(tracks, from, button, now, effects);
                     }
                     None => {}
                 },
@@ -2013,6 +2121,7 @@ impl Nav {
                         effects.push(Effect::Session(UiAction::PlayTracks {
                             tracks: collection.tracks.clone(),
                             start: index,
+                            from: page.playing_from(),
                         }));
                         if let Some(track) = collection.tracks.get(index) {
                             self.say(format!("Playing “{}”", track.title), now);
@@ -2044,7 +2153,7 @@ impl Nav {
                         {
                             if key == Key::Ok {
                                 let songs = (card.track.clone().into_iter().collect(), 0);
-                                self.open_card(&card, songs, now, effects);
+                                self.open_card(&card, songs, None, now, effects);
                             } else {
                                 self.card_menu(&card, effects);
                             }
@@ -2066,6 +2175,7 @@ impl Nav {
     fn play_tracks(
         &mut self,
         tracks: Vec<QueueTrack>,
+        from: Option<PlayingFrom>,
         button: CollectionButton,
         now: Instant,
         effects: &mut Vec<Effect>,
@@ -2076,12 +2186,17 @@ impl Nav {
         match button {
             CollectionButton::Save => {}
             CollectionButton::Play => {
-                effects.push(Effect::Session(UiAction::PlayTracks { tracks, start: 0 }));
+                effects.push(Effect::Session(UiAction::PlayTracks {
+                    tracks,
+                    start: 0,
+                    from,
+                }));
             }
             CollectionButton::Shuffle => {
                 effects.push(Effect::Session(UiAction::PlayTracks {
                     tracks: shuffled(tracks, now),
                     start: 0,
+                    from,
                 }));
             }
             CollectionButton::Queue => {
@@ -2121,11 +2236,17 @@ impl Nav {
 
     fn run_menu(&mut self, action: MenuAction, now: Instant, effects: &mut Vec<Effect>) {
         let play = |target: Target, mode: PlayMode, effects: &mut Vec<Effect>| match target {
+            // A song played from its menu plays on its own, from nothing.
             Target::Tracks(tracks) => effects.push(Effect::Session(match mode {
-                PlayMode::Play => UiAction::PlayTracks { tracks, start: 0 },
+                PlayMode::Play => UiAction::PlayTracks {
+                    tracks,
+                    start: 0,
+                    from: None,
+                },
                 PlayMode::Shuffle => UiAction::PlayTracks {
                     tracks: shuffled(tracks, now),
                     start: 0,
+                    from: None,
                 },
                 PlayMode::Next => UiAction::Enqueue {
                     tracks,
@@ -2203,6 +2324,7 @@ impl Nav {
             MenuAction::OpenUpdateSettings => effects.push(Effect::OpenUpdateSettings),
             MenuAction::CheckForUpdates => effects.push(Effect::CheckForUpdates),
             MenuAction::InstallUpdate => effects.push(Effect::InstallUpdate),
+            MenuAction::GoTo(from) => self.go_to(from, effects),
             MenuAction::Close => {}
         }
     }
@@ -2417,11 +2539,18 @@ mod tests {
         let mut nav = Nav::new();
         nav.on_home(Ok(shelves()));
         let effects = press(&mut nav, &[Key::Right, Key::Right, Key::Ok]);
-        let Effect::Session(UiAction::PlayTracks { tracks, start }) = &effects[0] else {
+        let Effect::Session(UiAction::PlayTracks {
+            tracks,
+            start,
+            from,
+        }) = &effects[0]
+        else {
             panic!("expected PlayTracks, got {effects:?}");
         };
         assert_eq!(tracks.len(), 10);
         assert_eq!(*start, 2);
+        // A row of Home plays from nothing with a page, as on the phone.
+        assert_eq!(*from, None);
     }
 
     #[test]
@@ -2470,12 +2599,239 @@ mod tests {
                 Key::Ok,
             ],
         );
-        let Effect::Session(UiAction::PlayTracks { start, .. }) = &effects[0] else {
+        let Effect::Session(UiAction::PlayTracks { start, from, .. }) = &effects[0] else {
             panic!("expected PlayTracks, got {effects:?}");
         };
         assert_eq!(*start, 1);
+        assert_eq!(
+            *from,
+            Some(PlayingFrom {
+                kind: PlayingFromKind::Album,
+                title: "Album a1".into(),
+                id: "a1".into(),
+            })
+        );
         press(&mut nav, &[Key::Back]);
         assert!(nav.collection().is_none());
+    }
+
+    /// A loaded collection page of `kind` on the Home tab.
+    fn open_page(nav: &mut Nav, kind: CollectionKind, id: &str, title: &str) {
+        nav.tab = Tab::Home;
+        nav.open_collection(kind, id.into(), &mut Vec::new());
+        nav.on_collection(
+            Tab::Home,
+            kind,
+            id,
+            Ok(Collection {
+                kind,
+                id: id.into(),
+                title: title.into(),
+                subtitle: String::new(),
+                description: None,
+                artwork_url: None,
+                tracks: vec![track("t0"), track("t1")],
+                shelves: Vec::new(),
+            }),
+        );
+    }
+
+    fn played_from(effects: &[Effect]) -> Option<PlayingFrom> {
+        effects.iter().find_map(|effect| match effect {
+            Effect::Session(UiAction::PlayTracks { from, .. }) => from.clone(),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn play_and_shuffle_say_what_the_page_is() {
+        let mut nav = Nav::new();
+        open_page(&mut nav, CollectionKind::MyPlaylist, "liked", "Liked Songs");
+        assert_eq!(
+            played_from(&press(&mut nav, &[Key::Ok])),
+            Some(PlayingFrom {
+                kind: PlayingFromKind::MyPlaylist,
+                title: "Liked Songs".into(),
+                id: "liked".into(),
+            })
+        );
+        // Shuffle.
+        let mut nav = Nav::new();
+        open_page(&mut nav, CollectionKind::Artist, "UCgeese", "Geese");
+        let from = played_from(&press(&mut nav, &[Key::Right, Key::Ok])).unwrap();
+        assert_eq!(
+            (from.kind, from.id.as_str()),
+            (PlayingFromKind::Artist, "UCgeese")
+        );
+        // A mix made on Home is a playlist of YouTube Music's radio.
+        let mut nav = Nav::new();
+        open_page(
+            &mut nav,
+            CollectionKind::Playlist,
+            "RDAMVMcobra",
+            "Mix: Geese",
+        );
+        let from = played_from(&press(&mut nav, &[Key::Ok])).unwrap();
+        assert_eq!(from.kind, PlayingFromKind::Mix);
+        let mut nav = Nav::new();
+        open_page(&mut nav, CollectionKind::Playlist, "PLroad", "Road Trip");
+        let from = played_from(&press(&mut nav, &[Key::Ok])).unwrap();
+        assert_eq!(from.kind, PlayingFromKind::Playlist);
+    }
+
+    #[test]
+    fn a_song_from_search_results_plays_from_the_search() {
+        let mut nav = Nav::new();
+        nav.tab = Tab::Search;
+        nav.search.query = "geese".into();
+        nav.on_search("geese", Ok(shelves()));
+        nav.search.in_results = true;
+        let effects = press(&mut nav, &[Key::Right, Key::Ok]);
+        assert_eq!(
+            played_from(&effects),
+            Some(PlayingFrom {
+                kind: PlayingFromKind::Search,
+                title: "geese".into(),
+                id: "geese".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_menu_plays_a_collection_from_its_card() {
+        let mut nav = Nav::new();
+        nav.on_home(Ok(shelves()));
+        // Hold on the album, then Play now: the page is fetched first, and
+        // the screen says where it plays from once it has the title.
+        press(&mut nav, &[Key::Down, Key::Right, Key::Hold]);
+        assert_eq!(
+            press(&mut nav, &[Key::Ok]),
+            vec![Effect::PlayCollection {
+                kind: CollectionKind::Album,
+                id: "a1".into(),
+                mode: PlayMode::Play,
+            }]
+        );
+        assert_eq!(
+            playing_from(CollectionKind::Album, "a1", "Album a1"),
+            PlayingFrom {
+                kind: PlayingFromKind::Album,
+                title: "Album a1".into(),
+                id: "a1".into(),
+            }
+        );
+    }
+
+    fn from_album() -> PlayingFrom {
+        PlayingFrom {
+            kind: PlayingFromKind::Album,
+            title: "Getting Killed".into(),
+            id: "MPREb_killed".into(),
+        }
+    }
+
+    #[test]
+    fn hold_on_now_playing_goes_to_what_the_queue_plays_from() {
+        let mut nav = Nav::new();
+        nav.on_session(View {
+            playing_from: Some(from_album()),
+            ..playing_view()
+        });
+        assert_eq!(nav.tab, Tab::NowPlaying);
+        // The first key brings up the controls; then hold.
+        press(&mut nav, &[Key::Right, Key::Hold]);
+        let menu = nav.menu.as_ref().unwrap();
+        assert_eq!(menu.items[1], MenuAction::GoTo(from_album()));
+        assert_eq!(menu.items[1].label(), "Go to album");
+        let effects = press(&mut nav, &[Key::Down, Key::Ok]);
+        assert_eq!(nav.tab, Tab::Search);
+        assert_eq!(nav.focus, Focus::Content);
+        assert!(effects.contains(&Effect::LoadCollection {
+            tab: Tab::Search,
+            kind: CollectionKind::Album,
+            id: "MPREb_killed".into(),
+        }));
+        let page = nav.collection().unwrap();
+        assert_eq!(
+            (page.kind, page.id.as_str()),
+            (CollectionKind::Album, "MPREb_killed")
+        );
+        // Back returns to Search, and going again doesn't stack it twice.
+        nav.show_now_playing();
+        press(&mut nav, &[Key::Right, Key::Hold, Key::Down]);
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::LoadCollection { .. }))
+        );
+        assert_eq!(nav.search.browse.stack.len(), 1);
+    }
+
+    #[test]
+    fn nothing_to_go_to_without_a_page() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        press(&mut nav, &[Key::Right, Key::Hold]);
+        let menu = nav.menu.as_ref().unwrap();
+        assert!(
+            !menu
+                .items
+                .iter()
+                .any(|item| matches!(item, MenuAction::GoTo(_)))
+        );
+    }
+
+    #[test]
+    fn the_queue_goes_to_my_playlist_in_the_library() {
+        let mut nav = Nav::new();
+        let mine = PlayingFrom {
+            kind: PlayingFromKind::MyPlaylist,
+            title: "Road Trip".into(),
+            id: "p1".into(),
+        };
+        nav.on_session(View {
+            playing_from: Some(mine.clone()),
+            ..playing_view()
+        });
+        // Controls up, over to Queue, open it, then hold on a song.
+        press(&mut nav, &[Key::Right]);
+        nav.control = CONTROLS.iter().position(|c| *c == Control::Queue).unwrap();
+        press(&mut nav, &[Key::Ok, Key::Down, Key::Hold]);
+        let menu = nav.menu.as_ref().unwrap();
+        let index = menu
+            .items
+            .iter()
+            .position(|item| *item == MenuAction::GoTo(mine.clone()))
+            .unwrap();
+        assert_eq!(menu.items[index].label(), "Go to playlist");
+        assert_eq!(menu.items.last(), Some(&MenuAction::Close));
+        let mut keys = vec![Key::Down; index];
+        keys.push(Key::Ok);
+        let effects = press(&mut nav, &keys);
+        assert_eq!((nav.tab, nav.panel), (Tab::Library, Panel::None));
+        assert!(effects.contains(&Effect::LoadLibrary));
+        assert!(effects.contains(&Effect::LoadCollection {
+            tab: Tab::Library,
+            kind: CollectionKind::MyPlaylist,
+            id: "p1".into(),
+        }));
+    }
+
+    #[test]
+    fn going_to_a_search_searches_again() {
+        let mut nav = Nav::new();
+        nav.search.query = "something else".into();
+        nav.on_session(View {
+            playing_from: Some(playing_from_search("daft punk")),
+            ..playing_view()
+        });
+        press(&mut nav, &[Key::Right, Key::Hold]);
+        assert_eq!(nav.menu.as_ref().unwrap().items[1].label(), "Go to search");
+        let effects = press(&mut nav, &[Key::Down, Key::Ok]);
+        assert_eq!(nav.tab, Tab::Search);
+        assert_eq!(nav.search.query, "daft punk");
+        assert_eq!(effects, vec![Effect::Search("daft punk".into())]);
     }
 
     #[test]

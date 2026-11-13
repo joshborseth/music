@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::protocol::QueueEntry;
+use crate::protocol::{PlayingFrom, PlayingFromKind, QueueEntry};
 
 /// Where playback is, to the millisecond. The controller sets it each time it
 /// rebuilds the view; the screen reads it many times a second to keep timed
@@ -69,6 +69,8 @@ pub struct View {
     pub utc_offset_minutes: Option<i32>,
     pub repeat: crate::protocol::RepeatMode,
     pub shuffle: bool,
+    /// What the queue was started from, for "Playing from" and Go to.
+    pub playing_from: Option<PlayingFrom>,
 }
 
 impl View {
@@ -79,6 +81,24 @@ impl View {
     pub fn is_idle(&self) -> bool {
         self.current.is_none()
     }
+}
+
+/// "Playing from" over the song: the kind, named as the phone's player names
+/// it, and the title, a search's in quotes.
+pub fn playing_from_line(from: &PlayingFrom) -> (String, String) {
+    let kind = match from.kind {
+        PlayingFromKind::Album => "ALBUM",
+        PlayingFromKind::Playlist | PlayingFromKind::MyPlaylist => "PLAYLIST",
+        PlayingFromKind::Artist => "ARTIST",
+        PlayingFromKind::Mix => "MIX",
+        PlayingFromKind::Radio => "RADIO",
+        PlayingFromKind::Search => "SEARCH",
+    };
+    let title = match from.kind {
+        PlayingFromKind::Search => format!("“{}”", from.title),
+        _ => from.title.clone(),
+    };
+    (format!("PLAYING FROM {kind}"), title)
 }
 
 /// `m:ss`, or `h:mm:ss` past an hour.
@@ -125,6 +145,27 @@ pub fn percent_encode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_what_the_queue_plays_from() {
+        let from = |kind, title: &str| PlayingFrom {
+            kind,
+            title: title.into(),
+            id: "id".into(),
+        };
+        assert_eq!(
+            playing_from_line(&from(PlayingFromKind::Album, "Discovery")),
+            ("PLAYING FROM ALBUM".into(), "Discovery".into())
+        );
+        assert_eq!(
+            playing_from_line(&from(PlayingFromKind::MyPlaylist, "Liked Songs")),
+            ("PLAYING FROM PLAYLIST".into(), "Liked Songs".into())
+        );
+        assert_eq!(
+            playing_from_line(&from(PlayingFromKind::Search, "daft punk")),
+            ("PLAYING FROM SEARCH".into(), "“daft punk”".into())
+        );
+    }
 
     #[test]
     fn formats_clock() {

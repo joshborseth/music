@@ -122,7 +122,9 @@ pub enum SleepTimer {
 #[serde(tag = "_tag")]
 pub enum SleepTimerChoice {
     /// After this many minutes.
-    Minutes { minutes: u32 },
+    Minutes {
+        minutes: u32,
+    },
     EndOfSong {},
 }
 
@@ -446,10 +448,7 @@ mod tests {
     fn decodes_a_state_from_a_server_before_the_sleep_timer() {
         let mut value: serde_json::Value =
             serde_json::from_str(&fixture("server-state.json")).unwrap();
-        value["state"]
-            .as_object_mut()
-            .unwrap()
-            .remove("sleepTimer");
+        value["state"].as_object_mut().unwrap().remove("sleepTimer");
         let ServerMessage::State { state, .. } = serde_json::from_value(value).unwrap() else {
             panic!("expected State");
         };
@@ -502,6 +501,42 @@ mod tests {
                 start_index: 0,
                 playing_from: None,
             }
+        );
+    }
+
+    #[test]
+    fn encodes_what_the_tv_plays_from() {
+        let message = ClientMessage::PlayQueue {
+            tracks: vec![],
+            start_index: 2,
+            playing_from: Some(PlayingFrom {
+                kind: PlayingFromKind::Search,
+                title: "daft punk".into(),
+                id: "daft punk".into(),
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&message).unwrap(),
+            serde_json::json!({
+                "_tag": "PlayQueue",
+                "tracks": [],
+                "startIndex": 2,
+                "playingFrom": { "kind": "Search", "title": "daft punk", "id": "daft punk" },
+            })
+        );
+        let mix = ClientMessage::PlayQueue {
+            tracks: vec![],
+            start_index: 0,
+            playing_from: Some(PlayingFrom {
+                kind: PlayingFromKind::Mix,
+                title: "Mix: Geese".into(),
+                id: "RDAMVMcobra".into(),
+            }),
+        };
+        let encoded = serde_json::to_string(&mix).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            mix
         );
     }
 
@@ -612,6 +647,23 @@ mod tests {
                 },
             ),
             (
+                // Songs that come from no page say so with null, never by
+                // leaving the field out.
+                "client-play-queue-from-nothing.json",
+                ClientMessage::PlayQueue {
+                    tracks: vec![QueueTrack {
+                        video_id: "dQw4w9WgXcQ".into(),
+                        title: "Never Gonna Give You Up".into(),
+                        artists: "Rick Astley".into(),
+                        album: None,
+                        duration_seconds: None,
+                        artwork_url: None,
+                    }],
+                    start_index: 0,
+                    playing_from: None,
+                },
+            ),
+            (
                 "client-enqueue.json",
                 ClientMessage::Enqueue {
                     tracks: vec![QueueTrack {
@@ -637,7 +689,10 @@ mod tests {
                     entry_id: "e1".into(),
                 },
             ),
-            ("client-clear-upcoming.json", ClientMessage::ClearUpcoming {}),
+            (
+                "client-clear-upcoming.json",
+                ClientMessage::ClearUpcoming {},
+            ),
             (
                 "client-transfer.json",
                 ClientMessage::Transfer {

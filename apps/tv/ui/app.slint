@@ -673,6 +673,10 @@ export component App inherits Window {
     in property <bool> playing;
     in property <bool> loading;
     in property <string> where;
+    // What the queue plays from: "PLAYING FROM ALBUM" and its title, both
+    // empty when it plays from nothing with a page.
+    in property <string> from-kind;
+    in property <string> from-title;
     in property <[ButtonData]> controls;
     // The seek bar has the selection (Left and Right seek), a seek is being
     // picked, and how far it goes ("+0:30").
@@ -830,9 +834,10 @@ export component App inherits Window {
         // tab bar and the buttons, shrinking its cover to fit, and with the
         // queue open it moves into the space left of it.
         song := VerticalLayout {
-            // Everything but the cover and the title: the gaps, the line
-            // above the title, the artists, the seek bar, and the times.
-            property <length> rest: Metrics.u * 10.1;
+            // Everything but the cover and the title: the gaps, what the
+            // queue plays from, the line above the title, the artists, the
+            // seek bar, and the times.
+            property <length> rest: Metrics.u * (root.from-title != "" ? 13.1 : 10.1);
             property <length> band-top: root.controls-shown ? Metrics.u * 6.8 : 0;
             property <length> band-bottom: root.controls-shown ? root.height - Metrics.u * 8.8 : root.height;
             property <length> full-art: stage.side ? Metrics.u * 24 : Metrics.u * 26;
@@ -844,6 +849,32 @@ export component App inherits Window {
             y: self.band-top + (self.band-bottom - self.band-top - self.preferred-height) / 2 + stage.shift-y;
             animate x, y, width { duration: 800ms; easing: cubic-bezier(0.2, 0.9, 0.25, 1); }
             spacing: Metrics.u * 0.45;
+            // What the queue plays from heads the song, as at the top of
+            // the phone's player: the kind small, the title beside it, cut
+            // short to the song's width. Solid greys, as for the times.
+            if root.from-title != "": HorizontalLayout {
+                alignment: stage.side ? LayoutAlignment.start : LayoutAlignment.center;
+                spacing: Metrics.u * 0.7;
+                Text {
+                    min-width: self.preferred-width;
+                    text: root.from-kind;
+                    color: Theme.lyric-next;
+                    font-size: Metrics.u * 1.1;
+                    font-weight: 700;
+                    letter-spacing: Metrics.u * 0.06;
+                    vertical-alignment: center;
+                }
+                Text {
+                    min-width: 0;
+                    text: root.from-title;
+                    color: Theme.lyric-plain;
+                    font-size: Metrics.u * 1.25;
+                    font-weight: 600;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+            }
+            if root.from-title != "": Rectangle { height: Metrics.u * 0.6; }
             HorizontalLayout {
                 alignment: stage.side ? LayoutAlignment.start : LayoutAlignment.center;
                 Rectangle {

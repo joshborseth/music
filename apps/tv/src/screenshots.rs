@@ -26,7 +26,7 @@ use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferTyp
 use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
 use slint::{ComponentHandle, PhysicalSize, Rgb8Pixel};
 
-use crate::protocol::{QueueEntry, QueueTrack};
+use crate::protocol::{PlayingFrom, PlayingFromKind, QueueEntry, QueueTrack};
 use crate::view::View;
 use crate::{App, ui};
 
@@ -275,5 +275,11 @@ pub fn sample_view(tracks: Vec<QueueTrack>, current: usize, here: bool) -> View 
         utc_offset_minutes: None,
         repeat: crate::protocol::RepeatMode::Off,
         shuffle: false,
+        // The made-up queue is the songs `screens` searched for.
+        playing_from: Some(PlayingFrom {
+            kind: PlayingFromKind::Search,
+            title: "daft punk".into(),
+            id: "daft punk".into(),
+        }),
     }
 }
