@@ -1,7 +1,16 @@
 import { Array, Match, Option } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
-import { CircleX, Disc3, History, ListMusic, Play, Search, User } from 'lucide'
+import {
+  CircleX,
+  Disc3,
+  History,
+  ListMusic,
+  LoaderCircle,
+  Play,
+  Search,
+  User,
+} from 'lucide'
 
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -9,6 +18,7 @@ import {
   type Artwork,
   type MoodCategory,
   type MoodGroup,
+  type Song,
   type TopResult,
 } from '@music/shared'
 
@@ -19,6 +29,7 @@ import {
 } from '../constant'
 import { Message } from '../message'
 import {
+  type RequestError,
   albumSearchQuery,
   artistSearchQuery,
   moodGroupsQuery,
@@ -27,13 +38,16 @@ import {
   topResultSearchQuery,
 } from '../query'
 import { SEARCH_KINDS, type SearchKind, moodRouter } from '../route'
-import { routeQuery, routeSearchKind } from '../update'
+import { isSearchSettled, routeQuery, routeSearchKind } from '../update'
 import { largeTitle, statusBarCover } from './chrome'
 import { type PageModel } from './page'
 import {
   ArtworkShape,
+  type SectionAction,
+  albumCard,
   albumHref,
   albumRow,
+  artistCard,
   artistHref,
   artistNames,
   artistRow,
@@ -42,17 +56,25 @@ import {
   joinDetails,
   list,
   loadingRows,
+  playlistCard,
   playlistHref,
   playlistRow,
   remote,
   requestErrorAlert,
   section,
+  sectionWithAction,
+  shelf,
   songList,
 } from './shared'
 
 // SEARCH BAR
 
-const searchField = (model: PageModel, h: HtmlBuilder<Message>): Html =>
+/** The search box. Its magnifier turns into a spinner while a search loads. */
+const searchField = (
+  model: PageModel,
+  isSearching: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.form(
     [
       h.OnSubmit(Message.SubmittedSearch()),
@@ -67,7 +89,14 @@ const searchField = (model: PageModel, h: HtmlBuilder<Message>): Html =>
             'text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2',
           ),
         ],
-        [icon(h, Search, 'size-[18px]')],
+        [
+          isSearching
+            ? h.span(
+                [h.Role('status'), h.AriaLabel('Searching')],
+                [icon(h, LoaderCircle, 'size-[18px] animate-spin')],
+              )
+            : icon(h, Search, 'size-[18px]'),
+        ],
       ),
       h.input([
         h.Id(SEARCH_INPUT_ID),
@@ -105,7 +134,7 @@ const kindPicker = (selectedKind: SearchKind, h: HtmlBuilder<Message>): Html =>
     [
       h.Role('tablist'),
       h.AriaLabel('Search in'),
-      h.Class('bg-muted grid h-8 grid-cols-4 rounded-[9px] p-0.5'),
+      h.Class('bg-muted grid h-8 grid-cols-5 rounded-[9px] p-0.5'),
     ],
     Array.map(SEARCH_KINDS, kind =>
       h.button(
@@ -131,6 +160,7 @@ const kindPicker = (selectedKind: SearchKind, h: HtmlBuilder<Message>): Html =>
 const stickySearchBar = (
   model: PageModel,
   kind: SearchKind,
+  isSearching: boolean,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
@@ -141,7 +171,7 @@ const stickySearchBar = (
       ),
     ],
     [
-      searchField(model, h),
+      searchField(model, isSearching, h),
       Option.isSome(routeQuery(model.route)) ? kindPicker(kind, h) : h.empty,
     ],
   )
@@ -289,46 +319,193 @@ const resultsHeading = (title: string, h: HtmlBuilder<Message>): Html =>
     [title],
   )
 
+// TOP
+
+/** Songs Top shows before See All. */
+const TOP_SONG_COUNT = 4
+/** Artists, albums, or playlists in each of Top's shelves. */
+const TOP_SHELF_COUNT = 10
+
+const seeAll = (kind: SearchKind): SectionAction => ({
+  label: 'See All',
+  accessibleLabel: `See all ${kind.toLowerCase()}`,
+  onClick: Message.SelectedSearchKind({ kind }),
+})
+
+const loadedOrEmpty = <A>(
+  data: AsyncData.AsyncData<ReadonlyArray<A>, RequestError>,
+): ReadonlyArray<A> => Option.getOrElse(AsyncData.getData(data), () => [])
+
+const isTopResult = (
+  maybeTopResult: Option.Option<TopResult>,
+  tag: 'Artist' | 'Album' | 'Playlist',
+  id: string,
+): boolean =>
+  Option.exists(maybeTopResult, topResult =>
+    Match.valueTags(topResult, {
+      Artist: ({ artist }) => tag === 'Artist' && artist.id === id,
+      Album: ({ album }) => tag === 'Album' && album.id === id,
+      Song: () => false,
+      Playlist: ({ playlist }) => tag === 'Playlist' && playlist.id === id,
+    }),
+  )
+
 /**
- * Songs, under the top result when YouTube Music picks one. The songs
- * never wait for it.
+ * The top result's song, or another copy of it: YouTube Music often has
+ * the same song on an album and on its deluxe edition.
  */
-const songResults = (
+const isTopResultSong = (
+  maybeTopResult: Option.Option<TopResult>,
+  song: Song,
+): boolean =>
+  Option.exists(
+    maybeTopResult,
+    topResult =>
+      topResult._tag === 'Song' &&
+      (topResult.song.videoId === song.videoId ||
+        (topResult.song.title.toLowerCase() === song.title.toLowerCase() &&
+          artistNames(topResult.song.artists) === artistNames(song.artists))),
+  )
+
+/**
+ * A little of everything, as Apple Music and Spotify start: the best match,
+ * the first songs, then artists, albums, and playlists to swipe through.
+ * Each shelf leaves out the top result and has See All for its kind.
+ */
+const topView = (
   model: PageModel,
   query: string,
-  songsView: Html,
   h: HtmlBuilder<Message>,
-): Html =>
-  Option.match(
-    Option.flatten(
-      AsyncData.getData(
-        topResultSearchQuery.read(model.topResultSearch, { query }),
-      ),
+): Html => {
+  const songSearch = songSearchQuery.read(model.songSearch, { query })
+  const maybeTopResult = Option.flatten(
+    AsyncData.getData(
+      topResultSearchQuery.read(model.topResultSearch, { query }),
     ),
-    {
-      onNone: () => songsView,
-      onSome: topResult =>
-        h.div(
-          [h.Class('flex flex-col')],
-          [
-            resultsHeading('Top Result', h),
-            topResultCard(topResult, h),
-            h.div([h.Class('h-6')]),
-            resultsHeading('Songs', h),
-            songsView,
-          ],
-        ),
-    },
   )
+  const songs = Array.filter(
+    loadedOrEmpty(songSearch),
+    song => !isTopResultSong(maybeTopResult, song),
+  )
+  const artists = Array.filter(
+    loadedOrEmpty(artistSearchQuery.read(model.artistSearch, { query })),
+    artist => !isTopResult(maybeTopResult, 'Artist', artist.id),
+  )
+  const albums = Array.filter(
+    loadedOrEmpty(albumSearchQuery.read(model.albumSearch, { query })),
+    album => !isTopResult(maybeTopResult, 'Album', album.id),
+  )
+  const playlists = Array.filter(
+    loadedOrEmpty(playlistSearchQuery.read(model.playlistSearch, { query })),
+    playlist => !isTopResult(maybeTopResult, 'Playlist', playlist.id),
+  )
+  const isEmpty =
+    Option.isNone(maybeTopResult) &&
+    Array.isReadonlyArrayEmpty(songs) &&
+    Array.isReadonlyArrayEmpty(artists) &&
+    Array.isReadonlyArrayEmpty(albums) &&
+    Array.isReadonlyArrayEmpty(playlists)
+
+  return Option.match(AsyncData.getError(songSearch), {
+    onSome: error => requestErrorAlert(error, h),
+    onNone: () =>
+      isEmpty
+        ? noResults(query, 'Song', h)
+        : h.div(
+            [h.Class('flex flex-col gap-7')],
+            [
+              Option.match(maybeTopResult, {
+                onNone: () => h.empty,
+                onSome: topResult =>
+                  h.section(
+                    [h.Class('flex flex-col')],
+                    [
+                      resultsHeading('Top Result', h),
+                      topResultCard(topResult, h),
+                    ],
+                  ),
+              }),
+              Array.match(songs, {
+                onEmpty: () => h.empty,
+                onNonEmpty: songs =>
+                  sectionWithAction(
+                    'Songs',
+                    seeAll('Songs'),
+                    [
+                      songList(
+                        {
+                          songs: Array.take(songs, TOP_SONG_COUNT),
+                          playing: model.playing,
+                          swipe: model.swipe,
+                          isNumbered: false,
+                          isAlbumHidden: false,
+                          isTitleWrapped: true,
+                          playsAlone: true,
+                        },
+                        h,
+                      ),
+                    ],
+                    h,
+                  ),
+              }),
+              shelf(
+                {
+                  title: 'Artists',
+                  items: Array.take(artists, TOP_SHELF_COUNT),
+                  toKey: artist => artist.id,
+                  toCard: artistCard,
+                  maybeAction: Option.some(seeAll('Artists')),
+                },
+                h,
+              ),
+              shelf(
+                {
+                  title: 'Albums',
+                  items: Array.take(albums, TOP_SHELF_COUNT),
+                  toKey: album => album.id,
+                  toCard: albumCard,
+                  maybeAction: Option.some(seeAll('Albums')),
+                },
+                h,
+              ),
+              shelf(
+                {
+                  title: 'Playlists',
+                  items: Array.take(playlists, TOP_SHELF_COUNT),
+                  toKey: playlist => playlist.id,
+                  toCard: playlistCard,
+                  maybeAction: Option.some(seeAll('Playlists')),
+                },
+                h,
+              ),
+            ],
+          ),
+  })
+}
 
 // RESULTS
 
 const searchKindToItemKind = {
+  Top: 'Song',
   Songs: 'Song',
   Artists: 'Artist',
   Albums: 'Album',
   Playlists: 'Playlist',
 } as const
+
+const noResults = (
+  query: string,
+  itemKind: (typeof searchKindToItemKind)[SearchKind],
+  h: HtmlBuilder<Message>,
+): Html =>
+  emptyState(
+    {
+      title: 'No results',
+      description: `Nothing on YouTube Music matches “${query}”.`,
+      kind: itemKind,
+    },
+    h,
+  )
 
 const resultsView = (
   model: PageModel,
@@ -336,17 +513,11 @@ const resultsView = (
   kind: SearchKind,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const noResults = emptyState(
-    {
-      title: 'No results',
-      description: `Nothing on YouTube Music matches “${query}”.`,
-      kind: searchKindToItemKind[kind],
-    },
-    h,
-  )
+  const empty = () => noResults(query, searchKindToItemKind[kind], h)
 
   return Match.value(kind).pipe(
     Match.withReturnType<Html>(),
+    Match.when('Top', () => topView(model, query, h)),
     Match.when('Songs', () =>
       remote(
         songSearchQuery.read(model.songSearch, { query }),
@@ -354,22 +525,18 @@ const resultsView = (
           onLoading: () => loadingRows(h),
           onData: songs =>
             Array.match(songs, {
-              onEmpty: () => noResults,
+              onEmpty: empty,
               onNonEmpty: songs =>
-                songResults(
-                  model,
-                  query,
-                  songList(
-                    {
-                      songs,
-                      playing: model.playing,
-                      swipe: model.swipe,
-                      isNumbered: false,
-                      isAlbumHidden: false,
-                      isTitleWrapped: true,
-                    },
-                    h,
-                  ),
+                songList(
+                  {
+                    songs,
+                    playing: model.playing,
+                    swipe: model.swipe,
+                    isNumbered: false,
+                    isAlbumHidden: false,
+                    isTitleWrapped: true,
+                    playsAlone: true,
+                  },
                   h,
                 ),
             }),
@@ -384,7 +551,7 @@ const resultsView = (
           onLoading: () => loadingRows(h),
           onData: artists =>
             Array.match(artists, {
-              onEmpty: () => noResults,
+              onEmpty: empty,
               onNonEmpty: artists =>
                 list(
                   artists,
@@ -403,7 +570,7 @@ const resultsView = (
           onLoading: () => loadingRows(h),
           onData: albums =>
             Array.match(albums, {
-              onEmpty: () => noResults,
+              onEmpty: empty,
               onNonEmpty: albums =>
                 list(albums, { toKey: album => album.id, toRow: albumRow }, h),
             }),
@@ -418,7 +585,7 @@ const resultsView = (
           onLoading: () => loadingRows(h),
           onData: playlists =>
             Array.match(playlists, {
-              onEmpty: () => noResults,
+              onEmpty: empty,
               onNonEmpty: playlists =>
                 list(
                   playlists,
@@ -433,6 +600,23 @@ const resultsView = (
     Match.exhaustive,
   )
 }
+
+/**
+ * The search whose results the page shows: this one once it has answered,
+ * and until then the one before it. With neither, the page keeps what it
+ * showed before anything was typed, so typing never fills the page with
+ * placeholders. The search field shows a spinner meanwhile.
+ */
+const shownSearch = (
+  model: PageModel,
+  query: string,
+  kind: SearchKind,
+): Option.Option<string> =>
+  isSearchSettled(model, query, kind)
+    ? Option.some(query)
+    : Option.filter(model.maybeEarlierSearch, earlierQuery =>
+        isSearchSettled(model, earlierQuery, kind),
+      )
 
 // RECENT SEARCHES
 
@@ -589,17 +773,25 @@ export const searchView = (
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => {
   const kind = routeSearchKind(model.route)
+  const maybeQuery = routeQuery(model.route)
+  const isSearching = Option.exists(
+    maybeQuery,
+    query => !isSearchSettled(model, query, kind),
+  )
   return [
     statusBarCover(h),
     largeTitle('Search', h.empty, h),
-    stickySearchBar(model, kind, h),
+    stickySearchBar(model, kind, isSearching, h),
     h.div(
       [h.DataAttribute(SEARCH_RESULTS_ATTRIBUTE, ''), h.Class('pb-6')],
       [
-        Option.match(routeQuery(model.route), {
-          onNone: () => emptySearchView(model, h),
-          onSome: query => resultsView(model, query, kind, h),
-        }),
+        Option.match(
+          Option.flatMap(maybeQuery, query => shownSearch(model, query, kind)),
+          {
+            onNone: () => emptySearchView(model, h),
+            onSome: query => resultsView(model, query, kind, h),
+          },
+        ),
       ],
     ),
   ]

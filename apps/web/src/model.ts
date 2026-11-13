@@ -37,6 +37,11 @@ export const Model = Schema.Struct({
   route: AppRoute,
   navigation: NavigationModel,
   searchInput: Schema.String,
+  /**
+   * The last search whose results the page showed. They stay on screen while
+   * a newer search loads.
+   */
+  maybeEarlierSearch: Schema.Option(Schema.String),
   recentSearches: Schema.Array(Schema.String),
   recentlyPlayed: Schema.Array(Session.QueueTrack),
   recentlyViewed: Schema.Array(LibraryItem),

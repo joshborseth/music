@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { Option } from 'effect'
 import { YTNodes } from 'youtubei.js'
 
+import { type Song } from '@music/shared'
+
 import {
+  audioTrackFor,
   filterSome,
   hexFromArgb,
   isExplicit,
@@ -201,6 +204,99 @@ describe('topResultFromCard', () => {
       },
     })
     expect(Option.isNone(radio)).toBe(true)
+  })
+})
+
+describe('topResultFromCard credits', () => {
+  test("keeps a channel's name when it links to no artist page", () => {
+    const result = topResultFromCard(
+      card('Anti-Hero (Lyrics)', watch('lyr1cs'), [
+        { text: 'Video' },
+        SEPARATOR,
+        { text: 'Lyric Vibes' },
+        SEPARATOR,
+        { text: '12M views' },
+        SEPARATOR,
+        { text: '3:21' },
+      ]),
+    )
+
+    expect(Option.getOrThrow(result)).toMatchObject({
+      _tag: 'Song',
+      song: { artists: [{ maybeId: Option.none(), name: 'Lyric Vibes' }] },
+    })
+  })
+})
+
+const taylorSwift = {
+  maybeId: Option.some('UCPC0L1d253x-KuMNwa05TpA'),
+  name: 'Taylor Swift',
+}
+
+const searchedSong = (
+  videoId: string,
+  title: string,
+  artists: Song['artists'],
+): Song => ({
+  videoId,
+  title,
+  artists,
+  maybeAlbum: Option.some({ id: 'MPREb_mid', name: 'Midnights' }),
+  maybeDurationSeconds: Option.some(201),
+  artwork: [],
+})
+
+describe('audioTrackFor', () => {
+  const karaoke = searchedSong('k4r40k3', 'Anti-Hero (Karaoke Version)', [
+    { maybeId: Option.some('UCkaraoke'), name: 'Sing King' },
+  ])
+  const song = searchedSong('3YgtjHZyCIQ', 'Anti-Hero', [taylorSwift])
+
+  test('finds the song a music video is of, by title and artist', () => {
+    const video = searchedSong(
+      'b1kbLwvqugk',
+      'Anti-Hero (Official Music Video)',
+      [taylorSwift],
+    )
+
+    expect(audioTrackFor(video, [karaoke, song])).toEqual(Option.some(song))
+  })
+
+  test('reads past the artist in front of the title', () => {
+    const video = searchedSong(
+      'v1d30',
+      'Taylor Swift - Anti-Hero [Official Video]',
+      [taylorSwift],
+    )
+
+    expect(audioTrackFor(video, [song])).toEqual(Option.some(song))
+  })
+
+  test('keeps a version that is part of the title apart', () => {
+    const video = searchedSong('v1d30', 'Anti-Hero (feat. Bleachers)', [
+      taylorSwift,
+    ])
+
+    expect(Option.isNone(audioTrackFor(video, [song]))).toBe(true)
+  })
+
+  test('leaves a song by someone else alone', () => {
+    const cover = searchedSong('c0v3r', 'Anti-Hero', [
+      { maybeId: Option.some('UCcover'), name: 'Some Band' },
+    ])
+    const video = searchedSong('v1d30', 'Anti-Hero (Official Video)', [
+      taylorSwift,
+    ])
+
+    expect(audioTrackFor(video, [cover])).toEqual(Option.none())
+  })
+
+  test('matches a video with no artist page on its title alone', () => {
+    const video = searchedSong('v1d30', 'Anti-Hero (Lyrics)', [
+      { maybeId: Option.none(), name: 'Lyric Vibes' },
+    ])
+
+    expect(audioTrackFor(video, [song])).toEqual(Option.some(song))
   })
 })
 

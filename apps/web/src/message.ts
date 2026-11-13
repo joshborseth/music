@@ -196,6 +196,7 @@ export const Message = defineMessageUnion({
   PressedMediaKey: { key: MediaKey },
 
   ClickedPlaySongs: { songs: Schema.Array(Song), startIndex: Schema.Number },
+  ClickedStartRadio: { song: Song },
   ClickedEnqueueSongs: {
     songs: Schema.Array(Song),
     placement: Session.Placement,

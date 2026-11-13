@@ -16,6 +16,7 @@ export type PageModel = Readonly<
     Model,
     | 'route'
     | 'searchInput'
+    | 'maybeEarlierSearch'
     | 'recentSearches'
     | 'recentlyPlayed'
     | 'recentlyViewed'
@@ -60,6 +61,7 @@ const renderPage = (
   render: PageRenderer,
   route: Model['route'],
   searchInput: string,
+  maybeEarlierSearch: Model['maybeEarlierSearch'],
   recentSearches: Model['recentSearches'],
   recentlyPlayed: Model['recentlyPlayed'],
   recentlyViewed: Model['recentlyViewed'],
@@ -87,6 +89,7 @@ const renderPage = (
     {
       route,
       searchInput,
+      maybeEarlierSearch,
       recentSearches,
       recentlyPlayed,
       recentlyViewed,
@@ -132,6 +135,7 @@ export const memoizedPage = (
     render,
     model.route,
     model.searchInput,
+    model.maybeEarlierSearch,
     model.recentSearches,
     model.recentlyPlayed,
     model.recentlyViewed,

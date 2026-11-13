@@ -1087,6 +1087,24 @@ export const clickPlaySongs = (
   }
 }
 
+/**
+ * Play `song` with its radio after it: autoplay adds YouTube Music's similar
+ * songs as soon as the queue holds only that song. Asking for a radio asks
+ * for those songs, so it turns autoplay back on when it was off.
+ */
+export const startRadio = (model: Model, song: Song): PlaybackReturn => {
+  const play = clickPlaySongs(model, [song], 0)
+  return Option.exists(model.maybeSession, ({ state }) => !state.autoplay)
+    ? {
+        model: play.model,
+        commands: [
+          ...(play.commands ?? []),
+          send({ _tag: 'SetAutoplay', enabled: true }),
+        ],
+      }
+    : play
+}
+
 export const clickEnqueueSongs = (
   model: Model,
   songs: ReadonlyArray<Song>,

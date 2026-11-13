@@ -814,6 +814,40 @@ describe('autoplay', () => {
     expect(outcome.model.seekSeq).toBe(playing().seekSeq)
   })
 
+  test('a song played alone, as from search, gets its radio after it', () => {
+    const alone = update(
+      { ...initialModel, autoplay: true },
+      { _tag: 'PlayQueue', tracks: [track('s')], startIndex: 0 },
+      makeContext('phone', 1_000),
+    ).model
+    expect(lookahead(alone).maybeAutoplayAfter).toEqual(Option.some('s'))
+    const radio = appendAutoplay(
+      alone,
+      's',
+      [track('s'), track('r1'), track('r2')],
+      makeEntryId,
+    ).model
+    expect(ids(radio)).toEqual(['s', 'r1', 'r2'])
+    expect(autoplayed(radio)).toEqual(['r1', 'r2'])
+  })
+
+  test('starting a radio with autoplay off turns it on, then fills the queue', () => {
+    const context = makeContext('phone', 1_000)
+    const off = { ...initialModel, autoplay: false }
+    const played = update(
+      off,
+      { _tag: 'PlayQueue', tracks: [track('s')], startIndex: 0 },
+      context,
+    ).model
+    expect(lookahead(played).maybeAutoplayAfter).toEqual(Option.none())
+    const radio = update(
+      played,
+      { _tag: 'SetAutoplay', enabled: true },
+      context,
+    ).model
+    expect(lookahead(radio).maybeAutoplayAfter).toEqual(Option.some('s'))
+  })
+
   test(`adds at most ${AUTOPLAY_BATCH} at a time`, () => {
     const songs = Array.from({ length: 25 }, (_, index) => track(`r${index}`))
     const outcome = appendAutoplay(playing(), 'c', songs, makeEntryId)
