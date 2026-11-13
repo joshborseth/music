@@ -131,9 +131,8 @@ const playButton = (song: Song, h: HtmlBuilder<Message>): Html =>
         [
           h.Type('button'),
           h.OnClick(
-            Message.ClickedPlaySongs({
+            Message.ClickedPlayInOrder({
               songs: [song],
-              startIndex: 0,
               maybePlayingFrom: Option.none(),
             }),
           ),

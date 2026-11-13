@@ -1,0 +1,28 @@
+{
+  "_tag": "PlayQueue",
+  "tracks": [
+    {
+      "videoId": "dQw4w9WgXcQ",
+      "title": "Never Gonna Give You Up",
+      "artists": "Rick Astley",
+      "album": "Whenever You Need Somebody",
+      "durationSeconds": 213.5,
+      "artworkUrl": null
+    },
+    {
+      "videoId": "yPYZpwSpKmA",
+      "title": "Together Forever",
+      "artists": "Rick Astley",
+      "album": "Whenever You Need Somebody",
+      "durationSeconds": 205.5,
+      "artworkUrl": null
+    }
+  ],
+  "startIndex": 1,
+  "playingFrom": {
+    "kind": "Album",
+    "title": "Whenever You Need Somebody",
+    "id": "MPREb_example"
+  },
+  "shuffle": true
+}

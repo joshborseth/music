@@ -17,6 +17,7 @@ import { Tv } from '@music/shared'
 
 import { SessionHub } from './session/hub.ts'
 import { TvWaker } from './session/wake.ts'
+import { isBlankFrame } from './tvFrame.ts'
 
 /** The most of a crash report worth keeping. */
 const MAX_REPORT_LENGTH = 16_384
@@ -260,6 +261,16 @@ const FRAMES_KEPT = 30
 const CAPTURE_WINDOW_MS = 60_000
 
 /**
+ * Note a screenshot saved in `file`. A blank one (`isBlankFrame`) is kept
+ * too, to look at, and logged as an error: the TV once drew nothing but
+ * black for every song (#80), and only its screenshots showed it.
+ */
+export const logTvFrame = (file: string, png: Uint8Array) =>
+  isBlankFrame(png)
+    ? Effect.logError('TV sent a black frame: the screen may be blank', file)
+    : Effect.logInfo('A screenshot from the TV', file)
+
+/**
  * Pictures of the TV's screen, to check its visuals: nobody can see the TV
  * from this box. `POST /tv/capture?count=N` asks for N; the TV asks
  * `GET /tv/capture` every few seconds while its visuals show (200 when one
@@ -360,7 +371,7 @@ export const TvCaptureRoute = HttpRouter.use(router =>
         yield* Effect.forEach(old, name => fs.remove(path.join(dir, name)), {
           discard: true,
         })
-        yield* Effect.logInfo('A screenshot from the TV', file)
+        yield* logTvFrame(file, bytes)
         return HttpServerResponse.empty({ status: 204 })
       }).pipe(
         Effect.catch(error =>

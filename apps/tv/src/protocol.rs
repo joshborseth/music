@@ -251,6 +251,11 @@ pub enum ClientMessage {
         /// What the songs come from, when it has a page.
         #[serde(default)]
         playing_from: Option<PlayingFrom>,
+        /// Shuffle them, as Shuffle does (`Some(true)`), play them in order,
+        /// as Play does (`Some(false)`), or keep the session's shuffle, as
+        /// picking one song does (`None`). The session's shuffle becomes it.
+        #[serde(default)]
+        shuffle: Option<bool>,
     },
     #[serde(rename_all = "camelCase")]
     Enqueue {
@@ -500,6 +505,7 @@ mod tests {
                 tracks: vec![],
                 start_index: 0,
                 playing_from: None,
+                shuffle: None,
             }
         );
     }
@@ -514,6 +520,7 @@ mod tests {
                 title: "daft punk".into(),
                 id: "daft punk".into(),
             }),
+            shuffle: None,
         };
         assert_eq!(
             serde_json::to_value(&message).unwrap(),
@@ -522,6 +529,7 @@ mod tests {
                 "tracks": [],
                 "startIndex": 2,
                 "playingFrom": { "kind": "Search", "title": "daft punk", "id": "daft punk" },
+                "shuffle": null,
             })
         );
         let mix = ClientMessage::PlayQueue {
@@ -532,6 +540,7 @@ mod tests {
                 title: "Mix: Geese".into(),
                 id: "RDAMVMcobra".into(),
             }),
+            shuffle: Some(true),
         };
         let encoded = serde_json::to_string(&mix).unwrap();
         assert_eq!(
@@ -644,6 +653,60 @@ mod tests {
                         title: "Whenever You Need Somebody".into(),
                         id: "MPREb_example".into(),
                     }),
+                    shuffle: None,
+                },
+            ),
+            (
+                // Play on an album page: in order, and shuffle off.
+                "client-play-queue-in-order.json",
+                ClientMessage::PlayQueue {
+                    tracks: vec![QueueTrack {
+                        video_id: "dQw4w9WgXcQ".into(),
+                        title: "Never Gonna Give You Up".into(),
+                        artists: "Rick Astley".into(),
+                        album: Some("Whenever You Need Somebody".into()),
+                        duration_seconds: Some(213.5),
+                        artwork_url: None,
+                    }],
+                    start_index: 0,
+                    playing_from: Some(PlayingFrom {
+                        kind: PlayingFromKind::Album,
+                        title: "Whenever You Need Somebody".into(),
+                        id: "MPREb_example".into(),
+                    }),
+                    shuffle: Some(false),
+                },
+            ),
+            (
+                // Shuffle on an album page: the server shuffles from the
+                // song it starts on, and shuffle is on.
+                "client-play-queue-shuffled.json",
+                ClientMessage::PlayQueue {
+                    tracks: vec![
+                        QueueTrack {
+                            video_id: "dQw4w9WgXcQ".into(),
+                            title: "Never Gonna Give You Up".into(),
+                            artists: "Rick Astley".into(),
+                            album: Some("Whenever You Need Somebody".into()),
+                            duration_seconds: Some(213.5),
+                            artwork_url: None,
+                        },
+                        QueueTrack {
+                            video_id: "yPYZpwSpKmA".into(),
+                            title: "Together Forever".into(),
+                            artists: "Rick Astley".into(),
+                            album: Some("Whenever You Need Somebody".into()),
+                            duration_seconds: Some(205.5),
+                            artwork_url: None,
+                        },
+                    ],
+                    start_index: 1,
+                    playing_from: Some(PlayingFrom {
+                        kind: PlayingFromKind::Album,
+                        title: "Whenever You Need Somebody".into(),
+                        id: "MPREb_example".into(),
+                    }),
+                    shuffle: Some(true),
                 },
             ),
             (
@@ -661,6 +724,7 @@ mod tests {
                     }],
                     start_index: 0,
                     playing_from: None,
+                    shuffle: None,
                 },
             ),
             (

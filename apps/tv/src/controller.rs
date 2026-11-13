@@ -35,6 +35,9 @@ pub enum UiAction {
         start: usize,
         /// The album, playlist, artist, or search they come from.
         from: Option<PlayingFrom>,
+        /// Play shuffled (Shuffle), in order (Play), or as shuffle is now
+        /// (picking a song): see `ClientMessage::PlayQueue`.
+        shuffle: Option<bool>,
     },
     Enqueue {
         tracks: Vec<QueueTrack>,
@@ -271,6 +274,7 @@ impl Controller {
                 tracks,
                 start,
                 from,
+                shuffle,
             } => {
                 if tracks.is_empty() {
                     return;
@@ -279,6 +283,7 @@ impl Controller {
                     tracks,
                     start_index: start,
                     playing_from: from,
+                    shuffle,
                 });
                 if !self.is_active() {
                     self.send(here);

@@ -650,6 +650,66 @@ describe('play history', () => {
   })
 })
 
+describe('music videos in the play history', () => {
+  const video = (videoId: string): Song => ({
+    ...song(videoId),
+    title: `Song ${videoId} (Official Music Video)`,
+    artwork: [
+      {
+        url: `https://i.ytimg.com/vi/${videoId}/hq.jpg`,
+        width: 400,
+        height: 225,
+      },
+    ],
+  })
+  const plays = (store: ReturnType<typeof makeStore>) =>
+    Result.getOrThrow(run(store.mostPlayed(10))).map(
+      ({ song: played, playCount }) => [played.videoId, playCount],
+    )
+
+  test('are the plays with a video frame for a cover, newest first', () => {
+    const store = makeStore()
+    run(store.recordPlay(video('v1')))
+    run(store.recordPlay(song('a')))
+    run(store.recordPlay(video('v2')))
+    const videos = Result.getOrThrow(run(store.historyVideos()))
+    expect(videos.map(({ videoId }) => videoId)).toEqual(['v2', 'v1'])
+    expect(videos[0]?.title).toBe('Song v2')
+  })
+
+  test('give way to their songs, keeping when they played and how often', () => {
+    const store = makeStore()
+    run(store.recordPlay(video('v1')))
+    run(store.recordPlay(video('v1')))
+    run(store.recordPlay(song('a')))
+    run(store.recordPlay(song('s1')))
+    run(store.recordPlay(video('v2')))
+    // v1's song already played once, after it: the plays add up.
+    Result.getOrThrow(run(store.replaceInHistory('v1', song('s1'))))
+    // v2 is a song after all, with its square cover.
+    Result.getOrThrow(run(store.replaceInHistory('v2', song('v2'))))
+    expect(plays(store)).toEqual([
+      ['s1', 3],
+      ['v2', 1],
+      ['a', 1],
+    ])
+    expect(Result.getOrThrow(run(store.historyVideos()))).toEqual([])
+    expect(Result.getOrThrow(run(store.recentlyPlayed(10)))).toEqual([
+      song('v2'),
+      song('s1'),
+      song('a'),
+    ])
+  })
+
+  test('give way to a song not played yet', () => {
+    const store = makeStore()
+    run(store.recordPlay(video('v1')))
+    run(store.recordPlay(video('v1')))
+    Result.getOrThrow(run(store.replaceInHistory('v1', song('s1'))))
+    expect(plays(store)).toEqual([['s1', 2]])
+  })
+})
+
 describe('songs saved with a music video’s title', () => {
   const taxes: Song = {
     ...song('Phh3oVCtzBg'),

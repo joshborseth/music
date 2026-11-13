@@ -155,6 +155,10 @@ const PlayedAtRow = Schema.Struct({
 const AlbumRow = Schema.Struct({ album: Schema.String })
 const ArtistRow = Schema.Struct({ artist: Schema.String })
 const VideoIdRow = Schema.Struct({ video_id: Schema.String })
+const HistoryRow = Schema.Struct({
+  video_id: Schema.String,
+  song: Schema.String,
+})
 const PositionRow = Schema.Struct({ position: Schema.NullOr(Schema.Number) })
 const VersionRow = Schema.Struct({ user_version: Schema.Number })
 
@@ -225,7 +229,31 @@ export interface PlaylistStoreShape {
   readonly mostPlayed: (
     limit: number,
   ) => Effect.Effect<ReadonlyArray<PlayedSong>, PlaylistStoreError>
+  /**
+   * The music videos in the play history, newest first: plays kept before
+   * the app swapped videos for their songs (#73), whose cover is a frame of
+   * the video (`isVideoCover`).
+   */
+  readonly historyVideos: () => Effect.Effect<
+    ReadonlyArray<Song>,
+    PlaylistStoreError
+  >
+  /**
+   * Puts `song` in the play history in place of the music video `videoId`,
+   * keeping the latest time either played and adding up their plays.
+   */
+  readonly replaceInHistory: (
+    videoId: string,
+    song: Song,
+  ) => Effect.Effect<void, PlaylistStoreError>
 }
+
+/**
+ * Whether a song's cover is a music video's frame, 16:9, where a song's
+ * cover is square.
+ */
+export const isVideoCover = (song: Song): boolean =>
+  Array.some(song.artwork, ({ width, height }) => width > height)
 
 /** A song from the play history and how many times it played. */
 export type PlayedSong = Readonly<{ song: Song; playCount: number }>
@@ -764,6 +792,45 @@ export const makePlaylistStore = (
       Array.getSomes,
     )
 
+  const readHistoryVideos = (): ReadonlyArray<Song> =>
+    pipe(
+      db
+        .query(
+          'SELECT video_id, song FROM play_history ORDER BY played_at DESC',
+        )
+        .all(),
+      decodeRows(HistoryRow),
+      Array.map(row =>
+        Option.filter(
+          decodeStoredSong(row.song),
+          song => song.videoId === row.video_id && isVideoCover(song),
+        ),
+      ),
+      Array.getSomes,
+    )
+
+  const writeInHistory = (videoId: string, song: Song): void => {
+    db.transaction(() => {
+      if (song.videoId === videoId) {
+        db.query('UPDATE play_history SET song = ? WHERE video_id = ?').run(
+          encodeSong(song),
+          videoId,
+        )
+        return
+      }
+      db.query(
+        `INSERT INTO play_history (video_id, song, played_at, play_count)
+         SELECT ?, ?, played_at, play_count FROM play_history
+         WHERE video_id = ?
+         ON CONFLICT (video_id) DO UPDATE SET
+           song = excluded.song,
+           played_at = MAX(played_at, excluded.played_at),
+           play_count = play_count + excluded.play_count`,
+      ).run(song.videoId, encodeSong(song), videoId)
+      db.query('DELETE FROM play_history WHERE video_id = ?').run(videoId)
+    })()
+  }
+
   const attempt = <A>(run: () => A) =>
     Effect.try({
       try: run,
@@ -799,6 +866,15 @@ export const makePlaylistStore = (
       limit: number,
     ) {
       return yield* attempt(() => readMostPlayed(limit))
+    }),
+    historyVideos: Effect.fn('PlaylistStore.historyVideos')(function* () {
+      return yield* attempt(readHistoryVideos)
+    }),
+    replaceInHistory: Effect.fn('PlaylistStore.replaceInHistory')(function* (
+      videoId: string,
+      song: Song,
+    ) {
+      yield* attempt(() => writeInHistory(videoId, song))
     }),
   }
 }

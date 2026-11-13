@@ -104,6 +104,11 @@ export const Message = defineMessageUnion({
   ClickedLibrarySort: { kind: SortableKind },
   SelectedLibrarySort: { kind: SortableKind, sort: LibrarySort },
   ClickedToggleLibraryLayout: { kind: LayoutKind },
+  /** Play on an album, playlist, artist, or song page: in order, shuffle off. */
+  ClickedPlayInOrder: {
+    songs: Schema.Array(Song),
+    maybePlayingFrom: Schema.Option(Session.PlayingFrom),
+  },
   ClickedShuffleSongs: {
     songs: Schema.Array(Song),
     maybePlayingFrom: Schema.Option(Session.PlayingFrom),

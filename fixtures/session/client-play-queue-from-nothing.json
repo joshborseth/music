@@ -11,5 +11,6 @@
     }
   ],
   "startIndex": 0,
-  "playingFrom": null
+  "playingFrom": null,
+  "shuffle": null
 }

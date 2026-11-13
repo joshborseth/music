@@ -567,6 +567,7 @@ describe('starting a radio', () => {
         title: radioSong.title,
         id: `RDAMVM${radioSong.videoId}`,
       },
+      shuffle: null,
     },
   })
 
@@ -600,6 +601,92 @@ describe('starting a radio', () => {
         [SendToSession, Message.CompletedSendToSession()],
         [SendToSession, Message.CompletedSendToSession()],
       ),
+    )
+  })
+})
+
+describe('play and shuffle', () => {
+  const album: Session.PlayingFrom = {
+    kind: 'Album',
+    title: 'Whenever You Need Somebody',
+    id: 'MPREb_example',
+  }
+  const song = songFromQueueTrack(entry.track)
+  const other: Song = { ...song, videoId: 'yPYZpwSpKmA', title: 'Together' }
+  const songs = [song, other]
+  const shuffledHere = modifyFields(playingHere(1), {
+    maybeSession: maybeSession =>
+      Option.map(maybeSession, snapshot => ({
+        ...snapshot,
+        state: { ...snapshot.state, shuffle: true },
+      })),
+  })
+  const isShuffled = (model: Model) =>
+    Option.exists(model.maybeSession, ({ state }) => state.shuffle)
+  const playQueue = (
+    startIndex: number,
+    shuffle: boolean | null,
+  ): Session.ClientMessage => ({
+    _tag: 'PlayQueue',
+    tracks: songs.map(toQueueTrack),
+    startIndex,
+    playingFrom: album,
+    shuffle,
+  })
+
+  test('Play plays in order and turns shuffle off, shown at once', () => {
+    story(
+      update,
+      given(shuffledHere),
+      message(
+        Message.ClickedPlayInOrder({
+          songs,
+          maybePlayingFrom: Option.some(album),
+        }),
+      ),
+      model(model => {
+        expect(isShuffled(model)).toBe(false)
+      }),
+      Command.expectExact(SendToSession({ message: playQueue(0, false) })),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('Shuffle turns shuffle on, shown at once', () => {
+    story(
+      update,
+      given(playingHere(1)),
+      message(
+        Message.CompletedShuffleSongs({
+          songs,
+          startIndex: 1,
+          maybePlayingFrom: Option.some(album),
+        }),
+      ),
+      model(model => {
+        expect(isShuffled(model)).toBe(true)
+      }),
+      Command.expectExact(SendToSession({ message: playQueue(1, true) })),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('a tap on one song keeps shuffle as it is', () => {
+    story(
+      update,
+      given(shuffledHere),
+      message(
+        Message.ClickedPlaySongs({
+          songs,
+          startIndex: 1,
+          maybePlayingFrom: Option.some(album),
+        }),
+      ),
+      model(model => {
+        expect(isShuffled(model)).toBe(true)
+      }),
+      Command.expectExact(SendToSession({ message: playQueue(1, null) })),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
     )
   })
 })

@@ -571,11 +571,13 @@ impl Ui {
                                         tracks,
                                         start: 0,
                                         from,
+                                        shuffle: Some(false),
                                     },
                                     PlayMode::Shuffle => UiAction::PlayTracks {
-                                        tracks: nav::shuffled(tracks, Instant::now()),
-                                        start: 0,
+                                        start: nav::random_index(tracks.len(), Instant::now()),
+                                        tracks,
                                         from,
+                                        shuffle: Some(true),
                                     },
                                     PlayMode::Next => UiAction::Enqueue {
                                         tracks,

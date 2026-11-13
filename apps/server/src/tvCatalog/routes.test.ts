@@ -92,6 +92,7 @@ const youTubeMusic = YouTubeMusic.of({
       maybeRadio: Option.none(),
     }),
   getPlaylist: () => down,
+  getSongForVideo: () => Effect.succeed(Option.none()),
   getRadio: () => down,
 })
 
