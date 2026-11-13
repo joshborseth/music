@@ -4,7 +4,12 @@ import { CircleArrowDown, LoaderCircle } from 'lucide'
 
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { type Artwork, type RadioStation, type Song } from '@music/shared'
+import {
+  type Artwork,
+  type RadioStation,
+  type Session,
+  type Song,
+} from '@music/shared'
 
 import { DownloadStatus, formatBytes } from '../downloads/domain'
 import { Message } from '../message'
@@ -122,6 +127,8 @@ export const collectionView = (
     swipe: Swipe
     maybeAlbumContext?: Option.Option<AlbumContext>
     maybeRadio?: Option.Option<RadioStation>
+    /** What its songs play from, for the player's "Playing from". */
+    maybePlayingFrom?: Option.Option<Session.PlayingFrom>
   }>,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -174,7 +181,12 @@ export const collectionView = (
             : downloadBadge(header.download, h),
         ],
       ),
-      playActions(config.tracks, h, config.maybeRadio ?? Option.none()),
+      playActions(
+        config.tracks,
+        h,
+        config.maybeRadio ?? Option.none(),
+        config.maybePlayingFrom ?? Option.none(),
+      ),
       Option.match(header.maybeDescription, {
         onNone: () => h.empty,
         onSome: text => expandableText(text, h),
@@ -190,6 +202,7 @@ export const collectionView = (
               isNumbered: config.isNumbered,
               isAlbumHidden: true,
               maybeAlbumContext: config.maybeAlbumContext ?? Option.none(),
+              maybePlayingFrom: config.maybePlayingFrom ?? Option.none(),
             },
             h,
           ),

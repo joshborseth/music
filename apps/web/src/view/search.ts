@@ -19,6 +19,7 @@ import {
   type Artwork,
   type MoodCategory,
   type MoodGroup,
+  type Session,
   type Song,
   type TopResult,
 } from '@music/shared'
@@ -329,12 +330,20 @@ const topResultContent = (
       ),
 ]
 
+/** A song played from search results says what was searched for. */
+const playingFromSearch = (query: string): Session.PlayingFrom => ({
+  kind: 'Search',
+  title: query,
+  id: query,
+})
+
 /**
  * The best match, big, above the songs: an artist, album, or playlist opens;
  * a song plays, and once it is the song playing, pauses and resumes it.
  */
 const topResultCard = (
   topResult: TopResult,
+  query: string,
   playing: NowPlaying,
   h: HtmlBuilder<Message>,
 ): Html => {
@@ -355,7 +364,11 @@ const topResultCard = (
           h.Type('button'),
           h.OnClick(
             playback === 'Ready'
-              ? Message.ClickedPlaySongs({ songs: [song], startIndex: 0 })
+              ? Message.ClickedPlaySongs({
+                  songs: [song],
+                  startIndex: 0,
+                  maybePlayingFrom: Option.some(playingFromSearch(query)),
+                })
               : Message.ClickedTogglePlayback(),
           ),
           h.AriaLabel(
@@ -503,7 +516,7 @@ const topView = (
                     [h.Class('flex flex-col')],
                     [
                       resultsHeading('Top Result', h),
-                      topResultCard(topResult, model.playing, h),
+                      topResultCard(topResult, query, model.playing, h),
                     ],
                   ),
               }),
@@ -523,6 +536,9 @@ const topView = (
                           isAlbumHidden: false,
                           isTitleWrapped: true,
                           playsAlone: true,
+                          maybePlayingFrom: Option.some(
+                            playingFromSearch(query),
+                          ),
                         },
                         h,
                       ),
@@ -618,6 +634,7 @@ const resultsView = (
                     isAlbumHidden: false,
                     isTitleWrapped: true,
                     playsAlone: true,
+                    maybePlayingFrom: Option.some(playingFromSearch(query)),
                   },
                   h,
                 ),

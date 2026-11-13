@@ -88,6 +88,7 @@ const sessionState = (
   repeat: 'Off',
   shuffle: false,
   sleepTimer: null,
+  playingFrom: null,
   positionAt: SERVER_NOW,
   seekSeq,
 })
@@ -561,6 +562,11 @@ describe('starting a radio', () => {
       _tag: 'PlayQueue',
       tracks: [toQueueTrack(radioSong)],
       startIndex: 0,
+      playingFrom: {
+        kind: 'Radio',
+        title: radioSong.title,
+        id: `RDAMVM${radioSong.videoId}`,
+      },
     },
   })
 

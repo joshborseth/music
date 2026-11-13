@@ -667,15 +667,32 @@ describe('shuffle', () => {
       title: 'Dreams',
     }
     const songs = [theChain, dreams]
+    const rumours: Session.PlayingFrom = {
+      kind: 'Album',
+      title: 'Rumours',
+      id: 'MPREb_rumours',
+    }
     story(
       update,
       given(homeModel),
-      message(Message.ClickedShuffleSongs({ songs })),
-      Command.expectExact(UnlockPhoneAudio(), ShuffleSongs({ songs })),
+      message(
+        Message.ClickedShuffleSongs({
+          songs,
+          maybePlayingFrom: Option.some(rumours),
+        }),
+      ),
+      Command.expectExact(
+        UnlockPhoneAudio(),
+        ShuffleSongs({ songs, maybePlayingFrom: Option.some(rumours) }),
+      ),
       Command.resolve(UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()),
       Command.resolve(
         ShuffleSongs,
-        Message.CompletedShuffleSongs({ songs, startIndex: 1 }),
+        Message.CompletedShuffleSongs({
+          songs,
+          startIndex: 1,
+          maybePlayingFrom: Option.some(rumours),
+        }),
       ),
       Command.expectExact(
         SendToSession({ message: { _tag: 'SetShuffle', enabled: true } }),
@@ -684,6 +701,7 @@ describe('shuffle', () => {
             _tag: 'PlayQueue',
             tracks: songs.map(toQueueTrack),
             startIndex: 1,
+            playingFrom: rumours,
           },
         }),
       ),
@@ -871,6 +889,7 @@ describe('lyrics that fail to load', () => {
           repeat: 'Off',
           shuffle: false,
           sleepTimer: null,
+          playingFrom: null,
           positionAt: 0,
           seekSeq: 0,
         },

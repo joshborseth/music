@@ -1,7 +1,7 @@
 import { Array, Option, pipe } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
 
-import { type Artwork, type PlaylistDetails } from '@music/shared'
+import { type Artwork, type PlaylistDetails, Session } from '@music/shared'
 
 import { downloadStatus } from '../downloads/domain'
 import { Message } from '../message'
@@ -138,6 +138,13 @@ export const playlistView = (
             footer: '',
             playing: model.playing,
             swipe: model.swipe,
+            maybePlayingFrom: Option.some({
+              kind: Session.isRadioPlaylistId(details.playlist.id)
+                ? 'Mix'
+                : 'Playlist',
+              title: details.playlist.title,
+              id: details.playlist.id,
+            }),
           },
           h,
         )

@@ -40,6 +40,8 @@ export interface Model {
   readonly waking: ReadonlyArray<string>
   /** When the music stops by itself, if a sleep timer is set. */
   readonly sleepTimer: Session.SleepTimer | null
+  /** What the queue was started from, if anything with a page. */
+  readonly playingFrom: Session.PlayingFrom | null
 }
 
 export const initialModel: Model = {
@@ -58,6 +60,7 @@ export const initialModel: Model = {
   pausedForLostPlayer: false,
   waking: [],
   sleepTimer: null,
+  playingFrom: null,
 }
 
 /**
@@ -139,6 +142,7 @@ export const toSessionState = (
   repeat: model.repeat,
   shuffle: model.shuffle,
   sleepTimer: model.sleepTimer,
+  playingFrom: model.playingFrom,
 })
 
 export const currentPosition = (model: Model, now: number): number =>
@@ -493,6 +497,7 @@ const transition = (
           ),
           playing: queue.length > 0,
           unshuffled: [],
+          playingFrom: message.playingFrom ?? null,
         }
         // Shuffle on: the chosen song first, then the rest in a random order.
         const ordered = model.shuffle
@@ -531,6 +536,8 @@ const transition = (
                 ...message.tracks,
               ],
               startIndex: model.queue.length,
+              // NOTE: the queue had ended, so what it came from is over.
+              playingFrom: null,
             },
             context,
           )

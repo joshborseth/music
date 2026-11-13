@@ -169,6 +169,18 @@ describe('saved session', () => {
     expect(fromSaved(older, 3_000).sleepTimer).toBeNull()
   })
 
+  test('what the queue plays from survives a restart, and an older file has none', () => {
+    const fromAlbum: Model = {
+      ...playing(),
+      playingFrom: { kind: 'Album', title: 'Kid A', id: 'MPREb_kida' },
+    }
+    expect(restart(fromAlbum, 20_000, 30_000).playingFrom).toEqual(
+      fromAlbum.playingFrom,
+    )
+    const { playingFrom: _playingFrom, ...older } = toSaved(fromAlbum, 2_000)
+    expect(fromSaved(older, 3_000).playingFrom).toBeNull()
+  })
+
   test('the position never runs past the song', () => {
     const after = restart(playing(), 900_000, 900_000)
     expect(currentPosition(after, 900_000)).toBe(200)

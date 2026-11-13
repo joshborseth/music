@@ -4,7 +4,7 @@ import { Command, Dom } from 'foldkit'
 import { back, load, pushUrl, replaceUrl } from 'foldkit/navigation'
 
 import { BrowserKeyValueStore } from '@effect/platform-browser'
-import { PlaylistEdit, RadioStation, Song } from '@music/shared'
+import { PlaylistEdit, RadioStation, Session, Song } from '@music/shared'
 
 import {
   PAGE_SELECTOR,
@@ -158,12 +158,39 @@ export const BlurSearchInput = Command.define('BlurSearchInput', {
  * and remembers the list's order for when shuffle is turned off.
  */
 export const ShuffleSongs = Command.define('ShuffleSongs', {
-  args: { songs: Schema.Array(Song) },
+  args: {
+    songs: Schema.Array(Song),
+    maybePlayingFrom: Schema.Option(Session.PlayingFrom),
+  },
   messages: [Message.CompletedShuffleSongs],
-  execute: ({ songs }) =>
+  execute: ({ songs, maybePlayingFrom }) =>
     Random.nextIntBetween(0, Math.max(0, songs.length - 1)).pipe(
       Effect.map(startIndex =>
-        Message.CompletedShuffleSongs({ songs, startIndex }),
+        Message.CompletedShuffleSongs({ songs, startIndex, maybePlayingFrom }),
+      ),
+    ),
+})
+
+/**
+ * Shares the page at `href` with the system share sheet, or where there is
+ * none, copies its address. Cancelling the share sheet is not a failure.
+ */
+export const ShareLink = Command.define('ShareLink', {
+  args: { title: Schema.String, href: Schema.String },
+  messages: [Message.CompletedShareLink],
+  execute: ({ title, href }) =>
+    Effect.gen(function* () {
+      const url = new URL(href, globalThis.location.origin).toString()
+      const { navigator } = globalThis
+      if (typeof navigator.share === 'function') {
+        yield* Effect.tryPromise(() => navigator.share({ title, url }))
+        return Message.CompletedShareLink({ isCopied: false })
+      }
+      yield* Effect.tryPromise(() => navigator.clipboard.writeText(url))
+      return Message.CompletedShareLink({ isCopied: true })
+    }).pipe(
+      Effect.catch(() =>
+        Effect.succeed(Message.CompletedShareLink({ isCopied: false })),
       ),
     ),
 })
@@ -201,11 +228,11 @@ export const EditPlaylists = Command.define('EditPlaylists', {
 
 /** The songs of an album's or artist's radio, to play. */
 export const FetchRadio = Command.define('FetchRadio', {
-  args: { station: RadioStation },
+  args: { station: RadioStation, playingFrom: Session.PlayingFrom },
   messages: [Message.SucceededFetchRadio, Message.FailedFetchRadio],
-  execute: ({ station }) =>
+  execute: ({ station, playingFrom }) =>
     MusicClient.use(client => client.getRadio({ station })).pipe(
-      Effect.map(songs => Message.SucceededFetchRadio({ songs })),
+      Effect.map(songs => Message.SucceededFetchRadio({ songs, playingFrom })),
       Effect.catch(() => Effect.succeed(Message.FailedFetchRadio())),
     ),
 })

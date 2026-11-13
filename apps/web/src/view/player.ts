@@ -58,11 +58,87 @@ import {
 import { displayedPosition } from '../playback/position'
 import { SwipeTarget, swipeOn } from '../playback/swipe'
 import { artworkBackdropQuery, songQuery } from '../query'
+import { searchUrl } from '../route'
 import { type PlayerPanel } from '../sheet'
 import { likedVideoIds } from '../update'
 import { timedLyrics } from './lyrics'
-import { formatDuration, sizedArtworkUrl } from './shared'
+import {
+  albumHref,
+  artistHref,
+  formatDuration,
+  myPlaylistHref,
+  playlistHref,
+  sizedArtworkUrl,
+} from './shared'
 import { onSwipeStart, swipeTransitionClass, swipeableRow } from './swipe'
+
+// PLAYING FROM
+
+/** The page that opens what the queue plays from. */
+const playingFromHref = ({ kind, id }: Session.PlayingFrom): string => {
+  if (kind === 'Album') {
+    return albumHref(id)
+  } else if (kind === 'Artist') {
+    return artistHref(id)
+  } else if (kind === 'MyPlaylist') {
+    return myPlaylistHref(id)
+  } else if (kind === 'Search') {
+    return searchUrl(id, 'Top')
+  } else {
+    return playlistHref(id)
+  }
+}
+
+const PLAYING_FROM_KIND_NAMES: Readonly<
+  Record<Session.PlayingFromKind, string>
+> = {
+  Album: 'Album',
+  Playlist: 'Playlist',
+  MyPlaylist: 'Playlist',
+  Artist: 'Artist',
+  Mix: 'Mix',
+  Radio: 'Radio',
+  Search: 'Search',
+}
+
+/** Its name as the player shows it: a search shows the words in quotes. */
+const playingFromName = ({ kind, title }: Session.PlayingFrom): string =>
+  kind === 'Search' ? `“${title}”` : title
+
+const playingFromLabel = (playingFrom: Session.PlayingFrom): string =>
+  `Playing from ${PLAYING_FROM_KIND_NAMES[playingFrom.kind].toLowerCase()} ${playingFromName(playingFrom)}`
+
+/**
+ * "Playing from" and the album, playlist, artist, mix, radio, or search the
+ * queue was started from, at the top of the player. Tapping it opens it.
+ */
+const playingFromHeader = (
+  playingFrom: Session.PlayingFrom,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.a(
+    [
+      h.Href(playingFromHref(playingFrom)),
+      h.AriaLabel(playingFromLabel(playingFrom)),
+      h.Class(
+        'col-start-2 flex min-w-0 flex-col items-center px-2 pt-2 text-center leading-tight active:opacity-60',
+      ),
+    ],
+    [
+      h.span(
+        [
+          h.Class(
+            'text-[11px] font-semibold tracking-[0.06em] text-white/60 uppercase',
+          ),
+        ],
+        [`Playing from ${PLAYING_FROM_KIND_NAMES[playingFrom.kind]}`],
+      ),
+      h.span(
+        [h.Class('max-w-full truncate text-[13px] font-semibold')],
+        [playingFromName(playingFrom)],
+      ),
+    ],
+  )
 
 // STATUS
 
@@ -817,7 +893,32 @@ const queuePanel = (
               h.div(
                 [h.Class('flex items-center justify-between pt-4 pb-2')],
                 [
-                  h.h3([h.Class('text-[17px] font-bold')], ['Playing Next']),
+                  h.div(
+                    [h.Class('flex min-w-0 flex-col')],
+                    [
+                      h.h3(
+                        [h.Class('text-[17px] font-bold')],
+                        ['Playing Next'],
+                      ),
+                      Option.match(
+                        Option.fromNullishOr(snapshot.state.playingFrom),
+                        {
+                          onNone: () => h.empty,
+                          onSome: playingFrom =>
+                            h.a(
+                              [
+                                h.Href(playingFromHref(playingFrom)),
+                                h.AriaLabel(playingFromLabel(playingFrom)),
+                                h.Class(
+                                  'truncate text-[13px] text-white/60 active:opacity-60',
+                                ),
+                              ],
+                              [`From ${playingFromName(playingFrom)}`],
+                            ),
+                        },
+                      ),
+                    ],
+                  ),
                   h.button(
                     [
                       h.Type('button'),
@@ -1198,7 +1299,11 @@ const playerSheet = (
         ],
         [
           h.div(
-            [h.Class('relative flex h-10 items-center justify-between')],
+            [
+              h.Class(
+                'relative grid h-10 grid-cols-[minmax(2.5rem,1fr)_minmax(0,max-content)_minmax(2.5rem,1fr)] items-center',
+              ),
+            ],
             [
               h.button(
                 [
@@ -1206,7 +1311,7 @@ const playerSheet = (
                   h.OnClick(Message.ClickedClosePlayer()),
                   h.AriaLabel('Close player'),
                   h.Class(
-                    'flex size-10 items-center justify-center rounded-full text-white/80 active:bg-white/10',
+                    'col-start-1 flex size-10 items-center justify-center justify-self-start rounded-full text-white/80 active:bg-white/10',
                   ),
                 ],
                 [icon(h, ChevronDown, 'size-7')],
@@ -1214,10 +1319,22 @@ const playerSheet = (
               h.span([
                 h.AriaHidden(true),
                 h.Class(
-                  'absolute top-1/2 left-1/2 h-[5px] w-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/35',
+                  cn(
+                    'absolute left-1/2 h-[5px] w-10 -translate-x-1/2 rounded-full bg-white/35',
+                    snapshot.state.playingFrom === null
+                      ? 'top-1/2 -translate-y-1/2'
+                      : '-top-0.5',
+                  ),
                 ),
               ]),
-              sleepTimerButton(model, snapshot, h),
+              Option.match(Option.fromNullishOr(snapshot.state.playingFrom), {
+                onNone: () => h.empty,
+                onSome: playingFrom => playingFromHeader(playingFrom, h),
+              }),
+              h.div(
+                [h.Class('col-start-3 justify-self-end')],
+                [sleepTimerButton(model, snapshot, h)],
+              ),
             ],
           ),
           panel === 'Artwork'

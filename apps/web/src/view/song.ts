@@ -130,7 +130,13 @@ const playButton = (song: Song, h: HtmlBuilder<Message>): Html =>
       h.button(
         [
           h.Type('button'),
-          h.OnClick(Message.ClickedPlaySongs({ songs: [song], startIndex: 0 })),
+          h.OnClick(
+            Message.ClickedPlaySongs({
+              songs: [song],
+              startIndex: 0,
+              maybePlayingFrom: Option.none(),
+            }),
+          ),
           h.Class(
             'pressable bg-secondary text-primary flex h-12 w-full items-center justify-center gap-2 rounded-xl text-[15px] font-semibold',
           ),

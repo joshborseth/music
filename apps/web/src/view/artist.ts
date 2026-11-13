@@ -8,6 +8,7 @@ import {
   type AlbumSummary,
   type ArtistDetails,
   type MyLibrary,
+  type Session,
   type Song,
 } from '@music/shared'
 
@@ -63,7 +64,7 @@ const followButton = (
               : `Follow ${details.artist.name}`,
           ),
           h.Class(
-            'pressable floating relative mr-4 mb-5 flex h-9 shrink-0 items-center gap-1.5 rounded-full px-4 text-[15px] font-semibold',
+            'pressable floating relative mx-4 mb-5 flex h-9 shrink-0 items-center gap-1.5 rounded-full px-4 text-[15px] font-semibold',
           ),
         ],
         isFollowing
@@ -97,6 +98,13 @@ const releasesHref = (artistId: string, kind: ReleaseKind): string =>
     ? artistAlbumsRouter({ artistId })
     : artistSinglesRouter({ artistId })
 
+/** Songs played from the artist page say so in the player. */
+const playingFromArtist = (details: ArtistDetails): Session.PlayingFrom => ({
+  kind: 'Artist',
+  title: details.artist.name,
+  id: details.artist.id,
+})
+
 /** A photo that runs edge to edge under the status bar, name on top of it. */
 const artistHero = (
   details: ArtistDetails,
@@ -106,7 +114,7 @@ const artistHero = (
   h.header(
     [
       h.Class(
-        'relative flex aspect-[4/5] max-h-[68vh] w-full items-end justify-between gap-3 overflow-hidden bg-muted',
+        'relative flex aspect-[4/5] max-h-[68vh] w-full flex-wrap content-end items-end justify-between overflow-hidden bg-muted',
       ),
     ],
     [
@@ -139,7 +147,7 @@ const artistHero = (
         [
           h.OnMount(SyncTitleBarReveal()),
           h.Class(
-            'relative px-4 pb-4 text-[40px] leading-[1.05] font-extrabold tracking-tight text-white drop-shadow-lg text-balance',
+            'relative min-w-0 px-4 pb-4 text-[40px] leading-[1.05] font-extrabold tracking-tight break-words text-white drop-shadow-lg text-balance',
           ),
         ],
         [details.artist.name],
@@ -217,7 +225,12 @@ export const artistView = (
                   AsyncData.getData(myLibraryQuery.read(model.myLibrary)),
                   h,
                 ),
-                playActions(details.topSongs, h, details.maybeRadio),
+                playActions(
+                  details.topSongs,
+                  h,
+                  details.maybeRadio,
+                  Option.some(playingFromArtist(details)),
+                ),
               ],
             ),
             songSection(
@@ -227,6 +240,7 @@ export const artistView = (
                 playing: model.playing,
                 swipe: model.swipe,
                 maybeDetails: Option.some(topSongDetails(details)),
+                maybePlayingFrom: Option.some(playingFromArtist(details)),
                 maybeAction: Option.map(
                   details.maybeAllSongsPlaylistId,
                   playlistId =>

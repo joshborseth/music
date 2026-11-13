@@ -61,6 +61,11 @@ export const albumView = (
               explicitVideoIds,
             }),
             maybeRadio,
+            maybePlayingFrom: Option.some({
+              kind: 'Album',
+              title: album.title,
+              id: album.id,
+            }),
           },
           h,
         ),

@@ -50,7 +50,7 @@ import {
   topResultSearchQuery,
 } from './query'
 import { SearchKind, Tab } from './route'
-import { PlayerPanel } from './sheet'
+import { CollectionKind, PlayerPanel } from './sheet'
 
 export const Message = defineMessageUnion({
   CompletedNavigateInternal: {
@@ -81,6 +81,7 @@ export const Message = defineMessageUnion({
   CompletedShuffleSongs: {
     songs: Schema.Array(Song),
     startIndex: Schema.Number,
+    maybePlayingFrom: Schema.Option(Session.PlayingFrom),
   },
   CompletedWaitBeforeSearch: { query: Schema.String },
   CompletedLoadRecentSearches: { recentSearches: Schema.Array(Schema.String) },
@@ -103,7 +104,10 @@ export const Message = defineMessageUnion({
   ClickedLibrarySort: { kind: SortableKind },
   SelectedLibrarySort: { kind: SortableKind, sort: LibrarySort },
   ClickedToggleLibraryLayout: { kind: LayoutKind },
-  ClickedShuffleSongs: { songs: Schema.Array(Song) },
+  ClickedShuffleSongs: {
+    songs: Schema.Array(Song),
+    maybePlayingFrom: Schema.Option(Session.PlayingFrom),
+  },
   ClickedSongActions: { song: Song },
   ClickedDevices: {},
   ClickedSleepTimer: {},
@@ -182,6 +186,11 @@ export const Message = defineMessageUnion({
     videoId: Schema.String,
   },
   ClickedPlaylistActions: { playlistId: Schema.String, title: Schema.String },
+  /** ⋯ on an album or playlist page. */
+  ClickedCollectionActions: { kind: CollectionKind, id: Schema.String },
+  /** Share in a sheet: the page at `href`, with the system share sheet. */
+  ClickedShare: { title: Schema.String, href: Schema.String },
+  CompletedShareLink: { isCopied: Schema.Boolean },
   ClickedRenamePlaylist: { playlistId: Schema.String, title: Schema.String },
   SubmittedRenamePlaylist: { playlistId: Schema.String },
   ClickedDeletePlaylist: { playlistId: Schema.String, title: Schema.String },
@@ -285,11 +294,19 @@ export const Message = defineMessageUnion({
   ResumedPhoneAudio: { entryId: Schema.String },
   PressedMediaKey: { key: MediaKey },
 
-  ClickedPlaySongs: { songs: Schema.Array(Song), startIndex: Schema.Number },
+  ClickedPlaySongs: {
+    songs: Schema.Array(Song),
+    startIndex: Schema.Number,
+    /** The album, playlist, artist, or search the songs are played from. */
+    maybePlayingFrom: Schema.Option(Session.PlayingFrom),
+  },
   ClickedStartRadio: { song: Song },
-  /** Radio on an album or artist page. */
-  ClickedStartStationRadio: { station: RadioStation },
-  SucceededFetchRadio: { songs: Schema.Array(Song) },
+  /** Radio on an album or artist page, which it is named after. */
+  ClickedStartStationRadio: { station: RadioStation, title: Schema.String },
+  SucceededFetchRadio: {
+    songs: Schema.Array(Song),
+    playingFrom: Session.PlayingFrom,
+  },
   FailedFetchRadio: {},
   ClickedEnqueueSongs: {
     songs: Schema.Array(Song),

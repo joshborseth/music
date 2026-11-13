@@ -155,30 +155,47 @@ export const navBarButton = (
     [icon(h, config.iconNode, 'size-[22px]')],
   )
 
+/** Room a row of round nav bar buttons takes from the screen's edge. */
+const navBarButtonsWidth = (buttons: number): string => {
+  const count = Math.max(1, buttons)
+  return `calc(0.75rem + ${count} * 2.5rem + ${count - 1} * 0.5rem + 0.5rem)`
+}
+
 /**
  * The top of a detail page: a round back button floating over the hero, and
  * the top edge with the page title, which fade in together as the page's own
  * title slides under them. The edge sits inside the title bar so it shares
  * the reveal range that `SyncTitleBarReveal` measures onto it. `trailing`
- * sits opposite the back button.
+ * sits opposite the back button; `trailingButtons` is how many round
+ * buttons it can hold. The title stays centered while it fits between the
+ * buttons, moves aside to fit, and ends in "…" past that.
  */
 export const detailNavBar = (
   title: string,
   trailing: Html,
   h: HtmlBuilder<Message>,
+  trailingButtons: number = 0,
 ): ReadonlyArray<Html> => [
   h.div(
     [
       h.AriaHidden(true),
       h.DataAttribute(TITLE_BAR_ATTRIBUTE, ''),
       h.Class(
-        'reveal-on-scroll pointer-events-none fixed inset-x-0 top-0 z-30 flex h-[calc(var(--safe-top)+var(--nav-bar-height)+0.5rem)] items-end justify-center px-[6.5rem] pb-3 [--reveal-end:240px] [--reveal-start:180px]',
+        'reveal-on-scroll pointer-events-none fixed inset-x-0 top-0 z-30 grid h-[calc(var(--safe-top)+var(--nav-bar-height)+0.5rem)] grid-cols-[minmax(var(--title-start),1fr)_minmax(0,max-content)_minmax(var(--title-end),1fr)] items-end pb-3 [--reveal-end:240px] [--reveal-start:180px]',
       ),
+      h.Style({
+        '--title-start': navBarButtonsWidth(1),
+        '--title-end': navBarButtonsWidth(trailingButtons),
+      }),
     ],
     [
       scrollEdge('', h),
       h.span(
-        [h.Class('relative z-[31] line-clamp-1 text-[17px] font-semibold')],
+        [
+          h.Class(
+            'relative z-[31] col-start-2 min-w-0 truncate text-[17px] font-semibold',
+          ),
+        ],
         [title],
       ),
     ],

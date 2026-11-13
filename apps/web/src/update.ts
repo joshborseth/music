@@ -43,6 +43,7 @@ import {
   SaveRecentlyViewed,
   ScrollSearchResultsToTop,
   ScrollToTop,
+  ShareLink,
   ShuffleSongs,
   TakeOverScrollRestoration,
   UnlockScroll,
@@ -1677,13 +1678,16 @@ const updateMessage = (model: Model, message: Message) =>
         }),
       ])(model),
     ClickedToggleAlbumSaved: ({ album }) =>
-      editPlaylists({
-        _tag: 'SetAlbumSaved',
-        album,
-        isSaved: !Option.exists(loadedLibrary(model), library =>
-          isAlbumSaved(library, album.id),
-        ),
-      })(model),
+      Update.combine([
+        dismissSheet,
+        editPlaylists({
+          _tag: 'SetAlbumSaved',
+          album,
+          isSaved: !Option.exists(loadedLibrary(model), library =>
+            isAlbumSaved(library, album.id),
+          ),
+        }),
+      ])(model),
     ClickedToggleArtistFollowed: ({ artist }) =>
       editPlaylists({
         _tag: 'SetArtistFollowed',
@@ -1699,6 +1703,18 @@ const updateMessage = (model: Model, message: Message) =>
       ])(model),
     ClickedPlaylistActions: ({ playlistId, title }) =>
       showSheet({ _tag: 'PlaylistActions', playlistId, title })(model),
+    ClickedCollectionActions: ({ kind, id }) =>
+      showSheet({ _tag: 'CollectionActions', kind, id })(model),
+    ClickedShare: ({ title, href }) =>
+      Update.combine([
+        dismissSheet,
+        (stepModel: Model) => ({
+          model: stepModel,
+          commands: [ShareLink({ title, href })],
+        }),
+      ])(model),
+    CompletedShareLink: ({ isCopied }) =>
+      isCopied ? Playback.receiveNotice(model, 'Link copied') : { model },
     ClickedRenamePlaylist: ({ playlistId, title }) =>
       showPlaylistTitleSheet(title, { _tag: 'RenamePlaylist', playlistId })(
         model,
@@ -1813,7 +1829,10 @@ const updateMessage = (model: Model, message: Message) =>
     ClickedSleepTimer: () => showSheet({ _tag: 'SleepTimer' })(model),
 
     ClickedDownload: ({ collection }) =>
-      DownloadsUpdate.startDownload(model, collection),
+      Update.combine([
+        dismissSheet,
+        stepModel => DownloadsUpdate.startDownload(stepModel, collection),
+      ])(model),
     ClickedRemoveDownload: ({ kind, id, title }) =>
       showSheet({ _tag: 'ConfirmRemoveDownload', kind, id, title })(model),
     ConfirmedRemoveDownload: ({ kind, id }) =>
@@ -1846,17 +1865,18 @@ const updateMessage = (model: Model, message: Message) =>
     SwipedDownPlayer: () => closePlayer(model),
     SelectedPlayerPanel: ({ panel }) => selectPlayerPanel(panel)(model),
 
-    ClickedShuffleSongs: ({ songs: songsToShuffle }) => ({
+    ClickedShuffleSongs: ({ songs: songsToShuffle, maybePlayingFrom }) => ({
       model,
       commands: [
         ...Playback.unlockIfIdle(model),
-        ShuffleSongs({ songs: songsToShuffle }),
+        ShuffleSongs({ songs: songsToShuffle, maybePlayingFrom }),
       ],
     }),
-    CompletedShuffleSongs: ({ songs, startIndex }) =>
+    CompletedShuffleSongs: ({ songs, startIndex, maybePlayingFrom }) =>
       Update.combine([
         (stepModel: Model) => Playback.setShuffle(stepModel, true),
-        (stepModel: Model) => Playback.playSongs(stepModel, songs, startIndex),
+        (stepModel: Model) =>
+          Playback.playSongs(stepModel, songs, startIndex, maybePlayingFrom),
       ])(model),
 
     CompletedLoadDeviceIdentity: ({ deviceId, deviceName }) =>
@@ -1916,19 +1936,29 @@ const updateMessage = (model: Model, message: Message) =>
         model,
       ),
 
-    ClickedPlaySongs: ({ songs: songsToPlay, startIndex }) =>
-      Playback.clickPlaySongs(model, songsToPlay, startIndex),
+    ClickedPlaySongs: ({ songs: songsToPlay, startIndex, maybePlayingFrom }) =>
+      Playback.clickPlaySongs(model, songsToPlay, startIndex, maybePlayingFrom),
     ClickedStartRadio: ({ song }) =>
       Update.combine([
         dismissSheet,
         stepModel => Playback.startRadio(stepModel, song),
       ])(model),
-    ClickedStartStationRadio: ({ station }) => ({
-      model,
-      commands: [...Playback.unlockIfIdle(model), FetchRadio({ station })],
-    }),
-    SucceededFetchRadio: ({ songs: radioSongs }) =>
-      Playback.playStationRadio(model, radioSongs),
+    ClickedStartStationRadio: ({ station, title }) =>
+      Update.combine([
+        dismissSheet,
+        (stepModel: Model) => ({
+          model: stepModel,
+          commands: [
+            ...Playback.unlockIfIdle(stepModel),
+            FetchRadio({
+              station,
+              playingFrom: { kind: 'Radio', title, id: station.playlistId },
+            }),
+          ],
+        }),
+      ])(model),
+    SucceededFetchRadio: ({ songs: radioSongs, playingFrom }) =>
+      Playback.playStationRadio(model, radioSongs, playingFrom),
     FailedFetchRadio: () =>
       Playback.receiveNotice(model, "Couldn't start the radio. Try again."),
     ClickedEnqueueSongs: ({ songs: songsToEnqueue, placement }) =>
