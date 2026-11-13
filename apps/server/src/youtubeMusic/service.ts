@@ -5,8 +5,11 @@ import {
   Duration,
   Effect,
   Exit,
+  Fiber,
   Layer,
   Option,
+  Record,
+  Semaphore,
   pipe,
 } from 'effect'
 import { type Helpers, Innertube, Log, YTMusic, YTNodes } from 'youtubei.js'
@@ -34,11 +37,14 @@ import {
   ArtistShelfTitle,
   type DiscographyLink,
   type MoodShelf,
+  type MusicVideo,
   albumFromListItem,
   artistFromListItem,
   audioTrackFor,
+  audioTrackQuery,
   discographyLink,
   filterSome,
+  musicVideoIds,
   playlistFromListItem,
   playlistOwnerFromResponse,
   rankSongsForQuery,
@@ -125,6 +131,29 @@ const ARTIST_PAGE_CAPACITY = 128
  * search under it instead.
  */
 const TOP_SONGS_WAIT = Duration.seconds(4)
+
+/**
+ * The song found for a music video is kept this long. The answer rarely
+ * changes, and a playlist of videos asks for one per video.
+ */
+const AUDIO_TRACK_TTL = Duration.days(1)
+const AUDIO_TRACK_CAPACITY = 4096
+
+/** How many music videos are looked up at once. */
+const AUDIO_TRACK_CONCURRENCY = 8
+
+/**
+ * How long a list waits for its music videos' songs. A playlist of 400
+ * videos takes about 25 seconds to look up, so it opens with the songs found
+ * by then, and the rest are ready the next time it opens.
+ */
+const AUDIO_TRACK_WAIT = Duration.seconds(4)
+
+/**
+ * What to do with a music video that has no song: a playlist someone chose
+ * keeps it, and a radio, where it is only filler, leaves it out.
+ */
+type WithoutSong = 'Keep' | 'Drop'
 
 const MOODS_AND_GENRES_BROWSE_ID = 'FEmusic_moods_and_genres'
 const MOOD_BROWSE_ID = 'FEmusic_moods_and_genres_category'
@@ -247,6 +276,88 @@ const make = Effect.gen(function* () {
     return yield* Cache.get(songSearches, query)
   })
 
+  const audioTrackSearches = yield* Semaphore.make(AUDIO_TRACK_CONCURRENCY)
+
+  /** The song a music video is of, from a song search for its words. */
+  const audioTracks = yield* Cache.makeWith(
+    (video: MusicVideo) =>
+      Effect.map(searchShelf(audioTrackQuery(video), 'song'), items =>
+        audioTrackFor(video, filterSome(items, songFromListItem)),
+      ).pipe(audioTrackSearches.withPermits(1)),
+    {
+      capacity: AUDIO_TRACK_CAPACITY,
+      timeToLive: Exit.match({
+        onFailure: () => Duration.zero,
+        onSuccess: () => AUDIO_TRACK_TTL,
+      }),
+    },
+  )
+
+  const audioTrackOf = (song: Song): Effect.Effect<Option.Option<Song>> =>
+    Cache.get(audioTracks, {
+      videoId: song.videoId,
+      title: song.title,
+      artists: song.artists,
+    }).pipe(Effect.orElseSucceed(() => Option.none<Song>()))
+
+  /**
+   * Each song, with the song it is of when it is a music video and it was
+   * found within `AUDIO_TRACK_WAIT`. Lookups still running carry on, so the
+   * cache has them next time.
+   */
+  const withAudioTracks = (
+    songs: ReadonlyArray<Song>,
+    videoIds: ReadonlySet<string>,
+  ): Effect.Effect<
+    ReadonlyArray<Readonly<{ song: Song; maybeTrack: Option.Option<Song> }>>
+  > =>
+    Effect.forEach(
+      songs,
+      song =>
+        videoIds.has(song.videoId)
+          ? Effect.map(Effect.forkDetach(audioTrackOf(song)), lookup =>
+              Fiber.join(lookup).pipe(
+                Effect.timeoutOption(AUDIO_TRACK_WAIT),
+                Effect.map(maybeFound => ({
+                  song,
+                  maybeTrack: Option.flatten(maybeFound),
+                })),
+              ),
+            )
+          : Effect.succeed(
+              Effect.succeed({ song, maybeTrack: Option.none<Song>() }),
+            ),
+    ).pipe(
+      Effect.flatMap(waits => Effect.all(waits, { concurrency: 'unbounded' })),
+    )
+
+  /**
+   * Songs, with each music video among them (`videoIds`) swapped for the
+   * song it is of: the album audio, which plays without the video's intro
+   * and skits and shows the album cover. This app plays songs, not videos.
+   */
+  const songsNotVideos = (
+    songs: ReadonlyArray<Song>,
+    videoIds: ReadonlySet<string>,
+    withoutSong: WithoutSong,
+  ): Effect.Effect<ReadonlyArray<Song>> =>
+    videoIds.size === 0
+      ? Effect.succeed(songs)
+      : Effect.map(withAudioTracks(songs, videoIds), found =>
+          Array.dedupeWith(
+            Array.flatMap(found, ({ song, maybeTrack }) =>
+              Option.match(maybeTrack, {
+                onNone: () =>
+                  withoutSong === 'Keep' || !videoIds.has(song.videoId)
+                    ? [song]
+                    : [],
+                onSome: track => [track],
+              }),
+            ),
+            (left, right) => left.videoId === right.videoId,
+          ),
+        )
+
   const searchArtists = Effect.fn('YouTubeMusic.searchArtists')(function* (
     query: string,
   ) {
@@ -268,6 +379,42 @@ const make = Effect.gen(function* () {
     return filterSome(items, playlistFromListItem)
   })
 
+  /** An artist's top songs as songs, each keeping its play count. */
+  const topSongsNotVideos = (page: YTMusic.Artist, details: ArtistDetails) =>
+    Effect.map(
+      withAudioTracks(
+        details.topSongs,
+        musicVideoIds(
+          Array.flatMap(page.sections, section =>
+            section.is(YTNodes.MusicShelf)
+              ? Array.fromIterable(section.as(YTNodes.MusicShelf).contents)
+              : [],
+          ),
+        ),
+      ),
+      (found): ArtistDetails => {
+        const songs = Array.map(found, ({ song, maybeTrack }) => ({
+          song: Option.getOrElse(maybeTrack, () => song),
+          maybePlays: Record.get(details.topSongPlays, song.videoId),
+        }))
+        return {
+          ...details,
+          topSongs: Array.dedupeWith(
+            Array.map(songs, ({ song }) => song),
+            (left, right) => left.videoId === right.videoId,
+          ),
+          topSongPlays: Record.fromEntries(
+            Array.flatMap(songs, ({ song, maybePlays }) =>
+              Option.match(maybePlays, {
+                onNone: () => [],
+                onSome: plays => [[song.videoId, plays] as const],
+              }),
+            ),
+          ),
+        }
+      },
+    )
+
   const artistPages = yield* Cache.makeWith(
     (artistId: string) =>
       Effect.gen(function* () {
@@ -275,7 +422,7 @@ const make = Effect.gen(function* () {
         const details = yield* orNotFound(artistId)(
           toArtistDetails(artistId, page),
         )
-        return { page, details }
+        return { page, details: yield* topSongsNotVideos(page, details) }
       }),
     {
       capacity: ARTIST_PAGE_CAPACITY,
@@ -387,32 +534,85 @@ const make = Effect.gen(function* () {
       Option.flatMap(header => Option.fromNullishOr(header.title)),
       Option.map(title => title.toString().trim()),
     )
-    const details = toMoodDetails({
+    const shelves = [...carousels, ...grids]
+    const moodPage = toMoodDetails({
       title: Option.getOrElse(maybeTitle, () => ''),
-      shelves: [...carousels, ...grids],
+      shelves,
     })
+    const details = {
+      ...moodPage,
+      songs: yield* songsNotVideos(
+        moodPage.songs,
+        musicVideoIds(Array.flatMap(shelves, ({ items }) => items)),
+        'Keep',
+      ),
+    }
     return Array.isReadonlyArrayEmpty(details.playlistShelves) &&
       Array.isReadonlyArrayEmpty(details.songs)
       ? yield* Effect.fail(new MusicNotFoundError({ id: params }))
       : details
   })
 
-  const upNextSongs = (videoId: string) =>
-    Effect.map(
-      lookUp(videoId, () => music.getUpNext(videoId)),
-      queue =>
-        filterSome(queue.contents, item =>
-          item.is(YTNodes.PlaylistPanelVideo)
-            ? songFromPlaylistPanelVideo(item.as(YTNodes.PlaylistPanelVideo))
-            : Option.none(),
-        ),
+  const queueSongs = (contents: ReadonlyArray<Helpers.YTNode>) =>
+    filterSome(contents, item =>
+      item.is(YTNodes.PlaylistPanelVideo)
+        ? songFromPlaylistPanelVideo(item.as(YTNodes.PlaylistPanelVideo))
+        : Option.none(),
     )
+
+  /** YouTube's "up next" for a song, as it sends it: the song comes first. */
+  const upNextSongs = (videoId: string) =>
+    Effect.map(lookUp(videoId, () => music.getUpNext(videoId)), queue =>
+      queueSongs(queue.contents),
+    )
+
+  /**
+   * YouTube Music's radio after a song, as songs. The radio follows its
+   * seed: one started from a music video plays music videos, so a video is
+   * swapped for its song first. `seedId` is the song the radio started
+   * from, which leads the list.
+   */
+  const songRadio = (videoId: string) =>
+    Effect.gen(function* () {
+      const queue = yield* lookUp(videoId, () => music.getUpNext(videoId))
+      const songs = queueSongs(queue.contents)
+      const videoIds = musicVideoIds(queue.contents)
+      const maybeSeedTrack = videoIds.has(videoId)
+        ? yield* pipe(
+            Array.findFirst(songs, ({ videoId: id }) => id === videoId),
+            Option.match({
+              onNone: () => Effect.succeed(Option.none<Song>()),
+              onSome: audioTrackOf,
+            }),
+          )
+        : Option.none<Song>()
+      if (Option.isNone(maybeSeedTrack)) {
+        return {
+          seedId: videoId,
+          songs: yield* songsNotVideos(songs, videoIds, 'Drop'),
+        }
+      }
+      const seedId = maybeSeedTrack.value.videoId
+      const trackQueue = yield* lookUp(seedId, () => music.getUpNext(seedId))
+      return {
+        seedId,
+        songs: yield* songsNotVideos(
+          queueSongs(trackQueue.contents),
+          musicVideoIds(trackQueue.contents),
+          'Drop',
+        ),
+      }
+    })
 
   const getUpNext = Effect.fn('YouTubeMusic.getUpNext')(function* (
     videoId: string,
   ) {
-    const songs = yield* upNextSongs(videoId)
-    return Array.filter(songs, ({ videoId: id }) => id !== videoId)
+    const { seedId, songs } = yield* songRadio(videoId)
+    // The seed, or the song it became, is playing already.
+    return Array.filter(
+      songs,
+      ({ videoId: id }) => id !== videoId && id !== seedId,
+    )
   })
 
   const getDurationSeconds = Effect.fn('YouTubeMusic.getDurationSeconds')(
@@ -542,8 +742,8 @@ const make = Effect.gen(function* () {
 
   /** A mix made on Home: the seed song, then its radio. */
   const getMix = (playlistId: string, seedVideoId: string) =>
-    upNextSongs(seedVideoId).pipe(
-      Effect.flatMap(songs =>
+    songRadio(seedVideoId).pipe(
+      Effect.flatMap(({ songs }) =>
         orNotFound(playlistId)(
           mixDetails(seedVideoId, Array.take(songs, MIX_SONGS)),
         ),
@@ -569,14 +769,25 @@ const make = Effect.gen(function* () {
       playlistId,
       async () => new YTMusic.Playlist(response, innertube.actions),
     )
-    const items = yield* withLaterPages(first, Array.fromIterable(first.items))
-    return yield* orNotFound(playlistId)(
+    const items = Array.take(
+      yield* withLaterPages(first, Array.fromIterable(first.items)),
+      MAX_PLAYLIST_SONGS,
+    )
+    const details = yield* orNotFound(playlistId)(
       toPlaylistDetails(playlistId, {
         header: first.header,
-        items: Array.take(items, MAX_PLAYLIST_SONGS),
+        items,
         maybeOwner: playlistOwnerFromResponse(response.data),
       }),
     )
+    return {
+      ...details,
+      tracks: yield* songsNotVideos(
+        details.tracks,
+        musicVideoIds(items),
+        'Keep',
+      ),
+    }
   })
 
   const getRadio = Effect.fn('YouTubeMusic.getRadio')(function* (
@@ -597,15 +808,14 @@ const make = Effect.gen(function* () {
         parse: true,
       }),
     )
-    const songs = filterSome(
-      Array.flatMap(
-        response.contents_memo?.getType(YTNodes.PlaylistPanel) ?? [],
-        panel => Array.fromIterable(panel.contents),
-      ),
-      item =>
-        item.is(YTNodes.PlaylistPanelVideo)
-          ? songFromPlaylistPanelVideo(item.as(YTNodes.PlaylistPanelVideo))
-          : Option.none(),
+    const contents = Array.flatMap(
+      response.contents_memo?.getType(YTNodes.PlaylistPanel) ?? [],
+      panel => Array.fromIterable(panel.contents),
+    )
+    const songs = yield* songsNotVideos(
+      queueSongs(contents),
+      musicVideoIds(contents),
+      'Drop',
     )
     return Array.isReadonlyArrayEmpty(songs)
       ? yield* Effect.fail(new MusicNotFoundError({ id: station.playlistId }))

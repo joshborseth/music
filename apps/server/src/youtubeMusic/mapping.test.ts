@@ -8,9 +8,11 @@ import {
   albumRadio,
   artistFromTwoRowItem,
   audioTrackFor,
+  audioTrackQuery,
   filterSome,
   hexFromArgb,
   isExplicit,
+  musicVideoIds,
   playlistOwnerFromResponse,
   playsFromListItem,
   radioOf,
@@ -300,12 +302,109 @@ describe('audioTrackFor', () => {
     expect(audioTrackFor(video, [cover])).toEqual(Option.none())
   })
 
+  test('reads past a video bracket YouTube cut short', () => {
+    const jid = { maybeId: Option.some('UCjid'), name: 'JID' }
+    const video = searchedSong(
+      'v1d30',
+      'Surround Sound [Official Music ... (feat. 21 Savage & Baby Tate)',
+      [jid],
+    )
+    const track = searchedSong(
+      's0ng',
+      'Surround Sound (feat. 21 Savage & Baby Tate)',
+      [jid],
+    )
+
+    expect(audioTrackFor(video, [track])).toEqual(Option.some(track))
+  })
+
+  test('matches an artist credited through another page by name', () => {
+    const video = searchedSong('v1d30', 'Anti-Hero (Official Video)', [
+      { maybeId: Option.some('UCvevo'), name: 'Taylor Swift' },
+    ])
+
+    expect(audioTrackFor(video, [song])).toEqual(Option.some(song))
+  })
+
   test('matches a video with no artist page on its title alone', () => {
     const video = searchedSong('v1d30', 'Anti-Hero (Lyrics)', [
       { maybeId: Option.none(), name: 'Lyric Vibes' },
     ])
 
     expect(audioTrackFor(video, [song])).toEqual(Option.some(song))
+  })
+})
+
+describe('audioTrackQuery', () => {
+  test('searches the first artist and the title without brackets', () => {
+    expect(
+      audioTrackQuery(
+        searchedSong(
+          'v1d30',
+          'Taylor Swift - Anti-Hero (Official Music Video)',
+          [taylorSwift],
+        ),
+      ),
+    ).toBe('Taylor Swift Anti-Hero')
+    expect(
+      audioTrackQuery(
+        searchedSong('v1d30', 'Surround Sound [Official Music ... (feat. X)', [
+          { maybeId: Option.none(), name: 'JID' },
+        ]),
+      ),
+    ).toBe('JID Surround Sound')
+  })
+
+  test('keeps a title that is all brackets', () => {
+    expect(audioTrackQuery(searchedSong('v1d30', '[untitled]', []))).toBe(
+      '[untitled]',
+    )
+  })
+})
+
+describe('musicVideoIds', () => {
+  const watchRun = (videoId: string, musicVideoType: string) => ({
+    text: videoId,
+    navigationEndpoint: {
+      watchEndpoint: {
+        videoId,
+        watchEndpointMusicSupportedConfigs: {
+          watchEndpointMusicConfig: { musicVideoType },
+        },
+      },
+    },
+  })
+
+  const row = (videoId: string, musicVideoType: string) =>
+    new YTNodes.MusicResponsiveListItem({
+      playlistItemData: { videoId },
+      flexColumns: [
+        column([watchRun(videoId, musicVideoType)]),
+        column([{ text: 'An Artist' }]),
+      ],
+    })
+
+  const queued = (videoId: string, musicVideoType: string) =>
+    new YTNodes.PlaylistPanelVideo({
+      title: { runs: [{ text: videoId }] },
+      videoId,
+      lengthText: { runs: [{ text: '3:00' }] },
+      shortBylineText: { runs: [] },
+      longBylineText: { runs: [] },
+      thumbnail: { thumbnails: [] },
+      navigationEndpoint: watchRun(videoId, musicVideoType).navigationEndpoint,
+    })
+
+  test('finds the official and uploaded videos among rows and a queue', () => {
+    expect(
+      musicVideoIds([
+        row('song', 'MUSIC_VIDEO_TYPE_ATV'),
+        row('official', 'MUSIC_VIDEO_TYPE_OMV'),
+        queued('queuedSong', 'MUSIC_VIDEO_TYPE_ATV'),
+        queued('upload', 'MUSIC_VIDEO_TYPE_UGC'),
+        queued('podcast', 'MUSIC_VIDEO_TYPE_PODCAST_EPISODE'),
+      ]),
+    ).toEqual(new Set(['official', 'upload']))
   })
 })
 
