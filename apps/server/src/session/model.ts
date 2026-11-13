@@ -496,11 +496,16 @@ const transition = (
             now,
           ),
           playing: queue.length > 0,
+          shuffle: false,
           unshuffled: [],
           playingFrom: message.playingFrom ?? null,
         }
+        // NOTE: a Play button plays in order and turns shuffle off, a Shuffle
+        // button turns it on, and a tap on one song (null, or missing from
+        // older clients) keeps the setting, as in Apple Music.
+        const shuffle = message.shuffle ?? model.shuffle
         // Shuffle on: the chosen song first, then the rest in a random order.
-        const ordered = model.shuffle
+        const ordered = shuffle
           ? shuffleUpcoming(
               {
                 ...started,
@@ -515,7 +520,7 @@ const transition = (
           : started
         return changed(
           claimIfIdle(
-            model.shuffle
+            shuffle
               ? { ...ordered, unshuffled: queue.map(entry => entry.entryId) }
               : ordered,
             context,

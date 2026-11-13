@@ -64,18 +64,22 @@ import {
 
 /**
  * Messages youtubei.js throws when an id points at nothing. YouTube does not
- * return a status code for these, so the message is the only signal.
+ * return a status code for these, so the message is the only signal. An id
+ * of the wrong shape ("Invalid album id") points at nothing too: its page
+ * says it is not there, not that YouTube Music is busy.
  */
 const NOT_FOUND_MESSAGES: ReadonlyArray<string> = [
   'No contents found in the response',
   'Music queue was empty',
   'This video is unavailable',
+  'Invalid album id',
+  'Invalid artist id',
 ]
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : globalThis.String(cause)
 
-const isNotFound = (cause: unknown): boolean =>
+export const isNotFound = (cause: unknown): boolean =>
   Array.some(NOT_FOUND_MESSAGES, message =>
     errorMessage(cause).includes(message),
   )
@@ -226,6 +230,13 @@ export interface YouTubeMusicShape {
   readonly getPlaylist: (
     playlistId: string,
   ) => Effect.Effect<PlaylistDetails, MusicNotFoundError | YouTubeMusicError>
+  /**
+   * The song a music video is of (`audioTrackFor`), from a song search kept
+   * for a day. None when there is none, or YouTube did not answer.
+   */
+  readonly getSongForVideo: (
+    video: MusicVideo,
+  ) => Effect.Effect<Option.Option<Song>>
   /** The songs an artist's or album's radio plays, in its order. */
   readonly getRadio: (
     station: RadioStation,
@@ -313,7 +324,7 @@ const make = Effect.gen(function* () {
     },
   )
 
-  const audioTrackOf = (song: Song): Effect.Effect<Option.Option<Song>> =>
+  const audioTrackOf = (song: MusicVideo): Effect.Effect<Option.Option<Song>> =>
     Cache.get(audioTracks, {
       videoId: song.videoId,
       title: song.title,
@@ -895,6 +906,7 @@ const make = Effect.gen(function* () {
     getArtistOverview,
     getAlbum,
     getPlaylist,
+    getSongForVideo: audioTrackOf,
     getRadio,
   })
 })

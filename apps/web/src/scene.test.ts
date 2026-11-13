@@ -402,6 +402,7 @@ describe('search page', () => {
             tracks: [toQueueTrack(theChain)],
             startIndex: 0,
             playingFrom: PLAYING_FROM_SEARCH,
+            shuffle: null,
           },
         }),
       ),
@@ -582,6 +583,7 @@ describe('search page', () => {
               title: 'The Chain',
               id: `RDAMVM${theChain.videoId}`,
             },
+            shuffle: null,
           },
         }),
       ),
@@ -666,6 +668,35 @@ describe('album page', () => {
             tracks: tracks.map(toQueueTrack),
             startIndex: 1,
             playingFrom: { kind: 'Album', title: 'Rumours', id: albumId },
+            shuffle: null,
+          },
+        }),
+      ),
+      Command.resolveAll(
+        [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
+        [SendToSession, Message.CompletedSendToSession()],
+      ),
+    )
+  })
+
+  test('Play plays the album in order and turns shuffle off', () => {
+    const dreams: Song = { ...theChain, videoId: 'dreams', title: 'Dreams' }
+    const tracks = [theChain, dreams]
+    scene(
+      { update, view },
+      given(albumPageModel(tracks)),
+      pageScrolled,
+      Mount.resolve(SyncTitleBarReveal, Message.CompletedSyncTitleBarReveal()),
+      click(role('button', { name: 'Play' })),
+      Command.expectExact(
+        UnlockPhoneAudio(),
+        SendToSession({
+          message: {
+            _tag: 'PlayQueue',
+            tracks: tracks.map(toQueueTrack),
+            startIndex: 0,
+            playingFrom: { kind: 'Album', title: 'Rumours', id: albumId },
+            shuffle: false,
           },
         }),
       ),
@@ -889,6 +920,7 @@ describe('artist page', () => {
             tracks: radioSongs.map(toQueueTrack),
             startIndex: 0,
             playingFrom: daftPunkRadio,
+            shuffle: null,
           },
         }),
       ),

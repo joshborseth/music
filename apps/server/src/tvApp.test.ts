@@ -16,11 +16,13 @@ import { join } from 'node:path'
 
 import { BunServices } from '@effect/platform-bun'
 
+import { encodePng } from './testing/png.ts'
 import {
   type AfterUpdate,
   TvCaptureRoute,
   TvVersionRoute,
   buildPathFor,
+  logTvFrame,
   logTvReport,
   reopenAfterUpdate,
   tvLogLevel,
@@ -131,6 +133,16 @@ describe('TV screenshots', () => {
       readdirSync(frames).filter(name => name.endsWith('.png')),
     ).toHaveLength(1)
   })
+
+  test('a black frame is saved too', async () => {
+    const before = readdirSync(frames).length
+    await withCapture(async call => {
+      expect(await call('POST', '/tv/capture')).toBe(200)
+      const black = encodePng(8, 6, 4, () => [0, 0, 0, 255])
+      expect(await call('POST', '/tv/frame', black)).toBe(204)
+    })
+    expect(readdirSync(frames)).toHaveLength(before + 1)
+  })
 })
 
 describe('logTvReport', () => {
@@ -155,6 +167,47 @@ describe('logTvReport', () => {
       ['Info', ['TV app', 'visuals: 60 fps']],
       ['Warn', ['TV app', 'update: no room']],
       ['Error', ['TV app', "panic in thread 'main'"]],
+    ])
+  })
+})
+
+describe('logTvFrame', () => {
+  test('logs a black or clear frame as an error, anything else as information', async () => {
+    const seen: Array<[string, unknown]> = []
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* logTvFrame(
+          'black.png',
+          encodePng(8, 6, 4, () => [0, 0, 0, 255]),
+        )
+        yield* logTvFrame(
+          'clear.png',
+          encodePng(8, 6, 4, () => [9, 9, 9, 0]),
+        )
+        yield* logTvFrame(
+          'lit.png',
+          encodePng(8, 6, 3, (x, y) => [x * 30, y * 40, 90]),
+        )
+      }).pipe(
+        Effect.provide(
+          Logger.layer([
+            Logger.make(({ logLevel, message }) => {
+              seen.push([logLevel, message])
+            }),
+          ]),
+        ),
+      ),
+    )
+    expect(seen).toEqual([
+      [
+        'Error',
+        ['TV sent a black frame: the screen may be blank', 'black.png'],
+      ],
+      [
+        'Error',
+        ['TV sent a black frame: the screen may be blank', 'clear.png'],
+      ],
+      ['Info', ['A screenshot from the TV', 'lit.png']],
     ])
   })
 })

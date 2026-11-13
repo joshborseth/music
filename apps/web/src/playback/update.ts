@@ -30,10 +30,12 @@ import {
   PREFETCH_COUNT,
   PROGRESS_INTERVAL_MS,
   PhoneAudio,
+  type PlayOrder,
   PlayerSheet,
   QueueEdit,
   RESTART_THRESHOLD_SECONDS,
   SEEK_TOLERANCE_SECONDS,
+  SHUFFLE_FOR_ORDER,
   type SessionSnapshot,
   currentEntry,
   followingEntry,
@@ -1179,35 +1181,46 @@ export const pressMediaKey = (model: Model, key: MediaKey): PlaybackReturn => {
 
 /**
  * Replace the queue with `songs` and play from `startIndex`, saying what
- * they are played from, if anything with a page.
+ * they are played from, if anything with a page. A Play or Shuffle button
+ * sets the session's shuffle (see `PlayOrder`), which the phone shows at once.
  */
 export const playSongs = (
   model: Model,
   songs: ReadonlyArray<Song>,
   startIndex: number,
   maybePlayingFrom: Option.Option<Session.PlayingFrom>,
-): PlaybackReturn =>
-  Array.isReadonlyArrayNonEmpty(songs)
+  order: PlayOrder = 'KeepShuffle',
+): PlaybackReturn => {
+  const shuffle = SHUFFLE_FOR_ORDER[order]
+  return Array.isReadonlyArrayNonEmpty(songs)
     ? {
-        model,
+        model:
+          shuffle === null
+            ? model
+            : withOptimisticSession(model, state =>
+                modifyFields(state, { shuffle: () => shuffle }),
+              ),
         commands: [
           send({
             _tag: 'PlayQueue',
             tracks: Array.map(songs, toQueueTrack),
             startIndex,
             playingFrom: Option.getOrNull(maybePlayingFrom),
+            shuffle,
           }),
         ],
       }
     : { model }
+}
 
 export const clickPlaySongs = (
   model: Model,
   songs: ReadonlyArray<Song>,
   startIndex: number,
   maybePlayingFrom: Option.Option<Session.PlayingFrom>,
+  order: PlayOrder = 'KeepShuffle',
 ): PlaybackReturn => {
-  const play = playSongs(model, songs, startIndex, maybePlayingFrom)
+  const play = playSongs(model, songs, startIndex, maybePlayingFrom, order)
   return {
     model: play.model,
     commands: [...unlockIfIdle(model), ...(play.commands ?? [])],

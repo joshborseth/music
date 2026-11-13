@@ -102,6 +102,21 @@ export const PlayerSheet = defineTaggedUnion({
 })
 export type PlayerSheet = typeof PlayerSheet.Type
 
+/**
+ * How a list starts playing, as in Apple Music: a Play button plays it in
+ * order and turns shuffle off, a Shuffle button shuffles it and turns shuffle
+ * on, and a tap on one song keeps the session's shuffle as it is.
+ */
+export const PlayOrder = Schema.Literals(['KeepShuffle', 'InOrder', 'Shuffled'])
+export type PlayOrder = typeof PlayOrder.Type
+
+/** `PlayQueue.shuffle` for each way of playing: null keeps the setting. */
+export const SHUFFLE_FOR_ORDER: Record<PlayOrder, boolean | null> = {
+  KeepShuffle: null,
+  InOrder: false,
+  Shuffled: true,
+}
+
 export const MediaKey = Schema.Literals([
   'Play',
   'Pause',

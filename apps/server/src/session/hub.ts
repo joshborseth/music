@@ -27,6 +27,7 @@ import { TimedLyrics } from '../lyrics/service.ts'
 import { PlaylistStore } from '../playlists/store.ts'
 import { Prefetcher } from '../prefetch.ts'
 import { songFromQueueTrack, toQueueTrack } from '../tvCatalog/mapping.ts'
+import { type MusicVideo } from '../youtubeMusic/mapping.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import {
   type Model,
@@ -45,6 +46,12 @@ import {
   update,
   wakeTimedOut,
 } from './model.ts'
+import {
+  isByVideoArtist,
+  queuedVideos,
+  withCleanTitles,
+  withSongsForVideos,
+} from './oldVideos.ts'
 import {
   SavedSessionJson,
   fromSaved,
@@ -82,6 +89,8 @@ const UTC_OFFSET_INTERVAL = '1 minute'
 const HISTORY_LOOKUP_TIMEOUT = '5 seconds'
 /** Device names remembered, to show a player that went away. */
 const KNOWN_DEVICES_CAPACITY = 200
+/** Music videos saved before #73 looked up at once at start. */
+const OLD_VIDEO_LOOKUPS = 4
 
 /** A volume from a client, kept between 0 and 1. */
 const clampVolume = (level: number): number =>
@@ -141,7 +150,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
     // Start from the session saved before the last restart, if any.
     let model: Model = yield* fs.readFileString(savedFile).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(SavedSessionJson)),
-      Effect.map(saved => fromSaved(saved, Date.now())),
+      Effect.map(saved => withCleanTitles(fromSaved(saved, Date.now()))),
       Effect.tap(restored =>
         Effect.logInfo(
           `Restored the session: ${restored.queue.length} songs in the queue`,
@@ -589,6 +598,65 @@ export const SessionHubLive = Layer.effect(SessionHub)(
 
     // A timer saved before a restart still stops the music on time.
     yield* lock.withPermits(1)(syncSleepTimer)
+
+    /** The song a music video is of, when it is by the video's artist. */
+    const songForVideo = (video: MusicVideo) =>
+      youTubeMusic
+        .getSongForVideo(video)
+        .pipe(Effect.map(Option.filter(song => isByVideoArtist(song, video))))
+
+    /**
+     * Music videos saved before the app played songs, not videos (#73): put
+     * the song each is of in its place in the queue and the play history, so
+     * the player and Home show its title and square cover. In the
+     * background, since each takes a song search; the session changes once
+     * the queue's are found.
+     */
+    const replaceOldVideos = Effect.gen(function* () {
+      const videos = queuedVideos(model)
+      const queueSongs = new Map<string, Session.QueueTrack>()
+      yield* Effect.forEach(
+        videos,
+        video =>
+          Effect.map(songForVideo(video), maybeSong => {
+            if (Option.isSome(maybeSong)) {
+              queueSongs.set(video.videoId, toQueueTrack(maybeSong.value))
+            }
+          }),
+        { concurrency: OLD_VIDEO_LOOKUPS, discard: true },
+      )
+      if (queueSongs.size > 0) {
+        yield* apply(current => withSongsForVideos(current, queueSongs))
+      }
+      const played = yield* playlistStore.historyVideos()
+      const playedSongs = yield* Effect.forEach(
+        played,
+        video =>
+          Effect.flatMap(
+            songForVideo(video),
+            Option.match({
+              onNone: () => Effect.succeed(0),
+              onSome: song =>
+                Effect.as(
+                  playlistStore.replaceInHistory(video.videoId, song),
+                  1,
+                ),
+            }),
+          ),
+        { concurrency: OLD_VIDEO_LOOKUPS },
+      )
+      const replaced = playedSongs.reduce((sum, count) => sum + count, 0)
+      if (videos.length > 0 || played.length > 0) {
+        yield* Effect.logInfo(
+          `Replaced old music videos with their songs: ${queueSongs.size} of ${videos.length} in the queue, ${replaced} of ${played.length} in the play history`,
+        )
+      }
+    }).pipe(
+      Effect.catch(error =>
+        Effect.logWarning('Could not replace old music videos', error),
+      ),
+    )
+    yield* Effect.forkIn(replaceOldVideos, hubScope)
 
     const contextFor = (senderId: string) => ({
       now: Date.now(),

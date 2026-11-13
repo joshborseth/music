@@ -1873,11 +1873,21 @@ const updateMessage = (model: Model, message: Message) =>
       ],
     }),
     CompletedShuffleSongs: ({ songs, startIndex, maybePlayingFrom }) =>
-      Update.combine([
-        (stepModel: Model) => Playback.setShuffle(stepModel, true),
-        (stepModel: Model) =>
-          Playback.playSongs(stepModel, songs, startIndex, maybePlayingFrom),
-      ])(model),
+      Playback.playSongs(
+        model,
+        songs,
+        startIndex,
+        maybePlayingFrom,
+        'Shuffled',
+      ),
+    ClickedPlayInOrder: ({ songs: songsToPlay, maybePlayingFrom }) =>
+      Playback.clickPlaySongs(
+        model,
+        songsToPlay,
+        0,
+        maybePlayingFrom,
+        'InOrder',
+      ),
 
     CompletedLoadDeviceIdentity: ({ deviceId, deviceName }) =>
       Playback.completeLoadDeviceIdentity(model, deviceId, deviceName),

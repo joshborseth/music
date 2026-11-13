@@ -659,8 +659,9 @@ describe('tab bar', () => {
 })
 
 describe('shuffle', () => {
-  test('turns shuffle on and plays the list from a random song, in its order', () => {
-    // The server shuffles the rest and remembers this order for later.
+  test('plays the list shuffled from a random song, sending it in its order', () => {
+    // The server turns shuffle on, shuffles the rest, and remembers this
+    // order for when shuffle is turned off.
     const dreams: Song = {
       ...theChain,
       videoId: 'mrZRURcb1cM',
@@ -695,20 +696,17 @@ describe('shuffle', () => {
         }),
       ),
       Command.expectExact(
-        SendToSession({ message: { _tag: 'SetShuffle', enabled: true } }),
         SendToSession({
           message: {
             _tag: 'PlayQueue',
             tracks: songs.map(toQueueTrack),
             startIndex: 1,
             playingFrom: rumours,
+            shuffle: true,
           },
         }),
       ),
-      Command.resolveAll(
-        [SendToSession, Message.CompletedSendToSession()],
-        [SendToSession, Message.CompletedSendToSession()],
-      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
     )
   })
 })

@@ -205,6 +205,14 @@ export const PlayQueue = Schema.TaggedStruct('PlayQueue', {
    * with a page (TV apps built before this field leave it out).
    */
   playingFrom: Schema.optionalKey(Schema.NullOr(PlayingFrom)),
+  /**
+   * Shuffle the songs, as a Shuffle button does (true), play them in order,
+   * as a Play button does (false), or keep the session's shuffle setting, as
+   * a tap on one song in a list does (null). The session's shuffle becomes
+   * this when it is not null. Clients built before this field leave it out,
+   * which reads as null.
+   */
+  shuffle: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
 })
 
 export const Placement = Schema.Literals(['Next', 'Last'])

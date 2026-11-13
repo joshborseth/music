@@ -872,6 +872,64 @@ describe('repeat and shuffle', () => {
     expect(back.currentEntryId).toBe(fresh.currentEntryId)
   })
 
+  const album = [track('p'), track('q'), track('r'), track('s')]
+  const videoIds = (model: Model) =>
+    model.queue.map(entry => entry.track.videoId)
+
+  test('a Play button plays in order and turns shuffle off', () => {
+    const on = set(playing(), { _tag: 'SetShuffle', enabled: true })
+    const played = set(on, {
+      _tag: 'PlayQueue',
+      tracks: album,
+      startIndex: 0,
+      shuffle: false,
+    })
+    expect(played.shuffle).toBe(false)
+    expect(played.unshuffled).toEqual([])
+    expect(videoIds(played)).toEqual(['p', 'q', 'r', 's'])
+    expect(played.queue[0]?.entryId ?? null).toBe(played.currentEntryId)
+    expect(toSessionState(played, []).shuffle).toBe(false)
+  })
+
+  test('a Shuffle button shuffles and turns shuffle on', () => {
+    const shuffledModel = set(playing(), {
+      _tag: 'PlayQueue',
+      tracks: album,
+      startIndex: 1,
+      shuffle: true,
+    })
+    expect(shuffledModel.shuffle).toBe(true)
+    expect(shuffledModel.queue[0]?.track.videoId).toBe('q')
+    expect(shuffledModel.queue[0]?.entryId ?? null).toBe(
+      shuffledModel.currentEntryId,
+    )
+    // The fixed shuffle puts p, r, s as r, s, p.
+    expect(videoIds(shuffledModel)).toEqual(['q', 'r', 's', 'p'])
+    // Turning it off brings back the album's order.
+    const back = set(shuffledModel, { _tag: 'SetShuffle', enabled: false })
+    expect(videoIds(back)).toEqual(['p', 'q', 'r', 's'])
+  })
+
+  test('a tap on one song keeps the shuffle setting, as do older clients', () => {
+    const on = set(playing(), { _tag: 'SetShuffle', enabled: true })
+    const tapped = set(on, {
+      _tag: 'PlayQueue',
+      tracks: album,
+      startIndex: 0,
+      shuffle: null,
+    })
+    expect(tapped.shuffle).toBe(true)
+    expect(videoIds(tapped)).not.toEqual(['p', 'q', 'r', 's'])
+    const tappedOff = set(playing(), {
+      _tag: 'PlayQueue',
+      tracks: album,
+      startIndex: 2,
+      shuffle: null,
+    })
+    expect(tappedOff.shuffle).toBe(false)
+    expect(videoIds(tappedOff)).toEqual(['p', 'q', 'r', 's'])
+  })
+
   test('the state says how it repeats and whether it is shuffled', () => {
     const model = set(set(playing(), { _tag: 'SetRepeat', mode: 'All' }), {
       _tag: 'SetShuffle',
@@ -1446,6 +1504,8 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-pause-at.json',
     'client-play-queue.json',
     'client-play-queue-from-nothing.json',
+    'client-play-queue-shuffled.json',
+    'client-play-queue-in-order.json',
     'client-enqueue.json',
     'client-skip-to.json',
     'client-remove-entry.json',

@@ -972,11 +972,7 @@ export const playActions = (
             [
               h.Type('button'),
               h.OnClick(
-                Message.ClickedPlaySongs({
-                  songs,
-                  startIndex: 0,
-                  maybePlayingFrom,
-                }),
+                Message.ClickedPlayInOrder({ songs, maybePlayingFrom }),
               ),
               h.Class(primaryPlayActionClass),
             ],

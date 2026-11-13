@@ -1806,6 +1806,7 @@ impl Nav {
                 tracks,
                 start,
                 from,
+                shuffle: None,
             }));
             self.say(format!("Playing “{}”", card.title), now);
             return;
@@ -2122,6 +2123,7 @@ impl Nav {
                             tracks: collection.tracks.clone(),
                             start: index,
                             from: page.playing_from(),
+                            shuffle: None,
                         }));
                         if let Some(track) = collection.tracks.get(index) {
                             self.say(format!("Playing “{}”", track.title), now);
@@ -2190,13 +2192,15 @@ impl Nav {
                     tracks,
                     start: 0,
                     from,
+                    shuffle: Some(false),
                 }));
             }
             CollectionButton::Shuffle => {
                 effects.push(Effect::Session(UiAction::PlayTracks {
-                    tracks: shuffled(tracks, now),
-                    start: 0,
+                    start: random_index(tracks.len(), now),
+                    tracks,
                     from,
+                    shuffle: Some(true),
                 }));
             }
             CollectionButton::Queue => {
@@ -2242,11 +2246,13 @@ impl Nav {
                     tracks,
                     start: 0,
                     from: None,
+                    shuffle: Some(false),
                 },
                 PlayMode::Shuffle => UiAction::PlayTracks {
-                    tracks: shuffled(tracks, now),
-                    start: 0,
+                    start: random_index(tracks.len(), now),
+                    tracks,
                     from: None,
+                    shuffle: Some(true),
                 },
                 PlayMode::Next => UiAction::Enqueue {
                     tracks,
@@ -2352,6 +2358,15 @@ pub fn shuffled<T>(mut items: Vec<T>, now: Instant) -> Vec<T> {
         items.swap(index, (seed % (index as u64 + 1)) as usize);
     }
     items
+}
+
+/// Where a Shuffle button starts: a random song. The server shuffles the
+/// rest and keeps the list's order for when shuffle is turned off.
+pub fn random_index(len: usize, now: Instant) -> usize {
+    shuffled((0..len).collect(), now)
+        .first()
+        .copied()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -2543,12 +2558,15 @@ mod tests {
             tracks,
             start,
             from,
+            shuffle,
         }) = &effects[0]
         else {
             panic!("expected PlayTracks, got {effects:?}");
         };
         assert_eq!(tracks.len(), 10);
         assert_eq!(*start, 2);
+        // A tapped song plays as shuffle is now.
+        assert_eq!(*shuffle, None);
         // A row of Home plays from nothing with a page, as on the phone.
         assert_eq!(*from, None);
     }
@@ -2641,6 +2659,66 @@ mod tests {
             Effect::Session(UiAction::PlayTracks { from, .. }) => from.clone(),
             _ => None,
         })
+    }
+
+    /// The songs, start, and shuffle of the first `PlayTracks`.
+    fn played(effects: &[Effect]) -> (Vec<String>, usize, Option<bool>) {
+        effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::Session(UiAction::PlayTracks {
+                    tracks,
+                    start,
+                    shuffle,
+                    ..
+                }) => Some((
+                    tracks.iter().map(|track| track.video_id.clone()).collect(),
+                    *start,
+                    *shuffle,
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected PlayTracks, got {effects:?}"))
+    }
+
+    #[test]
+    fn play_plays_in_order_shuffle_shuffles_and_a_song_keeps_the_setting() {
+        let in_order = vec!["t0".to_owned(), "t1".to_owned()];
+        // Play: in order, and shuffle off.
+        let mut nav = Nav::new();
+        open_page(&mut nav, CollectionKind::Album, "a1", "Album a1");
+        assert_eq!(
+            played(&press(&mut nav, &[Key::Ok])),
+            (in_order.clone(), 0, Some(false))
+        );
+        // Shuffle: the list in its order, so turning shuffle off brings it
+        // back, from a random song; the server shuffles the rest.
+        let mut nav = Nav::new();
+        open_page(&mut nav, CollectionKind::Album, "a1", "Album a1");
+        let (tracks, start, shuffle) = played(&press(&mut nav, &[Key::Right, Key::Ok]));
+        assert_eq!((tracks, shuffle), (in_order.clone(), Some(true)));
+        assert!(start < 2);
+        // A song in the list: as shuffle is now.
+        let mut nav = Nav::new();
+        open_page(&mut nav, CollectionKind::Album, "a1", "Album a1");
+        assert_eq!(
+            played(&press(&mut nav, &[Key::Down, Key::Down, Key::Ok])),
+            (in_order, 1, None)
+        );
+        // Play now in a song's menu is a Play button.
+        let mut nav = Nav::new();
+        open_page(&mut nav, CollectionKind::Album, "a1", "Album a1");
+        assert_eq!(
+            played(&press(&mut nav, &[Key::Down, Key::Hold, Key::Ok])),
+            (vec!["t0".to_owned()], 0, Some(false))
+        );
+    }
+
+    #[test]
+    fn random_index_stays_in_the_list() {
+        assert_eq!(random_index(0, Instant::now()), 0);
+        assert_eq!(random_index(1, Instant::now()), 0);
+        assert!((0..20).all(|_| random_index(3, Instant::now()) < 3));
     }
 
     #[test]
