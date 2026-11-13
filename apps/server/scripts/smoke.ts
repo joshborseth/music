@@ -89,7 +89,24 @@ const program = Effect.gen(function* () {
   console.log(
     'my playlists',
     library.playlists.map(({ title, songCount }) => `${title}:${songCount}`),
+    'albums',
+    library.albums.length,
+    'artists',
+    library.artists.length,
   )
+  const home = yield* client.getHome()
+  console.log(
+    'home',
+    'jump back in',
+    home.jumpBackIn.length,
+    'recently played',
+    home.recentlyPlayed.length,
+  )
+  const seed = home.recentlyPlayed[0]?.videoId
+  if (seed !== undefined) {
+    const radio = yield* client.getSongRadio({ videoId: seed })
+    console.log('more like', home.recentlyPlayed[0]?.title, radio.length)
+  }
   const missing = yield* client
     .getAlbum({ albumId: 'MPREb_doesnotexist' })
     .pipe(Effect.flip)

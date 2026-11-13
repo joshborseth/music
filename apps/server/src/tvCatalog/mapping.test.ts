@@ -23,6 +23,7 @@ import {
   homeShelves,
   labelled,
   largestArtworkUrl,
+  libraryShelves,
   lyricsOf,
   myPlaylistCard,
   myPlaylistCollection,
@@ -89,6 +90,8 @@ const library: MyLibrary = {
     }),
   ],
   likedVideoIds: ['a'],
+  albums: [],
+  artists: [],
 }
 
 describe('toQueueTrack', () => {
@@ -283,7 +286,12 @@ describe('shelves', () => {
       ),
     ]
     expect(
-      homePlaylists({ playlists, likedVideoIds: [] }).map(({ id }) => id),
+      homePlaylists({
+        playlists,
+        likedVideoIds: [],
+        albums: [],
+        artists: [],
+      }).map(({ id }) => id),
     ).toEqual(
       Array.from({ length: HOME_PLAYLIST_SHELVES }, (_, index) => `p${index}`),
     )
@@ -363,6 +371,43 @@ describe('lyrics', () => {
         maybeLyrics: Option.none(),
       }),
     ).toEqual({ text: null, source: null, lines: null })
+  })
+})
+
+describe('library shelves', () => {
+  test('are your playlists alone until anything is saved or followed', () => {
+    expect(libraryShelves(library).shelves.map(({ title }) => title)).toEqual([
+      'Your playlists',
+    ])
+  })
+
+  test('add the albums saved and the artists followed, latest first', () => {
+    const { shelves } = libraryShelves({
+      ...library,
+      albums: [album({ id: 'A2' }), album({ id: 'A1' })],
+      artists: [
+        {
+          id: 'UCa',
+          name: 'Rick Astley',
+          maybeAudience: Option.none(),
+          artwork: [image('artist', 544)],
+        },
+      ],
+    })
+    expect(shelves.map(({ title }) => title)).toEqual([
+      'Your playlists',
+      'Albums',
+      'Artists',
+    ])
+    expect(shelves[1]?.cards.map(({ kind, id }) => [kind, id])).toEqual([
+      ['Album', 'A2'],
+      ['Album', 'A1'],
+    ])
+    expect(shelves[2]?.cards[0]).toMatchObject({
+      kind: 'Artist',
+      id: 'UCa',
+      title: 'Rick Astley',
+    })
   })
 })
 

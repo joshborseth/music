@@ -1,13 +1,15 @@
 import { Array, Option } from 'effect'
+import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
-import { User } from 'lucide'
+import { Check, User } from 'lucide'
 
 import { icon } from '@/lib/icons'
-import { type ArtistDetails } from '@music/shared'
+import { type ArtistDetails, type MyLibrary } from '@music/shared'
 
+import { isArtistFollowed } from '../library'
 import { Message } from '../message'
 import { SyncTitleBarReveal } from '../mount'
-import { artistQuery } from '../query'
+import { artistQuery, myLibraryQuery } from '../query'
 import { type PageModel } from './page'
 import {
   albumCard,
@@ -23,12 +25,51 @@ import {
 
 const HERO_IMAGE_WIDTH = 480
 
+/**
+ * Follows the artist, keeping them in the Library, or unfollows them. Shown
+ * once the Library has loaded, so it never shows the wrong state.
+ */
+const followButton = (
+  details: ArtistDetails,
+  maybeLibrary: Option.Option<MyLibrary>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(maybeLibrary, {
+    onNone: () => h.empty,
+    onSome: library => {
+      const isFollowing = isArtistFollowed(library, details.artist.id)
+      return h.button(
+        [
+          h.Type('button'),
+          h.OnClick(
+            Message.ClickedToggleArtistFollowed({ artist: details.artist }),
+          ),
+          h.AriaLabel(
+            isFollowing
+              ? `Unfollow ${details.artist.name}`
+              : `Follow ${details.artist.name}`,
+          ),
+          h.Class(
+            'pressable floating relative mr-4 mb-5 flex h-9 shrink-0 items-center gap-1.5 rounded-full px-4 text-[15px] font-semibold',
+          ),
+        ],
+        isFollowing
+          ? [icon(h, Check, 'text-primary size-4'), 'Following']
+          : ['Follow'],
+      )
+    },
+  })
+
 /** A photo that runs edge to edge under the status bar, name on top of it. */
-const artistHero = (details: ArtistDetails, h: HtmlBuilder<Message>): Html =>
+const artistHero = (
+  details: ArtistDetails,
+  maybeLibrary: Option.Option<MyLibrary>,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.header(
     [
       h.Class(
-        'relative flex aspect-[4/5] max-h-[68vh] w-full items-end overflow-hidden bg-muted',
+        'relative flex aspect-[4/5] max-h-[68vh] w-full items-end justify-between gap-3 overflow-hidden bg-muted',
       ),
     ],
     [
@@ -66,6 +107,7 @@ const artistHero = (details: ArtistDetails, h: HtmlBuilder<Message>): Html =>
         ],
         [details.artist.name],
       ),
+      followButton(details, maybeLibrary, h),
     ],
   )
 
@@ -85,7 +127,14 @@ export const artistView = (
           [
             h.div(
               [h.Class('flex flex-col gap-5')],
-              [artistHero(details, h), playActions(details.topSongs, h)],
+              [
+                artistHero(
+                  details,
+                  AsyncData.getData(myLibraryQuery.read(model.myLibrary)),
+                  h,
+                ),
+                playActions(details.topSongs, h),
+              ],
             ),
             songSection(
               {

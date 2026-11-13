@@ -1,4 +1,5 @@
 import { Option, Result } from 'effect'
+import { AsyncData } from 'foldkit'
 import { Command, given, message, model, story } from 'foldkit/story'
 import { modifyFields } from 'foldkit/struct'
 import { fromString } from 'foldkit/url'
@@ -15,7 +16,6 @@ import {
   NavigateInternal,
   ReplaceSearchUrl,
   SaveRecentSearches,
-  SaveRecentlyPlayed,
   SaveRecentlyViewed,
   ScrollSearchResultsToTop,
   ScrollToTop,
@@ -33,10 +33,12 @@ import {
   albumQuery,
   albumSearchQuery,
   artistSearchQuery,
+  homeQuery,
   myLibraryQuery,
   myPlaylistQuery,
   playlistSearchQuery,
   songQuery,
+  songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
 } from './query'
@@ -55,13 +57,31 @@ const resolveLikedSongs = Command.resolve(
   }),
 )
 
-/** Home loads my playlists and Liked songs, and nothing from YouTube. */
+/** Nothing has played on any device yet. */
+const resolveHistory = Command.resolve(
+  homeQuery.Fetch,
+  homeQuery.Message.CompletedFetch({
+    generation: FIRST_REQUEST_GENERATION,
+    result: Result.succeed({ jumpBackIn: [], recentlyPlayed: [] }),
+  }),
+)
+
+/**
+ * Home loads the play history, my playlists, and Liked songs. With nothing
+ * played, it asks YouTube for nothing.
+ */
 const resolveHome = [
+  resolveHistory,
   Command.resolve(
     myLibraryQuery.Fetch,
     myLibraryQuery.Message.CompletedFetch({
       generation: FIRST_REQUEST_GENERATION,
-      result: Result.succeed({ playlists: [], likedVideoIds: [] }),
+      result: Result.succeed({
+        playlists: [],
+        likedVideoIds: [],
+        albums: [],
+        artists: [],
+      }),
     }),
   ),
   resolveLikedSongs,
@@ -513,7 +533,9 @@ describe('back button', () => {
       Command.expectExact(NavigateBackTo({ url: '/' })),
       Command.resolve(NavigateBackTo, Message.CompletedNavigateBackTo()),
       message(Message.ChangedUrl({ url: urlOrThrow('http://localhost/') })),
-      // The Library tab already asked for my playlists; only Liked songs is new.
+      // The Library tab already asked for my playlists; the history and Liked
+      // songs are new.
+      resolveHistory,
       resolveLikedSongs,
       model(model => {
         expect(model.route._tag).toBe('Home')
@@ -649,30 +671,38 @@ describe('top result', () => {
 
 const playedTrack: Session.QueueTrack = toQueueTrack(theChain)
 
-describe('clearing the library', () => {
+const viewedAlbum = {
+  kind: 'Album' as const,
+  id: 'MPREb_1SbgcDGdrT4',
+  title: 'Rumours',
+  subtitle: 'Album · Fleetwood Mac',
+  maybeArtworkUrl: Option.none(),
+}
+
+describe('clearing recently viewed', () => {
   const libraryModel: Model = modifyFields(
     initialModel(AppRoute.Library(), '/library'),
-    { recentlyPlayed: () => [playedTrack] },
+    { recentlyViewed: () => [viewedAlbum] },
   )
 
   test('asks first, and keeps everything if cancelled', () => {
     story(
       update,
       given(libraryModel),
-      message(Message.ClickedClearLibrary()),
+      message(Message.ClickedClearRecentlyViewed()),
       model(model => {
         expect(model.actionSheet).toStrictEqual({
           _tag: 'Shown',
-          content: { _tag: 'ConfirmClearLibrary' },
+          content: { _tag: 'ConfirmClearRecentlyViewed' },
         })
-        expect(model.recentlyPlayed).toStrictEqual([playedTrack])
+        expect(model.recentlyViewed).toStrictEqual([viewedAlbum])
       }),
       Command.expectExact(LockScroll()),
       Command.resolve(LockScroll, Message.CompletedLockScroll()),
       message(Message.ClickedCloseSheet()),
       Command.resolve(UnlockScroll, Message.CompletedUnlockScroll()),
       model(model => {
-        expect(model.recentlyPlayed).toStrictEqual([playedTrack])
+        expect(model.recentlyViewed).toStrictEqual([viewedAlbum])
       }),
     )
   })
@@ -681,24 +711,76 @@ describe('clearing the library', () => {
     story(
       update,
       given(libraryModel),
-      message(Message.ClickedClearLibrary()),
+      message(Message.ClickedClearRecentlyViewed()),
       Command.resolve(LockScroll, Message.CompletedLockScroll()),
-      message(Message.ConfirmedClearLibrary()),
+      message(Message.ConfirmedClearRecentlyViewed()),
       model(model => {
-        expect(model.recentlyPlayed).toStrictEqual([])
         expect(model.recentlyViewed).toStrictEqual([])
         expect(model.actionSheet._tag).toBe('Dismissed')
       }),
       Command.expectExact(
         UnlockScroll(),
-        SaveRecentlyPlayed({ recentlyPlayed: [] }),
         SaveRecentlyViewed({ recentlyViewed: [] }),
       ),
       Command.resolveAll(
         [UnlockScroll, Message.CompletedUnlockScroll()],
-        [SaveRecentlyPlayed, Message.CompletedSaveRecentlyPlayed()],
         [SaveRecentlyViewed, Message.CompletedSaveRecentlyViewed()],
       ),
+    )
+  })
+})
+
+describe('home', () => {
+  test('asks YouTube for more like the song played last, once the history has loaded', () => {
+    const dreams: Song = {
+      ...theChain,
+      videoId: 'mrZRURcb1cM',
+      title: 'Dreams',
+    }
+    story(
+      update,
+      given(initialModel(AppRoute.Library(), '/library')),
+      message(Message.ChangedUrl({ url: urlOrThrow('http://localhost/') })),
+      Command.resolve(
+        homeQuery.Fetch,
+        homeQuery.Message.CompletedFetch({
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed({
+            jumpBackIn: [],
+            recentlyPlayed: [theChain, dreams],
+          }),
+        }),
+      ),
+      Command.resolve(
+        myLibraryQuery.Fetch,
+        myLibraryQuery.Message.CompletedFetch({
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed({
+            playlists: [],
+            likedVideoIds: [],
+            albums: [],
+            artists: [],
+          }),
+        }),
+      ),
+      resolveLikedSongs,
+      Command.resolve(
+        songRadioQuery.Fetch,
+        songRadioQuery.Message.CompletedFetch({
+          args: { videoId: theChain.videoId },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed([dreams]),
+        }),
+      ),
+      model(model => {
+        expect(
+          AsyncData.getData(
+            songRadioQuery.read(model.songRadios, {
+              videoId: theChain.videoId,
+            }),
+          ),
+        ).toStrictEqual(Option.some([dreams]))
+      }),
     )
   })
 })

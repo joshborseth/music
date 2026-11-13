@@ -6,35 +6,42 @@ import { Play, Speaker, Tv } from 'lucide'
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
+  type HomeFeed,
   LIKED_PLAYLIST_ID,
   type MyLibrary,
   type MyPlaylistSummary,
-  Session,
   type Song,
 } from '@music/shared'
 
-import { songFromQueueTrack } from '../library'
 import { Message } from '../message'
-import { myLibraryQuery, myPlaylistQuery } from '../query'
+import {
+  homeQuery,
+  myLibraryQuery,
+  myPlaylistQuery,
+  songRadioQuery,
+} from '../query'
 import { largeTitleHeader } from './chrome'
 import { type PageModel } from './page'
 import {
   ArtworkShape,
   type NowPlaying,
   type PlayOn,
+  albumCard,
+  artistCard,
   artistNames,
   artworkImage,
   emptyState,
   equalizer,
+  loadingRows,
   loadingShelf,
   myPlaylistCard,
+  namedSection,
   remote,
   shelf,
   songGridShelf,
 } from './shared'
 
 const RECENT_CARD_ARTWORK_WIDTH = 140
-const RECENTLY_PLAYED_ON_HOME = 12
 
 /** A recently played song as a card that plays it, with the ones after it. */
 const recentCard = (
@@ -106,16 +113,13 @@ const recentCard = (
 
 type RecentSong = Readonly<{ song: Song; index: number }>
 
+/** What played lately on any device, newest first. */
 const recentlyPlayedShelf = (
-  recentlyPlayed: ReadonlyArray<Session.QueueTrack>,
+  songs: ReadonlyArray<Song>,
   playing: NowPlaying,
   h: HtmlBuilder<Message>,
-): Html => {
-  const songs = Array.map(
-    Array.take(recentlyPlayed, RECENTLY_PLAYED_ON_HOME),
-    songFromQueueTrack,
-  )
-  return shelf<RecentSong>(
+): Html =>
+  shelf<RecentSong>(
     {
       title: 'Recently played',
       items: Array.map(songs, (song, index) => ({ song, index })),
@@ -124,7 +128,60 @@ const recentlyPlayedShelf = (
     },
     h,
   )
-}
+
+const jumpBackInShelf = (feed: HomeFeed, h: HtmlBuilder<Message>): Html =>
+  shelf(
+    {
+      title: 'Jump back in',
+      items: feed.jumpBackIn,
+      toKey: ({ id }) => id,
+      toCard: albumCard,
+    },
+    h,
+  )
+
+/**
+ * The song YouTube Music's radio starts from: the latest song played whose
+ * radio was asked for. A song that just started has not been asked for yet,
+ * so the shelf keeps showing the one before it until Home reloads.
+ */
+const radioSeed = (model: PageModel, feed: HomeFeed): Option.Option<Song> =>
+  Array.findFirst(
+    feed.recentlyPlayed,
+    ({ videoId }) =>
+      !AsyncData.isIdle(songRadioQuery.read(model.songRadios, { videoId })),
+  )
+
+const RADIO_EYEBROW = 'More like'
+
+/** YouTube Music's radio for the song played last. Hidden if it fails. */
+const radioShelf = (
+  model: PageModel,
+  feed: HomeFeed,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(radioSeed(model, feed), {
+    onNone: () => h.empty,
+    onSome: seed =>
+      AsyncData.matchData(
+        songRadioQuery.read(model.songRadios, { videoId: seed.videoId }),
+        {
+          onEmpty: () =>
+            namedSection(RADIO_EYEBROW, seed.title, [loadingRows(h)], h),
+          onFailure: () => h.empty,
+          onData: songs =>
+            songGridShelf(
+              {
+                title: seed.title,
+                maybeEyebrow: Option.some(RADIO_EYEBROW),
+                songs,
+                playing: model.playing,
+              },
+              h,
+            ),
+        },
+      ),
+  })
 
 const LIKED_SONGS_ON_HOME = 24
 
@@ -164,11 +221,47 @@ const likedSongsShelf = (model: PageModel, h: HtmlBuilder<Message>): Html =>
     },
   )
 
-/** True once there is nothing of mine to show: no plays, likes, or playlists. */
+const followedArtistsShelf = (
+  library: MyLibrary,
+  h: HtmlBuilder<Message>,
+): Html =>
+  shelf(
+    {
+      title: 'Artists you follow',
+      items: library.artists,
+      toKey: ({ id }) => id,
+      toCard: artistCard,
+    },
+    h,
+  )
+
+/** The shelves made from the play history, once it has loaded. */
+const historyShelves = (
+  model: PageModel,
+  h: HtmlBuilder<Message>,
+): ReadonlyArray<Html> =>
+  AsyncData.matchData(homeQuery.read(model.home), {
+    onEmpty: (): ReadonlyArray<Html> => [loadingShelf(h)],
+    onFailure: (): ReadonlyArray<Html> => [],
+    onData: (feed): ReadonlyArray<Html> => [
+      jumpBackInShelf(feed, h),
+      recentlyPlayedShelf(feed.recentlyPlayed, model.playing, h),
+      radioShelf(model, feed, h),
+    ],
+  })
+
+/**
+ * True once there is nothing of mine to show: nothing played on any device,
+ * and no likes, playlists, saved albums, or followed artists.
+ */
 const isNothingYet = (model: PageModel, library: MyLibrary): boolean =>
-  Array.isReadonlyArrayEmpty(model.recentlyPlayed) &&
+  Option.exists(AsyncData.getData(homeQuery.read(model.home)), feed =>
+    Array.isReadonlyArrayEmpty(feed.recentlyPlayed),
+  ) &&
   Array.isReadonlyArrayEmpty(library.likedVideoIds) &&
-  Array.every(library.playlists, playlist => playlist.isLiked)
+  Array.every(library.playlists, playlist => playlist.isLiked) &&
+  Array.isReadonlyArrayEmpty(library.albums) &&
+  Array.isReadonlyArrayEmpty(library.artists)
 
 /**
  * Where songs play, and the way to the device picker even when nothing
@@ -203,7 +296,10 @@ const playOnButton = (playOn: PlayOn, h: HtmlBuilder<Message>): Html =>
     ],
   )
 
-/** Home: only my music. What I played lately, my playlists, my likes. */
+/**
+ * Home: only my music. What played lately on any device and more like it,
+ * my playlists, my likes, and the artists I follow.
+ */
 export const homeView = (
   model: PageModel,
   h: HtmlBuilder<Message>,
@@ -215,10 +311,7 @@ export const homeView = (
       onLoading: () =>
         h.div(
           [h.Class('flex flex-col gap-8 pt-2 pb-6')],
-          [
-            recentlyPlayedShelf(model.recentlyPlayed, model.playing, h),
-            loadingShelf(h),
-          ],
+          [loadingShelf(h), loadingShelf(h)],
         ),
       onData: library =>
         isNothingYet(model, library)
@@ -234,9 +327,10 @@ export const homeView = (
           : h.div(
               [h.Class('flex flex-col gap-8 pt-2 pb-6')],
               [
-                recentlyPlayedShelf(model.recentlyPlayed, model.playing, h),
+                ...historyShelves(model, h),
                 playlistsShelf(library.playlists, h),
                 likedSongsShelf(model, h),
+                followedArtistsShelf(library, h),
               ],
             ),
     },

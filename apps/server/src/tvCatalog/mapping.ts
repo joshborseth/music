@@ -454,3 +454,20 @@ export const likedOf = (library: MyLibrary, videoId: string): Tv.TvLiked => ({
   videoId,
   liked: library.likedVideoIds.includes(videoId),
 })
+
+// LIBRARY
+
+/**
+ * The Library tab: your playlists, then the albums saved and the artists
+ * followed on the phone, latest first.
+ */
+export const libraryShelves = (library: MyLibrary): Tv.TvShelves => ({
+  shelves: nonEmptyShelves([
+    yourPlaylistsShelf(library),
+    {
+      title: 'Albums',
+      cards: Array.map(library.albums, album => albumCard(album)),
+    },
+    { title: 'Artists', cards: Array.map(library.artists, artistCard) },
+  ]),
+})

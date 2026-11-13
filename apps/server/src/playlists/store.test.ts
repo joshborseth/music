@@ -3,6 +3,8 @@ import { describe, expect, test } from 'bun:test'
 import { Effect, Option, Result } from 'effect'
 
 import {
+  type AlbumSummary,
+  type ArtistSummary,
   LIKED_PLAYLIST_ID,
   MAX_PLAYLIST_TITLE_LENGTH,
   type PlaylistEdit,
@@ -216,6 +218,136 @@ describe('playlist store', () => {
     const reopened = makePlaylistStore(db, options)
     const details = Result.getOrThrow(run(reopened.playlist('kept')))
     expect(details.songs).toHaveLength(1)
+  })
+})
+
+const album = (id: string, title = `Album ${id}`): AlbumSummary => ({
+  id,
+  title,
+  artists: [{ maybeId: Option.some('UCartist'), name: 'Artist' }],
+  maybeKind: Option.some('Album'),
+  maybeYear: Option.some('1977'),
+  artwork: [
+    { url: `https://lh3.googleusercontent.com/${id}`, width: 60, height: 60 },
+  ],
+})
+
+const artist = (id: string): ArtistSummary => ({
+  id,
+  name: `Artist ${id}`,
+  maybeAudience: Option.some('1M monthly audience'),
+  artwork: [],
+})
+
+const ids = <A extends Readonly<{ id: string }>>(
+  items: ReadonlyArray<A>,
+): ReadonlyArray<string> => items.map(({ id }) => id)
+
+describe('saved albums and followed artists', () => {
+  test('start empty', () => {
+    const library = Result.getOrThrow(run(makeStore().library()))
+    expect(library.albums).toEqual([])
+    expect(library.artists).toEqual([])
+  })
+
+  test('keep each album once, the latest saved first, with its details', () => {
+    const store = makeStore()
+    edit(store, { _tag: 'SetAlbumSaved', album: album('a'), isSaved: true })
+    edit(store, { _tag: 'SetAlbumSaved', album: album('b'), isSaved: true })
+    const result = edit(store, {
+      _tag: 'SetAlbumSaved',
+      album: album('a', 'Rumours (Deluxe)'),
+      isSaved: true,
+    })
+
+    expect(ids(result.library.albums)).toEqual(['a', 'b'])
+    expect(result.library.albums[0]).toEqual(album('a', 'Rumours (Deluxe)'))
+    expect(Option.isNone(result.maybePlaylist)).toBe(true)
+  })
+
+  test('remove an album, and removing one never saved changes nothing', () => {
+    const store = makeStore()
+    edit(store, { _tag: 'SetAlbumSaved', album: album('a'), isSaved: true })
+    edit(store, { _tag: 'SetAlbumSaved', album: album('b'), isSaved: true })
+
+    const removed = edit(store, {
+      _tag: 'SetAlbumSaved',
+      album: album('a'),
+      isSaved: false,
+    })
+    expect(ids(removed.library.albums)).toEqual(['b'])
+
+    const unchanged = edit(store, {
+      _tag: 'SetAlbumSaved',
+      album: album('never'),
+      isSaved: false,
+    })
+    expect(ids(unchanged.library.albums)).toEqual(['b'])
+  })
+
+  test('follow and unfollow artists, the latest followed first', () => {
+    const store = makeStore()
+    edit(store, {
+      _tag: 'SetArtistFollowed',
+      artist: artist('x'),
+      isFollowed: true,
+    })
+    const followed = edit(store, {
+      _tag: 'SetArtistFollowed',
+      artist: artist('y'),
+      isFollowed: true,
+    })
+    expect(ids(followed.library.artists)).toEqual(['y', 'x'])
+    expect(followed.library.artists[1]).toEqual(artist('x'))
+
+    const unfollowed = edit(store, {
+      _tag: 'SetArtistFollowed',
+      artist: artist('y'),
+      isFollowed: false,
+    })
+    expect(ids(unfollowed.library.artists)).toEqual(['x'])
+  })
+
+  test('leave playlists and likes alone', () => {
+    const store = makeStore()
+    edit(store, { _tag: 'SetLiked', song: song('a'), isLiked: true })
+    const result = edit(store, {
+      _tag: 'SetAlbumSaved',
+      album: album('a'),
+      isSaved: true,
+    })
+    expect(result.library.likedVideoIds).toEqual(['a'])
+    expect(result.library.playlists).toHaveLength(1)
+  })
+
+  test('a file from before albums and artists keeps its playlists and history', () => {
+    const db = new Database(':memory:', { strict: true })
+    const options = { now: () => 1, newId: () => 'kept' }
+    const older = makePlaylistStore(db, options)
+    Result.getOrThrow(
+      run(older.edit({ _tag: 'Create', title: 'Kept', songs: [song('a')] })),
+    )
+    Result.getOrThrow(run(older.recordPlay(song('b'))))
+    db.run('DROP TABLE saved_albums')
+    db.run('DROP TABLE followed_artists')
+    db.run('PRAGMA user_version = 2')
+
+    const reopened = makePlaylistStore(db, options)
+    const library = Result.getOrThrow(run(reopened.library()))
+    expect(ids(library.playlists)).toEqual([LIKED_PLAYLIST_ID, 'kept'])
+    expect(library.albums).toEqual([])
+    expect(
+      Result.getOrThrow(run(reopened.recentlyPlayed(1))).map(
+        ({ videoId }) => videoId,
+      ),
+    ).toEqual(['b'])
+
+    const saved = edit(reopened, {
+      _tag: 'SetAlbumSaved',
+      album: album('a'),
+      isSaved: true,
+    })
+    expect(ids(saved.library.albums)).toEqual(['a'])
   })
 })
 

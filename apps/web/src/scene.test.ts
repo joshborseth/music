@@ -15,9 +15,16 @@ import { modifyFields } from 'foldkit/struct'
 import { fromString } from 'foldkit/url'
 import { describe, test } from 'vitest'
 
-import { type AlbumSummary, type ArtistSummary, type Song } from '@music/shared'
+import {
+  type AlbumSummary,
+  type ArtistSummary,
+  type MyLibrary,
+  type MyPlaylistSummary,
+  type Song,
+} from '@music/shared'
 
 import {
+  EditPlaylists,
   LockScroll,
   ReplaceSearchUrl,
   SaveRecentSearches,
@@ -27,13 +34,19 @@ import {
 import { Message } from './message'
 import { type Model } from './model'
 import { DragToDismiss, RestoreScroll, SyncTitleBarReveal } from './mount'
-import { SendToSession, UnlockPhoneAudio } from './playback/command'
+import {
+  SendToSession,
+  UnlockPhoneAudio,
+  WaitBeforeHideNotice,
+} from './playback/command'
 import { toQueueTrack } from './playback/queueTrack'
 import {
   type RequestError,
   albumQuery,
   albumSearchQuery,
+  artistQuery,
   artistSearchQuery,
+  songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
 } from './query'
@@ -51,6 +64,11 @@ const pageScrolled = Mount.resolve(
 const sheetFollowsDrags = Mount.resolve(
   DragToDismiss,
   Message.CompletedFollowSheetDrags(),
+)
+
+const titleBarFollowsScroll = Mount.resolve(
+  SyncTitleBarReveal,
+  Message.CompletedSyncTitleBarReveal(),
 )
 
 const emptySearchModel: Model = initialModel(
@@ -532,6 +550,8 @@ describe('library', () => {
                 },
               ],
               likedVideoIds: ['FhgFtXESdPk'],
+              albums: [],
+              artists: [],
             }),
         }),
     })
@@ -544,6 +564,329 @@ describe('library', () => {
         '/library/playlist/liked',
       ),
       expect(text('12 songs · 1 hr 5 min')).toExist(),
+    )
+  })
+
+  test('shows saved albums and followed artists, and filters to one kind', () => {
+    const model = withLibrary(
+      initialModel(AppRoute.Library(), '/library'),
+      libraryWith({ albums: [rumours], artists: [fleetwoodMac] }),
+    )
+    scene(
+      { update, view },
+      given(model),
+      pageScrolled,
+      expect(role('heading', { name: 'Playlists' })).toExist(),
+      expect(role('heading', { name: 'Albums' })).toExist(),
+      expect(role('heading', { name: 'Artists' })).toExist(),
+      click(role('button', { name: 'Albums' })),
+      expect(role('button', { name: 'Albums' })).toHaveAttr(
+        'aria-pressed',
+        'true',
+      ),
+      expect(role('heading', { name: 'Playlists' })).toBeAbsent(),
+      expect(role('link', { name: /Rumours/ })).toHaveAttr(
+        'href',
+        '/album/MPREb_1SbgcDGdrT4',
+      ),
+      click(role('button', { name: 'Artists' })),
+      expect(role('link', { name: /Fleetwood Mac/ })).toHaveAttr(
+        'href',
+        '/artist/UCCzULu3prrEaPvM2ZtkJlYQ',
+      ),
+      expect(role('link', { name: /Rumours/ })).toBeAbsent(),
+      click(role('button', { name: 'Artists' })),
+      expect(role('heading', { name: 'Playlists' })).toExist(),
+    )
+  })
+
+  test('says how to save an album when there are none', () => {
+    const model = modifyFields(
+      withLibrary(initialModel(AppRoute.Library(), '/library'), libraryWith()),
+      { libraryFilter: () => 'Albums' as const },
+    )
+    scene(
+      { update, view },
+      given(model),
+      pageScrolled,
+      expect(text('No albums yet')).toExist(),
+    )
+  })
+
+  test('lists recently viewed as rows, and its Clear says what it clears', () => {
+    const model = modifyFields(
+      withLibrary(initialModel(AppRoute.Library(), '/library'), libraryWith()),
+      {
+        recentlyViewed: () => [
+          {
+            kind: 'Album' as const,
+            id: 'MPREb_1SbgcDGdrT4',
+            title: 'Rumours',
+            subtitle: 'Album · Fleetwood Mac',
+            maybeArtworkUrl: Option.none(),
+          },
+        ],
+      },
+    )
+    scene(
+      { update, view },
+      given(model),
+      pageScrolled,
+      expect(role('heading', { name: 'Recently viewed' })).toExist(),
+      expect(role('link', { name: /Rumours/ })).toHaveAttr(
+        'href',
+        '/album/MPREb_1SbgcDGdrT4',
+      ),
+      click(role('button', { name: 'Clear recently viewed' })),
+      Command.expectExact(LockScroll()),
+      Command.resolveAll([LockScroll, Message.CompletedLockScroll()]),
+      sheetFollowsDrags,
+      expect(role('dialog', { name: 'Clear recently viewed' })).toContainText(
+        'Your library stays.',
+      ),
+    )
+  })
+})
+
+const rumours: AlbumSummary = {
+  id: 'MPREb_1SbgcDGdrT4',
+  title: 'Rumours',
+  artists: [
+    { maybeId: Option.some('UCCzULu3prrEaPvM2ZtkJlYQ'), name: 'Fleetwood Mac' },
+  ],
+  maybeKind: Option.some('Album'),
+  maybeYear: Option.some('1977'),
+  artwork: [],
+}
+
+const fleetwoodMac: ArtistSummary = {
+  id: 'UCCzULu3prrEaPvM2ZtkJlYQ',
+  name: 'Fleetwood Mac',
+  maybeAudience: Option.some('20M monthly audience'),
+  artwork: [],
+}
+
+const likedSongs: MyPlaylistSummary = {
+  id: 'liked',
+  title: 'Liked songs',
+  isLiked: true,
+  songCount: 0,
+  totalSeconds: 0,
+  covers: [],
+  updatedAt: 1,
+}
+
+const libraryWith = (overrides: Partial<MyLibrary> = {}): MyLibrary => ({
+  playlists: [likedSongs],
+  likedVideoIds: [],
+  albums: [],
+  artists: [],
+  ...overrides,
+})
+
+const withLibrary = (base: Model, library: MyLibrary): Model =>
+  modifyFields(base, {
+    myLibrary: query =>
+      modifyFields(query, { data: () => AsyncData.succeed(library) }),
+  })
+
+describe('home', () => {
+  const dreams: Song = { ...theChain, videoId: 'mrZRURcb1cM', title: 'Dreams' }
+
+  /** A phone that has played nothing, on a server where the TV has. */
+  const freshPhone = (
+    radio: Result.Result<ReadonlyArray<Song>, RequestError> = Result.succeed([
+      dreams,
+    ]),
+  ): Model => {
+    const base = withLibrary(
+      initialModel(AppRoute.Home(), '/'),
+      libraryWith({ artists: [fleetwoodMac] }),
+    )
+    const radioLoading = songRadioQuery.loadIfMissing(base.songRadios, {
+      videoId: theChain.videoId,
+    }).model
+    return modifyFields(base, {
+      home: query =>
+        modifyFields(query, {
+          data: () =>
+            AsyncData.succeed({
+              jumpBackIn: [{ ...rumours, maybeYear: Option.none() }],
+              recentlyPlayed: [theChain],
+            }),
+        }),
+      songRadios: () =>
+        songRadioQuery.update(
+          radioLoading,
+          songRadioQuery.Message.CompletedFetch({
+            args: { videoId: theChain.videoId },
+            generation: FIRST_REQUEST_GENERATION,
+            result: radio,
+          }),
+        ).model,
+    })
+  }
+
+  test('on a fresh phone, shows what played on any device and more like it', () => {
+    scene(
+      { update, view },
+      given(freshPhone()),
+      pageScrolled,
+      expect(role('heading', { name: 'Jump back in' })).toExist(),
+      expect(role('link', { name: /Rumours/ })).toHaveAttr(
+        'href',
+        '/album/MPREb_1SbgcDGdrT4',
+      ),
+      expect(role('heading', { name: 'Recently played' })).toExist(),
+      expect(role('button', { name: 'Play The Chain' })).toExist(),
+      expect(role('heading', { name: 'More like The Chain' })).toExist(),
+      expect(role('button', { name: /^Dreams/ })).toExist(),
+      expect(role('heading', { name: 'Artists you follow' })).toExist(),
+      expect(text('Your music lives here')).toBeAbsent(),
+    )
+  })
+
+  test('says where music will show once nothing has played anywhere', () => {
+    const model = modifyFields(
+      withLibrary(initialModel(AppRoute.Home(), '/'), libraryWith()),
+      {
+        home: query =>
+          modifyFields(query, {
+            data: () =>
+              AsyncData.succeed({ jumpBackIn: [], recentlyPlayed: [] }),
+          }),
+      },
+    )
+    scene(
+      { update, view },
+      given(model),
+      pageScrolled,
+      expect(text('Your music lives here')).toExist(),
+    )
+  })
+
+  test('leaves out More like when YouTube does not answer', () => {
+    scene(
+      { update, view },
+      given(freshPhone(Result.fail('YouTubeUnavailable'))),
+      pageScrolled,
+      expect(role('heading', { name: 'More like The Chain' })).toBeAbsent(),
+      expect(role('heading', { name: 'Recently played' })).toExist(),
+    )
+  })
+})
+
+describe('saving to the Library', () => {
+  test('an album page saves the album, and says so', () => {
+    const route = AppRoute.Album({ albumId: rumours.id })
+    const base = withLibrary(
+      initialModel(route, `/album/${rumours.id}`),
+      libraryWith(),
+    )
+    const loading = albumQuery.loadIfMissing(base.albums, {
+      albumId: rumours.id,
+    }).model
+    const model = modifyFields(base, {
+      albums: () =>
+        albumQuery.update(
+          loading,
+          albumQuery.Message.CompletedFetch({
+            args: { albumId: rumours.id },
+            generation: FIRST_REQUEST_GENERATION,
+            result: Result.succeed({
+              album: rumours,
+              maybeDescription: Option.none(),
+              maybeLengthSummary: Option.none(),
+              tracks: [theChain],
+              explicitVideoIds: [],
+            }),
+          }),
+        ).model,
+    })
+    const edit = {
+      _tag: 'SetAlbumSaved' as const,
+      album: rumours,
+      isSaved: true,
+    }
+    scene(
+      { update, view },
+      given(model),
+      pageScrolled,
+      titleBarFollowsScroll,
+      click(role('button', { name: 'Save to Library' })),
+      expect(role('button', { name: 'Remove from Library' })).toExist(),
+      Command.expectExact(EditPlaylists({ edit })),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit,
+          result: Result.succeed({
+            library: libraryWith({ albums: [rumours] }),
+            maybePlaylist: Option.none(),
+          }),
+        }),
+      ),
+      expect(text('Saved to your Library')).toExist(),
+      Command.resolve(
+        WaitBeforeHideNotice,
+        Message.CompletedWaitBeforeHideNotice({
+          message: 'Saved to your Library',
+        }),
+      ),
+    )
+  })
+
+  test('an artist page follows the artist', () => {
+    const route = AppRoute.Artist({ artistId: fleetwoodMac.id })
+    const base = withLibrary(
+      initialModel(route, `/artist/${fleetwoodMac.id}`),
+      libraryWith(),
+    )
+    const loading = artistQuery.loadIfMissing(base.artists, {
+      artistId: fleetwoodMac.id,
+    }).model
+    const model = modifyFields(base, {
+      artists: () =>
+        artistQuery.update(
+          loading,
+          artistQuery.Message.CompletedFetch({
+            args: { artistId: fleetwoodMac.id },
+            generation: FIRST_REQUEST_GENERATION,
+            result: Result.succeed({
+              artist: fleetwoodMac,
+              maybeDescription: Option.none(),
+              topSongs: [theChain],
+              albums: [rumours],
+              singles: [],
+            }),
+          }),
+        ).model,
+    })
+    const edit = {
+      _tag: 'SetArtistFollowed' as const,
+      artist: fleetwoodMac,
+      isFollowed: true,
+    }
+    scene(
+      { update, view },
+      given(model),
+      pageScrolled,
+      titleBarFollowsScroll,
+      click(role('button', { name: 'Follow Fleetwood Mac' })),
+      expect(role('button', { name: 'Unfollow Fleetwood Mac' })).toHaveText(
+        'Following',
+      ),
+      Command.expectExact(EditPlaylists({ edit })),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit,
+          result: Result.succeed({
+            library: libraryWith({ artists: [fleetwoodMac] }),
+            maybePlaylist: Option.none(),
+          }),
+        }),
+      ),
     )
   })
 })

@@ -1,16 +1,18 @@
 import { Array, Option } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Document, Html, HtmlBuilder } from 'foldkit/html'
-import { Ellipsis, ListPlus } from 'lucide'
+import { Check, Ellipsis, ListPlus, Plus } from 'lucide'
 
-import { type Song } from '@music/shared'
+import { type AlbumSummary, type MyLibrary, type Song } from '@music/shared'
 
+import { isAlbumSaved } from '../library'
 import { Message } from '../message'
 import { Model } from '../model'
 import {
   albumQuery,
   artistQuery,
   moodQuery,
+  myLibraryQuery,
   myPlaylistQuery,
   playlistQuery,
   songQuery,
@@ -94,6 +96,36 @@ const addToPlaylistButton = (
     },
   )
 
+/**
+ * Saves the album to the Library, or takes it out. Shown once the Library
+ * has loaded, so it never shows the wrong state.
+ */
+const saveAlbumButton = (
+  maybeAlbum: Option.Option<AlbumSummary>,
+  maybeLibrary: Option.Option<MyLibrary>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(Option.all([maybeAlbum, maybeLibrary]), {
+    onNone: () => h.empty,
+    onSome: ([album, library]) => {
+      const isSaved = isAlbumSaved(library, album.id)
+      return navBarButton(
+        {
+          onClick: Message.ClickedToggleAlbumSaved({ album }),
+          iconNode: isSaved ? Check : Plus,
+          label: isSaved ? 'Remove from Library' : 'Save to Library',
+          isOn: isSaved,
+        },
+        h,
+      )
+    },
+  })
+
+const navBarButtons = (
+  buttons: ReadonlyArray<Html>,
+  h: HtmlBuilder<Message>,
+): Html => h.div([h.Class('flex gap-2')], buttons)
+
 const routeContent = (model: PageModel, h: HtmlBuilder<Message>): Html =>
   h.div([h.Class('contents')], routeParts(model, h))
 
@@ -131,11 +163,21 @@ const routeParts = (
         Option.map(maybeAlbum, ({ album }) => album.title),
         albumView(model, albumId, h),
         h,
-        addToPlaylistButton(
-          Option.map(maybeAlbum, ({ album, tracks }) => ({
-            title: album.title,
-            songs: tracks,
-          })),
+        navBarButtons(
+          [
+            saveAlbumButton(
+              Option.map(maybeAlbum, ({ album }) => album),
+              AsyncData.getData(myLibraryQuery.read(model.myLibrary)),
+              h,
+            ),
+            addToPlaylistButton(
+              Option.map(maybeAlbum, ({ album, tracks }) => ({
+                title: album.title,
+                songs: tracks,
+              })),
+              h,
+            ),
+          ],
           h,
         ),
       )

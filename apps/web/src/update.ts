@@ -13,11 +13,13 @@ import { UrlRequest } from 'foldkit/navigation'
 import { modifyFields } from 'foldkit/struct'
 
 import {
+  type HomeFeed,
   LIKED_PLAYLIST_ID,
   type MyLibrary,
   type MyPlaylistDetails,
   type PlaylistEdit,
   type PlaylistEditResult,
+  type Session,
   type Song,
 } from '@music/shared'
 
@@ -35,7 +37,6 @@ import {
   NavigateInternal,
   ReplaceSearchUrl,
   SaveRecentSearches,
-  SaveRecentlyPlayed,
   SaveRecentlyViewed,
   ScrollSearchResultsToTop,
   ScrollToTop,
@@ -49,14 +50,15 @@ import { MAX_RECENT_SEARCHES } from './constant'
 import {
   LIBRARY_ARTWORK_WIDTH,
   type LibraryItem,
-  MAX_RECENTLY_PLAYED,
   MAX_RECENTLY_VIEWED,
   albumLibraryItem,
   artistLibraryItem,
+  isAlbumSaved,
+  isArtistFollowed,
   isSameLibraryItem,
-  isSameTrack,
   playlistLibraryItem,
   rememberFirst,
+  songFromQueueTrack,
 } from './library'
 import { Message } from './message'
 import { Model } from './model'
@@ -82,6 +84,7 @@ import {
   artistQuery,
   artistSearchQuery,
   artworkBackdropQuery,
+  homeQuery,
   moodGroupsQuery,
   moodQuery,
   myLibraryQuery,
@@ -89,6 +92,7 @@ import {
   playlistQuery,
   playlistSearchQuery,
   songQuery,
+  songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
 } from './query'
@@ -164,6 +168,16 @@ const myLibrary = myLibraryQuery.lift<Model, Message>({
 const myPlaylists = myPlaylistQuery.lift<Model, Message>({
   parentField: 'myPlaylists',
   toParentMessage: message => Message.GotMyPlaylistMessage({ message }),
+})
+
+const home = homeQuery.lift<Model, Message>({
+  parentField: 'home',
+  toParentMessage: message => Message.GotHomeMessage({ message }),
+})
+
+const songRadios = songRadioQuery.lift<Model, Message>({
+  parentField: 'songRadios',
+  toParentMessage: message => Message.GotSongRadioMessage({ message }),
 })
 
 const songs = songQuery.lift<Model, Message>({
@@ -646,21 +660,61 @@ const currentVideoId = (model: Model): Option.Option<string> =>
   )
 
 /**
- * Run a step that may change the current song, then remember the new song
- * and load its lyrics if they are showing. The phone moves to the next song
- * itself, so this is not only for the server's state.
+ * Run a step that may change the current song, then show the new song in
+ * Home's Recently played and load its lyrics if they are showing. The phone
+ * moves to the next song itself, so this is not only for the server's state.
  */
 const followingCurrentSong =
   (step: UpdateStep): UpdateStep =>
   model =>
     Update.combine([
       step,
-      rememberPlayed(currentVideoId(model)),
+      showPlayedEarly(currentVideoId(model)),
       loadLyricsIfShown,
     ])(model)
 
-/** Adds the song now playing to Recently Played when it changes. */
-const rememberPlayed =
+/** The most songs Home's Recently played keeps, as the server does. */
+const HOME_RECENT_SONGS = 20
+
+const mapHome = (model: Model, change: (feed: HomeFeed) => HomeFeed): Model =>
+  modifyFields(model, {
+    home: query =>
+      modifyFields(query, {
+        data: data => AsyncData.map(data, change),
+      }),
+  })
+
+/**
+ * Puts a song first in Recently played. The server's copy of it, which
+ * links its album and artists, is kept when the list already holds it.
+ */
+const withPlayedFirst =
+  (track: Session.QueueTrack) =>
+  (feed: HomeFeed): HomeFeed => {
+    const song = Option.getOrElse(
+      Array.findFirst(
+        feed.recentlyPlayed,
+        ({ videoId }) => videoId === track.videoId,
+      ),
+      () => songFromQueueTrack(track),
+    )
+    return {
+      ...feed,
+      recentlyPlayed: rememberFirst(
+        feed.recentlyPlayed,
+        song,
+        (left, right) => left.videoId === right.videoId,
+        HOME_RECENT_SONGS,
+      ),
+    }
+  }
+
+/**
+ * Shows the song now playing first in Home's Recently played when it
+ * changes. The server adds it to the play history too, and Home takes the
+ * server's list the next time it opens.
+ */
+const showPlayedEarly =
   (maybePreviousVideoId: Option.Option<string>): UpdateStep =>
   model =>
     pipe(
@@ -671,35 +725,27 @@ const rememberPlayed =
       ),
       Option.match({
         onNone: () => ({ model }),
-        onSome: ({ track }) => {
-          const recentlyPlayed = rememberFirst(
-            model.recentlyPlayed,
-            track,
-            isSameTrack,
-            MAX_RECENTLY_PLAYED,
-          )
-          return {
-            model: modifyFields(model, {
-              recentlyPlayed: () => recentlyPlayed,
-            }),
-            commands: [SaveRecentlyPlayed({ recentlyPlayed })],
-          }
-        },
+        onSome: ({ track }) => ({
+          model: mapHome(model, withPlayedFirst(track)),
+        }),
       }),
     )
 
-/** Keeps anything remembered before the saved Library finished loading. */
-const mergeRemembered = <A>(
-  newer: ReadonlyArray<A>,
-  stored: ReadonlyArray<A>,
-  isSame: (left: A, right: A) => boolean,
-  max: number,
-): ReadonlyArray<A> =>
-  Array.reduceRight(newer, stored, (items, item) =>
-    rememberFirst(items, item, isSame, max),
+/** Asks YouTube Music for "More like" the song played last, once per song. */
+const loadRadio: UpdateStep = model =>
+  pipe(
+    AsyncData.getData(homeQuery.read(model.home)),
+    Option.flatMap(feed => Array.head(feed.recentlyPlayed)),
+    Option.match({
+      onNone: () => ({ model }),
+      onSome: ({ videoId }) => songRadios.loadIfMissing(model, { videoId }),
+    }),
   )
 
 // MY PLAYLISTS
+
+const loadedLibrary = (model: Model): Option.Option<MyLibrary> =>
+  AsyncData.getData(myLibraryQuery.read(model.myLibrary))
 
 /** The ids of the songs I like, as far as this device knows. */
 export const likedVideoIds = (model: Model): ReadonlyArray<string> =>
@@ -794,6 +840,25 @@ const showEditEarly = (model: Model, edit: PlaylistEdit): Model =>
         LIKED_PLAYLIST_ID,
         isLiked ? withSongFirst(song) : withoutSong(song.videoId),
       ),
+    SetAlbumSaved: ({ album, isSaved }) =>
+      mapMyLibrary(model, library => {
+        const others = Array.filter(library.albums, ({ id }) => id !== album.id)
+        return {
+          ...library,
+          albums: isSaved ? Array.prepend(others, album) : others,
+        }
+      }),
+    SetArtistFollowed: ({ artist, isFollowed }) =>
+      mapMyLibrary(model, library => {
+        const others = Array.filter(
+          library.artists,
+          ({ id }) => id !== artist.id,
+        )
+        return {
+          ...library,
+          artists: isFollowed ? Array.prepend(others, artist) : others,
+        }
+      }),
   })
 
 const editPlaylists =
@@ -812,6 +877,8 @@ const editedPlaylistId = (edit: PlaylistEdit): Option.Option<string> =>
     AddSongs: ({ playlistId }) => Option.some(playlistId),
     RemoveSong: ({ playlistId }) => Option.some(playlistId),
     SetLiked: () => Option.some(LIKED_PLAYLIST_ID),
+    SetAlbumSaved: () => Option.none(),
+    SetArtistFollowed: () => Option.none(),
   })
 
 const showNotice =
@@ -823,26 +890,41 @@ const addedNotice = (title: string): string => `Added to “${title}”`
 
 const stay: UpdateStep = model => ({ model })
 
-/** What follows a saved edit: a new empty playlist opens, adding says so. */
+/**
+ * What follows a saved edit: a new empty playlist opens, and adding songs or
+ * saving an album says so, since nothing else on screen shows where it went.
+ */
 const followEdit = (
   edit: PlaylistEdit,
   result: PlaylistEditResult,
-): UpdateStep =>
-  Option.match(result.maybePlaylist, {
-    onNone: () => stay,
-    onSome: ({ playlist }) =>
-      Match.valueTags(edit, {
-        Create: ({ songs: createdWith }) =>
-          Array.isReadonlyArrayEmpty(createdWith)
-            ? navigateTo(myPlaylistHref(playlist.id), 'Push')
-            : showNotice(addedNotice(playlist.title)),
-        AddSongs: () => showNotice(addedNotice(playlist.title)),
-        Rename: () => stay,
-        Delete: () => stay,
-        RemoveSong: () => stay,
-        SetLiked: () => stay,
-      }),
+): UpdateStep => {
+  const withChangedPlaylist = (
+    follow: (title: string, playlistId: string) => UpdateStep,
+  ): UpdateStep =>
+    Option.match(result.maybePlaylist, {
+      onNone: () => stay,
+      onSome: ({ playlist }) => follow(playlist.title, playlist.id),
+    })
+  return Match.valueTags(edit, {
+    Create: ({ songs: createdWith }) =>
+      withChangedPlaylist((title, playlistId) =>
+        Array.isReadonlyArrayEmpty(createdWith)
+          ? navigateTo(myPlaylistHref(playlistId), 'Push')
+          : showNotice(addedNotice(title)),
+      ),
+    AddSongs: () =>
+      withChangedPlaylist(title => showNotice(addedNotice(title))),
+    Rename: () => stay,
+    Delete: () => stay,
+    RemoveSong: () => stay,
+    SetLiked: () => stay,
+    SetAlbumSaved: ({ isSaved }) =>
+      showNotice(
+        isSaved ? 'Saved to your Library' : 'Removed from your Library',
+      ),
+    SetArtistFollowed: () => stay,
   })
+}
 
 const completeEditPlaylists = (
   edit: PlaylistEdit,
@@ -968,8 +1050,12 @@ const revalidateSearch = (query: string, kind: SearchKind): UpdateStep =>
     Match.exhaustive,
   )
 
-/** Home shows my playlists and Liked songs, so it checks both for changes. */
+/**
+ * Home shows the play history, my playlists, and Liked songs, so it checks
+ * each for changes.
+ */
 const loadHome: UpdateStep = Update.combine([
+  model => home.revalidateOrLoad(model),
   model => myLibrary.revalidateOrLoad(model),
   model =>
     myPlaylists.revalidateOrLoad(model, { playlistId: LIKED_PLAYLIST_ID }),
@@ -1061,8 +1147,8 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     searchInput: '',
     maybeEarlierSearch: Option.none(),
     recentSearches: [],
-    recentlyPlayed: [],
     recentlyViewed: [],
+    libraryFilter: 'All',
     songSearch: songSearchQuery.init(),
     artistSearch: artistSearchQuery.init(),
     albumSearch: albumSearchQuery.init(),
@@ -1076,6 +1162,8 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     playlists: playlistQuery.init(),
     myLibrary: myLibraryQuery.init(),
     myPlaylists: myPlaylistQuery.init(),
+    home: homeQuery.init(),
+    songRadios: songRadioQuery.init(),
     artworkBackdrops: artworkBackdropQuery.init(),
     playlistTitleInput: '',
     actionSheet: ActionSheet.Hidden(),
@@ -1261,42 +1349,30 @@ const updateMessage = (model: Model, message: Message) =>
       model: modifyFields(model, { recentSearches: () => recentSearches }),
     }),
 
-    CompletedLoadLibrary: ({ recentlyPlayed, recentlyViewed }) => ({
+    CompletedLoadLibrary: ({ recentlyViewed }) => ({
       model: modifyFields(model, {
-        recentlyPlayed: newer =>
-          mergeRemembered(
-            newer,
-            recentlyPlayed,
-            isSameTrack,
-            MAX_RECENTLY_PLAYED,
-          ),
         recentlyViewed: newer =>
-          mergeRemembered(
-            newer,
-            recentlyViewed,
-            isSameLibraryItem,
-            MAX_RECENTLY_VIEWED,
+          Array.reduceRight(newer, recentlyViewed, (items, item) =>
+            rememberFirst(items, item, isSameLibraryItem, MAX_RECENTLY_VIEWED),
           ),
       }),
     }),
 
-    ClickedClearLibrary: () =>
-      showSheet({ _tag: 'ConfirmClearLibrary' })(model),
+    ClickedClearRecentlyViewed: () =>
+      showSheet({ _tag: 'ConfirmClearRecentlyViewed' })(model),
 
-    ConfirmedClearLibrary: () =>
+    ConfirmedClearRecentlyViewed: () =>
       Update.combine([
         dismissSheet,
         stepModel => ({
-          model: modifyFields(stepModel, {
-            recentlyPlayed: () => [],
-            recentlyViewed: () => [],
-          }),
-          commands: [
-            SaveRecentlyPlayed({ recentlyPlayed: [] }),
-            SaveRecentlyViewed({ recentlyViewed: [] }),
-          ],
+          model: modifyFields(stepModel, { recentlyViewed: () => [] }),
+          commands: [SaveRecentlyViewed({ recentlyViewed: [] })],
         }),
       ])(model),
+
+    SelectedLibraryFilter: ({ filter }) => ({
+      model: modifyFields(model, { libraryFilter: () => filter }),
+    }),
 
     GotSongSearchMessage: ({ message }) => songSearch.fold(model, message),
     GotArtistSearchMessage: ({ message }) => artistSearch.fold(model, message),
@@ -1331,6 +1407,11 @@ const updateMessage = (model: Model, message: Message) =>
       playlistSearch.fold(model, message),
     GotMyLibraryMessage: ({ message }) => myLibrary.fold(model, message),
     GotMyPlaylistMessage: ({ message }) => myPlaylists.fold(model, message),
+    GotHomeMessage: ({ message }) =>
+      Update.combine([stepModel => home.fold(stepModel, message), loadRadio])(
+        model,
+      ),
+    GotSongRadioMessage: ({ message }) => songRadios.fold(model, message),
 
     ClickedAddToPlaylist: ({ songs: songsToAdd, suggestedTitle }) =>
       Update.combine([
@@ -1372,6 +1453,22 @@ const updateMessage = (model: Model, message: Message) =>
           isLiked: !Array.contains(likedVideoIds(model), song.videoId),
         }),
       ])(model),
+    ClickedToggleAlbumSaved: ({ album }) =>
+      editPlaylists({
+        _tag: 'SetAlbumSaved',
+        album,
+        isSaved: !Option.exists(loadedLibrary(model), library =>
+          isAlbumSaved(library, album.id),
+        ),
+      })(model),
+    ClickedToggleArtistFollowed: ({ artist }) =>
+      editPlaylists({
+        _tag: 'SetArtistFollowed',
+        artist,
+        isFollowed: !Option.exists(loadedLibrary(model), library =>
+          isArtistFollowed(library, artist.id),
+        ),
+      })(model),
     ClickedRemoveFromPlaylist: ({ playlistId, videoId }) =>
       Update.combine([
         dismissSheet,
@@ -1420,7 +1517,6 @@ const updateMessage = (model: Model, message: Message) =>
     CompletedLockScroll: () => ({ model }),
     CompletedUnlockScroll: () => ({ model }),
     CompletedSaveRecentSearches: () => ({ model }),
-    CompletedSaveRecentlyPlayed: () => ({ model }),
     CompletedSaveRecentlyViewed: () => ({ model }),
 
     ClickedSongActions: ({ song }) =>

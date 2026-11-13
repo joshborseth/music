@@ -15,7 +15,8 @@ import { QueueTrack } from './session.ts'
  *   GET  /tv/home                          TvShelves  albums and songs played lately (on any device),
  *                                                    then your latest liked songs; your playlists
  *                                                    until anything has played
- *   GET  /tv/library                       TvShelves  your playlists, Liked songs first
+ *   GET  /tv/library                       TvShelves  your playlists, Liked songs first, then
+ *                                                    saved albums and followed artists
  *   GET  /tv/search?q=…                    TvShelves  songs, artists, albums, playlists
  *   GET  /tv/collection?kind=…&id=…        TvCollection
  *   GET  /tv/lyrics?videoId=…              TvLyrics

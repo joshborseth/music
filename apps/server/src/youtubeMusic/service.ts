@@ -142,7 +142,7 @@ export interface YouTubeMusicShape {
   ) => Effect.Effect<SongDetails, MusicNotFoundError | YouTubeMusicError>
   /**
    * The songs YouTube Music's radio would play after this one, for
-   * autoplay. Nothing else shows YouTube's picks.
+   * autoplay and the phone Home's "More like" shelf.
    */
   readonly getUpNext: (
     videoId: string,

@@ -1371,7 +1371,7 @@ impl Ui {
         let selectable = self.content_focused();
         self.draw_shelf_models(app, tab, selectable);
         let (title, subtitle) = match tab {
-            Tab::Library => ("Your library", "Liked songs and the playlists you made"),
+            Tab::Library => ("Your library", "Your playlists, saved albums, and followed artists"),
             _ => (time.greeting(), "Pick something to play on this TV"),
         };
         app.set_page_title(title.into());

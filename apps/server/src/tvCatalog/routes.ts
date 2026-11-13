@@ -22,13 +22,13 @@ import {
   artistCollection,
   homePlaylists,
   homeShelves,
+  libraryShelves,
   likedOf,
   lyricsOf,
   myPlaylistCollection,
   playlistCollection,
   searchShelves,
   songFromQueueTrack,
-  yourPlaylistsShelf,
 } from './mapping.ts'
 
 /*
@@ -180,12 +180,9 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
       )
     }).pipe(Effect.mapError(toRouteError))
 
-    const library = playlistStore.library().pipe(
-      Effect.map((library): Tv.TvShelves => ({
-        shelves: [yourPlaylistsShelf(library)],
-      })),
-      Effect.mapError(toRouteError),
-    )
+    const library = playlistStore
+      .library()
+      .pipe(Effect.map(libraryShelves), Effect.mapError(toRouteError))
 
     const search = Effect.gen(function* () {
       const { q } = yield* HttpServerRequest.schemaSearchParams(
