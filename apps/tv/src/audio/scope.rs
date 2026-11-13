@@ -81,13 +81,15 @@ impl Scope {
         self.written_at.store(now_ms(), Ordering::Relaxed);
     }
 
-    /// Copy the `out.len()` samples heard most recently, oldest first.
-    /// Returns false when nothing has played for a moment (paused or
-    /// stopped).
-    pub fn read(&self, out: &mut [f32]) -> bool {
+    /// Copy `out.len()` samples, oldest first, ending with the one heard
+    /// `ahead` from now: what the device was handed but has yet to play
+    /// is already here, up to its whole delay. Returns false when nothing
+    /// has played for a moment (paused or stopped).
+    pub fn read(&self, out: &mut [f32], ahead: Duration) -> bool {
         let written = self.written.load(Ordering::Acquire);
         let fresh = now_ms().saturating_sub(self.written_at.load(Ordering::Relaxed)) < 250;
-        let delay = (self.latency().as_secs_f64() * f64::from(self.rate())) as u64;
+        let delay =
+            (self.latency().saturating_sub(ahead).as_secs_f64() * f64::from(self.rate())) as u64;
         debug_assert!(out.len() as u64 + delay <= LENGTH as u64);
         let count = out.len() as u64;
         let end = written.saturating_sub(delay);
@@ -98,5 +100,39 @@ impl Scope {
             *slot = f32::from_bits(self.samples[index as usize % LENGTH].load(Ordering::Relaxed));
         }
         fresh && end >= count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scope() -> Scope {
+        Scope {
+            samples: [const { AtomicU32::new(0) }; LENGTH],
+            written: AtomicU64::new(0),
+            rate: AtomicU32::new(1000),
+            written_at: AtomicU64::new(0),
+            latency_us: AtomicU32::new(0),
+        }
+    }
+
+    #[test]
+    fn reads_what_is_heard_or_a_little_ahead() {
+        let scope = scope();
+        // A ramp: sample n holds n.
+        let ramp: Vec<f32> = (0..2000).map(|n| n as f32).collect();
+        scope.write(&ramp, 1);
+        // Handed over up to 1999, heard 100 ms (100 samples) later.
+        scope.set_latency(Duration::from_millis(100));
+        let mut out = [0.0; 4];
+        assert!(scope.read(&mut out, Duration::ZERO));
+        assert_eq!(out, [1896.0, 1897.0, 1898.0, 1899.0]);
+        // 40 ms ahead of what is heard.
+        scope.read(&mut out, Duration::from_millis(40));
+        assert_eq!(out, [1936.0, 1937.0, 1938.0, 1939.0]);
+        // Never past what the device was handed.
+        scope.read(&mut out, Duration::from_millis(400));
+        assert_eq!(out, [1996.0, 1997.0, 1998.0, 1999.0]);
     }
 }

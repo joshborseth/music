@@ -42,10 +42,13 @@ impl Analyzer {
         }
     }
 
-    /// The bars for this frame, each 0 to 1. They fall to nothing while no
-    /// audio plays.
-    pub fn frame(&mut self) -> &[f32; BARS] {
-        let fresh = SCOPE.read(&mut self.samples);
+    /// The bars for this frame, each 0 to 1, as heard `show_ahead` seconds
+    /// from now, when the frame shows: the window is centred there. They
+    /// fall to nothing while no audio plays.
+    pub fn frame(&mut self, show_ahead: f64) -> &[f32; BARS] {
+        let half_window = WINDOW as f64 / 2.0 / f64::from(SCOPE.rate().max(1));
+        let ahead = std::time::Duration::from_secs_f64(show_ahead + half_window);
+        let fresh = SCOPE.read(&mut self.samples, ahead);
         if fresh {
             let rate = SCOPE.rate() as f32;
             let target = self.spectrum(rate);

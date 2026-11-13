@@ -29,6 +29,18 @@ const BUILD_BARS: f64 = 4.0;
 const DROP_BARS: f64 = 2.0;
 /// Seconds between the made-up beats while nothing plays.
 const CALM_BEAT: f32 = 2.6;
+/// How long after it is drawn a frame shows: it goes to the screen on the
+/// next refresh or the one after. The song's timeline is read this far
+/// ahead of what is heard, so a beat lands on screen as it is heard. The
+/// scope reads its samples this far ahead too (`visualizer.rs`).
+pub const SHOW_AHEAD: f64 = 0.035;
+/// The loudness curve is averaged over this many seconds each side of now:
+/// enough to smooth out each beat's own swell, and no lag, as the curve
+/// is known ahead.
+const ENERGY_SPAN: f64 = 0.4;
+/// How fast `intensity` follows the section: within a beat or two, so a
+/// chorus coming in looks bigger at once.
+const INTENSITY_RATE: f32 = 2.5;
 
 /// The section playing now, as the director needs it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,6 +49,8 @@ pub struct SectionNow {
     pub kind: SectionKind,
     pub group: u32,
     pub energy: f32,
+    /// Seconds until it ends.
+    pub left: f32,
 }
 
 /// The music in one frame: what the shaders get as uniforms, and the
@@ -61,6 +75,9 @@ pub struct Music {
     pub tension: f32,
     pub drop: f32,
     pub intensity: f32,
+    /// The most intense this song gets (`intensity_ceiling`); 1 without
+    /// an analysis.
+    pub ceiling: f32,
     /// Seconds per beat.
     pub beat_seconds: f32,
 
@@ -188,7 +205,7 @@ impl Listener {
     pub fn hear(&mut self, dt: f32, song: Option<Song<'_>>) -> Music {
         self.time += dt;
         let time = self.time;
-        let mut bands = *self.analyzer.frame();
+        let mut bands = *self.analyzer.frame(SHOW_AHEAD);
         let live = self.analyzer.is_moving();
         self.calm = if live {
             0.0
@@ -292,6 +309,7 @@ impl Listener {
             tension: 0.0,
             drop: 0.0,
             intensity: heard_intensity,
+            ceiling: 1.0,
             beat_seconds: 0.5,
             on_beat: false,
             on_downbeat: false,
@@ -306,11 +324,28 @@ impl Listener {
             _ => self.guess(&mut music, kicked, dt),
         }
 
-        self.intensity += (music.intensity - self.intensity) * (dt * 0.7).min(1.0);
-        self.energy += (music.energy - self.energy) * (dt * 4.0).min(1.0);
+        // The analysis knows where sections start, so its intensity is
+        // followed quickly, and a drop lands at once. A guess from what is
+        // heard moves slowly, so one loud bar doesn't change the mood.
+        let (intensity_rate, energy_rate) = if music.analyzed {
+            (INTENSITY_RATE, 10.0)
+        } else {
+            (0.7, 4.0)
+        };
+        if music.drop_landed {
+            self.intensity = self.intensity.max(music.intensity);
+        }
+        self.intensity += (music.intensity - self.intensity) * (dt * intensity_rate).min(1.0);
+        self.energy += (music.energy - self.energy) * (dt * energy_rate).min(1.0);
         music.intensity = self.intensity;
         music.energy = self.energy;
-        self.drive += dt * (0.35 + music.energy * 1.2 + level * 0.6 + music.beat_pulse * 0.4);
+        // The scenes' clock: slow for calm music, quick for wild, with a
+        // nudge on each beat.
+        self.drive += dt
+            * (0.25
+                + 1.1 * music.intensity
+                + 0.4 * music.energy
+                + 0.3 * music.beat_pulse * music.intensity);
         music.drive = self.drive;
         music
     }
@@ -354,7 +389,8 @@ impl Listener {
             }
         };
         self.clock = Some(clock);
-        let t = clock;
+        // Where the song will be when this frame shows.
+        let t = clock + SHOW_AHEAD;
 
         let (beats, beat_seconds) = position_in(&analysis.beats, t, 60.0 / analysis.tempo.max(1.0));
         let (bars, _) = position_in(&analysis.downbeats, t, 240.0 / analysis.tempo.max(1.0));
@@ -373,9 +409,11 @@ impl Listener {
             music.bar_pulse *= 0.3;
         }
 
-        // The loudness the server measured, with what is heard on top.
-        let curve = energy_at(analysis, t);
-        music.energy = (curve * 0.8 + music.energy * 0.25).clamp(0.0, 1.0);
+        // The loudness the server measured, smoothed over the beat. What is
+        // heard adds nothing here: it swells and falls with every beat, and
+        // the beat has its own pulse.
+        let curve = energy_around(analysis, t);
+        music.energy = curve;
 
         let section = analysis
             .sections
@@ -388,12 +426,20 @@ impl Listener {
                 kind: section.kind,
                 group: section.group,
                 energy: section.energy,
+                left: (section.end_seconds - t) as f32,
             }
         });
-        music.intensity = match music.section {
-            Some(section) => section_intensity(section.kind, section.energy),
-            None => curve,
-        };
+        // Section energies are loudness within the song, so a ballad's
+        // loudest chorus scores as high as a club track's drop. The song's
+        // drive (its hits and its grit, whatever the volume) caps how wild
+        // its loudest part looks.
+        let ceiling = intensity_ceiling(analysis.drive);
+        music.ceiling = ceiling;
+        music.intensity = ceiling
+            * match music.section {
+                Some(section) => section_intensity(section.kind, section.energy),
+                None => curve,
+            };
 
         // Drops: the build-up before, the hit, the aftershock.
         let bar_seconds = beat_seconds * 4.0;
@@ -426,14 +472,25 @@ impl Listener {
                 music.tension = built * built * 0.5;
             }
         }
-        if let Some(accent) = analysis.accents.iter().rev().find(|accent| **accent <= t) {
-            let since = (t - accent) as f32;
-            music.accent = music.accent.max((-since * 14.0).exp());
-        }
-        // The kick heard, or the beat's own pulse where the kick is quiet.
-        music.kick = music
-            .kick
-            .max(music.beat_pulse * smoothstep(0.3, 0.8, music.energy) * 0.8);
+        // A calm song's swells build and land gently: its "drop" is a
+        // louder chorus, not a club track's.
+        let wild = smoothstep(0.35, 0.9, ceiling);
+        music.tension *= wild;
+        music.drop *= wild;
+        // Hits come from the analysis alone. Heard live, the bass and the
+        // highs jump between the beats too (a bass line pumping between
+        // kicks, an open hat), and a guess fires late by the time it is
+        // sure: in house music it fired a quarter second early as often as
+        // on the beat.
+        let after = analysis.accents.partition_point(|accent| *accent <= t);
+        music.accent = after.checked_sub(1).map_or(0.0, |index| {
+            (-((t - analysis.accents[index]) as f32) * 14.0).exp()
+        });
+        // The kick: each beat, as hard as the music is loud and wild, and
+        // hardest on the bar's first beat.
+        let strength = smoothstep(0.15, 0.7, music.energy) * (0.35 + 0.65 * music.intensity);
+        let bar_weight = 0.75 + 0.25 * music.bar_pulse.min(1.0);
+        music.kick = (music.beat_pulse * strength * bar_weight).max(music.drop.powi(3));
         music.analyzed = true;
     }
 
@@ -508,16 +565,23 @@ fn position_in(times: &[f64], t: f64, period: f64) -> (f64, f64) {
     (index as f64 + (t - start) / gap, gap)
 }
 
-fn energy_at(analysis: &Analysis, t: f64) -> f32 {
-    let step = analysis.energy_step_seconds.max(0.01);
-    let at = (t / step).max(0.0);
-    let index = at as usize;
-    let Some(first) = analysis.energy.get(index) else {
-        return analysis.energy.last().copied().unwrap_or(0.5);
+/// The loudness curve at `t`, averaged over `ENERGY_SPAN` each side.
+fn energy_around(analysis: &Analysis, t: f64) -> f32 {
+    let curve = &analysis.energy;
+    let Some(last) = curve.len().checked_sub(1) else {
+        return 0.5;
     };
-    let second = analysis.energy.get(index + 1).unwrap_or(first);
-    let blend = at.fract() as f32;
-    first * (1.0 - blend) + second * blend
+    let step = analysis.energy_step_seconds.max(0.01);
+    let index = |seconds: f64| ((seconds / step).round().max(0.0) as usize).min(last);
+    let (from, to) = (index(t - ENERGY_SPAN), index(t + ENERGY_SPAN));
+    curve[from..=to].iter().sum::<f32>() / (to - from + 1) as f32
+}
+
+/// The most intense a song with `drive` (0 to 1, see `Analysis::drive`)
+/// looks, at its loudest: a piano ballad tops out among the calm scenes,
+/// a club track reaches the wildest.
+pub fn intensity_ceiling(drive: f32) -> f32 {
+    0.4 + 0.6 * smoothstep(0.0, 0.7, drive)
 }
 
 /// How wild a section should look: its energy, nudged by what it is.
@@ -589,6 +653,7 @@ mod tests {
             energy: (0..33)
                 .map(|second| if second < 16 { 0.3 } else { 1.0 })
                 .collect(),
+            drive: 0.8,
         }
     }
 
@@ -630,14 +695,90 @@ mod tests {
     }
 
     #[test]
+    fn a_beat_is_drawn_just_ahead_of_when_it_is_heard() {
+        let analysis = song();
+        let mut listener = Listener::new();
+        let dt = 1.0 / 60.0;
+        let frames = play(&mut listener, &analysis, 1.0, 3.0);
+        let mut seen = 0;
+        for (index, frame) in frames.iter().enumerate() {
+            if !frame.on_beat {
+                continue;
+            }
+            seen += 1;
+            // The frame drawn at heard time `t` shows SHOW_AHEAD later.
+            let heard = 1.0 + index as f64 * dt;
+            let shown = heard + SHOW_AHEAD;
+            let beat = (shown * 2.0).floor() / 2.0;
+            assert!(
+                (0.0..dt + 1e-6).contains(&(shown - beat)),
+                "beat {beat} shows at {shown}"
+            );
+        }
+        assert!(seen >= 3);
+    }
+
+    #[test]
+    fn the_kick_lands_on_the_beat_and_is_gone_between() {
+        let analysis = song();
+        let mut listener = Listener::new();
+        // In the drop, loud: a beat every 30 frames.
+        let frames = play(&mut listener, &analysis, 19.0, 22.0);
+        let on: Vec<&Music> = frames.iter().filter(|m| m.on_beat).collect();
+        assert!(on.len() >= 5);
+        for frame in &on {
+            assert!(frame.kick > 0.6, "kick on the beat {}", frame.kick);
+        }
+        let between: Vec<f32> = frames
+            .iter()
+            .filter(|m| (m.beats.fract() - 0.5).abs() < 0.05)
+            .map(|m| m.kick)
+            .collect();
+        assert!(between.iter().all(|kick| *kick < 0.2), "{between:?}");
+    }
+
+    #[test]
+    fn energy_follows_the_song_without_the_beats_swell() {
+        let mut analysis = song();
+        // Loudness swelling and falling every tenth of a second, as each
+        // beat's own hit does in the curve.
+        analysis.energy_step_seconds = 0.1;
+        analysis.energy = (0..320)
+            .map(|step| if step % 2 == 0 { 0.5 } else { 0.7 })
+            .collect();
+        let mut listener = Listener::new();
+        let frames = play(&mut listener, &analysis, 4.0, 8.0);
+        for frame in &frames[60..] {
+            assert!((frame.energy - 0.6).abs() < 0.04, "{}", frame.energy);
+        }
+    }
+
+    #[test]
+    fn a_ballads_chorus_stays_calm_and_a_club_tracks_drop_goes_wild() {
+        let mut ballad = song();
+        ballad.drive = 0.05;
+        let mut club = song();
+        club.drive = 0.8;
+        let peak = |analysis: &Analysis| {
+            let mut listener = Listener::new();
+            play(&mut listener, analysis, 18.0, 24.0)
+                .last()
+                .map_or(0.0, |music| music.intensity)
+        };
+        assert!(peak(&ballad) < 0.45, "{}", peak(&ballad));
+        assert!(peak(&club) > 0.85, "{}", peak(&club));
+    }
+
+    #[test]
     fn a_drop_builds_then_lands_once() {
         let analysis = song();
         let mut listener = Listener::new();
-        let before = play(&mut listener, &analysis, 6.0, 16.0);
+        // Heard time: the frame drawn at 15.95 s shows at 15.985 s.
+        let before = play(&mut listener, &analysis, 6.0, 15.95);
         assert!(before[0].tension == 0.0);
         let last = before.last().unwrap();
         assert!(last.tension > 0.9, "tension {}", last.tension);
-        let after = play(&mut listener, &analysis, 16.0, 20.0);
+        let after = play(&mut listener, &analysis, 15.95, 20.0);
         assert_eq!(after.iter().filter(|m| m.drop_landed).count(), 1);
         assert!(after[1].drop > 0.9);
         assert!(after.last().unwrap().drop < 0.5);

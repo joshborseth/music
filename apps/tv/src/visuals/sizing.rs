@@ -1,7 +1,7 @@
 //! How large each scene is drawn, so frames keep coming on time.
 //!
-//! Each scene has its own size, because Kaleido costs a fraction of what
-//! Chrome does. A scene whose frames come late shrinks within a second or
+//! Each scene has its own size, because Silk costs a fraction of what
+//! Halo does. A scene whose frames come late shrinks within a second or
 //! two. A scene that keeps time grows a step after a while, but it never
 //! goes straight back to a size that already failed: that size is tried
 //! again only after minutes of clean frames, and each failure doubles the

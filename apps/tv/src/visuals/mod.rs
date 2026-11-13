@@ -19,6 +19,10 @@ mod look;
 mod motion;
 mod music;
 mod sizing;
+mod timing;
+
+#[cfg(test)]
+mod lab;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -364,13 +368,12 @@ impl State {
                 playing: stage.playing,
             });
         let music = self.listener.hear(dt, song);
-        let has_cover = renderer.has_cover();
-        let mut shot: Shot = self
-            .director
-            .direct(&music, Some(stage.entry_id.as_str()), has_cover);
+        let mut shot: Shot = self.director.direct(&music, Some(stage.entry_id.as_str()));
         // A scene whose shader did not compile on this GPU shows the one before.
         if !renderer.can_draw(shot.current.scene) {
-            shot.current.scene = (0..8).find(|scene| renderer.can_draw(*scene)).unwrap_or(0);
+            shot.current.scene = (0..director::SCENES.len())
+                .find(|scene| renderer.can_draw(*scene))
+                .unwrap_or(0);
         }
         if shot.next.is_some_and(|(next, _)| {
             !renderer.can_draw(next.scene) || next.scene == shot.current.scene
@@ -398,7 +401,13 @@ impl State {
         );
 
         if let Some(took) = took
-            && let Some(line) = self.pace.frame(took, size, || renderer.sizes())
+            && let Some(line) = self.pace.frame(took, size, || {
+                let sizes = renderer.sizes();
+                match renderer.timings() {
+                    Some(timings) => format!("{sizes}; {timings}"),
+                    None => sizes,
+                }
+            })
         {
             log::info!("{line}");
             (self.report)(line);
