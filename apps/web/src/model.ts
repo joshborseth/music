@@ -28,6 +28,7 @@ import {
   newReleasesQuery,
   playlistQuery,
   playlistSearchQuery,
+  searchSuggestionsQuery,
   songQuery,
   songRadioQuery,
   songSearchQuery,
@@ -35,6 +36,7 @@ import {
 } from './query'
 import { AppRoute } from './route'
 import { ActionSheet, PlayerPanel } from './sheet'
+import { SuggestionList } from './suggestions'
 
 export const Model = Schema.Struct({
   route: AppRoute,
@@ -45,7 +47,18 @@ export const Model = Schema.Struct({
    * a newer search loads.
    */
   maybeEarlierSearch: Schema.Option(Schema.String),
+  /**
+   * How many of a search's Top shelves (artists, albums, playlists) show.
+   * They come one a frame, after its first rows.
+   */
+  shownTopShelves: Schema.Struct({
+    query: Schema.String,
+    count: Schema.Number,
+  }),
   recentSearches: Schema.Array(Schema.String),
+  /** Whether suggestions show under the search box, as something is typed. */
+  suggestionList: SuggestionList,
+  searchSuggestions: searchSuggestionsQuery.Model,
   /** Albums, artists, and playlists opened on this device, newest first. */
   recentlyViewed: Schema.Array(LibraryItem),
   libraryFilter: LibraryFilter,

@@ -17,7 +17,10 @@ export type PageModel = Readonly<
     | 'route'
     | 'searchInput'
     | 'maybeEarlierSearch'
+    | 'shownTopShelves'
     | 'recentSearches'
+    | 'suggestionList'
+    | 'searchSuggestions'
     | 'recentlyViewed'
     | 'libraryFilter'
     | 'libraryPrefs'
@@ -69,7 +72,10 @@ const renderPage = (
   route: Model['route'],
   searchInput: string,
   maybeEarlierSearch: Model['maybeEarlierSearch'],
+  shownTopShelves: Model['shownTopShelves'],
   recentSearches: Model['recentSearches'],
+  suggestionList: Model['suggestionList'],
+  searchSuggestions: Model['searchSuggestions'],
   recentlyViewed: Model['recentlyViewed'],
   libraryFilter: Model['libraryFilter'],
   libraryPrefs: Model['libraryPrefs'],
@@ -104,7 +110,10 @@ const renderPage = (
       route,
       searchInput,
       maybeEarlierSearch,
+      shownTopShelves,
       recentSearches,
+      suggestionList,
+      searchSuggestions,
       recentlyViewed,
       libraryFilter,
       libraryPrefs,
@@ -157,7 +166,10 @@ export const memoizedPage = (
     model.route,
     model.searchInput,
     model.maybeEarlierSearch,
+    model.shownTopShelves,
     model.recentSearches,
+    model.suggestionList,
+    model.searchSuggestions,
     model.recentlyViewed,
     model.libraryFilter,
     model.libraryPrefs,

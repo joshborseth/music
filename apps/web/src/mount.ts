@@ -33,6 +33,32 @@ export const RestoreScroll = Mount.define('RestoreScroll', {
     }),
 })
 
+// SEARCH
+
+/**
+ * Says when the page has painted once with this element on it, so the
+ * browser shows what was drawn before anything more is. The Top tab draws
+ * each of its shelves only then, one a frame, so its first rows and each
+ * shelf come up in short tasks, not all of it in one long one.
+ */
+export const WaitBeforeTopShelves = Mount.define('WaitBeforeTopShelves', {
+  args: { query: Schema.String, count: Schema.Number },
+  messages: [Message.CompletedWaitBeforeTopShelves],
+  execute: ({ element, query, count }) =>
+    Effect.callback<void>(resume => {
+      const maybeWindow = element.ownerDocument.defaultView
+      if (maybeWindow === null) {
+        resume(Effect.void)
+        return
+      }
+      const resumeAfterPaint = () => {
+        maybeWindow.setTimeout(() => resume(Effect.void), 0)
+      }
+      const frame = maybeWindow.requestAnimationFrame(resumeAfterPaint)
+      return Effect.sync(() => maybeWindow.cancelAnimationFrame(frame))
+    }).pipe(Effect.as(Message.CompletedWaitBeforeTopShelves({ query, count }))),
+})
+
 // TITLE BAR
 
 /**

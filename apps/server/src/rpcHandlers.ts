@@ -48,6 +48,7 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
       searchAlbums: ({ query }) => youTubeMusic.searchAlbums(query),
       searchPlaylists: ({ query }) => youTubeMusic.searchPlaylists(query),
       searchTopResult: ({ query }) => youTubeMusic.searchTopResult(query),
+      searchSuggestions: ({ query }) => youTubeMusic.searchSuggestions(query),
       getMoodsAndGenres: () => youTubeMusic.getMoodsAndGenres(),
       getMood: ({ params }) => youTubeMusic.getMood(params),
       getSong: ({ videoId }) =>
@@ -75,7 +76,8 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
       editPlaylists: ({ edit }) => playlistStore.edit(edit),
       getHome: () => homeFeedInput(playlistStore).pipe(Effect.map(homeFeed)),
       getNewReleases: () => loadNewReleases(playlistStore, youTubeMusic),
-      getSongRadio: ({ videoId }) => loadSongRadio(youTubeMusic, videoId),
+      getSongRadio: ({ videoId }) =>
+        loadSongRadio(playlistStore, youTubeMusic, videoId),
       getRadio: ({ station }) => youTubeMusic.getRadio(station),
       getArtworkBackdrop: ({ artworkUrl }) =>
         artworkPalette.backdropFor(artworkUrl),

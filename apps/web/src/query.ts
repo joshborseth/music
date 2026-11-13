@@ -109,6 +109,18 @@ export const topResultSearchQuery = Query.define({
     ),
 })
 
+/** What YouTube Music suggests searching for as something is typed. */
+export const searchSuggestionsQuery = Query.define({
+  name: 'SearchSuggestions',
+  args: SearchArgs,
+  data: Schema.Array(Schema.String),
+  error: RequestError,
+  execute: ({ query }) =>
+    MusicClient.use(client => client.searchSuggestions({ query })).pipe(
+      withRequestError,
+    ),
+})
+
 /** YouTube Music's moods and genres, for browsing from an empty search. */
 export const moodGroupsQuery = Query.define({
   name: 'MoodGroups',

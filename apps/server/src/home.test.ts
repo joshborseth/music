@@ -8,10 +8,12 @@ import {
   HOME_NEW_RELEASES,
   HOME_RECENT_ALBUMS,
   HOME_RECENT_SONGS,
+  RADIO_SONGS,
   homeFeed,
   homeMixes,
   mixDetails,
   mixSeedOf,
+  moreLike,
   newReleases,
 } from './home.ts'
 
@@ -138,6 +140,32 @@ describe('home mixes', () => {
     ])
   })
 
+  test('bases a mix on a song Home shows nowhere else, when there is one', () => {
+    const getLucky = song('lucky', Option.none(), daftPunk)
+    const oneMoreTime = song('omt', Option.none(), daftPunk)
+    const feed = homeFeed({
+      recentSongs: [getLucky],
+      played: [
+        { song: getLucky, playCount: 5 },
+        { song: oneMoreTime, playCount: 2 },
+      ],
+      liked: [],
+    })
+
+    expect(feed.mixes.map(({ id }) => id)).toEqual(['RDAMVMomt'])
+  })
+
+  test('keeps the favorite song when Home shows all of them', () => {
+    const getLucky = song('lucky', Option.none(), daftPunk)
+    const feed = homeFeed({
+      recentSongs: [getLucky],
+      played: [{ song: getLucky, playCount: 5 }],
+      liked: [],
+    })
+
+    expect(feed.mixes.map(({ id }) => id)).toEqual(['RDAMVMlucky'])
+  })
+
   test('makes a few at most', () => {
     const played = Array.from({ length: 10 }, (_, index) => ({
       song: song(`s${index}`, Option.none(), {
@@ -228,5 +256,79 @@ describe('new releases', () => {
     )
 
     expect(newReleases(many, 2026)).toHaveLength(HOME_NEW_RELEASES)
+  })
+})
+
+describe('more like', () => {
+  const macDeMarco = { id: 'UCmac', name: 'Mac DeMarco' }
+  const swimming = { id: 'UCmiller', name: 'Mac Miller' }
+  const other = { id: 'UCo', name: 'Other' }
+  const named = (
+    videoId: string,
+    title: string,
+    album: Option.Option<string>,
+    artist: Readonly<{ id: string; name: string }>,
+  ): Song => ({ ...song(videoId, album, artist), title })
+  const ids = (songs: ReadonlyArray<Song>) =>
+    songs.map(({ videoId }) => videoId)
+
+  // Played lately: "Come Back to Earth", from Swimming, and "Pink + White".
+  const comeBackToEarth = named(
+    'cbte',
+    'Come Back to Earth',
+    Option.some('SWIM'),
+    swimming,
+  )
+  const pinkWhite = named('pw', 'Pink + White', Option.some('BLONDE'), other)
+  const liked = named(
+    'liked',
+    'Chamber of Reflection',
+    Option.none(),
+    macDeMarco,
+  )
+
+  test('leaves out what played lately, the seed’s album, and liked songs', () => {
+    const radio = [
+      named('swim2', 'Self Care', Option.some('SWIM'), swimming),
+      pinkWhite,
+      named('pwcopy', 'Pink + White', Option.some('OTHER'), other),
+      liked,
+      named('new1', 'Ladders', Option.some('GOOD'), other),
+      named('swim3', 'Wings', Option.some('SWIM'), swimming),
+      named('new2', 'Nights', Option.some('BLONDE2'), other),
+    ]
+    const songs = moreLike('cbte', radio, {
+      recentSongs: [comeBackToEarth, pinkWhite],
+      played: [],
+      liked: [liked],
+    })
+
+    expect(ids(songs)).toEqual(['new1', 'new2'])
+  })
+
+  test('leaves out songs from an album in Jump back in', () => {
+    const fromAlbum = named('blonde3', 'Ivy', Option.some('BLONDE'), other)
+    const seed = named('seed', 'Seed', Option.none(), other)
+    const songs = moreLike('seed', [fromAlbum], {
+      recentSongs: [
+        seed,
+        named('b1', 'Nikes', Option.some('BLONDE'), other),
+        named('b2', 'Solo', Option.some('BLONDE'), other),
+      ],
+      played: [],
+      liked: [],
+    })
+
+    expect(songs).toEqual([])
+  })
+
+  test('keeps the shelf short', () => {
+    const radio = Array.from({ length: RADIO_SONGS + 5 }, (_, index) =>
+      named(`r${index}`, `Radio ${index}`, Option.none(), other),
+    )
+
+    expect(
+      moreLike('cbte', radio, { recentSongs: [], played: [], liked: [] }),
+    ).toHaveLength(RADIO_SONGS)
   })
 })
