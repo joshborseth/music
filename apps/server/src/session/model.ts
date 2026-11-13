@@ -530,6 +530,22 @@ const transition = (
         return changed(jumpTo({ ...model, queue }, maybeReplacement, 0, now))
       },
 
+      // NOTE: shuffle stays as it is, and `unshuffled` keeps the order
+      // turning it off goes back to. Nobody reloads: the current song stays.
+      MoveEntry: message =>
+        Option.match(
+          Session.moveEntry(
+            model.queue,
+            model.currentEntryId,
+            message.entryId,
+            message.beforeEntryId,
+          ),
+          {
+            onNone: () => quiet(model),
+            onSome: queue => changed({ ...model, queue }),
+          },
+        ),
+
       Resume: () => {
         if (model.queue.length === 0) return quiet(model)
         const withEntry =

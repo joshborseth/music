@@ -907,6 +907,158 @@ describe('autoplay', () => {
   })
 })
 
+describe('moving a queued song', () => {
+  const ids = (model: Model) => model.queue.map(entry => entry.track.videoId)
+  let counter = 0
+  beforeEach(() => {
+    counter = 0
+  })
+  const apply = (model: Model, message: SessionMessage) =>
+    update(model, message, {
+      ...makeContext('phone', 2_000),
+      makeEntryId: () => `x${counter++}`,
+    })
+  const move = (model: Model, entryId: string, beforeEntryId: string | null) =>
+    apply(model, { _tag: 'MoveEntry', entryId, beforeEntryId })
+  /** a (playing), b, c, d, e: entries e0–e4. */
+  const five = () =>
+    update(
+      initialModel,
+      {
+        _tag: 'PlayQueue',
+        tracks: ['a', 'b', 'c', 'd', 'e'].map(track),
+        startIndex: 0,
+      },
+      makeContext('phone', 1_000),
+    ).model
+  /** five(), then autoplay's p and q (x0, x1) after it. */
+  const withRadio = () =>
+    appendAutoplay(five(), 'e', [track('p'), track('q')], () => `x${counter++}`)
+      .model
+
+  test('moves a song up or down among the songs to come, without a reload', () => {
+    const model = five()
+    const up = move(model, 'e3', 'e1')
+    expect(up.broadcast).toBe(true)
+    expect(ids(up.model)).toEqual(['a', 'd', 'b', 'c', 'e'])
+    expect(up.model.currentEntryId).toBe('e0')
+    expect(up.model.seekSeq).toBe(model.seekSeq)
+    expect(up.model.playing).toBe(true)
+    expect(ids(move(model, 'e1', 'e4').model)).toEqual([
+      'a',
+      'c',
+      'd',
+      'b',
+      'e',
+    ])
+  })
+
+  test('null moves it to the end of the songs someone queued', () => {
+    expect(ids(move(five(), 'e1', null).model)).toEqual([
+      'a',
+      'c',
+      'd',
+      'e',
+      'b',
+    ])
+    expect(ids(move(withRadio(), 'e1', null).model)).toEqual([
+      'a',
+      'c',
+      'd',
+      'e',
+      'b',
+      'p',
+      'q',
+    ])
+  })
+
+  test('the current song and the songs before it stay put', () => {
+    const third = apply(five(), { _tag: 'SkipTo', entryId: 'e2' }).model
+    expect(move(third, 'e2', 'e4').broadcast).toBe(false)
+    expect(move(third, 'e0', null).broadcast).toBe(false)
+    expect(ids(move(third, 'e0', null).model)).toEqual(ids(third))
+  })
+
+  test('a song never moves before the current one', () => {
+    const third = apply(five(), { _tag: 'SkipTo', entryId: 'e2' }).model
+    expect(ids(move(third, 'e4', 'e0').model)).toEqual([
+      'a',
+      'b',
+      'c',
+      'e',
+      'd',
+    ])
+    expect(ids(move(third, 'e4', 'e2').model)).toEqual([
+      'a',
+      'b',
+      'c',
+      'e',
+      'd',
+    ])
+  })
+
+  test('autoplay songs stay after the songs someone queued', () => {
+    const model = withRadio()
+    expect(ids(model)).toEqual(['a', 'b', 'c', 'd', 'e', 'p', 'q'])
+    // Someone's song dropped among autoplay's goes last of someone's.
+    expect(ids(move(model, 'e1', 'x1').model)).toEqual([
+      'a',
+      'c',
+      'd',
+      'e',
+      'b',
+      'p',
+      'q',
+    ])
+    // An autoplay song dropped among someone's goes first of autoplay's.
+    expect(ids(move(model, 'x1', 'e2').model)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+      'q',
+      'p',
+    ])
+    // Autoplay's songs move among themselves, and null puts one last.
+    expect(ids(move(model, 'x0', null).model)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+      'q',
+      'p',
+    ])
+  })
+
+  test('a move that changes nothing, or names an unknown song, stays quiet', () => {
+    const model = five()
+    expect(move(model, 'e1', 'e2').broadcast).toBe(false)
+    expect(move(model, 'e1', 'e1').broadcast).toBe(false)
+    expect(move(model, 'e4', null).broadcast).toBe(false)
+    expect(move(model, 'gone', 'e1').broadcast).toBe(false)
+    expect(move(model, 'e3', 'gone').broadcast).toBe(false)
+    expect(ids(move(model, 'e3', 'gone').model)).toEqual(ids(model))
+  })
+
+  test('moving while shuffled stays shuffled, and turning it off still puts the songs back', () => {
+    const shuffledModel = apply(five(), {
+      _tag: 'SetShuffle',
+      enabled: true,
+    }).model
+    // The fixed shuffle puts b, c, d, e as c, d, e, b.
+    expect(ids(shuffledModel)).toEqual(['a', 'c', 'd', 'e', 'b'])
+    const moved = move(shuffledModel, 'e4', 'e2').model
+    expect(ids(moved)).toEqual(['a', 'e', 'c', 'd', 'b'])
+    expect(moved.shuffle).toBe(true)
+    expect(moved.unshuffled).toEqual(shuffledModel.unshuffled)
+    expect(toSessionState(moved, []).shuffle).toBe(true)
+    const back = apply(moved, { _tag: 'SetShuffle', enabled: false }).model
+    expect(ids(back)).toEqual(['a', 'b', 'c', 'd', 'e'])
+  })
+})
+
 describe('protocol fixtures shared with the TV app', () => {
   const read = (name: string) => Bun.file(new URL(name, FIXTURES)).text()
 
@@ -932,6 +1084,7 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-enqueue.json',
     'client-skip-to.json',
     'client-remove-entry.json',
+    'client-move-entry.json',
     'client-transfer.json',
     'client-wake.json',
     'client-volume.json',

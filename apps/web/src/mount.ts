@@ -1,8 +1,15 @@
-import { Effect, Queue, Schema, Stream } from 'effect'
+import { Effect, Option, Queue, Schema, Stream } from 'effect'
 import { Mount } from 'foldkit'
 
 import { PAGE_SELECTOR, TITLE_BAR_SELECTOR } from './constant'
 import { Message } from './message'
+import {
+  type RowSlot,
+  beforeEntryIdAfterMove,
+  dropIndex,
+  rowShift,
+  settleOffset,
+} from './playback/reorder'
 
 // SCROLL
 
@@ -351,6 +358,357 @@ export const DragToDismiss = Mount.defineStream('DragToDismiss', {
                 )
               : () => {}
           Queue.offerUnsafe(queue, Message.CompletedFollowSheetDrags())
+          return stopFollowing
+        }),
+        stopFollowing => Effect.sync(stopFollowing),
+      ).pipe(Effect.flatMap(() => Effect.never)),
+    ),
+})
+
+// QUEUE DRAGS
+
+const QUEUE_ROW_SELECTOR = '[data-queue-entry]'
+const REORDER_HANDLE_SELECTOR = '[data-reorder-handle]'
+
+/** How long the other rows take to slide out of the dragged row's way. */
+const ROW_MAKE_WAY_MS = 220
+
+/** How long a let-go row takes to settle into the gap made for it. */
+const ROW_SETTLE_MS = 160
+
+const ROW_EASING = 'cubic-bezier(0.2, 0, 0, 1)'
+
+/** A row dragged this close to the scroll area's top or bottom scrolls it. */
+const AUTO_SCROLL_EDGE_PX = 64
+
+const AUTO_SCROLL_MAX_PX_PER_FRAME = 12
+
+/**
+ * A let-go row waits this long for the list to come back in its new order
+ * before sliding back, in case the move was refused.
+ */
+const DROP_TIMEOUT_MS = 1000
+
+interface QueueDrag {
+  readonly pointerId: number
+  readonly rows: ReadonlyArray<HTMLElement>
+  readonly slots: ReadonlyArray<RowSlot>
+  readonly from: number
+  readonly startY: number
+  readonly startScrollTop: number
+  readonly maybeScroller: HTMLElement | null
+  clientY: number
+  to: number
+}
+
+const queueRows = (list: HTMLElement): ReadonlyArray<HTMLElement> =>
+  Array.from(list.children).filter(
+    (child): child is HTMLElement =>
+      child instanceof HTMLElement && child.matches(QUEUE_ROW_SELECTOR),
+  )
+
+const translateY = (offset: number): string =>
+  offset === 0 ? '' : `translate3d(0, ${offset}px, 0)`
+
+/** Scroll speed for a finger `inside` px from an edge of the scroll area. */
+const edgeSpeed = (inside: number): number =>
+  inside >= AUTO_SCROLL_EDGE_PX
+    ? 0
+    : AUTO_SCROLL_MAX_PX_PER_FRAME *
+      Math.min(
+        1,
+        (AUTO_SCROLL_EDGE_PX - Math.max(0, inside)) / AUTO_SCROLL_EDGE_PX,
+      )
+
+/**
+ * Lets a queue row be dragged up or down by its handle, the way Apple Music
+ * does: the row follows the finger, the rows it passes slide out of its way,
+ * and near the top or bottom the queue scrolls along. Let go, the row settles
+ * into the gap and `onMove` reports where it went; the list re-rendered in
+ * its new order then takes over from the inline offsets. The handle's press
+ * never reaches the row's own swipe.
+ */
+const followQueueDrags = (
+  list: HTMLElement,
+  onMove: (entryId: string, maybeBeforeEntryId: Option.Option<string>) => void,
+) => {
+  const maybeWindow = list.ownerDocument.defaultView
+  const prefersLessMotion =
+    maybeWindow?.matchMedia('(prefers-reduced-motion: reduce)').matches ?? false
+  const makeWay = prefersLessMotion
+    ? 'none'
+    : `transform ${ROW_MAKE_WAY_MS}ms ${ROW_EASING}`
+  let maybeDrag: QueueDrag | undefined
+  let settlingRows: ReadonlyArray<HTMLElement> = []
+  let maybeFrame: number | undefined
+  let maybeTimer: ReturnType<typeof setTimeout> | undefined
+
+  const clearRows = (rows: ReadonlyArray<HTMLElement>) =>
+    rows.forEach(row => {
+      row.style.transition = ''
+      row.style.transform = ''
+      row.removeAttribute('data-dragging')
+    })
+
+  /** Every row back in its own place: slid there, or at once. */
+  const restoreRows = (
+    rows: ReadonlyArray<HTMLElement>,
+    isAnimated: boolean,
+  ) => {
+    clearTimeout(maybeTimer)
+    if (!isAnimated || prefersLessMotion) {
+      clearRows(rows)
+      settlingRows = []
+      return
+    }
+    rows.forEach(row => {
+      row.style.transition = makeWay
+      row.style.transform = ''
+    })
+    settlingRows = rows
+    maybeTimer = setTimeout(() => {
+      clearRows(rows)
+      settlingRows = []
+    }, ROW_MAKE_WAY_MS)
+  }
+
+  const stopAutoScroll = () => {
+    if (maybeFrame !== undefined) {
+      cancelAnimationFrame(maybeFrame)
+      maybeFrame = undefined
+    }
+  }
+
+  const draggedOffset = (drag: QueueDrag): number => {
+    const scrolled =
+      (drag.maybeScroller?.scrollTop ?? drag.startScrollTop) -
+      drag.startScrollTop
+    const moving = drag.slots[drag.from]
+    const first = drag.slots[0]
+    const last = drag.slots[drag.slots.length - 1]
+    if (moving === undefined || first === undefined || last === undefined) {
+      return 0
+    }
+    return Math.min(
+      last.top + last.height - (moving.top + moving.height),
+      Math.max(first.top - moving.top, drag.clientY - drag.startY + scrolled),
+    )
+  }
+
+  const follow = (drag: QueueDrag) => {
+    const moving = drag.slots[drag.from]
+    if (moving === undefined) {
+      return
+    }
+    const offset = draggedOffset(drag)
+    drag.to = dropIndex(
+      drag.slots,
+      drag.from,
+      moving.top + moving.height / 2 + offset,
+    )
+    drag.rows.forEach((row, index) => {
+      row.style.transform = translateY(
+        index === drag.from
+          ? offset
+          : rowShift(index, drag.from, drag.to, moving.height),
+      )
+    })
+  }
+
+  const autoScroll = () => {
+    maybeFrame = undefined
+    const drag = maybeDrag
+    if (drag === undefined || drag.maybeScroller === null) {
+      return
+    }
+    const scroller = drag.maybeScroller
+    const bounds = scroller.getBoundingClientRect()
+    const speed =
+      edgeSpeed(bounds.bottom - drag.clientY) -
+      edgeSpeed(drag.clientY - bounds.top)
+    if (speed === 0) {
+      return
+    }
+    const before = scroller.scrollTop
+    scroller.scrollTop = before + speed
+    if (scroller.scrollTop !== before) {
+      follow(drag)
+    }
+    maybeFrame = requestAnimationFrame(autoScroll)
+  }
+
+  const handlePointerDown = (event: PointerEvent) => {
+    const maybeHandle =
+      event.target instanceof Element
+        ? event.target.closest(REORDER_HANDLE_SELECTOR)
+        : null
+    if (maybeHandle === null || !list.contains(maybeHandle)) {
+      return
+    }
+    // NOTE: the row under the handle swipes to remove; a press on the
+    // handle only ever drags.
+    event.stopPropagation()
+    if (
+      maybeDrag !== undefined ||
+      settlingRows.length > 0 ||
+      event.button !== 0
+    ) {
+      return
+    }
+    const rows = queueRows(list)
+    const from = rows.findIndex(row => row.contains(maybeHandle))
+    const row = rows[from]
+    if (row === undefined) {
+      return
+    }
+    event.preventDefault()
+    list.setPointerCapture(event.pointerId)
+    const maybeScroller = list.closest(SCROLL_AREA_SELECTOR)
+    const scroller = maybeScroller instanceof HTMLElement ? maybeScroller : null
+    maybeDrag = {
+      pointerId: event.pointerId,
+      rows,
+      slots: rows.map(each => ({
+        top: each.offsetTop,
+        height: each.offsetHeight,
+      })),
+      from,
+      startY: event.clientY,
+      startScrollTop: scroller?.scrollTop ?? 0,
+      maybeScroller: scroller,
+      clientY: event.clientY,
+      to: from,
+    }
+    rows.forEach(each => {
+      each.style.transition = each === row ? 'none' : makeWay
+    })
+    row.setAttribute('data-dragging', '')
+  }
+
+  const handlePointerMove = (event: PointerEvent) => {
+    const drag = maybeDrag
+    if (drag === undefined || event.pointerId !== drag.pointerId) {
+      return
+    }
+    drag.clientY = event.clientY
+    follow(drag)
+    if (maybeFrame === undefined) {
+      maybeFrame = requestAnimationFrame(autoScroll)
+    }
+  }
+
+  const handlePointerUp = (event: PointerEvent) => {
+    const drag = maybeDrag
+    if (drag === undefined || event.pointerId !== drag.pointerId) {
+      return
+    }
+    maybeDrag = undefined
+    stopAutoScroll()
+    const row = drag.rows[drag.from]
+    const maybeEntryId = row?.dataset['queueEntry']
+    if (
+      row === undefined ||
+      maybeEntryId === undefined ||
+      drag.to === drag.from
+    ) {
+      restoreRows(drag.rows, true)
+      return
+    }
+    const entryId = maybeEntryId
+    const maybeBeforeEntryId = beforeEntryIdAfterMove(
+      drag.rows.map(each => each.dataset['queueEntry'] ?? ''),
+      drag.from,
+      drag.to,
+    )
+    row.style.transition = prefersLessMotion
+      ? 'none'
+      : `transform ${ROW_SETTLE_MS}ms ${ROW_EASING}`
+    row.style.transform = translateY(
+      settleOffset(drag.slots, drag.from, drag.to),
+    )
+    settlingRows = drag.rows
+    maybeTimer = setTimeout(
+      () => {
+        maybeTimer = setTimeout(
+          () => restoreRows(drag.rows, true),
+          DROP_TIMEOUT_MS,
+        )
+        onMove(entryId, maybeBeforeEntryId)
+      },
+      prefersLessMotion ? 0 : ROW_SETTLE_MS,
+    )
+  }
+
+  const handlePointerCancel = (event: PointerEvent) => {
+    const drag = maybeDrag
+    if (drag === undefined || event.pointerId !== drag.pointerId) {
+      return
+    }
+    maybeDrag = undefined
+    stopAutoScroll()
+    restoreRows(drag.rows, true)
+  }
+
+  // NOTE: the list re-rendered in its new order puts each row where its
+  // offset was showing it, so the offsets go at once, before the next paint.
+  // A list that changes mid-drag (a song ends, autoplay adds more) ends it.
+  const observer = new MutationObserver(() => {
+    const drag = maybeDrag
+    if (drag !== undefined) {
+      maybeDrag = undefined
+      stopAutoScroll()
+      restoreRows(drag.rows, true)
+    } else if (settlingRows.length > 0) {
+      restoreRows(settlingRows, false)
+    }
+  })
+  observer.observe(list, { childList: true })
+
+  list.addEventListener('pointerdown', handlePointerDown, { capture: true })
+  list.addEventListener('pointermove', handlePointerMove)
+  list.addEventListener('pointerup', handlePointerUp)
+  list.addEventListener('pointercancel', handlePointerCancel)
+  list.addEventListener('lostpointercapture', handlePointerCancel)
+
+  return () => {
+    observer.disconnect()
+    list.removeEventListener('pointerdown', handlePointerDown, {
+      capture: true,
+    })
+    list.removeEventListener('pointermove', handlePointerMove)
+    list.removeEventListener('pointerup', handlePointerUp)
+    list.removeEventListener('pointercancel', handlePointerCancel)
+    list.removeEventListener('lostpointercapture', handlePointerCancel)
+    stopAutoScroll()
+    clearTimeout(maybeTimer)
+    clearRows(queueRows(list))
+  }
+}
+
+type QueueDragMessage =
+  | typeof Message.CompletedFollowQueueDrags.Type
+  | typeof Message.DraggedQueueEntry.Type
+
+/**
+ * Reorders the queue list it is mounted on by its rows' handles; see
+ * `followQueueDrags`. It reports once when it starts, then once per move.
+ */
+export const FollowQueueDrags = Mount.defineStream('FollowQueueDrags', {
+  messages: [Message.CompletedFollowQueueDrags, Message.DraggedQueueEntry],
+  execute: ({ element }) =>
+    Stream.callback<QueueDragMessage>(queue =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const stopFollowing =
+            element instanceof HTMLElement
+              ? followQueueDrags(element, (entryId, maybeBeforeEntryId) =>
+                  Queue.offerUnsafe(
+                    queue,
+                    Message.DraggedQueueEntry({ entryId, maybeBeforeEntryId }),
+                  ),
+                )
+              : () => {}
+          Queue.offerUnsafe(queue, Message.CompletedFollowQueueDrags())
           return stopFollowing
         }),
         stopFollowing => Effect.sync(stopFollowing),

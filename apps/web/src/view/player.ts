@@ -8,6 +8,7 @@ import {
   Infinity as InfinityIcon,
   ListMusic,
   LoaderCircle,
+  Menu,
   MessageSquareQuote,
   Monitor,
   Music,
@@ -24,7 +25,6 @@ import {
   Speaker,
   Trash2,
   Tv,
-  X,
 } from 'lucide'
 
 import { icon } from '@/lib/icons'
@@ -34,7 +34,12 @@ import { Session } from '@music/shared'
 import { songFromQueueTrack } from '../library'
 import { Message } from '../message'
 import { Model } from '../model'
-import { DragToDismiss, FollowSeekBarDrags, Marquee } from '../mount'
+import {
+  DragToDismiss,
+  FollowQueueDrags,
+  FollowSeekBarDrags,
+  Marquee,
+} from '../mount'
 import {
   type Output,
   SKIP_SECONDS,
@@ -771,6 +776,7 @@ const queueControls = (
 const queuePanel = (
   model: Model,
   snapshot: SessionSnapshot,
+  color: string,
   h: HtmlBuilder<Message>,
 ): Html => {
   const upcoming = upcomingEntries(snapshot.state)
@@ -783,6 +789,9 @@ const queuePanel = (
       h.Class(
         'no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8',
       ),
+      // NOTE: a dragged row is lifted onto the player's own color, darkened,
+      // and must be solid so the rows it passes don't show through.
+      h.Style({ '--queue-lift': `color-mix(in oklab, ${color}, black 35%)` }),
     ],
     [
       queueControls(snapshot.state, h),
@@ -853,18 +862,27 @@ const queuePanel = (
   )
 }
 
-/** Upcoming songs: tap one to jump to it, swipe one away to remove it. */
+/**
+ * Upcoming songs: tap one to jump to it, swipe one away to remove it, or
+ * drag one by its handle to move it (`FollowQueueDrags`). A row being
+ * dragged is lifted onto a solid surface above the rows it passes.
+ */
 const queueList = (
   model: Model,
   entries: ReadonlyArray<Session.QueueEntry>,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.ul(
-    [h.Class('-mx-2 flex flex-col pb-4')],
+    [h.Class('-mx-2 flex flex-col pb-4'), h.OnMount(FollowQueueDrags())],
     Array.map(entries, entry =>
       h.keyed('li')(
         entry.entryId,
-        [],
+        [
+          h.DataAttribute('queue-entry', entry.entryId),
+          h.Class(
+            'rounded-lg data-dragging:relative data-dragging:z-10 data-dragging:bg-(--queue-lift) data-dragging:ring-1 data-dragging:ring-white/15',
+          ),
+        ],
         [
           swipeableRow(
             {
@@ -893,7 +911,7 @@ const queueList = (
     ),
   )
 
-/** One upcoming song: tap to jump to it, or remove it. */
+/** One upcoming song: tap to jump to it, or drag its handle to move it. */
 const queueRow = (entry: Session.QueueEntry, h: HtmlBuilder<Message>): Html =>
   h.div(
     [h.Class('flex items-center')],
@@ -923,20 +941,16 @@ const queueRow = (entry: Session.QueueEntry, h: HtmlBuilder<Message>): Html =>
           ),
         ],
       ),
-      h.button(
+      h.div(
         [
-          h.Type('button'),
-          h.OnClick(
-            Message.ClickedRemoveQueueEntry({
-              entryId: entry.entryId,
-            }),
-          ),
-          h.AriaLabel(`Remove ${entry.track.title}`),
+          h.DataAttribute('reorder-handle', ''),
+          h.DataAttribute('no-drag', ''),
+          h.AriaHidden(true),
           h.Class(
-            'flex size-10 shrink-0 items-center justify-center rounded-full text-white/60 active:bg-white/10',
+            'flex h-14 w-12 shrink-0 cursor-grab touch-none items-center justify-center text-white/45 select-none [-webkit-touch-callout:none]',
           ),
         ],
-        [icon(h, X, 'size-5')],
+        [icon(h, Menu, 'size-[22px]')],
       ),
     ],
   )
@@ -1139,7 +1153,7 @@ const playerSheet = (
             ? artworkPanel(model, snapshot, entry, h)
             : compactNowPlaying(model, entry, h),
           panel === 'Lyrics' ? lyricsPanel(model, snapshot, entry, h) : h.empty,
-          panel === 'Queue' ? queuePanel(model, snapshot, h) : h.empty,
+          panel === 'Queue' ? queuePanel(model, snapshot, color, h) : h.empty,
           h.div(
             [h.Class('flex flex-col gap-3 pt-2')],
             [

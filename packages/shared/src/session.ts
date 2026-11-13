@@ -156,6 +156,17 @@ export const Enqueue = Schema.TaggedStruct('Enqueue', {
 export const RemoveEntry = Schema.TaggedStruct('RemoveEntry', {
   entryId: Schema.String,
 })
+/**
+ * Move a song still to come to another place among the songs still to come:
+ * just before `beforeEntryId`, or with null, last among the songs of its
+ * kind (after the last song someone queued, or for an autoplay song, at the
+ * end of the queue). The current song and the songs before it stay put, and
+ * autoplay's songs stay after the songs someone queued. See `moveEntry`.
+ */
+export const MoveEntry = Schema.TaggedStruct('MoveEntry', {
+  entryId: Schema.String,
+  beforeEntryId: Schema.NullOr(Schema.String),
+})
 export const Resume = Schema.TaggedStruct('Resume', {})
 /** Where a player stopped, and the session jump it was following. */
 export const StoppedAt = Schema.Struct({
@@ -254,6 +265,7 @@ export const ClientMessage = Schema.Union([
   PlayQueue,
   Enqueue,
   RemoveEntry,
+  MoveEntry,
   Resume,
   Pause,
   Seek,
@@ -351,3 +363,41 @@ export const skipIndex = (
   repeat: RepeatMode,
 ): Option.Option<number> =>
   followingIndex(length, index, repeat === 'One' ? 'All' : repeat)
+
+/**
+ * The queue after `MoveEntry`, or None when the move changes nothing or can't
+ * be made. Only an entry after `currentEntryId` moves (every entry when there
+ * is none). It lands just before `beforeEntryId`, kept among the songs still
+ * to come and among the songs of its own kind: someone's songs stay before
+ * autoplay's. An unknown `beforeEntryId` (removed meanwhile) moves nothing.
+ * The server applies moves with this, and the phone shows its own at once
+ * with it, so both put the song in the same place.
+ */
+export const moveEntry = (
+  queue: ReadonlyArray<QueueEntry>,
+  currentEntryId: string | null,
+  entryId: string,
+  beforeEntryId: string | null,
+): Option.Option<ReadonlyArray<QueueEntry>> => {
+  const indexIn = (entries: ReadonlyArray<QueueEntry>, id: string | null) =>
+    id === null ? -1 : entries.findIndex(entry => entry.entryId === id)
+  const after = indexIn(queue, currentEntryId) + 1
+  const from = indexIn(queue, entryId)
+  const moving = queue[from]
+  if (from < after || moving === undefined) return Option.none()
+  const rest = queue.filter(entry => entry.entryId !== entryId)
+  const firstAutoplay = rest.findIndex(
+    (entry, index) => index >= after && entry.autoplay,
+  )
+  const autoplayStart = firstAutoplay === -1 ? rest.length : firstAutoplay
+  const lowest = moving.autoplay ? autoplayStart : after
+  const highest = moving.autoplay ? rest.length : autoplayStart
+  const before = indexIn(rest, beforeEntryId)
+  if (beforeEntryId !== null && before === -1) return Option.none()
+  const to = Math.min(
+    highest,
+    Math.max(lowest, beforeEntryId === null ? highest : before),
+  )
+  if (to === from) return Option.none()
+  return Option.some([...rest.slice(0, to), moving, ...rest.slice(to)])
+}

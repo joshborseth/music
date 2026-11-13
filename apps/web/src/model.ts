@@ -10,6 +10,7 @@ import {
   LocalChanges,
   PhoneAudio,
   PlayerSheet,
+  QueueMove,
   SessionSnapshot,
 } from './playback/domain'
 import { Swipe } from './playback/swipe'
@@ -72,6 +73,8 @@ export const Model = Schema.Struct({
   /** Where the seek bar is being dragged to, before it is let go. */
   maybeScrubSeconds: Schema.Option(Schema.Number),
   localChanges: LocalChanges,
+  /** Songs this phone moved in the queue that the server has not confirmed. */
+  queueMoves: Schema.Array(QueueMove),
   swipe: Swipe,
 })
 export type Model = typeof Model.Type
