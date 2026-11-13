@@ -4,10 +4,15 @@
 //! start of a section, on its first beat. A chorus that comes back gets the
 //! same scene (and the same look) it had before, so the song's shape shows
 //! on screen. A drop cuts hard, on the beat, to one of the wildest scenes.
-//! A long section moves on at a phrase: every 16 bars from its start (24
-//! when calm), never in its last 8 bars, where its own end is coming. Calm
-//! parts get calm scenes: how wild a part looks is its intensity, which the
-//! song's drive caps (`music.rs`), so a ballad never gets the tunnel.
+//! A scene that has shown a while moves on at a phrase, counted in bars
+//! from when it came on, so it can't hold through a run of sections that
+//! share it (a chorus sung twice in a row): every 16 bars, or when calm
+//! the first 16-bar phrase past 45 seconds (32 bars at most tempos), and
+//! every 8 bars (or at a section's start) once it has shown for two
+//! minutes. Never in a section's last 8 bars, where its own end is coming,
+//! and never back to the scene just before. Calm parts get calm scenes: how wild a part looks is its
+//! intensity, which the song's drive caps (`music.rs`), so a ballad never
+//! gets the tunnel.
 //!
 //! Without an analysis, scenes change when the music surges, or after a
 //! while on a kick.
@@ -47,10 +52,15 @@ pub const SCENES: [SceneSpec; 5] = [
     },
 ];
 
-/// Bars a scene stays within one section, calm and wild, counted from the
-/// section's start so it moves on at a phrase.
-const CALM_BARS: u32 = 24;
-const BUSY_BARS: u32 = 16;
+/// A phrase, in bars: a scene that has shown a while moves on at the end
+/// of one, counted from when it came on.
+const PHRASE_BARS: u32 = 16;
+/// Seconds a scene shows before it moves on when the music is calm; busy
+/// music moves on at its first phrase.
+const CALM_SECONDS: f32 = 45.0;
+/// Seconds after which a scene moves on at half a phrase: one that has
+/// held this long found every phrase near a section's end.
+const LONGEST_SECONDS: f32 = 120.0;
 /// A section this close to its end keeps its scene: the next section
 /// brings a new one soon enough.
 const LAST_BARS: f32 = 8.0;
@@ -86,8 +96,8 @@ pub struct Director {
     by_group: HashMap<u32, (usize, f32)>,
     recent: Vec<usize>,
     section: Option<usize>,
-    /// Bars since the section started.
-    bars_in_section: u32,
+    /// Bars since the latest scene came on.
+    bars_on_scene: u32,
     random: u32,
     song: Option<String>,
 }
@@ -104,7 +114,7 @@ impl Director {
             by_group: HashMap::new(),
             recent: Vec::new(),
             section: None,
-            bars_in_section: 0,
+            bars_on_scene: 0,
             random: seed | 1,
             song: None,
         };
@@ -128,6 +138,11 @@ impl Director {
     /// The best scene for music this intense, other than the one showing,
     /// avoiding the last two where another fits nearly as well.
     fn pick(&mut self, target: f32) -> usize {
+        self.pick_avoiding(target, None)
+    }
+
+    /// As `pick`, and not `avoid` either unless nothing else suits.
+    fn pick_avoiding(&mut self, target: f32, avoid: Option<usize>) -> usize {
         // Before any song, nothing shows yet: every scene may come on.
         let latest = self.song.is_some().then(|| self.latest());
         let jitter: Vec<f32> = (0..SCENES.len()).map(|_| self.unit() * 0.12).collect();
@@ -140,6 +155,7 @@ impl Director {
             let energy = SCENES[scene].energy;
             fit(scene)
                 + if recent.contains(&scene) { 0.15 } else { 0.0 }
+                + if Some(scene) == avoid { 1.0 } else { 0.0 }
                 + if energy > target + 0.3 { 10.0 } else { 0.0 }
         };
         (0..SCENES.len())
@@ -161,6 +177,7 @@ impl Director {
         if self.recent.len() > 6 {
             self.recent.remove(0);
         }
+        self.bars_on_scene = 0;
         let showing = Showing {
             scene,
             seed,
@@ -171,6 +188,17 @@ impl Director {
         } else {
             self.next = Some((showing, 0.0, seconds));
         }
+    }
+
+    /// Move on from a scene that has shown a while, within a section of
+    /// `group`, to a new one that is not the one before it either. The
+    /// rest of the section, and any after it in its group, keep it.
+    fn move_on(&mut self, group: u32, target: f32, seconds: f32) {
+        let before = self.recent.last().copied();
+        let scene = self.pick_avoiding(target, before);
+        let seed = self.unit();
+        self.by_group.insert(group, (scene, seed));
+        self.change(scene, seed, seconds);
     }
 
     /// The scene for a section: its group's scene if it had one before.
@@ -196,7 +224,7 @@ impl Director {
             }
         }
         if music.on_downbeat {
-            self.bars_in_section += 1;
+            self.bars_on_scene += 1;
         }
         // The intensity this section is heading for: the analysis knows it
         // at once, while `music.intensity` eases toward it.
@@ -215,7 +243,6 @@ impl Director {
             let first_song = self.song.is_none();
             self.by_group.clear();
             self.section = section_now;
-            self.bars_in_section = 0;
             if song.is_some() {
                 let (scene, seed) = match music.section {
                     Some(section) => self.for_section(section, aim),
@@ -229,6 +256,7 @@ impl Director {
                         age: 0.0,
                     };
                     self.next = None;
+                    self.bars_on_scene = 0;
                 } else {
                     self.change(scene, seed, MOST_FADE);
                 }
@@ -244,12 +272,10 @@ impl Director {
                 None => (self.pick(wild), self.unit()),
             };
             self.section = section_now;
-            self.bars_in_section = 0;
             self.change(scene, seed, 0.0);
         } else if section_now != self.section {
             let first = self.section.is_none();
             self.section = section_now;
-            self.bars_in_section = 0;
             if let Some(section) = music.section {
                 // The analysis arrived after the song started: keep the
                 // scene showing if it suits this section.
@@ -262,22 +288,40 @@ impl Director {
                     self.by_group.insert(section.group, (self.latest(), seed));
                 } else {
                     let (scene, seed) = self.for_section(section, aim);
-                    self.change(scene, seed, fade);
+                    if scene == self.latest()
+                        && self.next.is_none()
+                        && self.current.age >= LONGEST_SECONDS
+                    {
+                        // Held for minutes through sections that share it,
+                        // none with a phrase far enough from its end: a
+                        // section's start is a phrase too.
+                        self.move_on(section.group, aim, fade * 1.5);
+                    } else {
+                        self.change(scene, seed, fade);
+                    }
                 }
             }
-        } else if let Some(section) = music.section {
-            let every = if aim < 0.4 { CALM_BARS } else { BUSY_BARS };
+        } else if let Some(section) = music.section
+            && music.on_downbeat
+            && self.next.is_none()
+        {
+            // A scene that has shown a while moves on at a phrase.
+            let shown = self.current.age;
+            let phrase = if shown >= LONGEST_SECONDS {
+                PHRASE_BARS / 2
+            } else {
+                PHRASE_BARS
+            };
+            let due = aim >= 0.4 || shown >= CALM_SECONDS;
             let bar_seconds = music.beat_seconds * 4.0;
-            if music.on_downbeat
-                && self.bars_in_section > 0
-                && self.bars_in_section.is_multiple_of(every)
+            if due
+                && self.bars_on_scene > 0
+                && self.bars_on_scene.is_multiple_of(phrase)
                 && section.left > bar_seconds * LAST_BARS
             {
-                let scene = self.pick(aim);
-                let seed = self.unit();
-                self.change(scene, seed, fade * 1.5);
+                self.move_on(section.group, aim, fade * 1.5);
             }
-        } else {
+        } else if music.section.is_none() {
             let age = self.current.age;
             if (music.surge && age > LIVE_MIN) || (music.on_downbeat && age > LIVE_MAX) {
                 let scene = self.pick(music.intensity);
@@ -516,5 +560,151 @@ mod tests {
         let shot = downbeat(&mut director, 10.0);
         assert!(shot.next.is_none());
         assert_eq!(shot.current.scene, moved);
+    }
+
+    /// One frame on the first beat of a bar, a bar of `bar_seconds` after
+    /// the last, `at` bars into a section of `bars`.
+    #[allow(clippy::too_many_arguments)]
+    fn bar(
+        director: &mut Director,
+        index: usize,
+        kind: SectionKind,
+        group: u32,
+        energy: f32,
+        (at, bars): (u32, u32),
+        bar_seconds: f32,
+        ceiling: f32,
+    ) -> Shot {
+        let mut frame = music(section(index, kind, group, energy));
+        frame.dt = bar_seconds;
+        frame.beat_seconds = bar_seconds / 4.0;
+        frame.on_downbeat = true;
+        frame.ceiling = ceiling;
+        frame.section = frame.section.map(|section| SectionNow {
+            left: (bars - at) as f32 * bar_seconds,
+            ..section
+        });
+        director.direct(&frame, Some("song"))
+    }
+
+    fn latest(shot: &Shot) -> usize {
+        shot.next.map_or(shot.current.scene, |(next, _)| next.scene)
+    }
+
+    #[test]
+    fn a_scene_shared_by_sections_in_a_row_moves_on_at_a_phrase() {
+        // "Too Long" (Gonzales): at 70 BPM, a chorus of 8 bars, then the
+        // same chorus for 20. Its scene held both, half the song; now it
+        // moves on at its 16th bar, the second chorus's 8th.
+        let ceiling = super::super::music::intensity_ceiling(0.023);
+        let bar_seconds = 3.4;
+        for seed in 1..30 {
+            let mut director = Director::new(seed);
+            let mut verse = 0;
+            for at in 0..10 {
+                let shot = bar(
+                    &mut director,
+                    0,
+                    SectionKind::Verse,
+                    0,
+                    0.42,
+                    (at, 10),
+                    bar_seconds,
+                    ceiling,
+                );
+                verse = latest(&shot);
+            }
+            let mut chorus = None;
+            let mut moved = None;
+            for (index, bars) in [(1, 8), (2, 20)] {
+                for at in 0..bars {
+                    let shot = bar(
+                        &mut director,
+                        index,
+                        SectionKind::Chorus,
+                        1,
+                        if index == 1 { 0.77 } else { 1.0 },
+                        (at, bars),
+                        bar_seconds,
+                        ceiling,
+                    );
+                    let now = latest(&shot);
+                    let first = *chorus.get_or_insert(now);
+                    if now != first && moved.is_none() {
+                        moved = Some((index, at, now));
+                    }
+                }
+            }
+            let chorus = chorus.expect("a chorus");
+            assert_ne!(chorus, verse, "seed {seed}");
+            let Some((index, at, now)) = moved else {
+                panic!("seed {seed}: {} held both choruses", SCENES[chorus].name);
+            };
+            assert_eq!((index, at), (2, 8), "seed {seed}");
+            assert_ne!(now, verse, "seed {seed}: back to the scene before");
+        }
+    }
+
+    #[test]
+    fn a_calm_scene_moves_on_at_the_first_phrase_past_its_time() {
+        // 120 BPM, calm: 16 bars is 32 seconds, too soon; 32 bars is 64.
+        let mut director = Director::new(5);
+        let mut changes = Vec::new();
+        let mut last = None;
+        for at in 0..60 {
+            let shot = bar(
+                &mut director,
+                0,
+                SectionKind::Intro,
+                0,
+                0.2,
+                (at, 100),
+                2.0,
+                1.0,
+            );
+            let now = latest(&shot);
+            if last.is_some_and(|last| last != now) {
+                changes.push(at);
+            }
+            last = Some(now);
+        }
+        assert_eq!(changes, vec![32]);
+    }
+
+    #[test]
+    fn a_scene_held_for_minutes_moves_on_where_a_section_starts() {
+        // Calm sections of 12 bars, all one group: every 16-bar phrase
+        // falls in a section's last 8 bars. After two minutes the scene
+        // moves on anyway, at a section's start or its 8th bar, never near
+        // a section's end.
+        let mut director = Director::new(8);
+        let mut changes = Vec::new();
+        let mut last = None;
+        for index in 0..12 {
+            for at in 0..12 {
+                let shot = bar(
+                    &mut director,
+                    index,
+                    SectionKind::Verse,
+                    0,
+                    0.2,
+                    (at, 12),
+                    2.0,
+                    1.0,
+                );
+                let now = latest(&shot);
+                if last.is_some_and(|last| last != now) {
+                    changes.push((index, at));
+                }
+                last = Some(now);
+            }
+        }
+        assert!(!changes.is_empty());
+        for (index, at) in &changes {
+            assert!(*at <= 4, "section {index}, bar {at}");
+        }
+        let (index, at) = changes[0];
+        let seconds = (index * 12 + at as usize) as f32 * 2.0;
+        assert!((120.0..150.0).contains(&seconds), "{seconds} s");
     }
 }

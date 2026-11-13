@@ -4,11 +4,12 @@
  *
  * The passes match `apps/tv/src/visuals/gpu.rs`: each scene draws into its
  * own pair of textures (feedback), Terrain adding its land as a mesh on
- * top, the bright parts are blurred at a
- * quarter size, `final.glsl` puts it together at the scenes' size, and
- * `present.glsl` stretches that to the screen under the app's shade. While
- * one scene dissolves into the next, the two take turns, one a frame. The
- * per-frame values in `motion` match `motion.rs`.
+ * top, the bright parts are cut out at an eighth of the scenes' size and
+ * blurred there in one pass (the glow), `final.glsl` puts it all together
+ * at the scenes' size under the app's shade, and `present.glsl` stretches
+ * that to the screen with a fine grain. While one scene dissolves into the
+ * next, the two take turns, one a frame. The per-frame values in `motion`
+ * and `screenLook` match `motion.rs`.
  */
 
 declare const SHADERS: Readonly<Record<string, string>>
@@ -42,6 +43,8 @@ const COVER = 256
  */
 const LAND_COLUMNS = 2 * (1 + BANDS + 5) + 1
 const LAND_VERTICES = HISTORY_ROWS * (2 * LAND_COLUMNS + 2) - 2
+/** The glow is this many times smaller than the scenes, each way (gpu.rs). */
+const BLOOM_DIVISOR = 8
 
 // MUSIC ----------------------------------------------------------------
 
@@ -148,6 +151,38 @@ const motion = (music: Music, seed: number): Motion => {
     shake: [
       (smoothNoise(music.time * 23) - 0.5) * shake,
       (smoothNoise(music.time * 27 + 57) - 0.5) * shake,
+    ],
+  }
+}
+
+interface ScreenLook {
+  readonly punch: number
+  readonly split: number
+  readonly glow: number
+  readonly flash: Rgb
+  readonly vignette: Rgb
+}
+
+/**
+ * The screen pass's values, the same at every pixel, once a frame: the
+ * TV's `Screen::new` (motion.rs). Keep the two in step.
+ */
+const screenLook = (music: Music, color: Rgb): ScreenLook => {
+  const { drop, tension } = music
+  const flash = drop ** 10 * 0.55
+  return {
+    punch: 1 - 0.018 * music.kick * (0.4 + music.energy) - 0.03 * drop,
+    split: 0.006 * drop * drop * drop,
+    glow: 0.4 + 0.35 * music.energy + 0.5 * drop,
+    flash: [
+      (color[0] + 0.3 * (1 - color[0])) * flash,
+      (color[1] + 0.3 * (1 - color[1])) * flash,
+      (color[2] + 0.3 * (1 - color[2])) * flash,
+    ],
+    vignette: [
+      1.05 - 0.4 * tension,
+      0.25 - 0.1 * tension,
+      0.55 - 0.25 * tension,
     ],
   }
 }
@@ -673,8 +708,12 @@ const makeEngine = (
     fragmentSource('present.glsl'),
   )
   const picture = makeTarget(gl, width, height)
-  const bloomA = makeTarget(gl, Math.ceil(width / 4), Math.ceil(height / 4))
-  const bloomB = makeTarget(gl, Math.ceil(width / 4), Math.ceil(height / 4))
+  // The glow, which `final` reads, and the bright parts it is blurred
+  // from, an eighth of the scenes' size each way (`BLOOM_DIVISOR`).
+  const bloomWidth = Math.max(1, Math.floor(width / BLOOM_DIVISOR))
+  const bloomHeight = Math.max(1, Math.floor(height / BLOOM_DIVISOR))
+  const glow = makeTarget(gl, bloomWidth, bloomHeight)
+  const brightParts = makeTarget(gl, bloomWidth, bloomHeight)
 
   const spectrumTexture = dataTexture(gl, BANDS, 1, 'r', false)
   const historyTexture = dataTexture(gl, BANDS, HISTORY_ROWS, 'r', false)
@@ -943,9 +982,9 @@ const makeEngine = (
     const outA = sceneA.targets[0]
     const outB = (sceneB ?? sceneA).targets[0]
     if (bright !== null && blur !== null) {
-      beginPass(bloomA)
+      beginPass(brightParts)
       gl.useProgram(bright.program)
-      setMusic(bright, music, [bloomA.width, bloomA.height], null)
+      setMusic(bright, music, [brightParts.width, brightParts.height], null)
       const passes: Array<[string, Target]> = [
         ['uSceneA', outA],
         ['uSceneB', outB],
@@ -962,24 +1001,17 @@ const makeEngine = (
       if (texelAt !== undefined)
         gl.uniform2f(texelAt, 1 / outA.width, 1 / outA.height)
       fullscreen()
-      const blurPass = (
-        from: Target,
-        to: Target,
-        direction: [number, number],
-      ) => {
-        beginPass(to)
-        gl.useProgram(blur.program)
-        gl.activeTexture(gl.TEXTURE0)
-        gl.bindTexture(gl.TEXTURE_2D, from.texture)
-        const s = blur.uniforms.get('uSource')
-        if (s !== undefined) gl.uniform1i(s, 0)
-        const d = blur.uniforms.get('uDirection')
-        if (d !== undefined)
-          gl.uniform2f(d, direction[0] / from.width, direction[1] / from.height)
-        fullscreen()
-      }
-      blurPass(bloomA, bloomB, [1, 0])
-      blurPass(bloomB, bloomA, [0, 1])
+
+      beginPass(glow)
+      gl.useProgram(blur.program)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, brightParts.texture)
+      const sourceAt = blur.uniforms.get('uSource')
+      if (sourceAt !== undefined) gl.uniform1i(sourceAt, 0)
+      const blurTexelAt = blur.uniforms.get('uTexel')
+      if (blurTexelAt !== undefined)
+        gl.uniform2f(blurTexelAt, 1 / brightParts.width, 1 / brightParts.height)
+      fullscreen()
     }
     if (final !== null) {
       beginPass(picture)
@@ -988,7 +1020,7 @@ const makeEngine = (
       const inputs: Array<[string, WebGLTexture]> = [
         ['uSceneA', outA.texture],
         ['uSceneB', outB.texture],
-        ['uBloom', bloomA.texture],
+        ['uBloom', glow.texture],
         ['uNoise', noiseTexture],
       ]
       inputs.forEach(([name, texture], unit) => {
@@ -997,10 +1029,30 @@ const makeEngine = (
         const loc = final.uniforms.get(name)
         if (loc !== undefined) gl.uniform1i(loc, unit)
       })
-      const mixAt = final.uniforms.get('uMix')
-      if (mixAt !== undefined) gl.uniform1f(mixAt, mix)
-      const fadeAt = final.uniforms.get('uFade')
-      if (fadeAt !== undefined) gl.uniform1f(fadeAt, 1)
+      const look = screenLook(music, colors[0] ?? [1, 1, 1])
+      const f = (name: string, value: number) => {
+        const at = final.uniforms.get(name)
+        if (at !== undefined) gl.uniform1f(at, value)
+      }
+      const v3 = (name: string, value: Rgb) => {
+        const at = final.uniforms.get(name)
+        if (at !== undefined) gl.uniform3f(at, ...value)
+      }
+      f('uMix', mix)
+      f('uPunch', look.punch)
+      f('uSplit', look.split)
+      f('uGlow', look.glow)
+      v3('uFlash', look.flash)
+      v3('uVignette', look.vignette)
+      // Fully faded in, under the light shade the app always needs.
+      f('uKeep', 1 - 0.227)
+      // The lyrics band on the right, or the song alone in the middle.
+      f('uSide', side)
+      f('uCentre', 1 - side)
+      const reach = 0.3 * Math.hypot(picture.width, picture.height)
+      const poolAt = final.uniforms.get('uPool')
+      if (poolAt !== undefined)
+        gl.uniform2f(poolAt, picture.width / reach, picture.height / reach)
       fullscreen()
     }
     if (present !== null) {
@@ -1009,21 +1061,15 @@ const makeEngine = (
       gl.clearColor(0, 0, 0, 1)
       gl.clear(gl.COLOR_BUFFER_BIT)
       gl.useProgram(present.program)
-      setMusic(present, music, screen, sceneA)
       gl.activeTexture(gl.TEXTURE0)
       gl.bindTexture(gl.TEXTURE_2D, picture.texture)
       const pictureAt = present.uniforms.get('uPicture')
       if (pictureAt !== undefined) gl.uniform1i(pictureAt, 0)
-      // The lyrics band on the right, or the song alone in the middle.
-      const sideAt = present.uniforms.get('uSide')
-      if (sideAt !== undefined) gl.uniform1f(sideAt, side)
-      const centreAt = present.uniforms.get('uCentre')
-      if (centreAt !== undefined) gl.uniform1f(centreAt, 1 - side)
       fullscreen()
     }
   }
 
-  /** Scene `index` alone, without bloom or the picture: for the bench. */
+  /** Scene `index` alone, without the glow or the picture: for the bench. */
   const sceneOnly = (music: Music, dt: number, index: number) => {
     const scene = scenes[index]
     if (scene === undefined) return
@@ -1121,7 +1167,9 @@ const sheet = () => {
 
 /**
  * Times every scene, drawn alone, at the size the TV starts each scene at
- * (1088 × 612) on a 1280 × 720 screen. In a software renderer the numbers
+ * (1088 × 612) on a 1280 × 720 screen, or at the sizes the URL names:
+ * `?screen=1920x1080&scene=896x504` is a 1080p TV holding a scene at 70%.
+ * In a software renderer the numbers
  * only rank the scenes against each other (and a change against the code
  * before it): a TV's GPU is far slower, and runs mediump at twice the
  * rate, which this can't show.
@@ -1136,8 +1184,15 @@ const sheet = () => {
 const bench = () => {
   const out = element('pre')
   document.body.append(out)
-  const width = 1280
-  const height = 720
+  const params = new URLSearchParams(location.search)
+  const size = (name: string, fallback: [number, number]): [number, number] => {
+    const [w, h] = (params.get(name) ?? '').split('x').map(Number)
+    return w !== undefined && h !== undefined && w > 0 && h > 0
+      ? [w, h]
+      : fallback
+  }
+  const [width, height] = size('screen', [1280, 720])
+  const [sceneWidth, sceneHeight] = size('scene', [1088, 612])
   const canvas = element('canvas')
   canvas.width = width
   canvas.height = height
@@ -1146,7 +1201,7 @@ const bench = () => {
     out.textContent = 'No WebGL 2 here.'
     return
   }
-  const engine = makeEngine(gl, 1088, 612)
+  const engine = makeEngine(gl, sceneWidth, sceneHeight)
   engine.setCover(madeUpCover())
   const pixel = new Uint8Array(4)
   const finish = () =>

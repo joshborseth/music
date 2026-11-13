@@ -19,6 +19,7 @@ pub mod protocol;
 mod qr;
 #[cfg(feature = "screenshots")]
 pub mod screenshots;
+mod server_log;
 mod session;
 mod ui;
 pub mod update;

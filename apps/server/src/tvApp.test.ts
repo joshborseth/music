@@ -1,5 +1,12 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { ConfigProvider, Effect, Fiber, Layer, SubscriptionRef } from 'effect'
+import {
+  ConfigProvider,
+  Effect,
+  Fiber,
+  Layer,
+  Logger,
+  SubscriptionRef,
+} from 'effect'
 import { HttpRouter } from 'effect/http'
 import { TestClock } from 'effect/testing'
 import { readdirSync } from 'node:fs'
@@ -14,7 +21,9 @@ import {
   TvCaptureRoute,
   TvVersionRoute,
   buildPathFor,
+  logTvReport,
   reopenAfterUpdate,
+  tvLogLevel,
 } from './tvApp.ts'
 
 const directory = mkdtempSync(join(tmpdir(), 'music-tv-version-'))
@@ -121,6 +130,60 @@ describe('TV screenshots', () => {
     expect(
       readdirSync(frames).filter(name => name.endsWith('.png')),
     ).toHaveLength(1)
+  })
+})
+
+describe('logTvReport', () => {
+  test('logs a line at the level the TV names, a crash as an error', async () => {
+    const seen: Array<[string, unknown]> = []
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* logTvReport('info', 'visuals: 60 fps')
+        yield* logTvReport('warning', 'update: no room')
+        yield* logTvReport(null, "panic in thread 'main'")
+      }).pipe(
+        Effect.provide(
+          Logger.layer([
+            Logger.make(({ logLevel, message }) => {
+              seen.push([logLevel, message])
+            }),
+          ]),
+        ),
+      ),
+    )
+    expect(seen).toEqual([
+      ['Info', ['TV app', 'visuals: 60 fps']],
+      ['Warn', ['TV app', 'update: no room']],
+      ['Error', ['TV app', "panic in thread 'main'"]],
+    ])
+  })
+})
+
+describe('tvLogLevel', () => {
+  test('follows the level the TV names', () => {
+    expect(tvLogLevel('info', 'anything')).toBe('Info')
+    expect(tvLogLevel('warning', 'anything')).toBe('Warning')
+    expect(tvLogLevel('error', 'visuals: could not start')).toBe('Error')
+  })
+
+  test('keeps crashes at error', () => {
+    expect(tvLogLevel(null, "panic in thread 'main': boom")).toBe('Error')
+    expect(tvLogLevel('loud', "panic in thread 'main': boom")).toBe('Error')
+  })
+
+  test("reads older TVs' visuals reports as information", () => {
+    expect(
+      tvLogLevel(null, 'visuals: 1920×1080 screen, 58.2 fps, 3.0% late'),
+    ).toBe('Info')
+    expect(tvLogLevel(null, 'visuals: GPU Mali-G52 (OpenGL ES 3.2)')).toBe(
+      'Info',
+    )
+    expect(tvLogLevel(null, 'visuals: could not start on Mali-G52')).toBe(
+      'Error',
+    )
+    expect(tvLogLevel(null, 'visuals: GL error 0x0505 in the visuals')).toBe(
+      'Error',
+    )
   })
 })
 
