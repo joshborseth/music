@@ -115,6 +115,8 @@ export const AlbumDetails = Schema.Struct({
   maybeDescription: Schema.Option(Schema.String),
   maybeLengthSummary: Schema.Option(Schema.String),
   tracks: Schema.Array(Song),
+  /** The tracks YouTube Music marks explicit. */
+  explicitVideoIds: Schema.Array(Schema.String),
 })
 export type AlbumDetails = typeof AlbumDetails.Type
 
@@ -148,6 +150,55 @@ export const PlaylistDetails = Schema.Struct({
   tracks: Schema.Array(Song),
 })
 export type PlaylistDetails = typeof PlaylistDetails.Type
+
+// SEARCH
+
+/**
+ * The one thing a search most likely means, as YouTube Music picks it: an
+ * artist, an album, a song, or a playlist.
+ */
+export const TopResult = Schema.Union([
+  Schema.TaggedStruct('Artist', { artist: ArtistSummary }),
+  Schema.TaggedStruct('Album', { album: AlbumSummary }),
+  Schema.TaggedStruct('Song', { song: Song }),
+  Schema.TaggedStruct('Playlist', { playlist: PlaylistSummary }),
+])
+export type TopResult = typeof TopResult.Type
+
+// MOODS AND GENRES
+
+/** One of YouTube Music's moods or genres, such as Chill or Jazz. */
+export const MoodCategory = Schema.Struct({
+  /** YouTube's opaque key for the category page. */
+  params: Schema.String,
+  title: Schema.String,
+  /** YouTube Music's color for it, as `#rrggbb`. */
+  maybeColor: Schema.Option(Schema.String),
+})
+export type MoodCategory = typeof MoodCategory.Type
+
+/** A titled group of categories: "Moods & moments", "Genres". */
+export const MoodGroup = Schema.Struct({
+  title: Schema.String,
+  categories: Schema.Array(MoodCategory),
+})
+export type MoodGroup = typeof MoodGroup.Type
+
+/** A titled row of YouTube Music's playlists on a category page. */
+export const PlaylistShelf = Schema.Struct({
+  title: Schema.String,
+  playlists: Schema.Array(PlaylistSummary),
+})
+export type PlaylistShelf = typeof PlaylistShelf.Type
+
+/** A mood or genre's page: its songs, playlists in shelves, and albums. */
+export const MoodDetails = Schema.Struct({
+  title: Schema.String,
+  songs: Schema.Array(Song),
+  playlistShelves: Schema.Array(PlaylistShelf),
+  albums: Schema.Array(AlbumSummary),
+})
+export type MoodDetails = typeof MoodDetails.Type
 
 // MY PLAYLISTS
 

@@ -1,7 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import { Option } from 'effect'
+import { YTNodes } from 'youtubei.js'
 
-import { filterSome, toArtwork } from './mapping.ts'
+import {
+  filterSome,
+  hexFromArgb,
+  isExplicit,
+  secondsFromClock,
+  toArtwork,
+  toMoodGroups,
+  topResultFromCard,
+} from './mapping.ts'
 
 const thumbnail = (url: string, size: number) => ({
   url,
@@ -52,5 +61,248 @@ describe('filterSome', () => {
         value % 2 === 0 ? Option.some(value * 10) : Option.none(),
       ),
     ).toEqual([20, 40])
+  })
+})
+
+const browseTo = (browseId: string, pageType: string) => ({
+  browseEndpoint: {
+    browseId,
+    browseEndpointContextSupportedConfigs: {
+      browseEndpointContextMusicConfig: { pageType },
+    },
+  },
+})
+
+const watch = (videoId: string) => ({ watchEndpoint: { videoId } })
+
+const SEPARATOR = { text: ' • ' }
+
+const card = (
+  title: string,
+  endpoint: object,
+  subtitleRuns: ReadonlyArray<object>,
+) =>
+  new YTNodes.MusicCardShelf({
+    title: { runs: [{ text: title, navigationEndpoint: endpoint }] },
+    subtitle: { runs: subtitleRuns },
+    onTap: endpoint,
+    thumbnail: {
+      musicThumbnailRenderer: {
+        thumbnail: {
+          thumbnails: [
+            {
+              url: 'https://lh3.googleusercontent.com/a=w120-h120-l90-rj',
+              width: 120,
+              height: 120,
+            },
+          ],
+        },
+      },
+    },
+  })
+
+const artistRun = (name: string, id: string) => ({
+  text: name,
+  navigationEndpoint: browseTo(id, 'MUSIC_PAGE_TYPE_ARTIST'),
+})
+
+describe('topResultFromCard', () => {
+  test('reads an artist with its audience', () => {
+    const result = topResultFromCard(
+      card('Daft Punk', browseTo('UC1', 'MUSIC_PAGE_TYPE_ARTIST'), [
+        { text: 'Artist' },
+        SEPARATOR,
+        { text: '66.1M monthly audience' },
+      ]),
+    )
+
+    expect(Option.getOrThrow(result)).toMatchObject({
+      _tag: 'Artist',
+      artist: {
+        id: 'UC1',
+        name: 'Daft Punk',
+        maybeAudience: Option.some('66.1M monthly audience'),
+      },
+    })
+  })
+
+  test('reads an album with its kind, artists, and year', () => {
+    const result = topResultFromCard(
+      card(
+        'Random Access Memories',
+        browseTo('MPREb_1', 'MUSIC_PAGE_TYPE_ALBUM'),
+        [
+          { text: 'Album' },
+          SEPARATOR,
+          artistRun('Daft Punk', 'UC1'),
+          SEPARATOR,
+          { text: '2013' },
+        ],
+      ),
+    )
+
+    expect(Option.getOrThrow(result)).toMatchObject({
+      _tag: 'Album',
+      album: {
+        id: 'MPREb_1',
+        title: 'Random Access Memories',
+        artists: [{ maybeId: Option.some('UC1'), name: 'Daft Punk' }],
+        maybeKind: Option.some('Album'),
+        maybeYear: Option.some('2013'),
+      },
+    })
+  })
+
+  test('reads a video as a song with its length', () => {
+    const result = topResultFromCard(
+      card('Creep', watch('XFkzRNyygfk'), [
+        { text: 'Video' },
+        SEPARATOR,
+        artistRun('Radiohead', 'UC2'),
+        SEPARATOR,
+        { text: '1.6B views' },
+        SEPARATOR,
+        { text: '3:57' },
+      ]),
+    )
+
+    expect(Option.getOrThrow(result)).toMatchObject({
+      _tag: 'Song',
+      song: {
+        videoId: 'XFkzRNyygfk',
+        title: 'Creep',
+        artists: [{ maybeId: Option.some('UC2'), name: 'Radiohead' }],
+        maybeDurationSeconds: Option.some(237),
+      },
+    })
+  })
+
+  test("keeps YouTube Music's own playlists but leaves out radio", () => {
+    const curated = topResultFromCard(
+      card(
+        'Coffee Shop Blend',
+        browseTo('VLRDCLAK5uy_x', 'MUSIC_PAGE_TYPE_PLAYLIST'),
+        [{ text: 'Playlist' }, SEPARATOR, { text: 'YouTube Music' }],
+      ),
+    )
+    const radio = topResultFromCard(
+      card(
+        'Radio • Lofi',
+        browseTo('VLRDATfcbG9maQ', 'MUSIC_PAGE_TYPE_PLAYLIST'),
+        [{ text: 'Saib, Sleepy Fish, and more' }],
+      ),
+    )
+
+    expect(Option.getOrThrow(curated)).toMatchObject({
+      _tag: 'Playlist',
+      playlist: {
+        id: 'VLRDCLAK5uy_x',
+        maybeSubtitle: Option.some('YouTube Music'),
+      },
+    })
+    expect(Option.isNone(radio)).toBe(true)
+  })
+})
+
+describe('secondsFromClock', () => {
+  test('reads minutes and hours', () => {
+    expect(secondsFromClock('3:57')).toEqual(Option.some(237))
+    expect(secondsFromClock('1:02:03')).toEqual(Option.some(3723))
+    expect(secondsFromClock('1.6B views')).toEqual(Option.none())
+  })
+})
+
+const navigationButton = (title: string, color: number, params: string) => ({
+  musicNavigationButtonRenderer: {
+    buttonText: { runs: [{ text: title }] },
+    solid: { leftStripeColor: color },
+    clickCommand: { browseEndpoint: { browseId: 'FEmusic_x', params } },
+  },
+})
+
+const moodsPage = (grids: ReadonlyArray<object>) => ({
+  contents: {
+    singleColumnBrowseResultsRenderer: {
+      tabs: [
+        {
+          tabRenderer: {
+            content: { sectionListRenderer: { contents: grids } },
+          },
+        },
+      ],
+    },
+  },
+})
+
+describe('toMoodGroups', () => {
+  test('reads each group with its categories and their colors', () => {
+    const groups = toMoodGroups(
+      moodsPage([
+        {
+          gridRenderer: {
+            header: {
+              gridHeaderRenderer: { title: { runs: [{ text: 'Genres' }] } },
+            },
+            items: [
+              navigationButton('Jazz', 0xffa4c5ff, 'jazz'),
+              { somethingElse: {} },
+            ],
+          },
+        },
+        { musicCarouselShelfRenderer: {} },
+      ]),
+    )
+
+    expect(Option.getOrThrow(groups)).toEqual([
+      {
+        title: 'Genres',
+        categories: [
+          {
+            params: 'jazz',
+            title: 'Jazz',
+            maybeColor: Option.some('#a4c5ff'),
+          },
+        ],
+      },
+    ])
+  })
+
+  test('is None for a page of another shape', () => {
+    expect(Option.isNone(toMoodGroups({ contents: {} }))).toBe(true)
+  })
+})
+
+describe('hexFromArgb', () => {
+  test('drops the alpha and pads', () => {
+    expect(hexFromArgb(0xff00a513)).toBe('#00a513')
+  })
+})
+
+describe('isExplicit', () => {
+  const row = (badges: ReadonlyArray<object>) =>
+    new YTNodes.MusicResponsiveListItem({
+      flexColumns: [
+        {
+          musicResponsiveListItemFlexColumnRenderer: {
+            text: { runs: [{ text: 'King Kunta' }] },
+          },
+        },
+      ],
+      badges,
+    })
+
+  test('sees the explicit badge', () => {
+    expect(
+      isExplicit(
+        row([
+          {
+            musicInlineBadgeRenderer: {
+              icon: { iconType: 'MUSIC_EXPLICIT_BADGE' },
+            },
+          },
+        ]),
+      ),
+    ).toBe(true)
+    expect(isExplicit(row([]))).toBe(false)
   })
 })

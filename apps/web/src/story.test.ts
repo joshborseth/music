@@ -4,19 +4,24 @@ import { modifyFields } from 'foldkit/struct'
 import { fromString } from 'foldkit/url'
 import { describe, expect, test } from 'vitest'
 
-import { LIKED_PLAYLIST_ID, type Song } from '@music/shared'
+import { LIKED_PLAYLIST_ID, Session, type Song } from '@music/shared'
 
 import {
   BlurSearchInput,
   FocusSearchInput,
+  LockScroll,
   NavigateBack,
   NavigateBackTo,
   NavigateInternal,
   ReplaceSearchUrl,
   SaveRecentSearches,
+  SaveRecentlyPlayed,
+  SaveRecentlyViewed,
   ScrollSearchResultsToTop,
   ScrollToTop,
   ShuffleSongs,
+  UnlockScroll,
+  WaitBeforeRetryLyrics,
   WaitBeforeSearch,
 } from './command'
 import { MAX_RECENT_SEARCHES } from './constant'
@@ -30,6 +35,7 @@ import {
   myPlaylistQuery,
   songQuery,
   songSearchQuery,
+  topResultSearchQuery,
 } from './query'
 import { AppRoute, searchUrl } from './route'
 import { initialModel, restoredScrollTop, update } from './update'
@@ -116,6 +122,14 @@ describe('search route', () => {
           songSearchQuery.read(model.songSearch, { query: 'rumours' })._tag,
         ).toBe('Success')
       }),
+      Command.resolve(
+        topResultSearchQuery.Fetch,
+        topResultSearchQuery.Message.CompletedFetch({
+          args: { query: 'rumours' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed(Option.none()),
+        }),
+      ),
     )
   })
 })
@@ -177,6 +191,14 @@ describe('typing a search', () => {
           args: { query: 'fleetwood' },
           generation: FIRST_REQUEST_GENERATION,
           result: Result.succeed([]),
+        }),
+      ),
+      Command.resolve(
+        topResultSearchQuery.Fetch,
+        topResultSearchQuery.Message.CompletedFetch({
+          args: { query: 'fleetwood' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed(Option.none()),
         }),
       ),
     )
@@ -537,6 +559,177 @@ describe('shuffle', () => {
         }),
       ),
       Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+})
+
+describe('top result', () => {
+  test('a song search also asks for the top result, and keeps it', () => {
+    story(
+      update,
+      given(emptySearchModel),
+      message(
+        Message.ChangedUrl({
+          url: urlOrThrow('http://localhost/search?q=the+chain'),
+        }),
+      ),
+      Command.resolve(
+        songSearchQuery.Fetch,
+        songSearchQuery.Message.CompletedFetch({
+          args: { query: 'the chain' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed([theChain]),
+        }),
+      ),
+      Command.resolve(
+        topResultSearchQuery.Fetch,
+        topResultSearchQuery.Message.CompletedFetch({
+          args: { query: 'the chain' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed(
+            Option.some({ _tag: 'Song' as const, song: theChain }),
+          ),
+        }),
+      ),
+      model(model => {
+        expect(
+          topResultSearchQuery.read(model.topResultSearch, {
+            query: 'the chain',
+          })._tag,
+        ).toBe('Success')
+      }),
+    )
+  })
+})
+
+const playedTrack: Session.QueueTrack = toQueueTrack(theChain)
+
+describe('clearing the library', () => {
+  const libraryModel: Model = modifyFields(
+    initialModel(AppRoute.Library(), '/library'),
+    { recentlyPlayed: () => [playedTrack] },
+  )
+
+  test('asks first, and keeps everything if cancelled', () => {
+    story(
+      update,
+      given(libraryModel),
+      message(Message.ClickedClearLibrary()),
+      model(model => {
+        expect(model.actionSheet).toStrictEqual({
+          _tag: 'Shown',
+          content: { _tag: 'ConfirmClearLibrary' },
+        })
+        expect(model.recentlyPlayed).toStrictEqual([playedTrack])
+      }),
+      Command.expectExact(LockScroll()),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      message(Message.ClickedCloseSheet()),
+      Command.resolve(UnlockScroll, Message.CompletedUnlockScroll()),
+      model(model => {
+        expect(model.recentlyPlayed).toStrictEqual([playedTrack])
+      }),
+    )
+  })
+
+  test('clears once confirmed', () => {
+    story(
+      update,
+      given(libraryModel),
+      message(Message.ClickedClearLibrary()),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      message(Message.ConfirmedClearLibrary()),
+      model(model => {
+        expect(model.recentlyPlayed).toStrictEqual([])
+        expect(model.recentlyViewed).toStrictEqual([])
+        expect(model.actionSheet._tag).toBe('Dismissed')
+      }),
+      Command.expectExact(
+        UnlockScroll(),
+        SaveRecentlyPlayed({ recentlyPlayed: [] }),
+        SaveRecentlyViewed({ recentlyViewed: [] }),
+      ),
+      Command.resolveAll(
+        [UnlockScroll, Message.CompletedUnlockScroll()],
+        [SaveRecentlyPlayed, Message.CompletedSaveRecentlyPlayed()],
+        [SaveRecentlyViewed, Message.CompletedSaveRecentlyViewed()],
+      ),
+    )
+  })
+})
+
+describe('lyrics that fail to load', () => {
+  const nowPlayingModel: Model = modifyFields(homeModel, {
+    maybeSession: () =>
+      Option.some({
+        state: {
+          devices: [],
+          activeDeviceId: 'tv',
+          queue: [{ entryId: 'e0', track: playedTrack, autoplay: false }],
+          currentEntryId: 'e0',
+          playing: true,
+          positionSeconds: 0,
+          autoplay: true,
+          positionAt: 0,
+          seekSeq: 0,
+        },
+        clockOffsetMs: 0,
+      }),
+  })
+
+  const lyricsFailed = (generation: number) =>
+    Command.resolve(
+      songQuery.Fetch,
+      songQuery.Message.CompletedFetch({
+        args: { videoId: theChain.videoId },
+        generation,
+        result: Result.fail('YouTubeUnavailable'),
+      }),
+    )
+
+  test('are tried again once by themselves, then on a tap', () => {
+    story(
+      update,
+      given(nowPlayingModel),
+      message(Message.SelectedPlayerPanel({ panel: 'Lyrics' })),
+      lyricsFailed(FIRST_REQUEST_GENERATION),
+      Command.expectExact(WaitBeforeRetryLyrics({ videoId: theChain.videoId })),
+      Command.resolve(
+        WaitBeforeRetryLyrics,
+        Message.CompletedWaitBeforeRetryLyrics({ videoId: theChain.videoId }),
+      ),
+      model(model => {
+        expect(
+          songQuery.read(model.songs, { videoId: theChain.videoId })._tag,
+        ).toBe('Loading')
+      }),
+      lyricsFailed(FIRST_REQUEST_GENERATION + 1),
+      Command.expectNone(),
+      message(Message.ClickedRetryLyrics()),
+      model(model => {
+        expect(
+          songQuery.read(model.songs, { videoId: theChain.videoId })._tag,
+        ).toBe('Loading')
+      }),
+      lyricsFailed(FIRST_REQUEST_GENERATION + 2),
+    )
+  })
+
+  test('a retry that comes due for another song does nothing', () => {
+    story(
+      update,
+      given(nowPlayingModel),
+      message(Message.SelectedPlayerPanel({ panel: 'Lyrics' })),
+      lyricsFailed(FIRST_REQUEST_GENERATION),
+      Command.resolve(
+        WaitBeforeRetryLyrics,
+        Message.CompletedWaitBeforeRetryLyrics({ videoId: 'another' }),
+      ),
+      model(model => {
+        expect(
+          songQuery.read(model.songs, { videoId: theChain.videoId })._tag,
+        ).toBe('Failure')
+      }),
     )
   })
 })

@@ -35,6 +35,9 @@ const youTubeMusic = YouTubeMusic.of({
   searchArtists: () => Effect.succeed([]),
   searchAlbums: () => Effect.succeed([]),
   searchPlaylists: () => down,
+  searchTopResult: () => down,
+  getMoodsAndGenres: () => down,
+  getMood: () => down,
   getSong: videoId =>
     videoId === 'missing'
       ? Effect.fail(new MusicNotFoundError({ id: videoId }))
@@ -63,6 +66,7 @@ const youTubeMusic = YouTubeMusic.of({
       maybeDescription: Option.none(),
       maybeLengthSummary: Option.none(),
       tracks: [song('t1'), song('t2')],
+      explicitVideoIds: [],
     }),
   getPlaylist: () => down,
 })

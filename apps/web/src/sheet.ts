@@ -14,6 +14,8 @@ export const SheetContent = defineTaggedUnion({
   PlaylistActions: { playlistId: Schema.String, title: Schema.String },
   RenamePlaylist: { playlistId: Schema.String },
   ConfirmDeletePlaylist: { playlistId: Schema.String, title: Schema.String },
+  /** Forget the songs played and pages opened on this device. */
+  ConfirmClearLibrary: {},
 })
 export type SheetContent = typeof SheetContent.Type
 

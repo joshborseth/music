@@ -31,7 +31,7 @@ import { Session } from '@music/shared'
 import { songFromQueueTrack } from '../library'
 import { Message } from '../message'
 import { Model } from '../model'
-import { DragToDismiss, FollowSeekBarDrags } from '../mount'
+import { DragToDismiss, FollowSeekBarDrags, Marquee } from '../mount'
 import {
   type Output,
   SKIP_SECONDS,
@@ -461,16 +461,13 @@ const trackTitle = (
   h.div(
     [h.Class('flex min-w-0 flex-1 flex-col')],
     [
-      h.h2(
-        [
-          h.Class(
-            cn(
-              'line-clamp-1 font-bold tracking-tight',
-              isLarge ? 'text-[22px] leading-tight' : 'text-[17px]',
-            ),
-          ),
-        ],
-        [track.title],
+      marqueeText(
+        track.title,
+        cn(
+          'font-bold tracking-tight',
+          isLarge ? 'text-[22px] leading-tight' : 'text-[17px]',
+        ),
+        h,
       ),
       h.p(
         [
@@ -482,6 +479,29 @@ const trackTitle = (
           ),
         ],
         [track.artists],
+      ),
+    ],
+  )
+
+/**
+ * One line of text that, when too long to fit, scrolls slowly sideways
+ * and back around instead of ending in "…", as the player does in music
+ * apps. The edges cut off plainly; nothing fades. `Marquee` measures it.
+ */
+const marqueeText = (
+  text: string,
+  className: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.h2(
+    [h.OnMount(Marquee()), h.Class(cn('marquee', className))],
+    [
+      h.span(
+        [h.Class('marquee-track')],
+        [
+          h.span([h.Class('marquee-text')], [text]),
+          h.span([h.AriaHidden(true), h.Class('marquee-copy')], [text]),
+        ],
       ),
     ],
   )
@@ -618,7 +638,29 @@ const lyricsPanel = (
           ),
           h,
         ),
-      onFailure: () => message('Lyrics could not be loaded.'),
+      onFailure: () =>
+        plainPanel(
+          h.div(
+            [h.Class('flex flex-col items-center gap-4 py-10')],
+            [
+              h.p(
+                [h.Class('text-center text-[17px] text-white/60')],
+                ['Lyrics could not be loaded.'],
+              ),
+              h.button(
+                [
+                  h.Type('button'),
+                  h.OnClick(Message.ClickedRetryLyrics()),
+                  h.Class(
+                    'flex h-10 items-center gap-2 rounded-full bg-white/15 px-5 text-[15px] font-semibold text-white active:scale-95 active:bg-white/25',
+                  ),
+                ],
+                [icon(h, RotateCw, 'size-4'), 'Try Again'],
+              ),
+            ],
+          ),
+          h,
+        ),
       onData: details =>
         Option.match(details.maybeLyrics, {
           onNone: () => message('No lyrics for this song.'),
@@ -678,7 +720,12 @@ const queuePanel = (
   const autoplayed = Array.filter(upcoming, entry => entry.autoplay)
   const isAutoplayOn = snapshot.state.autoplay
   return h.div(
-    [h.DataAttribute('sheet-scroll', ''), h.Class(scrollPanelClass)],
+    [
+      h.DataAttribute('sheet-scroll', ''),
+      h.Class(
+        'no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8',
+      ),
+    ],
     [
       Array.match(queued, {
         onEmpty: () => h.empty,

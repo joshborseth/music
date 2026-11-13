@@ -79,6 +79,70 @@ export const SyncTitleBarReveal = Mount.defineStream('SyncTitleBarReveal', {
     ),
 })
 
+// MARQUEE
+
+/** Space between the end of the text and its copy coming around again. */
+const MARQUEE_GAP_PX = 48
+
+const MARQUEE_SPEED_PX_PER_SECOND = 30
+
+/** The share of each loop spent resting at the start, as in `@keyframes marquee`. */
+const MARQUEE_REST_SHARE = 0.3
+
+const MARQUEE_TEXT_SELECTOR = '.marquee-text'
+
+/**
+ * Lets one line of text scroll sideways when it is too long to fit (see
+ * `.marquee` in styles.css). It marks the element `data-overflowing` and
+ * sets how far and how long the text travels, and measures again whenever
+ * the text or the space for it changes size, so a new song's title gets
+ * its own.
+ */
+export const Marquee = Mount.defineStream('Marquee', {
+  messages: [Message.CompletedSyncMarquee],
+  execute: ({ element }) =>
+    Stream.callback<typeof Message.CompletedSyncMarquee.Type>(queue =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const maybeText = element.querySelector(MARQUEE_TEXT_SELECTOR)
+
+          const measure = () => {
+            if (
+              !(maybeText instanceof HTMLElement) ||
+              !(element instanceof HTMLElement)
+            ) {
+              return
+            }
+            const textWidth = maybeText.offsetWidth
+            if (textWidth - element.clientWidth > 1) {
+              const distance = textWidth + MARQUEE_GAP_PX
+              const seconds =
+                distance /
+                MARQUEE_SPEED_PX_PER_SECOND /
+                (1 - MARQUEE_REST_SHARE)
+              element.style.setProperty('--marquee-distance', `${distance}px`)
+              element.style.setProperty('--marquee-duration', `${seconds}s`)
+              element.setAttribute('data-overflowing', '')
+            } else {
+              element.removeAttribute('data-overflowing')
+            }
+          }
+
+          measure()
+          const observer = new ResizeObserver(measure)
+          observer.observe(element)
+          if (maybeText instanceof HTMLElement) {
+            observer.observe(maybeText)
+          }
+          Queue.offerUnsafe(queue, Message.CompletedSyncMarquee())
+
+          return () => observer.disconnect()
+        }),
+        stopMeasuring => Effect.sync(stopMeasuring),
+      ).pipe(Effect.flatMap(() => Effect.never)),
+    ),
+})
+
 // DRAG TO DISMISS
 
 /** How far down a sheet must be pulled to close when let go. */

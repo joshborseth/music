@@ -23,6 +23,9 @@ export type PageModel = Readonly<
     | 'artistSearch'
     | 'albumSearch'
     | 'playlistSearch'
+    | 'topResultSearch'
+    | 'moodGroups'
+    | 'moods'
     | 'songs'
     | 'artists'
     | 'albums'
@@ -64,6 +67,9 @@ const renderPage = (
   artistSearch: Model['artistSearch'],
   albumSearch: Model['albumSearch'],
   playlistSearch: Model['playlistSearch'],
+  topResultSearch: Model['topResultSearch'],
+  moodGroups: Model['moodGroups'],
+  moods: Model['moods'],
   songs: Model['songs'],
   artists: Model['artists'],
   albums: Model['albums'],
@@ -88,6 +94,9 @@ const renderPage = (
       artistSearch,
       albumSearch,
       playlistSearch,
+      topResultSearch,
+      moodGroups,
+      moods,
       songs,
       artists,
       albums,
@@ -130,6 +139,9 @@ export const memoizedPage = (
     model.artistSearch,
     model.albumSearch,
     model.playlistSearch,
+    model.topResultSearch,
+    model.moodGroups,
+    model.moods,
     model.songs,
     model.artists,
     model.albums,

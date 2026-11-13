@@ -42,6 +42,7 @@ import {
   ShuffleSongs,
   TakeOverScrollRestoration,
   UnlockScroll,
+  WaitBeforeRetryLyrics,
   WaitBeforeSearch,
 } from './command'
 import { MAX_RECENT_SEARCHES } from './constant'
@@ -77,12 +78,15 @@ import {
   artistQuery,
   artistSearchQuery,
   artworkBackdropQuery,
+  moodGroupsQuery,
+  moodQuery,
   myLibraryQuery,
   myPlaylistQuery,
   playlistQuery,
   playlistSearchQuery,
   songQuery,
   songSearchQuery,
+  topResultSearchQuery,
 } from './query'
 import {
   AppRoute,
@@ -131,6 +135,21 @@ const albumSearch = albumSearchQuery.lift<Model, Message>({
 const playlistSearch = playlistSearchQuery.lift<Model, Message>({
   parentField: 'playlistSearch',
   toParentMessage: message => Message.GotPlaylistSearchMessage({ message }),
+})
+
+const topResultSearch = topResultSearchQuery.lift<Model, Message>({
+  parentField: 'topResultSearch',
+  toParentMessage: message => Message.GotTopResultSearchMessage({ message }),
+})
+
+const moodGroups = moodGroupsQuery.lift<Model, Message>({
+  parentField: 'moodGroups',
+  toParentMessage: message => Message.GotMoodGroupsMessage({ message }),
+})
+
+const moods = moodQuery.lift<Model, Message>({
+  parentField: 'moods',
+  toParentMessage: message => Message.GotMoodMessage({ message }),
 })
 
 const myLibrary = myLibraryQuery.lift<Model, Message>({
@@ -384,6 +403,38 @@ const loadLyricsIfShown: UpdateStep = model =>
         songs.loadIfMissing(model, { videoId: entry.track.videoId }),
     }),
   )
+
+/**
+ * Lyrics that failed to load while they show are asked for once more, a
+ * moment later, before the player offers Retry.
+ */
+const retryFailedLyricsOnce: UpdateStep = model =>
+  pipe(
+    Option.liftPredicate(model, ({ playerPanel }) => playerPanel === 'Lyrics'),
+    Option.flatMap(currentVideoId),
+    Option.filter(
+      videoId =>
+        AsyncData.isFailure(songQuery.read(model.songs, { videoId })) &&
+        !Option.contains(model.maybeLyricsRetriedVideoId, videoId),
+    ),
+    Option.match({
+      onNone: () => ({ model }),
+      onSome: videoId => ({
+        model: modifyFields(model, {
+          maybeLyricsRetriedVideoId: () => Option.some(videoId),
+        }),
+        commands: [WaitBeforeRetryLyrics({ videoId })],
+      }),
+    }),
+  )
+
+/** Tries the lyrics again if they are still showing for the same song. */
+const completeWaitBeforeRetryLyrics =
+  (videoId: string): UpdateStep =>
+  model =>
+    Option.contains(currentVideoId(model), videoId)
+      ? loadLyricsIfShown(model)
+      : { model }
 
 // SEARCH
 
@@ -776,9 +827,11 @@ const leaveDeletedPlaylist =
 const loadSearch = (query: string, kind: SearchKind): UpdateStep =>
   Match.value(kind).pipe(
     Match.withReturnType<UpdateStep>(),
-    Match.when(
-      'Songs',
-      () => model => songSearch.loadIfMissing(model, { query }),
+    Match.when('Songs', () =>
+      Update.combine([
+        model => songSearch.loadIfMissing(model, { query }),
+        model => topResultSearch.loadIfMissing(model, { query }),
+      ]),
     ),
     Match.when(
       'Artists',
@@ -798,9 +851,11 @@ const loadSearch = (query: string, kind: SearchKind): UpdateStep =>
 const revalidateSearch = (query: string, kind: SearchKind): UpdateStep =>
   Match.value(kind).pipe(
     Match.withReturnType<UpdateStep>(),
-    Match.when(
-      'Songs',
-      () => model => songSearch.revalidateOrLoad(model, { query }),
+    Match.when('Songs', () =>
+      Update.combine([
+        model => songSearch.revalidateOrLoad(model, { query }),
+        model => topResultSearch.revalidateOrLoad(model, { query }),
+      ]),
     ),
     Match.when(
       'Artists',
@@ -829,7 +884,7 @@ const loadRoute = (route: AppRoute): UpdateStep =>
     Home: () => loadHome,
     Search: () =>
       Option.match(routeQuery(route), {
-        onNone: () => model => ({ model }),
+        onNone: () => model => moodGroups.loadIfMissing(model),
         onSome: query => loadSearch(query, routeSearchKind(route)),
       }),
     Library: () => model => myLibrary.revalidateOrLoad(model),
@@ -853,6 +908,10 @@ const loadRoute = (route: AppRoute): UpdateStep =>
       ({ playlistId }) =>
       model =>
         myPlaylists.revalidateOrLoad(model, { playlistId }),
+    Mood:
+      ({ params }) =>
+      model =>
+        moods.loadIfMissing(model, { params }),
     NotFound: () => model => ({ model }),
   })
 
@@ -861,7 +920,7 @@ const retryRoute = (route: AppRoute): UpdateStep =>
     Home: () => loadHome,
     Search: () =>
       Option.match(routeQuery(route), {
-        onNone: () => model => ({ model }),
+        onNone: () => model => moodGroups.revalidateOrLoad(model),
         onSome: query => revalidateSearch(query, routeSearchKind(route)),
       }),
     Library: () => model => myLibrary.revalidateOrLoad(model),
@@ -885,6 +944,10 @@ const retryRoute = (route: AppRoute): UpdateStep =>
       ({ playlistId }) =>
       model =>
         myPlaylists.revalidateOrLoad(model, { playlistId }),
+    Mood:
+      ({ params }) =>
+      model =>
+        moods.revalidateOrLoad(model, { params }),
     NotFound: () => model => ({ model }),
   })
 
@@ -907,6 +970,9 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     artistSearch: artistSearchQuery.init(),
     albumSearch: albumSearchQuery.init(),
     playlistSearch: playlistSearchQuery.init(),
+    topResultSearch: topResultSearchQuery.init(),
+    moodGroups: moodGroupsQuery.init(),
+    moods: moodQuery.init(),
     songs: songQuery.init(),
     artists: artistQuery.init(),
     albums: albumQuery.init(),
@@ -917,6 +983,7 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     playlistTitleInput: '',
     actionSheet: ActionSheet.Hidden(),
     playerPanel: 'Artwork',
+    maybeLyricsRetriedVideoId: Option.none(),
     ...initialPlaybackModel,
   })
 }
@@ -1112,21 +1179,36 @@ const updateMessage = (model: Model, message: Message) =>
       }),
     }),
 
-    ClickedClearLibrary: () => ({
-      model: modifyFields(model, {
-        recentlyPlayed: () => [],
-        recentlyViewed: () => [],
-      }),
-      commands: [
-        SaveRecentlyPlayed({ recentlyPlayed: [] }),
-        SaveRecentlyViewed({ recentlyViewed: [] }),
-      ],
-    }),
+    ClickedClearLibrary: () =>
+      showSheet({ _tag: 'ConfirmClearLibrary' })(model),
+
+    ConfirmedClearLibrary: () =>
+      Update.combine([
+        dismissSheet,
+        stepModel => ({
+          model: modifyFields(stepModel, {
+            recentlyPlayed: () => [],
+            recentlyViewed: () => [],
+          }),
+          commands: [
+            SaveRecentlyPlayed({ recentlyPlayed: [] }),
+            SaveRecentlyViewed({ recentlyViewed: [] }),
+          ],
+        }),
+      ])(model),
 
     GotSongSearchMessage: ({ message }) => songSearch.fold(model, message),
     GotArtistSearchMessage: ({ message }) => artistSearch.fold(model, message),
     GotAlbumSearchMessage: ({ message }) => albumSearch.fold(model, message),
-    GotSongMessage: ({ message }) => songs.fold(model, message),
+    GotSongMessage: ({ message }) =>
+      Update.combine([
+        stepModel => songs.fold(stepModel, message),
+        retryFailedLyricsOnce,
+      ])(model),
+    GotTopResultSearchMessage: ({ message }) =>
+      topResultSearch.fold(model, message),
+    GotMoodGroupsMessage: ({ message }) => moodGroups.fold(model, message),
+    GotMoodMessage: ({ message }) => moods.fold(model, message),
     GotArtworkBackdropMessage: ({ message }) =>
       artworkBackdrops.fold(model, message),
     GotArtistMessage: ({ message }) =>
@@ -1228,6 +1310,7 @@ const updateMessage = (model: Model, message: Message) =>
     CompletedScrollToTop: () => ({ model }),
     CompletedScrollSearchResultsToTop: () => ({ model }),
     CompletedSyncTitleBarReveal: () => ({ model }),
+    CompletedSyncMarquee: () => ({ model }),
     CompletedRestoreScroll: () => ({ model }),
     CompletedFollowSheetDrags: () => ({ model }),
     CompletedTakeOverScrollRestoration: () => ({ model }),
@@ -1334,6 +1417,9 @@ const updateMessage = (model: Model, message: Message) =>
     CompletedFollowSeekBarDrags: () => ({ model }),
     CompletedFollowLyrics: () => ({ model }),
     ClickedLyricLine: ({ seconds }) => Playback.seekTo(model, seconds),
+    ClickedRetryLyrics: () => loadLyricsIfShown(model),
+    CompletedWaitBeforeRetryLyrics: ({ videoId }) =>
+      completeWaitBeforeRetryLyrics(videoId)(model),
     ClickedSkipBy: ({ seconds }) => Playback.skipBy(model, seconds),
     ChangedPhoneAudioBuffering: ({ entryId, isBuffering }) =>
       Playback.changePhoneAudioBuffering(model, entryId, isBuffering),
