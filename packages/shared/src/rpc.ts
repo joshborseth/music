@@ -122,6 +122,15 @@ export const getHomeRpc = Rpc.make('getHome', {
 })
 
 /**
+ * The latest releases of the artists I follow, newest first, for Home's
+ * "New from artists you follow". Only releases from this year and last.
+ */
+export const getNewReleasesRpc = Rpc.make('getNewReleases', {
+  success: Schema.Array(AlbumSummary),
+  error: PlaylistStoreError,
+})
+
+/**
  * The songs YouTube Music's radio would play after a song, for Home's
  * "More like" shelf.
  */
@@ -167,6 +176,7 @@ export const MusicRpcs = RpcGroup.make(
   getMyPlaylistRpc,
   editPlaylistsRpc,
   getHomeRpc,
+  getNewReleasesRpc,
   getSongRadioRpc,
   getRadioRpc,
   getArtworkBackdropRpc,

@@ -34,6 +34,7 @@ import {
   moodQuery,
   myLibraryQuery,
   myPlaylistQuery,
+  newReleasesQuery,
   playlistQuery,
   playlistSearchQuery,
   songQuery,
@@ -139,6 +140,7 @@ export const Message = defineMessageUnion({
   GotMyLibraryMessage: { message: myLibraryQuery.Message },
   GotMyPlaylistMessage: { message: myPlaylistQuery.Message },
   GotHomeMessage: { message: homeQuery.Message },
+  GotNewReleasesMessage: { message: newReleasesQuery.Message },
   GotSongRadioMessage: { message: songRadioQuery.Message },
   GotArtworkBackdropMessage: { message: artworkBackdropQuery.Message },
 

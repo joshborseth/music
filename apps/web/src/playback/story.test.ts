@@ -939,6 +939,10 @@ describe('on the lock screen', () => {
                 AsyncData.succeed({
                   jumpBackIn: [],
                   recentlyPlayed: [songFromQueueTrack(queue[0]!.track)],
+                  maybeLastPlayed: Option.some(
+                    songFromQueueTrack(queue[0]!.track),
+                  ),
+                  mixes: [],
                 }),
             }),
         }),

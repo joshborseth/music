@@ -18,6 +18,7 @@ import { describe, test } from 'vitest'
 import {
   type AlbumSummary,
   type ArtistSummary,
+  type HomeFeed,
   type MyLibrary,
   type MyPlaylistSummary,
   type RadioStation,
@@ -108,6 +109,7 @@ const fleetwoodMacResult = {
     maybeAudience: Option.some('20M monthly audience'),
     artwork: [],
   },
+  topSongs: [],
 }
 
 const urlOrThrow = (raw: string) =>
@@ -222,6 +224,41 @@ describe('search page', () => {
       ),
       expect(role('heading', { name: 'Songs' })).toExist(),
       expect(role('button', { name: /The Chain/ })).toExist(),
+    )
+  })
+
+  test('lists the top artist’s hits, not every song that mentions them', () => {
+    const dreams: Song = { ...theChain, videoId: 'dr34ms', title: 'Dreams' }
+    const tribute: Song = {
+      ...theChain,
+      videoId: 'tr1but3',
+      title: 'Fleetwood Mac Tribute',
+      artists: [{ maybeId: Option.none(), name: 'Cover Band' }],
+    }
+    const query = 'fleetwood mac'
+    const searched = update(
+      searchResultModel(query, Result.succeed([tribute]), 'Top'),
+      Message.GotTopResultSearchMessage({
+        message: topResultSearchQuery.Message.CompletedFetch({
+          args: { query },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed(
+            Option.some({
+              ...fleetwoodMacResult,
+              topSongs: [dreams, theChain],
+            }),
+          ),
+        }),
+      }),
+    ).model
+    scene(
+      { update, view },
+      given(searched),
+      pageScrolled,
+      expect(role('heading', { name: 'Songs' })).toExist(),
+      expect(role('button', { name: /^Dreams ·/ })).toExist(),
+      expect(role('button', { name: /^The Chain ·/ })).toExist(),
+      expect(role('button', { name: /^Fleetwood Mac Tribute/ })).toBeAbsent(),
     )
   })
 
@@ -967,8 +1004,42 @@ const withLibrary = (base: Model, library: MyLibrary): Model =>
 
 describe('home', () => {
   const dreams: Song = { ...theChain, videoId: 'mrZRURcb1cM', title: 'Dreams' }
+  const landslide: Song = {
+    ...theChain,
+    videoId: 'WM7-PYtXtJM',
+    title: 'Landslide',
+    maybeAlbum: Option.some({ id: 'MPREb_fm1975', name: 'Fleetwood Mac' }),
+  }
+  const fleetwoodMacMix = {
+    id: `RDAMVM${theChain.videoId}`,
+    title: 'Mix: Fleetwood Mac',
+    maybeSubtitle: Option.some('Based on The Chain'),
+    artwork: [],
+  }
+  const tusk: AlbumSummary = {
+    ...rumours,
+    id: 'MPREb_tusk2026',
+    title: 'Tusk (Deluxe)',
+    maybeKind: Option.some('Album'),
+    maybeYear: Option.some('2026'),
+  }
+  const roadTrip: MyPlaylistSummary = {
+    ...likedSongs,
+    id: 'p1',
+    title: 'Road trip',
+    isLiked: false,
+  }
 
-  /** A phone that has played nothing, on a server where the TV has. */
+  const withHomeFeed = (base: Model, feed: HomeFeed): Model =>
+    modifyFields(base, {
+      home: query =>
+        modifyFields(query, { data: () => AsyncData.succeed(feed) }),
+    })
+
+  /**
+   * A phone that has played nothing, on a server where the TV has: The
+   * Chain and another song from Rumours, then Landslide on its own.
+   */
   const freshPhone = (
     radio: Result.Result<ReadonlyArray<Song>, RequestError> = Result.succeed([
       dreams,
@@ -976,30 +1047,35 @@ describe('home', () => {
   ): Model => {
     const base = withLibrary(
       initialModel(AppRoute.Home(), '/'),
-      libraryWith({ artists: [fleetwoodMac] }),
+      libraryWith({
+        playlists: [likedSongs, roadTrip],
+        artists: [fleetwoodMac],
+      }),
     )
     const radioLoading = songRadioQuery.loadIfMissing(base.songRadios, {
       videoId: theChain.videoId,
     }).model
-    return modifyFields(base, {
-      home: query =>
-        modifyFields(query, {
-          data: () =>
-            AsyncData.succeed({
-              jumpBackIn: [{ ...rumours, maybeYear: Option.none() }],
-              recentlyPlayed: [theChain],
+    return modifyFields(
+      withHomeFeed(base, {
+        jumpBackIn: [{ ...rumours, maybeYear: Option.none() }],
+        recentlyPlayed: [landslide],
+        maybeLastPlayed: Option.some(theChain),
+        mixes: [fleetwoodMacMix],
+      }),
+      {
+        newReleases: query =>
+          modifyFields(query, { data: () => AsyncData.succeed([tusk]) }),
+        songRadios: () =>
+          songRadioQuery.update(
+            radioLoading,
+            songRadioQuery.Message.CompletedFetch({
+              args: { videoId: theChain.videoId },
+              generation: FIRST_REQUEST_GENERATION,
+              result: radio,
             }),
-        }),
-      songRadios: () =>
-        songRadioQuery.update(
-          radioLoading,
-          songRadioQuery.Message.CompletedFetch({
-            args: { videoId: theChain.videoId },
-            generation: FIRST_REQUEST_GENERATION,
-            result: radio,
-          }),
-        ).model,
-    })
+          ).model,
+      },
+    )
   }
 
   test('on a fresh phone, shows what played on any device and more like it', () => {
@@ -1013,7 +1089,7 @@ describe('home', () => {
         '/album/MPREb_1SbgcDGdrT4',
       ),
       expect(role('heading', { name: 'Recently played' })).toExist(),
-      expect(role('button', { name: 'Play The Chain' })).toExist(),
+      expect(role('button', { name: 'Play Landslide' })).toExist(),
       expect(role('heading', { name: 'More like The Chain' })).toExist(),
       expect(role('button', { name: /^Dreams/ })).toExist(),
       expect(role('heading', { name: 'Artists you follow' })).toExist(),
@@ -1021,15 +1097,63 @@ describe('home', () => {
     )
   })
 
+  test('shows a song that played inside its album only once', () => {
+    scene(
+      { update, view },
+      given(freshPhone()),
+      pageScrolled,
+      expect(role('button', { name: 'Play The Chain' })).toBeAbsent(),
+      expect(role('link', { name: /Rumours/ })).toExist(),
+    )
+  })
+
+  test('offers mixes of what I play most, opening as playlists', () => {
+    scene(
+      { update, view },
+      given(freshPhone()),
+      pageScrolled,
+      expect(role('heading', { name: 'Your mixes' })).toExist(),
+      expect(role('link', { name: /Mix: Fleetwood Mac/ })).toHaveAttr(
+        'href',
+        `/playlist/RDAMVM${theChain.videoId}`,
+      ),
+    )
+  })
+
+  test('shows what the artists I follow released lately', () => {
+    scene(
+      { update, view },
+      given(freshPhone()),
+      pageScrolled,
+      expect(
+        role('heading', { name: 'New from artists you follow' }),
+      ).toExist(),
+      expect(role('link', { name: /Tusk \(Deluxe\)/ })).toHaveAttr(
+        'href',
+        '/album/MPREb_tusk2026',
+      ),
+    )
+  })
+
+  test('shows Liked songs once, as songs, and my other playlists as covers', () => {
+    scene(
+      { update, view },
+      given(freshPhone()),
+      pageScrolled,
+      expect(role('heading', { name: 'Your playlists' })).toExist(),
+      expect(role('link', { name: /Road trip/ })).toExist(),
+      expect(role('link', { name: /^Liked songs/ })).toBeAbsent(),
+    )
+  })
+
   test('says where music will show once nothing has played anywhere', () => {
-    const model = modifyFields(
+    const model = withHomeFeed(
       withLibrary(initialModel(AppRoute.Home(), '/'), libraryWith()),
       {
-        home: query =>
-          modifyFields(query, {
-            data: () =>
-              AsyncData.succeed({ jumpBackIn: [], recentlyPlayed: [] }),
-          }),
+        jumpBackIn: [],
+        recentlyPlayed: [],
+        maybeLastPlayed: Option.none(),
+        mixes: [],
       },
     )
     scene(

@@ -352,6 +352,26 @@ export const playsFromListItem = (
     Array.findFirst(text => PLAY_COUNT.test(text)),
   )
 
+/**
+ * The credits of an "up next" song. youtubei.js only reads the artists that
+ * link to an artist page; an artist without one (a self-released song, say)
+ * is named only in the byline, so the byline stands in as one credit.
+ */
+const panelVideoArtistLinks = (
+  video: YTNodes.PlaylistPanelVideo,
+): ReadonlyArray<ArtistLink> =>
+  Array.match(toArtistLinks(video.artists), {
+    onNonEmpty: links => links,
+    onEmpty: () =>
+      Array.map(
+        Array.fromOption(nonEmptyString(video.author?.trim())),
+        name => ({
+          maybeId: Option.none(),
+          name,
+        }),
+      ),
+  })
+
 /** A song from an "up next" queue. */
 export const songFromPlaylistPanelVideo = (
   video: YTNodes.PlaylistPanelVideo,
@@ -363,7 +383,7 @@ export const songFromPlaylistPanelVideo = (
     Option.map(({ videoId, title }) => ({
       videoId,
       title,
-      artists: toArtistLinks(video.artists),
+      artists: panelVideoArtistLinks(video),
       maybeAlbum: pipe(
         Option.fromNullishOr(video.album),
         Option.flatMap(({ id, name }) =>
@@ -980,6 +1000,7 @@ const topResultFromPage = (
         maybeAudience: audienceFromSubtitle(card.subtitle),
         artwork,
       },
+      topSongs: [],
     })
   }
   if (pageType === ALBUM_PAGE) {
@@ -1157,6 +1178,73 @@ export const audioTrackFor = (
     ),
   )
 }
+
+// SEARCH RANKING
+
+const ACCENT = /\p{M}/gu
+
+/** Lowercase, no accents: "Beyoncé" → "beyonce". */
+const plainLetters = (text: string): string =>
+  text.normalize('NFKD').replace(ACCENT, '').toLowerCase()
+
+/** Letters and digits only: "AC/DC" → "acdc", "Daft Punk" → "daftpunk". */
+const compactName = (text: string): string =>
+  plainLetters(text).replace(NOT_LETTER_OR_DIGIT, '')
+
+/** The words, padded with a space each side: " daft punk ". */
+const paddedWords = (text: string): string =>
+  ` ${plainLetters(text).replace(NOT_LETTER_OR_DIGIT, ' ').trim()} `
+
+/**
+ * Whether a search names this artist: the whole search is their name
+ * ("radiohead", "acdc" for AC/DC), or it starts or ends with their name
+ * beside other words ("daft punk get lucky", "get lucky daft punk").
+ */
+export const searchNamesArtist = (
+  query: string,
+  artist: ArtistLink,
+): boolean => {
+  const name = compactName(artist.name)
+  if (String.isEmpty(name)) {
+    return false
+  }
+  const words = paddedWords(query)
+  const nameWords = paddedWords(artist.name)
+  return (
+    compactName(query) === name ||
+    words.startsWith(nameWords) ||
+    words.endsWith(nameWords)
+  )
+}
+
+/** 2 when the search names a song's main artist, 1 another credit, else 0. */
+const artistRank = (query: string, song: Song): number =>
+  Array.match(song.artists, {
+    onEmpty: () => 0,
+    onNonEmpty: ([first, ...others]) =>
+      searchNamesArtist(query, first)
+        ? 2
+        : Array.some(others, artist => searchNamesArtist(query, artist))
+          ? 1
+          : 0,
+  })
+
+/**
+ * A song search with the songs by the artist searched for first: "daft
+ * punk" lists Daft Punk's songs, then songs they are featured on, then the
+ * remixes and covers that only mention them. Otherwise YouTube's order
+ * stays.
+ */
+export const rankSongsForQuery = (
+  query: string,
+  songs: ReadonlyArray<Song>,
+): ReadonlyArray<Song> =>
+  Array.sort(
+    songs,
+    Order.mapInput(Order.flip(Order.Number), (song: Song) =>
+      artistRank(query, song),
+    ),
+  )
 
 // MOODS AND GENRES
 

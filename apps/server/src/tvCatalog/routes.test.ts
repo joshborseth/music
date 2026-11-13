@@ -53,6 +53,7 @@ const youTubeMusic = YouTubeMusic.of({
   getUpNext: () => down,
   getDurationSeconds: () => down,
   getArtist: () => down,
+  getArtistOverview: () => down,
   getAlbum: albumId =>
     Effect.succeed({
       album: {

@@ -36,6 +36,7 @@ import {
   homeQuery,
   myLibraryQuery,
   myPlaylistQuery,
+  newReleasesQuery,
   playlistSearchQuery,
   songQuery,
   songRadioQuery,
@@ -62,7 +63,21 @@ const resolveHistory = Command.resolve(
   homeQuery.Fetch,
   homeQuery.Message.CompletedFetch({
     generation: FIRST_REQUEST_GENERATION,
-    result: Result.succeed({ jumpBackIn: [], recentlyPlayed: [] }),
+    result: Result.succeed({
+      jumpBackIn: [],
+      recentlyPlayed: [],
+      maybeLastPlayed: Option.none(),
+      mixes: [],
+    }),
+  }),
+)
+
+/** The artists I follow have released nothing lately. */
+const resolveNewReleases = Command.resolve(
+  newReleasesQuery.Fetch,
+  newReleasesQuery.Message.CompletedFetch({
+    generation: FIRST_REQUEST_GENERATION,
+    result: Result.succeed([]),
   }),
 )
 
@@ -72,6 +87,7 @@ const resolveHistory = Command.resolve(
  */
 const resolveHome = [
   resolveHistory,
+  resolveNewReleases,
   Command.resolve(
     myLibraryQuery.Fetch,
     myLibraryQuery.Message.CompletedFetch({
@@ -533,9 +549,10 @@ describe('back button', () => {
       Command.expectExact(NavigateBackTo({ url: '/' })),
       Command.resolve(NavigateBackTo, Message.CompletedNavigateBackTo()),
       message(Message.ChangedUrl({ url: urlOrThrow('http://localhost/') })),
-      // The Library tab already asked for my playlists; the history and Liked
-      // songs are new.
+      // The Library tab already asked for my playlists; the history, new
+      // releases, and Liked songs are new.
       resolveHistory,
+      resolveNewReleases,
       resolveLikedSongs,
       model(model => {
         expect(model.route._tag).toBe('Home')
@@ -795,9 +812,12 @@ describe('home', () => {
           result: Result.succeed({
             jumpBackIn: [],
             recentlyPlayed: [theChain, dreams],
+            maybeLastPlayed: Option.some(theChain),
+            mixes: [],
           }),
         }),
       ),
+      resolveNewReleases,
       Command.resolve(
         myLibraryQuery.Fetch,
         myLibraryQuery.Message.CompletedFetch({

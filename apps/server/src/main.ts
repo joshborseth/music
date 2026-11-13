@@ -1,5 +1,5 @@
-import { Config, Effect, Layer, Option } from 'effect'
-import { HttpRouter, HttpStaticServer } from 'effect/http'
+import { Config, Layer } from 'effect'
+import { HttpRouter } from 'effect/http'
 import { RpcSerialization, RpcServer } from 'effect/rpc'
 
 import { BunHttpServer, BunRuntime, BunServices } from '@effect/platform-bun'
@@ -18,12 +18,11 @@ import { SessionHubLive, SessionRoutes } from './session/hub.ts'
 import { TvWakerLive } from './session/wake.ts'
 import { TvAppRoutes, TvUpdatingRoute } from './tvApp.ts'
 import { TvCatalogRoutes } from './tvCatalog/routes.ts'
+import { WebAppRoutes } from './webApp.ts'
 import { YouTubeMusicLive } from './youtubeMusic/service.ts'
 
 const DEFAULT_PORT = 3001
 const DEFAULT_HOSTNAME = '127.0.0.1'
-
-const STATIC_MIME_TYPES = { webmanifest: 'application/manifest+json' }
 
 /** Timed lyrics, shared by the RPCs, the TV routes, and the session. */
 const LyricsLive = TimedLyricsLive.pipe(Layer.provide(BunServices.layer))
@@ -67,26 +66,6 @@ const CatalogRoutes = Layer.mergeAll(RpcRoutes, TvCatalogRoutes).pipe(
   Layer.provide(AudioLive),
 )
 
-/**
- * Serves the built web app when `WEB_DIST_DIR` is set, so one origin carries
- * both the app and its RPC endpoint. In development Vite serves the app.
- */
-const WebAppRoutes = Layer.unwrap(
-  Effect.gen(function* () {
-    const maybeWebDistDir = yield* Config.option(Config.String('WEB_DIST_DIR'))
-    return Option.match(maybeWebDistDir, {
-      onNone: () => Layer.empty,
-      onSome: root =>
-        HttpStaticServer.layer({
-          root,
-          spa: true,
-          cacheControl: 'no-cache',
-          mimeTypes: STATIC_MIME_TYPES,
-        }),
-    })
-  }),
-)
-
 const PlaybackRoutes = Layer.mergeAll(
   AudioRoutes,
   SessionRoutes,
@@ -106,7 +85,7 @@ const ServerLive = HttpRouter.serve(
     PlaybackRoutes,
     ArtworkRoutes,
     TvAppRoutes.pipe(Layer.provide(BunServices.layer)),
-    WebAppRoutes,
+    WebAppRoutes.pipe(Layer.provide(BunServices.layer)),
   ),
 ).pipe(
   Layer.provide(

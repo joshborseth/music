@@ -368,6 +368,29 @@ const isTopResultSong = (
   )
 
 /**
+ * The songs the Top tab lists: the top artist's most played songs when the
+ * best match is an artist, as Apple Music and Spotify do, else the song
+ * search.
+ */
+const topSongs = (
+  maybeTopResult: Option.Option<TopResult>,
+  searchedSongs: ReadonlyArray<Song>,
+): ReadonlyArray<Song> =>
+  Option.match(maybeTopResult, {
+    onNone: () => searchedSongs,
+    onSome: topResult =>
+      Match.valueTags(topResult, {
+        Artist: ({ topSongs: artistSongs }) =>
+          Array.isReadonlyArrayNonEmpty(artistSongs)
+            ? artistSongs
+            : searchedSongs,
+        Album: () => searchedSongs,
+        Song: () => searchedSongs,
+        Playlist: () => searchedSongs,
+      }),
+  })
+
+/**
  * A little of everything, as Apple Music and Spotify start: the best match,
  * the first songs, then artists, albums, and playlists to swipe through.
  * Each shelf leaves out the top result and has See All for its kind.
@@ -384,7 +407,7 @@ const topView = (
     ),
   )
   const songs = Array.filter(
-    loadedOrEmpty(songSearch),
+    topSongs(maybeTopResult, loadedOrEmpty(songSearch)),
     song => !isTopResultSong(maybeTopResult, song),
   )
   const artists = Array.filter(
