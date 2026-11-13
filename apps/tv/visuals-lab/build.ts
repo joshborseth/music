@@ -6,6 +6,7 @@
  *   bun apps/tv/visuals-lab/build.ts   → dist/index.html  live, with controls
  *                                        dist/sheet.html  every scene, still, side by side
  *                                        dist/sheet-<moment>.html  one moment of the song
+ *                                        dist/bench.html  times each scene
  */
 
 import { readdir } from 'node:fs/promises'
@@ -63,6 +64,7 @@ const page = (mode: string) => `<!doctype html>
 
 await Bun.write(join(here, 'dist/index.html'), page('live'))
 await Bun.write(join(here, 'dist/sheet.html'), page('sheet'))
+await Bun.write(join(here, 'dist/bench.html'), page('bench'))
 // One moment of the made-up song each, quicker to render.
 for (const moment of ['verse', 'build', 'drop']) {
   await Bun.write(

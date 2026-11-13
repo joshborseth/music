@@ -5,7 +5,9 @@
  * The passes match `apps/tv/src/visuals/gpu.rs`: each scene draws into its
  * own pair of textures (feedback), the bright parts are blurred at a
  * quarter size, `final.glsl` puts it together at the scenes' size, and
- * `present.glsl` stretches that to the screen under the app's shade.
+ * `present.glsl` stretches that to the screen under the app's shade. While
+ * one scene dissolves into the next, the two take turns, one a frame. The
+ * per-frame values in `motion` match `motion.rs`.
  */
 
 declare const SHADERS: Readonly<Record<string, string>>
@@ -59,6 +61,134 @@ interface Music {
 
 const fract = (x: number): number => x - Math.floor(x)
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x))
+
+// MOTION ------------------------------------------------------------------
+
+/** A well-mixed 32-bit hash: the TV's `motion::hash`. */
+const hash = (input: number): number => {
+  let x = input >>> 0
+  x ^= x >>> 16
+  x = Math.imul(x, 0x7feb352d)
+  x ^= x >>> 15
+  x = Math.imul(x, 0x846ca68b)
+  x ^= x >>> 16
+  return x >>> 0
+}
+
+/** 0 to 1 from a hash. */
+const unit = (x: number): number => (hash(x) >>> 8) / (1 << 24)
+
+/** Smooth noise along a line, 0 to 1, eased between whole numbers. */
+const smoothNoise = (x: number): number => {
+  const i = Math.floor(x)
+  const f = x - i
+  const u = f * f * (3 - 2 * f)
+  const a = unit(i >>> 0)
+  const b = unit((i + 1) >>> 0)
+  return a + (b - a) * u
+}
+
+type Vec3 = [number, number, number]
+
+const length3 = (v: Vec3): number => Math.hypot(v[0], v[1], v[2])
+const normalize3 = (v: Vec3): Vec3 => {
+  const l = Math.max(length3(v), 1e-6)
+  return [v[0] / l, v[1] / l, v[2] / l]
+}
+const cross3 = (a: Vec3, b: Vec3): Vec3 => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0],
+]
+
+interface Motion {
+  readonly blobs: Array<number>
+  readonly melt: number
+  readonly margin: number
+  readonly camera: Array<number>
+  readonly pour: Array<number>
+  readonly turn: [number, number, number, number]
+  readonly flight: [number, number, number, number]
+  readonly shake: [number, number]
+}
+
+/**
+ * What a scene would otherwise work out at every pixel, once a frame: the
+ * TV's `Motion::new`. Keep the two in step.
+ */
+const motion = (music: Music, seed: number): Motion => {
+  const drive = music.drive
+  const gather =
+    Math.pow(1 - fract(music.bar), 2) * 0.6 + 0.4 - 0.4 * music.drop
+  const spread =
+    (0.55 + 0.25 * music.intensity + 1.1 * music.drop) * (1 - 0.35 * gather)
+  const blobs: Array<number> = []
+  for (let i = 0; i < 5; i++) {
+    const centre: Vec3 = [
+      Math.sin(drive * (0.31 + i * 0.07) + i * 1.9) * spread,
+      Math.cos(drive * (0.27 + i * 0.05) + i * 2.7) * 0.7 * spread,
+      Math.sin(drive * (0.19 + i * 0.09) + i * 0.8) * spread,
+    ]
+    const radius = 0.27 + 0.16 * (music.levels[i] ?? 0) + 0.05 * music.kick
+    blobs.push(...centre, radius)
+  }
+  const melt = 0.35 - 0.2 * music.drop
+  // Each blob melting into the others swells the shape by up to a quarter
+  // of `melt`; four in a row, by up to `melt`. Then the ripples and glow.
+  const margin = melt + 0.065 + 0.2
+
+  const punch = 1 + 0.06 * music.kick
+  const distance = 2.5 / punch
+  const eye: Vec3 = [
+    Math.sin(drive * 0.07) * distance,
+    0,
+    -Math.cos(drive * 0.07) * distance,
+  ]
+  const forward = normalize3([-eye[0], -eye[1], -eye[2]])
+  const right = normalize3([forward[2], 0, -forward[0]])
+  const up = cross3(forward, right)
+
+  const pour: Array<number> = []
+  for (let i = 0; i < 3; i++) {
+    const phase = drive * (0.21 + 0.07 * i) + i * 2.1 + seed * 5
+    const level = music.bands[i] ?? 0
+    const first = i === 0 ? 1 : 0
+    pour.push(
+      0.55 * Math.sin(phase * 1.3),
+      0.32 * Math.cos(phase),
+      0.025 + 0.05 * level + 0.06 * music.beatPulse * first,
+      0.02 + 0.22 * level + 0.35 * music.kick * first,
+    )
+  }
+
+  const spin = drive * 0.05 + 0.15 * Math.sin(music.beats * Math.PI * 0.25)
+  const bob = 0.04 * music.beatPulse * music.energy - 0.12 * music.drop
+  const roll = 0.04 * Math.sin(drive * 0.09)
+  const shake = music.tension * music.tension * 0.006
+  return {
+    blobs,
+    melt,
+    margin,
+    camera: [...eye, ...right, ...up, ...forward],
+    pour,
+    turn: [
+      Math.sin(drive * 0.23) * 0.08,
+      Math.cos(drive * 0.17) * 0.08,
+      Math.cos(spin),
+      Math.sin(spin),
+    ],
+    flight: [
+      0.12 * Math.sin(drive * 0.11),
+      0.62 + bob + 0.15 * music.tension,
+      Math.cos(roll),
+      Math.sin(roll),
+    ],
+    shake: [
+      (smoothNoise(music.time * 23) - 0.5) * shake,
+      (smoothNoise(music.time * 27 + 57) - 0.5) * shake,
+    ],
+  }
+}
 
 /**
  * A made-up song at `bpm`, 32 bars round: intro, verse, a four-bar build,
@@ -358,6 +488,7 @@ const fragmentSource = (name: string): string =>
   VERSION +
   shaderText('common.glsl') +
   shaderText('fragment.glsl') +
+  shaderText('helpers.glsl') +
   shaderText(name)
 const VERTEX = VERSION + shaderText('fullscreen.vert')
 
@@ -449,6 +580,79 @@ const noisePixels = (): Uint8Array => {
   return pixels
 }
 
+/**
+ * Fractal noise worked out ahead, the same numbers as the TV's
+ * `fbm_pixels`: red is the value, green and blue its slope across and up.
+ */
+const FBM_SIDE = 256
+const FBM_UNITS = 8
+const fbmPixels = (): Uint8Array => {
+  // Each octave's turn from the first, as rows: (2 -1; 1 2), then
+  // (0 -2; 2 0) times the one before, twice.
+  const turns: Array<[number, number, number, number]> = [
+    [1, 0, 0, 1],
+    [2, -1, 1, 2],
+    [-2, -4, 4, -2],
+    [-8, 4, -4, -8],
+  ]
+  const total = 0.5 + 0.25 + 0.125 + 0.0625
+  const perUnit = FBM_SIDE / FBM_UNITS
+  const byte = (value: number) => Math.round(clamp01(value) * 255)
+  const wrap = (cell: number) =>
+    (((Math.trunc(cell) % FBM_UNITS) + FBM_UNITS) % FBM_UNITS) >>> 0
+  const smooth = (octave: number, x: number, y: number) => {
+    const lattice = (cx: number, cy: number) =>
+      unit((hash((hash(octave) + wrap(cy)) >>> 0) + wrap(cx)) >>> 0)
+    const ix = Math.floor(x)
+    const iy = Math.floor(y)
+    const fx = x - ix
+    const fy = y - iy
+    const ux = fx * fx * (3 - 2 * fx)
+    const uy = fy * fy * (3 - 2 * fy)
+    const dx = 6 * fx * (1 - fx)
+    const dy = 6 * fy * (1 - fy)
+    const a = lattice(ix, iy)
+    const b = lattice(ix + 1, iy)
+    const c = lattice(ix, iy + 1)
+    const d = lattice(ix + 1, iy + 1)
+    const twist = a - b - c + d
+    return [
+      a + (b - a) * ux + (c - a) * uy + twist * ux * uy,
+      dx * (b - a + twist * uy),
+      dy * (c - a + twist * ux),
+    ] as const
+  }
+  const pixels = new Uint8Array(FBM_SIDE * FBM_SIDE * 4)
+  for (let row = 0; row < FBM_SIDE; row++) {
+    for (let column = 0; column < FBM_SIDE; column++) {
+      const x = (column + 0.5) / perUnit
+      const y = (row + 0.5) / perUnit
+      let value = 0
+      let across = 0
+      let up = 0
+      let amplitude = 0.5
+      turns.forEach(([a, b, c, d], octave) => {
+        const shift = octave * 0.37
+        const [n, nx, ny] = smooth(
+          octave,
+          a * x + b * y + shift,
+          c * x + d * y + shift * 1.7,
+        )
+        value += amplitude * n
+        across += amplitude * (a * nx + c * ny)
+        up += amplitude * (b * nx + d * ny)
+        amplitude *= 0.5
+      })
+      const at = (row * FBM_SIDE + column) * 4
+      pixels[at] = byte(value / total)
+      pixels[at + 1] = byte(0.5 + across / total / 8)
+      pixels[at + 2] = byte(0.5 + up / total / 8)
+      pixels[at + 3] = 255
+    }
+  }
+  return pixels
+}
+
 const toBytes = (
   values: Float32Array,
   map: (v: number) => number,
@@ -474,7 +678,10 @@ const makeEngine = (
       ? program(
           gl,
           'particles.vert',
-          VERSION + shaderText('common.glsl') + shaderText('particles.vert'),
+          VERSION +
+            shaderText('common.glsl') +
+            shaderText('helpers.glsl') +
+            shaderText('particles.vert'),
           VERSION + shaderText('common.glsl') + shaderText('particles.frag'),
         )
       : null,
@@ -516,9 +723,23 @@ const makeEngine = (
     gl.UNSIGNED_BYTE,
     noisePixels(),
   )
+  const fbmTexture = dataTexture(gl, FBM_SIDE, FBM_SIDE, 'rgba', true)
+  gl.bindTexture(gl.TEXTURE_2D, fbmTexture)
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA8,
+    FBM_SIDE,
+    FBM_SIDE,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    fbmPixels(),
+  )
   const coverTexture = dataTexture(gl, COVER, COVER, 'rgba', false)
   const history = new Uint8Array(BANDS * HISTORY_ROWS)
   let historyAge = 0
+  let historyPeak = 0
   // Joshify green in its three shades, until a cover loads.
   let colors: Array<Rgb> = [
     [0.13, 0.83, 0.44],
@@ -559,6 +780,7 @@ const makeEngine = (
       ['uWave', waveTexture],
       ['uPrev', prev?.texture ?? null],
       ['uNoise', noiseTexture],
+      ['uFbm', fbmTexture],
     ]
     units.forEach(([name, texture], unit) => {
       const at = p.uniforms.get(name)
@@ -598,6 +820,7 @@ const makeEngine = (
     f('uSeed', scene?.seed ?? 0)
     f('uHasCover', hasCover)
     f('uHistoryAge', historyAge)
+    f('uHistoryPeak', historyPeak)
     f('uGrid', GRID)
     const bandsAt = at('uBands')
     if (bandsAt !== undefined) gl.uniform4f(bandsAt, ...music.bands)
@@ -609,6 +832,21 @@ const makeEngine = (
       const color = colors[i]
       if (c !== undefined && color !== undefined) gl.uniform3f(c, ...color)
     })
+    const moved = motion(music, scene?.seed ?? 0)
+    f('uMelt', moved.melt)
+    f('uMargin', moved.margin)
+    const blobsAt = at('uBlobs')
+    if (blobsAt !== undefined) gl.uniform4fv(blobsAt, moved.blobs)
+    const cameraAt = at('uCamera')
+    if (cameraAt !== undefined) gl.uniform3fv(cameraAt, moved.camera)
+    const pourAt = at('uPour')
+    if (pourAt !== undefined) gl.uniform4fv(pourAt, moved.pour)
+    const turnAt = at('uTurn')
+    if (turnAt !== undefined) gl.uniform4f(turnAt, ...moved.turn)
+    const flightAt = at('uFlight')
+    if (flightAt !== undefined) gl.uniform4f(flightAt, ...moved.flight)
+    const shakeAt = at('uShake')
+    if (shakeAt !== undefined) gl.uniform2f(shakeAt, ...moved.shake)
   }
 
   const fullscreen = () => gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -668,6 +906,7 @@ const makeEngine = (
         toBytes(music.spectrum, v => v),
         0,
       )
+      historyPeak = history.reduce((most, v) => Math.max(most, v), 0) / 255
       gl.bindTexture(gl.TEXTURE_2D, historyTexture)
       gl.texImage2D(
         gl.TEXTURE_2D,
@@ -683,7 +922,11 @@ const makeEngine = (
     }
   }
 
-  /** One frame: scene `a`, dissolving into `b` by `mix`. */
+  let frames = 0
+  /**
+   * One frame: scene `a`, dissolving into `b` by `mix`. While both show,
+   * they take turns, one a frame, as on the TV.
+   */
   const frame = (
     music: Music,
     dt: number,
@@ -694,11 +937,12 @@ const makeEngine = (
   ) => {
     gl.bindVertexArray(vao)
     update(music, dt)
+    frames++
     const sceneA = scenes[a]
-    const sceneB = mix > 0 ? scenes[b] : undefined
+    const sceneB = mix > 0 && b !== a ? scenes[b] : undefined
     if (sceneA === undefined) return
-    drawScene(sceneA, music)
-    if (sceneB !== undefined) drawScene(sceneB, music)
+    if (sceneB === undefined || frames % 2 === 0) drawScene(sceneA, music)
+    if (sceneB !== undefined && frames % 2 === 1) drawScene(sceneB, music)
     const outA = sceneA.targets[0]
     const outB = (sceneB ?? sceneA).targets[0]
     if (bright !== null && blur !== null) {
@@ -848,6 +1092,75 @@ const sheet = () => {
   console.log(`sheet done, ${errors.length} shader errors`)
 }
 
+/**
+ * Times every scene, drawn alone through every pass, at the TV's full
+ * scene size. In a software renderer the numbers only rank the scenes
+ * against each other (and a change against the code before it): a TV's GPU
+ * is far slower, and runs mediump at twice the rate, which this can't show.
+ *
+ * Each scene warms up in one animation frame and is timed over the next:
+ * the time between that frame and the one after is the drawing (and at
+ * most one display refresh of waiting).
+ */
+const bench = () => {
+  const out = element('pre')
+  document.body.append(out)
+  const width = 1280
+  const height = 720
+  const canvas = element('canvas')
+  canvas.width = width
+  canvas.height = height
+  const gl = canvas.getContext('webgl2')
+  if (gl === null) {
+    out.textContent = 'No WebGL 2 here.'
+    return
+  }
+  const engine = makeEngine(gl, width, height)
+  engine.setCover(madeUpCover())
+  const pixel = new Uint8Array(4)
+  const finish = () =>
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel)
+  const at = (60 / 124) * 4 * 20.25
+  const frames = 8
+  const lines: Array<string> = []
+  const draw = (index: number, from: number, count: number) => {
+    const song = madeUpSong(124)
+    for (let step = 0; step < count; step++)
+      engine.frame(song(at + (from + step) / 60), 1 / 60, index, index, 0, [
+        width,
+        height,
+      ])
+    finish()
+  }
+  let index = 0
+  let warmed = false
+  let started = -1
+  const tick = (now: number) => {
+    if (started >= 0) {
+      const ms = (now - started) / frames
+      const name = SCENES[index]?.name ?? ''
+      lines.push(`${name.padEnd(10)} ${ms.toFixed(1).padStart(7)} ms a frame`)
+      out.textContent = lines.join('\n')
+      started = -1
+      index++
+    }
+    if (index >= SCENES.length) {
+      console.log(`bench\n${lines.join('\n')}`)
+      return
+    }
+    if (warmed) {
+      warmed = false
+      started = now
+      draw(index, 3, frames)
+    } else {
+      warmed = true
+      draw(index, 0, 3)
+    }
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+}
+
 const live = () => {
   const controls = element('div', { id: 'controls' })
   const stage = element('div', { id: 'stage' })
@@ -991,4 +1304,5 @@ const live = () => {
 }
 
 if (MODE.startsWith('sheet')) sheet()
+else if (MODE === 'bench') bench()
 else live()

@@ -1,5 +1,7 @@
 // PARTICLES (points): a soft round grain, added on top of the others.
 
+precision mediump float;
+
 in vec3 vColor;
 out vec4 fragColor;
 
