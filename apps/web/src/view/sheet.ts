@@ -2,6 +2,7 @@ import { Array, Option, pipe } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
+  AudioLines,
   Check,
   CircleArrowDown,
   CircleX,
@@ -52,6 +53,7 @@ import {
   SLEEP_TIMER_MINUTES,
   SleepCountdown,
   countdownText,
+  currentEntry,
   deviceStatus,
   deviceStatusText,
   playbackOutput,
@@ -167,6 +169,68 @@ const actionLink = (
     [icon(h, iconNode, 'text-primary size-[22px]'), label],
   )
 
+/**
+ * Sound Check's switch, under the song playing in the full player's ⋯. It
+ * is the session's, so it holds on every device; only the TV levels songs
+ * so far, because iOS ignores a web page's audio volume.
+ */
+const soundCheckSwitch = (isOn: boolean, h: HtmlBuilder<Message>): Html =>
+  h.button(
+    [
+      h.Type('button'),
+      h.OnClick(Message.ClickedToggleSoundCheck()),
+      h.AriaPressed(isOn ? 'true' : 'false'),
+      h.Class(cn(actionClass, 'h-auto min-h-14 border-t py-2.5')),
+    ],
+    [
+      icon(h, AudioLines, 'text-primary size-[22px] shrink-0'),
+      h.span(
+        [h.Class('flex min-w-0 flex-1 flex-col')],
+        [
+          'Sound Check',
+          h.span(
+            [h.Class('text-muted-foreground text-[13px]')],
+            ['Plays every song at the same volume on the TV.'],
+          ),
+        ],
+      ),
+      h.span(
+        [
+          h.AriaHidden(true),
+          h.Class(
+            cn(
+              'flex h-[31px] w-[51px] shrink-0 items-center rounded-full p-0.5 transition-colors',
+              isOn ? 'bg-primary justify-end' : 'bg-muted justify-start',
+            ),
+          ),
+        ],
+        [h.span([h.Class('size-[27px] rounded-full bg-white shadow')])],
+      ),
+    ],
+  )
+
+/** Sound Check's switch, when the sheet is about the song in the open player. */
+const playerSettings = (
+  model: Model,
+  song: Song,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(
+    Option.filter(
+      model.maybeSession,
+      ({ state }) =>
+        model.playerSheet._tag === 'Open' &&
+        Option.exists(
+          currentEntry(state),
+          entry => entry.track.videoId === song.videoId,
+        ),
+    ),
+    {
+      onNone: () => h.empty,
+      onSome: ({ state }) => soundCheckSwitch(state.soundCheck, h),
+    },
+  )
+
 const songActions = (
   model: Model,
   song: Song,
@@ -208,6 +272,7 @@ const songActions = (
       }),
     ],
     h,
+    playerSettings(model, song, h),
   )
 }
 
@@ -247,6 +312,7 @@ const songActionsFor = (
   song: Song,
   playlistActions: ReadonlyArray<Html>,
   h: HtmlBuilder<Message>,
+  settings: Html = h.empty,
 ): Html =>
   h.div(
     [h.Class('flex flex-col')],
@@ -287,6 +353,7 @@ const songActionsFor = (
           actionLink(songHref(song.videoId), FileText, 'Lyrics and Details', h),
         ],
       ),
+      settings,
     ],
   )
 

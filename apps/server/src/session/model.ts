@@ -42,6 +42,8 @@ export interface Model {
   readonly sleepTimer: Session.SleepTimer | null
   /** What the queue was started from, if anything with a page. */
   readonly playingFrom: Session.PlayingFrom | null
+  /** Players level every song to the same loudness. */
+  readonly soundCheck: boolean
 }
 
 export const initialModel: Model = {
@@ -61,6 +63,7 @@ export const initialModel: Model = {
   waking: [],
   sleepTimer: null,
   playingFrom: null,
+  soundCheck: true,
 }
 
 /**
@@ -143,6 +146,7 @@ export const toSessionState = (
   shuffle: model.shuffle,
   sleepTimer: model.sleepTimer,
   playingFrom: model.playingFrom,
+  soundCheck: model.soundCheck,
 })
 
 export const currentPosition = (model: Model, now: number): number =>
@@ -720,6 +724,11 @@ const transition = (
           ? quiet(model)
           : changed({ ...model, sleepTimer })
       },
+
+      SetSoundCheck: message =>
+        message.enabled === model.soundCheck
+          ? quiet(model)
+          : changed({ ...model, soundCheck: message.enabled }),
 
       SetAutoplay: message => {
         if (message.enabled === model.autoplay) return quiet(model)

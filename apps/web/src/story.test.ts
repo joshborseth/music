@@ -903,6 +903,7 @@ describe('lyrics that fail to load', () => {
           shuffle: false,
           sleepTimer: null,
           playingFrom: null,
+          soundCheck: true,
           positionAt: 0,
           seekSeq: 0,
         },

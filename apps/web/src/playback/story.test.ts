@@ -89,6 +89,7 @@ const sessionState = (
   shuffle: false,
   sleepTimer: null,
   playingFrom: null,
+  soundCheck: true,
   positionAt: SERVER_NOW,
   seekSeq,
 })

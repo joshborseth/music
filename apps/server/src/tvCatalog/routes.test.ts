@@ -29,6 +29,7 @@ const song = (videoId: string): Song => ({
 const down = Effect.fail(new YouTubeMusicError({ message: 'down' }))
 
 const plans: Array<ReadonlyArray<PrefetchJob>> = []
+const warmed: Array<string> = []
 
 const youTubeMusic = YouTubeMusic.of({
   searchSongs: () => Effect.succeed([song('s1'), song('s2')]),
@@ -95,6 +96,14 @@ const youTubeMusic = YouTubeMusic.of({
   getPlaylist: () => down,
   getSongForVideo: () => Effect.succeed(Option.none()),
   getRadio: () => down,
+  getLoudnessLufs: videoId =>
+    Effect.succeed(
+      videoId.startsWith('loud')
+        ? Option.some(-9.5)
+        : videoId.startsWith('quiet')
+          ? Option.some(-17)
+          : Option.none(),
+    ),
 })
 
 const analysisOf = (videoId: string): Tv.TvAnalysis => ({
@@ -132,7 +141,23 @@ const songAnalysis = SongAnalysis.of({
             }),
           )
         : Effect.succeed(analysisOf(videoId)),
-  warm: () => Effect.void,
+  knownLoudness: videoId =>
+    Effect.succeed(
+      videoId.startsWith('measured')
+        ? Option.some({ integratedLufs: -8, truePeakDbtp: 0.5 })
+        : Option.none(),
+    ),
+  loudness: videoId =>
+    videoId.startsWith('gone')
+      ? Effect.fail(
+          new AnalysisError({
+            videoId,
+            reason: 'AudioUnavailable',
+            message: 'yt-dlp failed',
+          }),
+        )
+      : Effect.succeed({ integratedLufs: -20, truePeakDbtp: -6 }),
+  warm: videoId => Effect.sync(() => void warmed.push(videoId)),
 })
 
 const playlistStore = makePlaylistStore(
@@ -313,6 +338,54 @@ describe('TV catalog routes', () => {
     expect((await get('/tv/analysis?videoId=broken123')).status).toBe(500)
     expect((await get('/tv/analysis?videoId=../etc')).status).toBe(400)
     expect((await get('/tv/analysis')).status).toBe(400)
+  })
+
+  test("a song's Sound Check gain: measured, YouTube's, or none yet", async () => {
+    const loudness = async (query: string) => {
+      const response = await get(`/tv/loudness?${query}`)
+      expect(response.status).toBe(200)
+      return Schema.decodeUnknownSync(Tv.TvLoudness)(await response.json())
+    }
+    // -8 LUFS turns down 6 dB, to -14; its peaks don't matter.
+    expect(await loudness('videoId=measured12')).toEqual({
+      videoId: 'measured12',
+      gainDb: -6,
+      source: 'Measured',
+      integratedLufs: -8,
+      truePeakDbtp: 0.5,
+    })
+    // Not measured yet: YouTube's figure turns a loud song down, never a
+    // quiet one up, and the server starts measuring it.
+    expect(await loudness('videoId=loudsong12')).toEqual({
+      videoId: 'loudsong12',
+      gainDb: -4.5,
+      source: 'YouTube',
+      integratedLufs: -9.5,
+      truePeakDbtp: null,
+    })
+    expect(await loudness('videoId=quietsong1')).toMatchObject({
+      gainDb: 0,
+      source: 'YouTube',
+    })
+    expect(await loudness('videoId=unknown123')).toMatchObject({
+      gainDb: 0,
+      source: 'Unknown',
+    })
+    expect(warmed).toEqual(['loudsong12', 'quietsong1', 'unknown123'])
+    // Waiting: the measurement. -20 LUFS wants 6 dB, but its peak at -6
+    // dBTP leaves only 5 under the -1 dBTP ceiling.
+    expect(await loudness('videoId=fresh12345&wait=true')).toEqual({
+      videoId: 'fresh12345',
+      gainDb: 5,
+      source: 'Measured',
+      integratedLufs: -20,
+      truePeakDbtp: -6,
+    })
+    expect((await get('/tv/loudness?videoId=gone12345&wait=true')).status).toBe(
+      502,
+    )
+    expect((await get('/tv/loudness?videoId=../etc')).status).toBe(400)
+    expect((await get('/tv/loudness?videoId=abc123&wait=yes')).status).toBe(400)
   })
 
   test('liking and unliking a song', async () => {

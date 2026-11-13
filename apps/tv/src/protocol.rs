@@ -77,6 +77,14 @@ pub struct SessionState {
     /// before this field leave it out.
     #[serde(default)]
     pub playing_from: Option<PlayingFrom>,
+    /// Sound Check: level every song to the same loudness. On by default,
+    /// and for servers before this field.
+    #[serde(default = "sound_check_default")]
+    pub sound_check: bool,
+}
+
+fn sound_check_default() -> bool {
+    true
 }
 
 /// What kind of thing a queue was started from. Mirrors `PlayingFromKind`
@@ -297,6 +305,10 @@ pub enum ClientMessage {
     SetShuffle {
         enabled: bool,
     },
+    /// Turn Sound Check on or off, for the whole session.
+    SetSoundCheck {
+        enabled: bool,
+    },
     /// Set the sleep timer, or turn it off with none.
     SetSleepTimer {
         timer: Option<SleepTimerChoice>,
@@ -414,6 +426,7 @@ mod tests {
         assert!(state.autoplay);
         assert_eq!(state.repeat, RepeatMode::All);
         assert!(state.shuffle);
+        assert!(!state.sound_check);
         assert!(!state.queue[0].autoplay);
         assert!(state.queue[1].autoplay);
         assert!(server_now > state.position_at);
@@ -473,6 +486,17 @@ mod tests {
             panic!("expected State");
         };
         assert_eq!(state.playing_from, None);
+    }
+
+    #[test]
+    fn sound_check_is_on_for_a_server_before_it() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fixture("server-state.json")).unwrap();
+        value["state"].as_object_mut().unwrap().remove("soundCheck");
+        let ServerMessage::State { state, .. } = serde_json::from_value(value).unwrap() else {
+            panic!("expected State");
+        };
+        assert!(state.sound_check);
     }
 
     #[test]
@@ -790,6 +814,10 @@ mod tests {
             (
                 "client-set-shuffle.json",
                 ClientMessage::SetShuffle { enabled: true },
+            ),
+            (
+                "client-set-sound-check.json",
+                ClientMessage::SetSoundCheck { enabled: false },
             ),
             (
                 "client-set-sleep-timer.json",

@@ -159,6 +159,14 @@ export const SessionState = Schema.Struct({
    * saved before this field.
    */
   playingFrom: Schema.NullOr(PlayingFrom),
+  /**
+   * Sound Check: every song plays at about the same loudness, turned up or
+   * down by the gain the server measured for it (`GET /tv/loudness`). It
+   * belongs to the session, so it applies on every device that levels; the
+   * TV does, and the phone can't yet (iOS ignores an audio element's
+   * volume). On unless someone turns it off.
+   */
+  soundCheck: Schema.Boolean,
 })
 export type SessionState = typeof SessionState.Type
 
@@ -286,6 +294,11 @@ export const SetShuffle = Schema.TaggedStruct('SetShuffle', {
   enabled: Schema.Boolean,
 })
 
+/** Turn Sound Check on or off (`SessionState.soundCheck`). */
+export const SetSoundCheck = Schema.TaggedStruct('SetSoundCheck', {
+  enabled: Schema.Boolean,
+})
+
 /** A sleep timer as someone picks it: after some minutes, or at the song's end. */
 export const SleepTimerChoice = Schema.Union([
   Schema.TaggedStruct('Minutes', { minutes: Schema.Number }),
@@ -364,6 +377,7 @@ export const ClientMessage = Schema.Union([
   SetAutoplay,
   SetRepeat,
   SetShuffle,
+  SetSoundCheck,
   SetSleepTimer,
   Transfer,
   Wake,

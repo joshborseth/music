@@ -50,6 +50,7 @@ import {
   filterPlaylistsForQuery,
   filterSome,
   musicVideoIds,
+  perceptualLoudnessOf,
   playlistFromListItem,
   playlistOwnerFromResponse,
   rankArtistsForQuery,
@@ -180,6 +181,10 @@ const AUDIO_TRACK_WAIT = Duration.seconds(4)
  */
 type WithoutSong = 'Keep' | 'Drop'
 
+/** A song's loudness figure doesn't change; a day keeps the cache small. */
+const LOUDNESS_TTL = Duration.days(1)
+const LOUDNESS_CAPACITY = 1024
+
 const MOODS_AND_GENRES_BROWSE_ID = 'FEmusic_moods_and_genres'
 const MOOD_BROWSE_ID = 'FEmusic_moods_and_genres_category'
 
@@ -262,6 +267,14 @@ export interface YouTubeMusicShape {
     ReadonlyArray<Song>,
     MusicNotFoundError | YouTubeMusicError
   >
+  /**
+   * YouTube's loudness figure for a song, in LUFS (`perceptualLoudnessOf`),
+   * kept for a day: Sound Check's guess until the server has measured the
+   * song itself. None when YouTube gives none.
+   */
+  readonly getLoudnessLufs: (
+    videoId: string,
+  ) => Effect.Effect<Option.Option<number>, YouTubeMusicError>
 }
 
 /** Read-only access to the YouTube Music catalog, mapped to shared Schemas. */
@@ -966,6 +979,26 @@ const make = Effect.gen(function* () {
       : Array.dedupeWith(songs, (left, right) => left.videoId === right.videoId)
   })
 
+  // NOTE: the iOS client's player response carries the loudness; YouTube
+  // Music's own (YTMUSIC) refuses to play signed out and has none.
+  const loudnesses = yield* Cache.makeWith(
+    (videoId: string) =>
+      callYouTube(() =>
+        innertube.actions.execute('/player', {
+          videoId,
+          client: 'IOS',
+          parse: false,
+        }),
+      ).pipe(Effect.map(response => perceptualLoudnessOf(response.data))),
+    {
+      capacity: LOUDNESS_CAPACITY,
+      timeToLive: Exit.match({
+        onFailure: () => Duration.zero,
+        onSuccess: () => LOUDNESS_TTL,
+      }),
+    },
+  )
+
   return YouTubeMusic.of({
     searchSongs,
     searchArtists,
@@ -984,6 +1017,7 @@ const make = Effect.gen(function* () {
     getPlaylist,
     getSongForVideo: audioTrackOf,
     getRadio,
+    getLoudnessLufs: videoId => Cache.get(loudnesses, videoId),
   })
 })
 

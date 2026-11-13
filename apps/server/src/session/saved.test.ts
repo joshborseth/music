@@ -58,6 +58,23 @@ const restart = (model: Model, savedAt: number, now: number): Model => {
 }
 
 describe('saved session', () => {
+  test('a restart keeps Sound Check as it was, and older files have it on', () => {
+    const off = update(
+      playing(),
+      { _tag: 'SetSoundCheck', enabled: false },
+      context('phone', 2_000),
+    ).model
+    expect(off.soundCheck).toBe(false)
+    expect(restart(off, 3_000, 4_000).soundCheck).toBe(false)
+    const emptied: Model = { ...off, queue: [], currentEntryId: null }
+    expect(restart(emptied, 3_000, 4_000).soundCheck).toBe(false)
+    const { soundCheck: _soundCheck, ...older } = toSaved(off, 3_000)
+    const json = Schema.encodeSync(SavedSessionJson)(older)
+    expect(
+      fromSaved(Schema.decodeSync(SavedSessionJson)(json), 4_000).soundCheck,
+    ).toBe(true)
+  })
+
   test('a restart keeps the queue and the song, paused where it had got to', () => {
     const before = playing()
     const after = restart(before, 31_000, 40_000)

@@ -59,6 +59,7 @@
     "autoplay": true,
     "repeat": "All",
     "shuffle": true,
+    "soundCheck": false,
     "sleepTimer": { "_tag": "At", "endsAt": 1794427800000 },
     "playingFrom": {
       "kind": "Playlist",

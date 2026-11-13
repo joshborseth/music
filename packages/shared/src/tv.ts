@@ -25,6 +25,9 @@ import { QueueTrack } from './session.ts'
  *   GET  /tv/collection?kind=…&id=…        TvCollection
  *   GET  /tv/lyrics?videoId=…              TvLyrics
  *   GET  /tv/analysis?videoId=…            TvAnalysis the song's beats, bars, sections and drops
+ *   GET  /tv/loudness?videoId=…[&wait=true] TvLoudness the gain that levels the song (Sound Check):
+ *                                                    the best known now, or with `wait`, once the
+ *                                                    server has measured it
  *   GET  /tv/liked?videoId=…               TvLiked
  *   POST /tv/like   (TvLikeRequest)        TvLiked
  *   GET  /tv/saved?kind=…&id=…             TvSaved    whether an album is saved or an artist followed
@@ -220,3 +223,32 @@ export const TvAnalysis = Schema.Struct({
   drive: Schema.Number,
 })
 export type TvAnalysis = typeof TvAnalysis.Type
+
+/**
+ * Where a song's Sound Check gain comes from: the server's own measurement
+ * of the audio (`Measured`), YouTube's loudness figure for the song, used
+ * until the measurement is ready and only ever to turn a song down
+ * (`YouTube`), or nothing yet (`Unknown`, gain 0).
+ */
+export const TvLoudnessSource = Schema.Literals([
+  'Measured',
+  'YouTube',
+  'Unknown',
+])
+export type TvLoudnessSource = typeof TvLoudnessSource.Type
+
+/**
+ * How to level one song. `gainDb` is what to add to its level so it plays
+ * at about -14 LUFS, never so much that its true peak passes -1 dBTP.
+ * `integratedLufs` is the song's loudness behind the gain: the server's EBU
+ * R128 measurement, or YouTube's figure, and null when `Unknown`.
+ * `truePeakDbtp` is measured only (null for a silent song).
+ */
+export const TvLoudness = Schema.Struct({
+  videoId: Schema.String,
+  gainDb: Schema.Number,
+  source: TvLoudnessSource,
+  integratedLufs: Schema.NullOr(Schema.Number),
+  truePeakDbtp: Schema.NullOr(Schema.Number),
+})
+export type TvLoudness = typeof TvLoudness.Type

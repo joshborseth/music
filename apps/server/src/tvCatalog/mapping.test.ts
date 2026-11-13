@@ -622,6 +622,8 @@ describe('fixtures shared with the TV app', () => {
     ['version.json', Tv.TvVersion],
     ['version-none.json', Tv.TvVersion],
     ['analysis.json', Tv.TvAnalysis],
+    ['loudness.json', Tv.TvLoudness],
+    ['loudness-youtube.json', Tv.TvLoudness],
   ]
 
   test.each(cases)('%s decodes', async (name, schema) => {

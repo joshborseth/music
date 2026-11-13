@@ -645,6 +645,7 @@ describe('search page', () => {
               seekSeq: 0,
               sleepTimer: null,
               playingFrom: null,
+              soundCheck: true,
             },
             clockOffsetMs: 0,
           }),
@@ -1842,6 +1843,7 @@ describe('sleep timer', () => {
             shuffle: false,
             sleepTimer,
             playingFrom: null,
+            soundCheck: true,
           },
         }),
     })
@@ -1940,6 +1942,28 @@ describe('sleep timer', () => {
       pageScrolled,
       playerMounts,
       expect(role('button', { name: 'Sleep Timer: End of song' })).toExist(),
+    )
+  })
+
+  test("the player's ⋯ turns Sound Check off for the whole session", () => {
+    scene(
+      { update, view },
+      given(playingOnTv(null)),
+      pageScrolled,
+      playerMounts,
+      click(role('button', { name: `More for ${theChain.title}` })),
+      Command.expectExact(LockScroll()),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      expect(role('button', { name: /Sound Check/ })).toHaveAttr(
+        'aria-pressed',
+        'true',
+      ),
+      click(role('button', { name: /Sound Check/ })),
+      Command.expectExact(
+        SendToSession({ message: { _tag: 'SetSoundCheck', enabled: false } }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
     )
   })
 })
