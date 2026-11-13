@@ -228,6 +228,7 @@ export const nonEmptyShelves = (
   Array.filter(shelves, shelf => Array.isReadonlyArrayNonEmpty(shelf.cards))
 
 export const YOUR_PLAYLISTS_TITLE = 'Your playlists'
+export const ARTISTS_YOU_FOLLOW_TITLE = 'Artists you follow'
 
 /** Liked songs first: the library already keeps that order. */
 export const yourPlaylistsShelf = (library: MyLibrary): Tv.TvShelf => ({
@@ -241,6 +242,8 @@ export const HOME_LIKED_SONGS = 30
 export const HOME_RECENT_SONGS = 20
 /** The most albums "Jump back in" shows. */
 export const HOME_RECENT_ALBUMS = 12
+/** The most followed artists Home shows, the latest followed first. */
+export const HOME_FOLLOWED_ARTISTS = 20
 /** How many of your own playlists get a shelf of their songs on Home. */
 export const HOME_PLAYLIST_SHELVES = 4
 /** The most songs a playlist's shelf on Home shows. */
@@ -314,8 +317,9 @@ export const fullerFirst = (
 /**
  * Only your own music, nothing from YouTube's feed: what played lately on
  * any device (its albums to jump back into, then the songs themselves),
- * your playlists, your latest liked songs, and then the songs of each of
- * `playlists` (see `homePlaylists`), so Home is full from the start.
+ * your playlists, your latest liked songs, the artists you follow, and then
+ * the songs of each of `playlists` (see `homePlaylists`), so Home is full
+ * from the start.
  */
 export const homeShelves = (
   library: MyLibrary,
@@ -334,6 +338,13 @@ export const homeShelves = (
       {
         title: 'Liked Songs',
         cards: Array.map(Array.take(likedSongs, HOME_LIKED_SONGS), songCard),
+      },
+      {
+        title: ARTISTS_YOU_FOLLOW_TITLE,
+        cards: Array.map(
+          Array.take(library.artists, HOME_FOLLOWED_ARTISTS),
+          artistCard,
+        ),
       },
       ...Array.map(playlists, playlistSongsShelf),
     ]),
@@ -453,6 +464,20 @@ export const lyricsOf = (details: SongDetails): Tv.TvLyrics =>
 export const likedOf = (library: MyLibrary, videoId: string): Tv.TvLiked => ({
   videoId,
   liked: library.likedVideoIds.includes(videoId),
+})
+
+/** Whether the album is saved, or the artist followed. */
+export const savedOf = (
+  library: MyLibrary,
+  kind: Tv.TvSaveKind,
+  id: string,
+): Tv.TvSaved => ({
+  kind,
+  id,
+  saved:
+    kind === 'Album'
+      ? Array.some(library.albums, album => album.id === id)
+      : Array.some(library.artists, artist => artist.id === id),
 })
 
 // LIBRARY

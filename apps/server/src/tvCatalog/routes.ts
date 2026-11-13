@@ -4,6 +4,8 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 import {
   LIKED_PLAYLIST_ID,
   type MusicNotFoundError,
+  type MyLibrary,
+  type PlaylistEdit,
   type PlaylistStoreError,
   type Session,
   type Song,
@@ -27,6 +29,7 @@ import {
   lyricsOf,
   myPlaylistCollection,
   playlistCollection,
+  savedOf,
   searchShelves,
   songFromQueueTrack,
 } from './mapping.ts'
@@ -58,6 +61,7 @@ const CollectionParams = Schema.Struct({
   id: NonBlank,
 })
 const VideoParams = Schema.Struct({ videoId: NonBlank })
+const SavedParams = Schema.Struct({ kind: Tv.TvSaveKind, id: NonBlank })
 const SongParams = Schema.Struct({
   videoId: Schema.String.check(Schema.isPattern(VIDEO_ID)),
 })
@@ -306,6 +310,92 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
       return likedOf(result.library, request.track.videoId)
     })
 
+    const saved = Effect.gen(function* () {
+      const { kind, id } = yield* HttpServerRequest.schemaSearchParams(
+        SavedParams,
+      ).pipe(Effect.mapError(badRequest('Needs kind (Album or Artist) and id')))
+      return yield* playlistStore.library().pipe(
+        Effect.map(library => savedOf(library, kind, id.trim())),
+        Effect.mapError(toRouteError),
+      )
+    })
+
+    /**
+     * Saving looks the album or artist up, so the library lists it as the
+     * phone would. Undoing needs only the copy the library already has.
+     */
+    const saveEdit = (
+      request: Tv.TvSaveRequest,
+      library: MyLibrary,
+    ): Effect.Effect<Option.Option<PlaylistEdit>, CatalogError> => {
+      const id = request.id
+      switch (request.kind) {
+        case 'Album':
+          return request.saved
+            ? youTubeMusic.getAlbum(id).pipe(
+                Effect.map(details =>
+                  Option.some<PlaylistEdit>({
+                    _tag: 'SetAlbumSaved',
+                    album: details.album,
+                    isSaved: true,
+                  }),
+                ),
+              )
+            : Effect.succeed(
+                Option.map(
+                  Array.findFirst(library.albums, album => album.id === id),
+                  (album): PlaylistEdit => ({
+                    _tag: 'SetAlbumSaved',
+                    album,
+                    isSaved: false,
+                  }),
+                ),
+              )
+        case 'Artist':
+          return request.saved
+            ? youTubeMusic.getArtist(id).pipe(
+                Effect.map(details =>
+                  Option.some<PlaylistEdit>({
+                    _tag: 'SetArtistFollowed',
+                    artist: details.artist,
+                    isFollowed: true,
+                  }),
+                ),
+              )
+            : Effect.succeed(
+                Option.map(
+                  Array.findFirst(library.artists, artist => artist.id === id),
+                  (artist): PlaylistEdit => ({
+                    _tag: 'SetArtistFollowed',
+                    artist,
+                    isFollowed: false,
+                  }),
+                ),
+              )
+      }
+    }
+
+    const applySave = (request: Tv.TvSaveRequest) =>
+      Effect.gen(function* () {
+        const library = yield* playlistStore.library()
+        const edit = yield* saveEdit(request, library)
+        const after = yield* Option.match(edit, {
+          onNone: () => Effect.succeed(library),
+          onSome: change =>
+            playlistStore
+              .edit(change)
+              .pipe(Effect.map(result => result.library)),
+        })
+        return savedOf(after, request.kind, request.id)
+      })
+
+    const save = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.schemaBodyJson(
+        Tv.TvSaveRequest,
+      ).pipe(Effect.mapError(badRequest('The body must be a TvSaveRequest')))
+      return yield* applySave(request).pipe(Effect.mapError(toRouteError))
+    })
+
     yield* router.add('GET', '/tv/home', respond(Tv.TvShelves, home))
     yield* router.add('GET', '/tv/library', respond(Tv.TvShelves, library))
     yield* router.add('GET', '/tv/search', respond(Tv.TvShelves, search))
@@ -318,5 +408,7 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
     yield* router.add('GET', '/tv/analysis', respond(Tv.TvAnalysis, analysis))
     yield* router.add('GET', '/tv/liked', respond(Tv.TvLiked, liked))
     yield* router.add('POST', '/tv/like', respond(Tv.TvLiked, like))
+    yield* router.add('GET', '/tv/saved', respond(Tv.TvSaved, saved))
+    yield* router.add('POST', '/tv/save', respond(Tv.TvSaved, save))
   }),
 )

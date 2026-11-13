@@ -45,7 +45,8 @@ const SERVER_URL: &str = match option_env!("MUSIC_SERVER_URL") {
 };
 
 /// Build the window, start the session and the engine, and run until closed.
-pub fn run() -> Result<(), slint::PlatformError> {
+/// The app keeps what it remembers (the recent searches) in `data_dir`.
+pub fn run(data_dir: Option<std::path::PathBuf>) -> Result<(), slint::PlatformError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_name("music-io")
@@ -76,6 +77,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         actions,
         clock.clone(),
         ui::Hooks {
+            recent_searches: data_dir.map(|dir| dir.join("recent-searches.txt")),
             open_update_settings: Box::new({
                 let updater = updater.clone();
                 move || updater.open_permission_settings()
@@ -170,8 +172,10 @@ fn android_main(app: slint::android::AndroidApp) {
         WindowManagerFlags::KEEP_SCREEN_ON | WindowManagerFlags::FULLSCREEN,
         WindowManagerFlags::empty(),
     );
+    // The app's private files, which an update keeps.
+    let data_dir = app.internal_data_path();
     slint::android::init(app).expect("initialize Slint for Android");
-    if let Err(error) = run() {
+    if let Err(error) = run(data_dir) {
         log::error!("Joshify stopped: {error}");
     }
 }

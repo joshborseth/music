@@ -11,6 +11,7 @@ import {
 } from '@music/shared'
 
 import {
+  HOME_FOLLOWED_ARTISTS,
   HOME_LIKED_SONGS,
   HOME_PLAYLIST_SHELVES,
   HOME_PLAYLIST_SONGS,
@@ -28,6 +29,7 @@ import {
   myPlaylistCard,
   myPlaylistCollection,
   playlistCard,
+  savedOf,
   searchShelves,
   songCard,
   songFromQueueTrack,
@@ -277,6 +279,46 @@ describe('shelves', () => {
     expect(shelves[0]?.cards[0]).toMatchObject({ kind: 'Song', id: 'p0' })
   })
 
+  test('home shows the artists you follow after your liked songs, the fuller shelves first', () => {
+    const artist = (id: string) => ({
+      id,
+      name: `Artist ${id}`,
+      maybeAudience: Option.none(),
+      artwork: [image(id, 544)],
+    })
+    const followed = Array.from(
+      { length: HOME_FOLLOWED_ARTISTS + 3 },
+      (_, index) => artist(`UC${index}`),
+    )
+    const { shelves } = homeShelves(
+      { ...library, artists: followed },
+      [song('l0')],
+      [],
+    )
+    expect(shelves.map(({ title }) => title)).toEqual([
+      'Artists you follow',
+      'Your playlists',
+      'Liked Songs',
+    ])
+    expect(shelves[0]?.cards).toHaveLength(HOME_FOLLOWED_ARTISTS)
+    expect(shelves[0]?.cards[0]).toMatchObject({
+      kind: 'Artist',
+      id: 'UC0',
+      title: 'Artist UC0',
+    })
+
+    const few = homeShelves(
+      { ...library, artists: [artist('UCa')] },
+      Array.from({ length: 5 }, (_, index) => song(`l${index}`)),
+      [],
+    )
+    expect(few.shelves.map(({ title }) => title)).toEqual([
+      'Liked Songs',
+      'Your playlists',
+      'Artists you follow',
+    ])
+  })
+
   test('home picks playlists with songs, latest first, never Liked songs', () => {
     const playlists = [
       myPlaylist(),
@@ -378,6 +420,31 @@ describe('lyrics', () => {
   })
 })
 
+describe('saved albums and followed artists', () => {
+  test('says whether an album is saved or an artist followed', () => {
+    const withBoth: MyLibrary = {
+      ...library,
+      albums: [album({ id: 'A1' })],
+      artists: [
+        {
+          id: 'UCa',
+          name: 'Rick Astley',
+          maybeAudience: Option.none(),
+          artwork: [],
+        },
+      ],
+    }
+    expect(savedOf(withBoth, 'Album', 'A1')).toEqual({
+      kind: 'Album',
+      id: 'A1',
+      saved: true,
+    })
+    expect(savedOf(withBoth, 'Album', 'UCa').saved).toBe(false)
+    expect(savedOf(withBoth, 'Artist', 'UCa').saved).toBe(true)
+    expect(savedOf(withBoth, 'Artist', 'A1').saved).toBe(false)
+  })
+})
+
 describe('library shelves', () => {
   test('are your playlists alone until anything is saved or followed', () => {
     expect(libraryShelves(library).shelves.map(({ title }) => title)).toEqual([
@@ -425,6 +492,8 @@ describe('fixtures shared with the TV app', () => {
     ['lyrics-none.json', Tv.TvLyrics],
     ['liked.json', Tv.TvLiked],
     ['like-request.json', Tv.TvLikeRequest],
+    ['saved.json', Tv.TvSaved],
+    ['save-request.json', Tv.TvSaveRequest],
     ['version.json', Tv.TvVersion],
     ['version-none.json', Tv.TvVersion],
     ['analysis.json', Tv.TvAnalysis],

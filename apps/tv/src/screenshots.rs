@@ -195,6 +195,7 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
         actions,
         clock.clone(),
         ui::Hooks {
+            recent_searches: None,
             open_update_settings: Box::new(|| {}),
             check_for_updates: Box::new(|| {}),
             install_update: Box::new(|| {}),
