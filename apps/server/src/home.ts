@@ -13,8 +13,9 @@ import { type PlayedSong } from './playlists/store.ts'
 
 /*
  * The phone's Home, made only from my own music: the play history every
- * device adds to, my likes, and the artists I follow. The TV's Home reads
- * the same history (`homeShelves` in `tvCatalog/mapping.ts`).
+ * device adds to, my likes, and the artists I follow. The TV's Home is made
+ * from the same feed (`homeShelves` in `tvCatalog/mapping.ts`), and both
+ * read it through `homeSources.ts`.
  */
 
 /** How far back Home looks for albums to jump back into. */
@@ -302,13 +303,16 @@ export const newReleases = (
 
 // FEED
 
-export const homeFeed = (
-  input: Readonly<{
-    recentSongs: ReadonlyArray<Song>
-    played: ReadonlyArray<PlayedSong>
-    liked: ReadonlyArray<Song>
-  }>,
-): HomeFeed => ({
+/** What Home is made from: the play history, and Liked songs. */
+export type HomeFeedInput = Readonly<{
+  /** The songs played lately, the latest first, each once. */
+  recentSongs: ReadonlyArray<Song>
+  /** The songs played most, the most played first. */
+  played: ReadonlyArray<PlayedSong>
+  liked: ReadonlyArray<Song>
+}>
+
+export const homeFeed = (input: HomeFeedInput): HomeFeed => ({
   ...foldRecent(input.recentSongs),
   maybeLastPlayed: Array.head(input.recentSongs),
   mixes: homeMixes(input.played, input.liked),

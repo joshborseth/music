@@ -7,6 +7,7 @@ import {
   type ArtistLink,
   type ArtistSummary,
   type Artwork,
+  type HomeFeed,
   LIKED_PLAYLIST_ID,
   type MyLibrary,
   type MyPlaylistDetails,
@@ -18,6 +19,8 @@ import {
   type SongDetails,
   type Tv,
 } from '@music/shared'
+
+import { mixSeedOf } from '../home.ts'
 
 /*
  * Pure mappings from the catalog's domain Schemas to the TV's plain JSON
@@ -238,10 +241,6 @@ export const yourPlaylistsShelf = (library: MyLibrary): Tv.TvShelf => ({
 
 /** The most liked songs Home shows; the whole list is one OK away. */
 export const HOME_LIKED_SONGS = 30
-/** The most songs "Recently played" shows. */
-export const HOME_RECENT_SONGS = 20
-/** The most albums "Jump back in" shows. */
-export const HOME_RECENT_ALBUMS = 12
 /** The most followed artists Home shows, the latest followed first. */
 export const HOME_FOLLOWED_ARTISTS = 20
 /** How many of your own playlists get a shelf of their songs on Home. */
@@ -249,31 +248,20 @@ export const HOME_PLAYLIST_SHELVES = 4
 /** The most songs a playlist's shelf on Home shows. */
 export const HOME_PLAYLIST_SONGS = 20
 
+export const YOUR_MIXES_TITLE = 'Your mixes'
+export const NEW_RELEASES_TITLE = 'New from artists you follow'
+
+/** "More like Bow Down": the radio of the song played last. */
+export const radioTitle = (seed: Song): string => `More like ${seed.title}`
+
 /**
- * The albums of the songs played lately, latest first, each once. A song
- * with no album (a video, say) adds nothing. The cover is the song's own,
- * which for an album track is the album's.
+ * A mix made on Home: "Mix: Geese", "Based on Cobra". It opens as a
+ * playlist, which the server answers with the seed song's radio.
  */
-export const recentAlbumCards = (
-  recentSongs: ReadonlyArray<Song>,
-): ReadonlyArray<Tv.TvCard> =>
-  pipe(
-    recentSongs,
-    Array.map(song =>
-      Option.map(song.maybeAlbum, (album): Tv.TvCard => ({
-        kind: 'Album',
-        id: album.id,
-        title: album.name,
-        // The album's artist: a song's featured guests are not the album's.
-        subtitle: artistNames(song.artists.slice(0, 1)),
-        artworkUrl: artworkUrl(song.artwork, CARD_ARTWORK_WIDTH),
-        track: null,
-      })),
-    ),
-    Array.getSomes,
-    Array.dedupeWith((left, right) => left.id === right.id),
-    Array.take(HOME_RECENT_ALBUMS),
-  )
+export const mixCard = (mix: PlaylistSummary): Tv.TvCard => ({
+  ...playlistCard(mix),
+  subtitle: Option.getOrElse(mix.maybeSubtitle, () => 'Mix'),
+})
 
 /**
  * The playlists you made that get a shelf of their songs on Home: the
@@ -314,39 +302,74 @@ export const fullerFirst = (
   ]
 }
 
+/** YouTube Music's radio for a song: "More like" it. */
+export type HomeRadio = Readonly<{ seed: Song; songs: ReadonlyArray<Song> }>
+
+export type HomeShelvesInput = Readonly<{
+  library: MyLibrary
+  likedSongs: ReadonlyArray<Song>
+  /** The phone's Home feed (`homeFeed` in `home.ts`). */
+  feed: HomeFeed
+  /** Your latest playlists with their songs (see `homePlaylists`). */
+  playlists?: ReadonlyArray<MyPlaylistDetails>
+  /** None while the radio is slow or failed: Home goes on without it. */
+  radio?: Option.Option<HomeRadio>
+  /** "New from artists you follow"; empty while their pages are slow. */
+  newReleases?: ReadonlyArray<AlbumSummary>
+}>
+
+/** The radio as a shelf, or no shelf. */
+const radioShelves = (
+  radio: Option.Option<HomeRadio>,
+): ReadonlyArray<Tv.TvShelf> =>
+  Option.match(radio, {
+    onNone: () => [],
+    onSome: ({ seed, songs }) => [
+      { title: radioTitle(seed), cards: Array.map(songs, songCard) },
+    ],
+  })
+
 /**
- * Only your own music, nothing from YouTube's feed: what played lately on
- * any device (its albums to jump back into, then the songs themselves),
- * your playlists, your latest liked songs, the artists you follow, and then
- * the songs of each of `playlists` (see `homePlaylists`), so Home is full
- * from the start.
+ * The phone's Home, shelf for shelf, and only your own music: what played
+ * lately on any device (albums more than one song played from, then the
+ * other songs), your mixes, more like the song played last, new releases
+ * from the artists you follow, your playlists, your latest liked songs, the
+ * artists you follow, and then the songs of your latest playlists, so Home
+ * is full from the start. The fuller shelves go first.
  */
-export const homeShelves = (
-  library: MyLibrary,
-  likedSongs: ReadonlyArray<Song>,
-  recentSongs: ReadonlyArray<Song>,
-  playlists: ReadonlyArray<MyPlaylistDetails> = [],
-): Tv.TvShelves => ({
+export const homeShelves = (input: HomeShelvesInput): Tv.TvShelves => ({
   shelves: fullerFirst(
     nonEmptyShelves([
-      { title: 'Jump back in', cards: recentAlbumCards(recentSongs) },
+      {
+        title: 'Jump back in',
+        cards: Array.map(input.feed.jumpBackIn, album => albumCard(album)),
+      },
       {
         title: 'Recently played',
-        cards: Array.map(Array.take(recentSongs, HOME_RECENT_SONGS), songCard),
+        cards: Array.map(input.feed.recentlyPlayed, songCard),
       },
-      yourPlaylistsShelf(library),
+      { title: YOUR_MIXES_TITLE, cards: Array.map(input.feed.mixes, mixCard) },
+      ...radioShelves(input.radio ?? Option.none()),
+      {
+        title: NEW_RELEASES_TITLE,
+        cards: Array.map(input.newReleases ?? [], album => albumCard(album)),
+      },
+      yourPlaylistsShelf(input.library),
       {
         title: 'Liked Songs',
-        cards: Array.map(Array.take(likedSongs, HOME_LIKED_SONGS), songCard),
+        cards: Array.map(
+          Array.take(input.likedSongs, HOME_LIKED_SONGS),
+          songCard,
+        ),
       },
       {
         title: ARTISTS_YOU_FOLLOW_TITLE,
         cards: Array.map(
-          Array.take(library.artists, HOME_FOLLOWED_ARTISTS),
+          Array.take(input.library.artists, HOME_FOLLOWED_ARTISTS),
           artistCard,
         ),
       },
-      ...Array.map(playlists, playlistSongsShelf),
+      ...Array.map(input.playlists ?? [], playlistSongsShelf),
     ]),
   ),
 })
@@ -393,6 +416,7 @@ export const albumCollection = (details: AlbumDetails): Tv.TvCollection => ({
   shelves: [],
 })
 
+/** A mix made on Home says so: "Mix · Based on Cobra · 50 songs". */
 export const playlistCollection = (
   details: PlaylistDetails,
 ): Tv.TvCollection => ({
@@ -400,7 +424,7 @@ export const playlistCollection = (
   id: details.playlist.id,
   title: details.playlist.title,
   subtitle: labelled(
-    'Playlist',
+    Option.isSome(mixSeedOf(details.playlist.id)) ? 'Mix' : 'Playlist',
     joinDetails([
       Option.getOrElse(details.playlist.maybeSubtitle, () => ''),
       Option.getOrElse(details.maybeLengthSummary, () => ''),

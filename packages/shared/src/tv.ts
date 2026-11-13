@@ -12,9 +12,13 @@ import { QueueTrack } from './session.ts'
  * sides together, and update the shared fixtures in `fixtures/tv/` that both
  * test suites decode.
  *
- *   GET  /tv/home                          TvShelves  albums and songs played lately (on any device),
- *                                                    your playlists, your latest liked songs, and
- *                                                    the artists you follow
+ *   GET  /tv/home                          TvShelves  the phone's Home: albums and songs played lately
+ *                                                    (on any device), your mixes (playlists whose id
+ *                                                    is YouTube's radio id, RDAMVM + a song), more
+ *                                                    like the song played last, new releases from the
+ *                                                    artists you follow, your playlists, your latest
+ *                                                    liked songs, the artists you follow, and your
+ *                                                    latest playlists' songs, the fuller shelves first
  *   GET  /tv/library                       TvShelves  your playlists, Liked songs first, then
  *                                                    saved albums and followed artists
  *   GET  /tv/search?q=…                    TvShelves  songs, artists, albums, playlists

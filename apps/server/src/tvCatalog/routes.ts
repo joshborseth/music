@@ -1,8 +1,7 @@
-import { Array, Duration, Effect, Match, Option, Schema } from 'effect'
+import { Array, Duration, Effect, Fiber, Match, Option, Schema } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
 import {
-  LIKED_PLAYLIST_ID,
   type MusicNotFoundError,
   type MyLibrary,
   type PlaylistEdit,
@@ -15,6 +14,12 @@ import {
 
 import { type AnalysisError, SongAnalysis } from '../analysis/service.ts'
 import { VIDEO_ID } from '../audio.ts'
+import { homeFeed } from '../home.ts'
+import {
+  homeFeedInput,
+  loadNewReleases,
+  loadSongRadio,
+} from '../homeSources.ts'
 import { TimedLyrics } from '../lyrics/service.ts'
 import { PlaylistStore } from '../playlists/store.ts'
 import { Prefetcher, pageJobs } from '../prefetch.ts'
@@ -41,8 +46,12 @@ import {
  * missing item 404, and YouTube Music failing 502, each with plain text.
  */
 
-/** How far back Home looks for albums to jump back into. */
-const HOME_HISTORY_DEPTH = 60
+/**
+ * How long Home waits for the shelves YouTube Music fills ("More like" and
+ * the new releases) before answering without them. They keep loading, so
+ * the TV's next visit to Home, which loads it again, finds them ready.
+ */
+const HOME_DISCOVERY_WAIT = Duration.seconds(4)
 
 /** How long a like waits for the song's full details before using the queue's copy. */
 const LIKE_LOOKUP_TIMEOUT = Duration.seconds(3)
@@ -155,17 +164,43 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
         ),
       )
 
+    /**
+     * `effect` in a fiber of its own, waited for at most `wait`: none when
+     * it is slower or fails. A slow one goes on, so its caches warm up.
+     */
+    const awaitBriefly = <A, E>(
+      effect: Effect.Effect<A, E>,
+      wait: Duration.Input,
+    ): Effect.Effect<Option.Option<A>> =>
+      Effect.forkDetach(effect).pipe(
+        Effect.flatMap(fiber =>
+          Fiber.join(fiber).pipe(Effect.timeoutOption(wait), Effect.option),
+        ),
+        Effect.map(Option.flatten),
+      )
+
     const home = Effect.gen(function* () {
-      const [library, liked, recent] = yield* Effect.all(
-        [
-          playlistStore.library(),
-          playlistStore.playlist(LIKED_PLAYLIST_ID),
-          playlistStore.recentlyPlayed(HOME_HISTORY_DEPTH),
-        ],
+      const [library, input] = yield* Effect.all(
+        [playlistStore.library(), homeFeedInput(playlistStore)],
         { concurrency: 'unbounded' },
       )
+      const feed = homeFeed(input)
+      const radio = Option.match(feed.maybeLastPlayed, {
+        onNone: () => Effect.succeedNone,
+        onSome: seed =>
+          awaitBriefly(
+            loadSongRadio(youTubeMusic, seed.videoId).pipe(
+              Effect.map(songs => ({ seed, songs })),
+            ),
+            HOME_DISCOVERY_WAIT,
+          ),
+      })
+      const newReleases = awaitBriefly(
+        loadNewReleases(playlistStore, youTubeMusic),
+        HOME_DISCOVERY_WAIT,
+      ).pipe(Effect.map(Option.getOrElse(() => [])))
       // A playlist deleted meanwhile just has no shelf.
-      const playlists = yield* Effect.forEach(
+      const playlists = Effect.forEach(
         homePlaylists(library),
         playlist =>
           playlistStore.playlist(playlist.id).pipe(
@@ -175,13 +210,17 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
             ),
           ),
         { concurrency: 'unbounded' },
+      ).pipe(Effect.map(Array.getSomes))
+      const more = yield* Effect.all(
+        { radio, newReleases, playlists },
+        { concurrency: 'unbounded' },
       )
-      return homeShelves(
+      return homeShelves({
         library,
-        liked.songs,
-        recent,
-        Array.getSomes(playlists),
-      )
+        likedSongs: input.liked,
+        feed,
+        ...more,
+      })
     }).pipe(Effect.mapError(toRouteError))
 
     const library = playlistStore

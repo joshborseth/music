@@ -50,7 +50,10 @@ const youTubeMusic = YouTubeMusic.of({
             maybeLines: Option.none(),
           }),
         }),
-  getUpNext: () => down,
+  getUpNext: videoId =>
+    videoId === 'radio-seed'
+      ? Effect.succeed([song('m1'), song('m2'), song('m3')])
+      : down,
   getDurationSeconds: () => down,
   getArtist: artistId =>
     artistId === 'UCgone'
@@ -229,6 +232,32 @@ describe('TV catalog routes', () => {
       kind: 'Song',
       id: 'trip',
     })
+  })
+
+  test('home adds more like the song played last, and a mix of the artist played most', async () => {
+    Effect.runSync(playlistStore.recordPlay(song('radio-seed')))
+    Effect.runSync(playlistStore.recordPlay(song('radio-seed')))
+    const response = await get('/tv/home')
+    const body = Schema.decodeUnknownSync(Tv.TvShelves)(await response.json())
+    expect(body.shelves.map(({ title }) => title)).toEqual([
+      'More like Song radio-seed',
+      'Recently played',
+      'Your mixes',
+      'Your playlists',
+      'Road trip',
+    ])
+    expect(body.shelves[0]?.cards.map(({ id }) => id)).toEqual([
+      'm1',
+      'm2',
+      'm3',
+    ])
+    expect(body.shelves[2]?.cards).toEqual([
+      expect.objectContaining({
+        kind: 'Playlist',
+        id: 'RDAMVMradio-seed',
+        title: 'Mix: Artist',
+      }),
+    ])
   })
 
   test('search answers 502 when a search fails, and 400 without q', async () => {
