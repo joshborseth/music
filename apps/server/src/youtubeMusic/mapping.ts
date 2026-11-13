@@ -1,8 +1,9 @@
-import { Array, Option, Order, Schema, String, pipe } from 'effect'
+import { Array, Option, Order, Record, Schema, String, pipe } from 'effect'
 import { type Helpers, type Misc, YTNodes } from 'youtubei.js'
 
 import {
   type AlbumDetails,
+  type AlbumLink,
   type AlbumSummary,
   type ArtistDetails,
   type ArtistLink,
@@ -88,6 +89,21 @@ const browseIdOf = (
     Option.flatMap(endpoint => decodeBrowsePayload(endpoint.payload)),
     Option.map(({ browseId }) => browseId),
   )
+
+const PageTypePayload = Schema.Struct({
+  browseId: Schema.String,
+  browseEndpointContextSupportedConfigs: Schema.Struct({
+    browseEndpointContextMusicConfig: Schema.Struct({
+      pageType: Schema.String,
+    }),
+  }),
+})
+
+const decodePageTypePayload = Schema.decodeUnknownOption(PageTypePayload)
+
+const ARTIST_PAGE = 'MUSIC_PAGE_TYPE_ARTIST'
+const ALBUM_PAGE = 'MUSIC_PAGE_TYPE_ALBUM'
+const PLAYLIST_PAGE = 'MUSIC_PAGE_TYPE_PLAYLIST'
 
 // ARTWORK
 
@@ -217,6 +233,36 @@ const audienceFromSubtitle = (
 
 // SONGS
 
+/**
+ * The album a row links to in one of its columns. youtubei.js only reads
+ * it from some layouts; an artist's top songs name it in their last column.
+ */
+const albumFromColumns = (
+  item: YTNodes.MusicResponsiveListItem,
+): Option.Option<AlbumLink> =>
+  pipe(
+    item.flex_columns,
+    Array.flatMap(column => column.title.runs ?? []),
+    Array.findFirst(run =>
+      pipe(
+        decodePageTypePayload(
+          'endpoint' in run ? run.endpoint?.payload : undefined,
+        ),
+        Option.filter(
+          payload =>
+            payload.browseEndpointContextSupportedConfigs
+              .browseEndpointContextMusicConfig.pageType === ALBUM_PAGE,
+        ),
+        Option.flatMap(({ browseId }) =>
+          Option.map(nonEmptyString(run.text), name => ({
+            id: browseId,
+            name,
+          })),
+        ),
+      ),
+    ),
+  )
+
 /** A song from a search result, tracklist, or top-songs row. */
 export const songFromListItem = (
   item: YTNodes.MusicResponsiveListItem,
@@ -234,10 +280,23 @@ export const songFromListItem = (
         Option.flatMap(({ id, name }) =>
           Option.map(nonEmptyString(id), albumId => ({ id: albumId, name })),
         ),
+        Option.orElse(() => albumFromColumns(item)),
       ),
       maybeDurationSeconds: Option.fromNullishOr(item.duration?.seconds),
       artwork: toArtwork(item.thumbnail?.contents),
     })),
+  )
+
+const PLAY_COUNT = /^[\d.,]+[KMB]? plays?$/
+
+/** How often a top song was played, as YouTube Music words it: "1.2B plays". */
+export const playsFromListItem = (
+  item: YTNodes.MusicResponsiveListItem,
+): Option.Option<string> =>
+  pipe(
+    item.flex_columns,
+    Array.map(column => column.title.toString().trim()),
+    Array.findFirst(text => PLAY_COUNT.test(text)),
   )
 
 /** A song from an "up next" queue. */
@@ -406,8 +465,12 @@ export const toAlbumDetails = (
 
 // ARTIST PAGE
 
-const ALBUMS_SHELF_TITLE = 'Albums'
-const SINGLES_SHELF_TITLE = 'Singles & EPs'
+/** The artist page's carousels this app reads, by their English titles. */
+export const ArtistShelfTitle = {
+  Albums: 'Albums',
+  Singles: 'Singles & EPs',
+  Related: 'Fans might also like',
+} as const
 
 type ArtistPage = {
   readonly header?:
@@ -444,29 +507,111 @@ const headerDescription = (header: NonNullable<ArtistPage['header']>) =>
     ? textToOption(header.as(YTNodes.MusicImmersiveHeader).description)
     : Option.none()
 
+const carouselTitled = (
+  sections: ArtistPage['sections'],
+  title: string,
+): Option.Option<YTNodes.MusicCarouselShelf> =>
+  Array.findFirst(sections, section =>
+    section.is(YTNodes.MusicCarouselShelf)
+      ? Option.liftPredicate(
+          section.as(YTNodes.MusicCarouselShelf),
+          carousel => carousel.header?.title.toString().trim() === title,
+        )
+      : Option.none(),
+  )
+
+/** The cards among `items`, leaving out anything else. */
+export const twoRowItemsOf = (
+  items: ReadonlyArray<Helpers.YTNode>,
+): ReadonlyArray<YTNodes.MusicTwoRowItem> =>
+  filterSome(items, item =>
+    item.is(YTNodes.MusicTwoRowItem)
+      ? Option.some(item.as(YTNodes.MusicTwoRowItem))
+      : Option.none(),
+  )
+
 const carouselItems = (
   sections: ArtistPage['sections'],
   title: string,
 ): ReadonlyArray<YTNodes.MusicTwoRowItem> =>
-  pipe(
-    sections,
-    Array.findFirst(section =>
-      section.is(YTNodes.MusicCarouselShelf)
-        ? Option.liftPredicate(
-            section.as(YTNodes.MusicCarouselShelf),
-            carousel => carousel.header?.title.toString().trim() === title,
-          )
-        : Option.none(),
-    ),
-    Option.match({
-      onNone: () => [],
-      onSome: carousel =>
-        filterSome(carousel.contents, item =>
-          item.is(YTNodes.MusicTwoRowItem)
-            ? Option.some(item.as(YTNodes.MusicTwoRowItem))
-            : Option.none(),
-        ),
+  Option.match(carouselTitled(sections, title), {
+    onNone: () => [],
+    onSome: carousel => twoRowItemsOf(carousel.contents),
+  })
+
+const topSongsShelf = (
+  sections: ArtistPage['sections'],
+): Option.Option<YTNodes.MusicShelf> =>
+  Array.findFirst(sections, section =>
+    section.is(YTNodes.MusicShelf)
+      ? Option.some(section.as(YTNodes.MusicShelf))
+      : Option.none(),
+  )
+
+const DiscographyPayload = Schema.Struct({
+  browseId: Schema.String,
+  params: Schema.String,
+  browseEndpointContextSupportedConfigs: Schema.Struct({
+    browseEndpointContextMusicConfig: Schema.Struct({
+      pageType: Schema.Literal('MUSIC_PAGE_TYPE_ARTIST_DISCOGRAPHY'),
     }),
+  }),
+})
+
+const decodeDiscographyPayload = Schema.decodeUnknownOption(DiscographyPayload)
+
+/** Where YouTube Music lists every release of one kind by an artist. */
+export type DiscographyLink = Readonly<{ browseId: string; params: string }>
+
+/**
+ * The page behind a release carousel's "More", when the carousel shows only
+ * some of the releases. None when it already shows them all.
+ */
+export const discographyLink = (
+  page: ArtistPage,
+  title: string,
+): Option.Option<DiscographyLink> =>
+  pipe(
+    carouselTitled(page.sections, title),
+    Option.flatMap(carousel =>
+      decodeDiscographyPayload(
+        carousel.header?.more_content?.endpoint?.payload,
+      ),
+    ),
+    Option.map(({ browseId, params }) => ({ browseId, params })),
+  )
+
+/** An artist from a card, such as one their fans also like. */
+export const artistFromTwoRowItem = (
+  item: YTNodes.MusicTwoRowItem,
+): Option.Option<ArtistSummary> =>
+  Option.all({
+    id: nonEmptyString(item.id),
+    name: textToOption(item.title),
+  }).pipe(
+    Option.map(({ id, name }) => ({
+      id,
+      name,
+      maybeAudience: audienceFromSubtitle(item.subtitle),
+      artwork: toArtwork(item.thumbnail),
+    })),
+  )
+
+/**
+ * Releases from a carousel or a discography page. Their cards leave out the
+ * artist the page is about, so it is credited here.
+ */
+export const releasesFromItems = (
+  artist: Readonly<{ id: string; name: string }>,
+  items: ReadonlyArray<YTNodes.MusicTwoRowItem>,
+  defaultKind: Option.Option<ReleaseKind>,
+): ReadonlyArray<AlbumSummary> =>
+  filterSome(
+    items,
+    albumFromTwoRowItem(
+      [{ maybeId: Option.some(artist.id), name: artist.name }],
+      defaultKind,
+    ),
   )
 
 /** The artist page. Returns None when YouTube has no artist with this id. */
@@ -478,34 +623,43 @@ export const toArtistDetails = (
     Option.fromNullishOr(page.header),
     Option.flatMap(header =>
       Option.map(headerTitle(header), name => {
-        const artistLink: ArtistLink = { maybeId: Option.some(artistId), name }
+        const artist = { id: artistId, name }
+        const maybeTopSongs = topSongsShelf(page.sections)
+        const topSongItems = Option.match(maybeTopSongs, {
+          onNone: () => [],
+          onSome: shelf => shelf.contents,
+        })
         return {
           artist: {
-            id: artistId,
-            name,
+            ...artist,
             maybeAudience: Option.none(),
             artwork: headerArtwork(header),
           },
           maybeDescription: headerDescription(header),
-          topSongs: pipe(
-            page.sections,
-            Array.findFirst(section =>
-              section.is(YTNodes.MusicShelf)
-                ? Option.some(section.as(YTNodes.MusicShelf))
-                : Option.none(),
+          topSongs: filterSome(topSongItems, songFromListItem),
+          topSongPlays: Record.fromEntries(
+            filterSome(topSongItems, item =>
+              Option.all([nonEmptyString(item.id), playsFromListItem(item)]),
             ),
-            Option.match({
-              onNone: () => [],
-              onSome: shelf => filterSome(shelf.contents, songFromListItem),
-            }),
           ),
-          albums: filterSome(
-            carouselItems(page.sections, ALBUMS_SHELF_TITLE),
-            albumFromTwoRowItem([artistLink], Option.some('Album')),
+          maybeAllSongsPlaylistId: Option.flatMap(maybeTopSongs, shelf =>
+            Option.orElse(browseIdOf(shelf.endpoint), () =>
+              browseIdOf(shelf.bottom_button?.endpoint),
+            ),
           ),
-          singles: filterSome(
-            carouselItems(page.sections, SINGLES_SHELF_TITLE),
-            albumFromTwoRowItem([artistLink], Option.none()),
+          albums: releasesFromItems(
+            artist,
+            carouselItems(page.sections, ArtistShelfTitle.Albums),
+            Option.some('Album'),
+          ),
+          singles: releasesFromItems(
+            artist,
+            carouselItems(page.sections, ArtistShelfTitle.Singles),
+            Option.none(),
+          ),
+          relatedArtists: filterSome(
+            carouselItems(page.sections, ArtistShelfTitle.Related),
+            artistFromTwoRowItem,
           ),
         }
       }),
@@ -535,14 +689,104 @@ export const playlistFromListItem = (
   )
 
 /**
+ * Who made a playlist, from the row of avatars in its header. youtubei.js
+ * drops that row, so it is read from YouTube's raw response.
+ */
+const RawFacepile = Schema.Struct({
+  avatarStackViewModel: Schema.Struct({
+    text: Schema.Struct({ content: Schema.String }),
+    rendererContext: Schema.optional(
+      Schema.Struct({
+        commandContext: Schema.optional(
+          Schema.Struct({
+            onTap: Schema.Struct({
+              innertubeCommand: Schema.Struct({
+                browseEndpoint: Schema.optional(PageTypePayload),
+              }),
+            }),
+          }),
+        ),
+      }),
+    ),
+  }),
+})
+
+const RawPlaylistPage = Schema.Struct({
+  contents: Schema.Struct({
+    twoColumnBrowseResultsRenderer: Schema.Struct({
+      tabs: Schema.Array(
+        Schema.Struct({
+          tabRenderer: Schema.Struct({
+            content: Schema.Struct({
+              sectionListRenderer: Schema.Struct({
+                contents: Schema.Array(
+                  Schema.Struct({
+                    musicResponsiveHeaderRenderer: Schema.optional(
+                      Schema.Struct({ facepile: Schema.optional(RawFacepile) }),
+                    ),
+                  }),
+                ),
+              }),
+            }),
+          }),
+        }),
+      ),
+    }),
+  }),
+})
+
+const decodeRawPlaylistPage = Schema.decodeUnknownOption(RawPlaylistPage)
+
+/**
+ * Who made a playlist, from YouTube's raw response for its page: an artist,
+ * linked to their page, or a name alone (YouTube Music, someone's channel).
+ */
+export const playlistOwnerFromResponse = (
+  response: unknown,
+): Option.Option<ArtistLink> =>
+  pipe(
+    decodeRawPlaylistPage(response),
+    Option.flatMap(page =>
+      pipe(
+        page.contents.twoColumnBrowseResultsRenderer.tabs,
+        Array.flatMap(
+          ({ tabRenderer }) => tabRenderer.content.sectionListRenderer.contents,
+        ),
+        Array.findFirst(({ musicResponsiveHeaderRenderer }) =>
+          Option.fromNullishOr(musicResponsiveHeaderRenderer?.facepile),
+        ),
+      ),
+    ),
+    Option.flatMap(({ avatarStackViewModel }) =>
+      Option.map(nonEmptyString(avatarStackViewModel.text.content), name => ({
+        name,
+        maybeId: pipe(
+          Option.fromNullishOr(
+            avatarStackViewModel.rendererContext?.commandContext?.onTap
+              .innertubeCommand.browseEndpoint,
+          ),
+          Option.filter(
+            endpoint =>
+              endpoint.browseEndpointContextSupportedConfigs
+                .browseEndpointContextMusicConfig.pageType === ARTIST_PAGE,
+          ),
+          Option.map(({ browseId }) => browseId),
+        ),
+      })),
+    ),
+  )
+
+/**
  * The playlist page. Its header reads like an album's, except the subtitle
- * names the kind and year rather than the artists.
+ * names the kind and year rather than the artists. `maybeOwner` comes from
+ * `playlistOwnerFromResponse`.
  */
 export const toPlaylistDetails = (
   playlistId: string,
   page: {
     readonly header: Helpers.YTNode | undefined
     readonly items: ReadonlyArray<Helpers.YTNode>
+    readonly maybeOwner: Option.Option<ArtistLink>
   },
 ): Option.Option<PlaylistDetails> =>
   pipe(
@@ -567,6 +811,13 @@ export const toPlaylistDetails = (
           ),
           artwork: toArtwork(header.thumbnail?.contents),
         },
+        maybeOwner: Option.orElse(page.maybeOwner, () =>
+          pipe(
+            textToOption(header.strapline_text_one),
+            Option.filter(text => text !== 'N/A'),
+            Option.map(name => ({ maybeId: Option.none(), name })),
+          ),
+        ),
         maybeDescription: textToOption(header.description?.description),
         maybeLengthSummary: textToOption(header.second_subtitle),
         tracks: filterSome(page.items, item =>
@@ -580,24 +831,9 @@ export const toPlaylistDetails = (
 
 // TOP RESULT
 
-const PageTypePayload = Schema.Struct({
-  browseId: Schema.String,
-  browseEndpointContextSupportedConfigs: Schema.Struct({
-    browseEndpointContextMusicConfig: Schema.Struct({
-      pageType: Schema.String,
-    }),
-  }),
-})
-
-const decodePageTypePayload = Schema.decodeUnknownOption(PageTypePayload)
-
 const WatchPayload = Schema.Struct({ videoId: Schema.String })
 
 const decodeWatchPayload = Schema.decodeUnknownOption(WatchPayload)
-
-const ARTIST_PAGE = 'MUSIC_PAGE_TYPE_ARTIST'
-const ALBUM_PAGE = 'MUSIC_PAGE_TYPE_ALBUM'
-const PLAYLIST_PAGE = 'MUSIC_PAGE_TYPE_PLAYLIST'
 
 /**
  * Playlist ids that start with `VLRD` are YouTube's generated mixes and

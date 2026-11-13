@@ -160,6 +160,8 @@ export const Message = defineMessageUnion({
     entryId: Schema.String,
     maybeSeq: Schema.Option(Schema.Number),
   },
+  /** A clear of the songs to come went out as this connection's `maybeSeq`th. */
+  SentQueueClear: { maybeSeq: Schema.Option(Schema.Number) },
   CompletedWaitBeforeHideNotice: { message: Schema.String },
   TickedClock: { now: Schema.Number },
 
@@ -220,6 +222,8 @@ export const Message = defineMessageUnion({
   ClickedQueueEntry: { entryId: Schema.String },
   ClickedToggleAutoplay: {},
   ClickedToggleShuffle: {},
+  /** "Clear" over Playing next: the songs someone queued go. */
+  ClickedClearUpcoming: {},
   ClickedCycleRepeat: {},
   ClickedOpenPlayer: {},
   ClickedClosePlayer: {},

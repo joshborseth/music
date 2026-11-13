@@ -551,9 +551,56 @@ describe('back button', () => {
       update,
       given(initialModel(AppRoute.Album({ albumId: 'x' }), '/album/x')),
       message(Message.ClickedBack()),
-      Command.expectExact(NavigateBackTo({ url: '/' })),
+      Command.expectExact(NavigateBackTo({ url: '/search' })),
       Command.resolve(NavigateBackTo, Message.CompletedNavigateBackTo()),
     )
+    story(
+      update,
+      given(
+        initialModel(
+          AppRoute.MyPlaylist({ playlistId: 'p1' }),
+          '/library/playlist/p1',
+        ),
+      ),
+      message(Message.ClickedBack()),
+      Command.expectExact(NavigateBackTo({ url: '/library' })),
+      Command.resolve(NavigateBackTo, Message.CompletedNavigateBackTo()),
+    )
+  })
+})
+
+describe('a page opened straight from a link', () => {
+  test("is under the tab that finds it: YouTube Music's pages under Search", () => {
+    const artist = initialModel(
+      AppRoute.Artist({ artistId: 'abc' }),
+      '/artist/abc',
+    )
+    expect(artist.navigation.activeTab).toBe('Search')
+    expect(artist.navigation.tabUrls.Search).toBe('/artist/abc')
+    expect(artist.navigation.tabUrls.Home).toBe('/')
+    expect(
+      initialModel(
+        AppRoute.ArtistAlbums({ artistId: 'abc' }),
+        '/artist/abc/albums',
+      ).navigation.activeTab,
+    ).toBe('Search')
+    expect(
+      initialModel(AppRoute.Mood({ params: 'm' }), '/browse/m').navigation
+        .activeTab,
+    ).toBe('Search')
+  })
+
+  test('is under Library for one of my playlists, and Home for a page not found', () => {
+    expect(
+      initialModel(
+        AppRoute.MyPlaylist({ playlistId: 'p1' }),
+        '/library/playlist/p1',
+      ).navigation.activeTab,
+    ).toBe('Library')
+    expect(
+      initialModel(AppRoute.NotFound({ path: '/x' }), '/x').navigation
+        .activeTab,
+    ).toBe('Home')
   })
 })
 

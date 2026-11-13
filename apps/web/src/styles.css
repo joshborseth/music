@@ -582,6 +582,20 @@
  * finger reads ahead.
  */
 
+/*
+ * The panel ends plainly, with no fade, so a line its edge would cut
+ * through is hidden instead (`data-cut`, which `FollowLyrics` keeps up to
+ * date): at rest it shows only whole lines. While a finger reads ahead,
+ * the lines scroll past the edges like any list.
+ */
+.lyrics {
+  position: relative;
+}
+
+.lyrics:not([data-browsing]) [data-cut] {
+  visibility: hidden;
+}
+
 .lyrics-lines {
   display: flex;
   flex-direction: column;
@@ -712,19 +726,34 @@
 
 /* MARQUEE
 
-   A line too long for the player scrolls slowly to the left, its copy
-   following a gap behind, then rests at the start; the `Marquee` Mount
+   A line too long for the player rests ending in "…" on a whole letter
+   (.marquee-rest), then scrolls slowly to the left, its copy following a
+   gap behind, until the copy stands where the line began; then it rests
+   again. The resting line and the moving one (.marquee-track) are separate
+   elements, and each cycle swaps them at once where they line up, so the
+   still line never ends mid-letter and nothing fades. The `Marquee` Mount
    sets --marquee-distance and --marquee-duration and marks it
-   data-overflowing. The ends cut off plainly: no fades. */
+   data-overflowing. */
 
 .marquee {
+  position: relative;
   overflow: hidden;
   white-space: nowrap;
 }
 
+.marquee-rest {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .marquee-track {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: inline-flex;
   gap: 48px;
+  visibility: hidden;
 }
 
 .marquee-copy {
@@ -736,14 +765,22 @@
 }
 
 .marquee[data-overflowing] .marquee-track {
-  animation: marquee var(--marquee-duration, 12s) linear infinite;
+  animation:
+    marquee var(--marquee-duration, 12s) linear infinite,
+    marquee-moving var(--marquee-duration, 12s) step-end infinite;
+}
+
+.marquee[data-overflowing] .marquee-rest {
+  animation: marquee-resting var(--marquee-duration, 12s) step-end infinite;
 }
 
 /* Still while the player is closed. */
-.sheet[data-state='closed'] .marquee-track {
+.sheet[data-state='closed'] .marquee-track,
+.sheet[data-state='closed'] .marquee-rest {
   animation-play-state: paused;
 }
 
+/* The rest share (30%) is MARQUEE_REST_SHARE in `mount.ts`. */
 @keyframes marquee {
   0%,
   30% {
@@ -751,6 +788,26 @@
   }
   100% {
     transform: translate3d(calc(-1 * var(--marquee-distance, 0px)), 0, 0);
+  }
+}
+
+@keyframes marquee-moving {
+  0% {
+    visibility: hidden;
+  }
+  30%,
+  100% {
+    visibility: visible;
+  }
+}
+
+@keyframes marquee-resting {
+  0% {
+    visibility: visible;
+  }
+  30%,
+  100% {
+    visibility: hidden;
   }
 }
 
@@ -777,16 +834,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .marquee {
-    text-overflow: ellipsis;
-  }
-  .marquee-track {
-    display: inline;
-  }
-  .marquee[data-overflowing] .marquee-copy {
-    display: none;
-  }
-  .marquee[data-overflowing] .marquee-track {
+  .marquee[data-overflowing] .marquee-track,
+  .marquee[data-overflowing] .marquee-rest {
     animation: none;
   }
   .equalizer-bar,

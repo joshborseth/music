@@ -9,13 +9,7 @@ import {
   Option,
   pipe,
 } from 'effect'
-import {
-  type Helpers,
-  Innertube,
-  Log,
-  type YTMusic,
-  YTNodes,
-} from 'youtubei.js'
+import { type Helpers, Innertube, Log, YTMusic, YTNodes } from 'youtubei.js'
 
 import {
   type AlbumDetails,
@@ -27,6 +21,7 @@ import {
   MusicNotFoundError,
   type PlaylistDetails,
   type PlaylistSummary,
+  type ReleaseKind,
   type Song,
   type SongDetails,
   type TopResult,
@@ -34,12 +29,17 @@ import {
 } from '@music/shared'
 
 import {
+  ArtistShelfTitle,
+  type DiscographyLink,
   type MoodShelf,
   albumFromListItem,
   artistFromListItem,
   audioTrackFor,
+  discographyLink,
   filterSome,
   playlistFromListItem,
+  playlistOwnerFromResponse,
+  releasesFromItems,
   songFromListItem,
   songFromPlaylistPanelVideo,
   toAlbumDetails,
@@ -49,6 +49,7 @@ import {
   toMoodGroups,
   toPlaylistDetails,
   topResultFromCard,
+  twoRowItemsOf,
 } from './mapping.ts'
 
 /**
@@ -387,11 +388,68 @@ const make = Effect.gen(function* () {
     }
   })
 
+  /**
+   * Every release of one kind, from the discography page behind a release
+   * carousel's "More". None when it can't be read; the carousel's own
+   * releases stand in.
+   */
+  const discography = (
+    link: DiscographyLink,
+    artist: Readonly<{ id: string; name: string }>,
+    defaultKind: Option.Option<ReleaseKind>,
+  ): Effect.Effect<Option.Option<ReadonlyArray<AlbumSummary>>> =>
+    callYouTube(() =>
+      innertube.actions.execute('/browse', {
+        browseId: link.browseId,
+        params: link.params,
+        client: 'YTMUSIC',
+        parse: true,
+      }),
+    ).pipe(
+      Effect.map(response =>
+        pipe(
+          releasesFromItems(
+            artist,
+            twoRowItemsOf(
+              Array.flatMap(
+                response.contents_memo?.getType(YTNodes.Grid) ?? [],
+                grid => grid.items,
+              ),
+            ),
+            defaultKind,
+          ),
+          Option.liftPredicate(Array.isReadonlyArrayNonEmpty),
+        ),
+      ),
+      Effect.orElseSucceed(() => Option.none()),
+    )
+
   const getArtist = Effect.fn('YouTubeMusic.getArtist')(function* (
     artistId: string,
   ) {
     const page = yield* lookUp(artistId, () => music.getArtist(artistId))
-    return yield* orNotFound(artistId)(toArtistDetails(artistId, page))
+    const details = yield* orNotFound(artistId)(toArtistDetails(artistId, page))
+    const artist = { id: artistId, name: details.artist.name }
+    const fullList = (
+      title: string,
+      shown: ReadonlyArray<AlbumSummary>,
+      defaultKind: Option.Option<ReleaseKind>,
+    ) =>
+      Option.match(discographyLink(page, title), {
+        onNone: () => Effect.succeed(shown),
+        onSome: link =>
+          Effect.map(discography(link, artist, defaultKind), maybeAll =>
+            Option.getOrElse(maybeAll, () => shown),
+          ),
+      })
+    const [albums, singles] = yield* Effect.all(
+      [
+        fullList(ArtistShelfTitle.Albums, details.albums, Option.some('Album')),
+        fullList(ArtistShelfTitle.Singles, details.singles, Option.none()),
+      ],
+      { concurrency: 'unbounded' },
+    )
+    return { ...details, albums, singles }
   })
 
   const getAlbum = Effect.fn('YouTubeMusic.getAlbum')(function* (
@@ -418,12 +476,24 @@ const make = Effect.gen(function* () {
   const getPlaylist = Effect.fn('YouTubeMusic.getPlaylist')(function* (
     playlistId: string,
   ) {
-    const first = yield* lookUp(playlistId, () => music.getPlaylist(playlistId))
+    // NOTE: the page is fetched raw, as `music.getPlaylist` does, because
+    // the parsed header leaves out who made the playlist.
+    const response = yield* lookUp(playlistId, () =>
+      innertube.actions.execute('/browse', {
+        browseId: playlistId.startsWith('VL') ? playlistId : `VL${playlistId}`,
+        client: 'YTMUSIC',
+      }),
+    )
+    const first = yield* lookUp(
+      playlistId,
+      async () => new YTMusic.Playlist(response, innertube.actions),
+    )
     const items = yield* withLaterPages(first, Array.fromIterable(first.items))
     return yield* orNotFound(playlistId)(
       toPlaylistDetails(playlistId, {
         header: first.header,
         items: Array.take(items, MAX_PLAYLIST_SONGS),
+        maybeOwner: playlistOwnerFromResponse(response.data),
       }),
     )
   })

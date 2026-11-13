@@ -693,13 +693,15 @@ const moodTile = (category: MoodCategory, h: HtmlBuilder<Message>): Html =>
     [
       h.Href(moodRouter({ params: category.params })),
       h.Class(
-        'pressable bg-secondary relative flex h-14 items-center overflow-hidden rounded-xl pr-3 pl-5 text-[15px] leading-tight font-semibold',
+        'pressable bg-secondary flex h-14 items-center gap-3 rounded-xl pr-3 pl-3 text-[15px] leading-tight font-semibold',
       ),
     ],
     [
+      // NOTE: the stripe sits inside the tile with its own rounded ends, so
+      // the tile's corners never bend it.
       h.span([
         h.AriaHidden(true),
-        h.Class('absolute inset-y-0 left-0 w-1.5'),
+        h.Class('h-7 w-1 shrink-0 rounded-full'),
         h.Style({
           backgroundColor: Option.getOrElse(
             category.maybeColor,

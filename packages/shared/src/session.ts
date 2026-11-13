@@ -167,6 +167,12 @@ export const MoveEntry = Schema.TaggedStruct('MoveEntry', {
   entryId: Schema.String,
   beforeEntryId: Schema.NullOr(Schema.String),
 })
+/**
+ * Clear the songs still to come that someone queued: "Clear" over Playing
+ * Next. The current song and the songs before it stay, and so do the
+ * autoplay songs, which then follow the current song. See `clearUpcoming`.
+ */
+export const ClearUpcoming = Schema.TaggedStruct('ClearUpcoming', {})
 export const Resume = Schema.TaggedStruct('Resume', {})
 /** Where a player stopped, and the session jump it was following. */
 export const StoppedAt = Schema.Struct({
@@ -266,6 +272,7 @@ export const ClientMessage = Schema.Union([
   Enqueue,
   RemoveEntry,
   MoveEntry,
+  ClearUpcoming,
   Resume,
   Pause,
   Seek,
@@ -400,4 +407,23 @@ export const moveEntry = (
   )
   if (to === from) return Option.none()
   return Option.some([...rest.slice(0, to), moving, ...rest.slice(to)])
+}
+
+/**
+ * The queue after `ClearUpcoming`, or None when there is nothing to clear.
+ * Every song after `currentEntryId` that someone queued goes (every one
+ * when there is none); the songs before it and autoplay's songs stay. The
+ * server clears with this, and the phone shows its own clear at once with
+ * it, so both leave the same songs.
+ */
+export const clearUpcoming = (
+  queue: ReadonlyArray<QueueEntry>,
+  currentEntryId: string | null,
+): Option.Option<ReadonlyArray<QueueEntry>> => {
+  const after =
+    (currentEntryId === null
+      ? -1
+      : queue.findIndex(entry => entry.entryId === currentEntryId)) + 1
+  const kept = queue.filter((entry, index) => index < after || entry.autoplay)
+  return kept.length === queue.length ? Option.none() : Option.some(kept)
 }

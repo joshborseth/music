@@ -119,7 +119,7 @@ export const SendLocalChange = Command.define('SendLocalChange', {
     ),
 })
 
-/** Send a queue move this phone already shows (see `QueueMove`). */
+/** Send a queue move this phone already shows (see `QueueEdit`). */
 export const SendQueueMove = Command.define('SendQueueMove', {
   args: { message: Session.MoveEntry },
   messages: [Message.SentQueueMove],
@@ -129,6 +129,14 @@ export const SendQueueMove = Command.define('SendQueueMove', {
         Message.SentQueueMove({ entryId: message.entryId, maybeSeq }),
       ),
     ),
+})
+
+/** Send a clear of the songs to come that this phone already shows. */
+export const SendQueueClear = Command.define('SendQueueClear', {
+  messages: [Message.SentQueueClear],
+  execute: sendMessage({ _tag: 'ClearUpcoming' }).pipe(
+    Effect.map(maybeSeq => Message.SentQueueClear({ maybeSeq })),
+  ),
 })
 
 export const WaitBeforeReconnect = Command.define('WaitBeforeReconnect', {

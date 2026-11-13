@@ -18,6 +18,7 @@ import {
   PrefetchSongs,
   SeekPhoneAudio,
   SendLocalChange,
+  SendQueueClear,
   SendQueueMove,
   SendToSession,
   SetPhoneAudioPlaying,
@@ -701,13 +702,13 @@ describe('moving a song in the queue', () => {
       message(stateMessage([...ORDER, queued('r2', true)], 3)),
       model(model => {
         expect(shownOrder(model)).toEqual(['e0', 'q3', 'q1', 'q2', 'r1', 'r2'])
-        expect(model.queueMoves).toHaveLength(1)
+        expect(model.queueEdits).toHaveLength(1)
       }),
       // The server's answer includes it: the phone follows the server again.
       message(stateMessage(queueOf('e0', 'q3', 'q1', 'q2', 'r1'), 4)),
       model(model => {
         expect(shownOrder(model)).toEqual(['e0', 'q3', 'q1', 'q2', 'r1'])
-        expect(model.queueMoves).toEqual([])
+        expect(model.queueEdits).toEqual([])
       }),
       // A later move from another device is followed.
       message(stateMessage(queueOf('e0', 'q2', 'q3', 'q1', 'r1'), 4)),
@@ -725,7 +726,7 @@ describe('moving a song in the queue', () => {
       Command.expectExact(sendQ3BeforeQ1),
       sentAsMove(Option.none()),
       model(model => {
-        expect(model.queueMoves).toEqual([])
+        expect(model.queueEdits).toEqual([])
       }),
       message(stateMessage(ORDER, 1)),
       model(model => {
@@ -753,8 +754,75 @@ describe('moving a song in the queue', () => {
       Command.expectNone(),
       model(model => {
         expect(shownOrder(model)).toEqual(ORDER.map(({ entryId }) => entryId))
-        expect(model.queueMoves).toEqual([])
+        expect(model.queueEdits).toEqual([])
       }),
+    )
+  })
+
+  const clearedAs = (maybeSeq: Option.Option<number>) =>
+    Command.resolve(SendQueueClear, Message.SentQueueClear({ maybeSeq }))
+
+  test("Clear drops the songs someone queued at once, keeping autoplay's", () => {
+    story(
+      update,
+      given(remoteWith(ORDER)),
+      message(Message.ClickedClearUpcoming()),
+      model(model => {
+        expect(shownOrder(model)).toEqual(['e0', 'r1'])
+      }),
+      Command.expectExact(SendQueueClear()),
+      clearedAs(Option.some(4)),
+      // The server's state from before the clear arrives, with a song
+      // another device queued meanwhile: the clear still shows.
+      message(stateMessage(queueOf('e0', 'q1', 'q2', 'q3', 'q4', 'r1'), 3)),
+      model(model => {
+        expect(shownOrder(model)).toEqual(['e0', 'r1'])
+        expect(model.queueEdits).toHaveLength(1)
+      }),
+      // The server's answer includes it: the phone follows the server again.
+      message(stateMessage(queueOf('e0', 'r1'), 4)),
+      model(model => {
+        expect(model.queueEdits).toEqual([])
+      }),
+      // A song queued after the clear is followed.
+      message(stateMessage(queueOf('e0', 'q5', 'r1'), 4)),
+      model(model => {
+        expect(shownOrder(model)).toEqual(['e0', 'q5', 'r1'])
+      }),
+    )
+  })
+
+  test('a move made before Clear is cleared with the rest', () => {
+    story(
+      update,
+      given(remoteWith(ORDER)),
+      dragQ3BeforeQ1,
+      Command.expectExact(sendQ3BeforeQ1),
+      sentAsMove(Option.some(4)),
+      message(Message.ClickedClearUpcoming()),
+      Command.expectExact(SendQueueClear()),
+      clearedAs(Option.some(5)),
+      message(stateMessage(ORDER, 3)),
+      model(model => {
+        expect(shownOrder(model)).toEqual(['e0', 'r1'])
+        expect(model.queueEdits).toHaveLength(2)
+      }),
+    )
+  })
+
+  test('a clear that never went out is forgotten, and nothing to clear sends nothing', () => {
+    story(
+      update,
+      given(remoteWith(ORDER)),
+      message(Message.ClickedClearUpcoming()),
+      Command.expectExact(SendQueueClear()),
+      clearedAs(Option.none()),
+      model(model => {
+        expect(model.queueEdits).toEqual([])
+      }),
+      message(stateMessage(queueOf('e0', 'r1'), 1)),
+      message(Message.ClickedClearUpcoming()),
+      Command.expectNone(),
     )
   })
 })

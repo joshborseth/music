@@ -102,6 +102,7 @@ import {
   type SearchKind,
   TAB_ROOT_URLS,
   type Tab,
+  openingTab,
   routeTab,
   searchUrl,
   urlPath,
@@ -1078,6 +1079,14 @@ const loadRoute = (route: AppRoute): UpdateStep =>
       ({ artistId }) =>
       model =>
         artists.loadIfMissing(model, { artistId }),
+    ArtistAlbums:
+      ({ artistId }) =>
+      model =>
+        artists.loadIfMissing(model, { artistId }),
+    ArtistSingles:
+      ({ artistId }) =>
+      model =>
+        artists.loadIfMissing(model, { artistId }),
     Album:
       ({ albumId }) =>
       model =>
@@ -1114,6 +1123,14 @@ const retryRoute = (route: AppRoute): UpdateStep =>
       ({ artistId }) =>
       model =>
         artists.revalidateOrLoad(model, { artistId }),
+    ArtistAlbums:
+      ({ artistId }) =>
+      model =>
+        artists.revalidateOrLoad(model, { artistId }),
+    ArtistSingles:
+      ({ artistId }) =>
+      model =>
+        artists.revalidateOrLoad(model, { artistId }),
     Album:
       ({ albumId }) =>
       model =>
@@ -1137,7 +1154,7 @@ const retryRoute = (route: AppRoute): UpdateStep =>
 
 /** The Model for a first visit to `route`, before anything has loaded. */
 export const initialModel = (route: AppRoute, path: string): Model => {
-  const activeTab = Option.getOrElse(routeTab(route), (): Tab => 'Home')
+  const activeTab = openingTab(route)
   const navigation = initialNavigationModel(activeTab)
   return syncSearchInput({
     route,
@@ -1646,6 +1663,9 @@ const updateMessage = (model: Model, message: Message) =>
       Playback.moveQueueEntry(model, entryId, maybeBeforeEntryId),
     SentQueueMove: ({ entryId, maybeSeq }) =>
       Playback.completeSendQueueMove(model, entryId, maybeSeq),
+    ClickedClearUpcoming: () => Playback.clearUpcoming(model),
+    SentQueueClear: ({ maybeSeq }) =>
+      Playback.completeSendQueueClear(model, maybeSeq),
     ClickedToggleAutoplay: () =>
       Option.match(model.maybeSession, {
         onNone: () => ({ model }),

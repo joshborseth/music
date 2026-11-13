@@ -354,6 +354,11 @@ type SongRowConfig = Readonly<{
   /** Lets a long title take two lines, where versions of a song differ only at the end. */
   isTitleWrapped: boolean
   maybeAlbumContext: Option.Option<AlbumContext>
+  /**
+   * The line under the title, in place of the artists and album: an
+   * artist's top songs name their album and how often they were played.
+   */
+  maybeDetails?: Option.Option<(song: Song) => string>
   playing: NowPlaying
   /**
    * Lets a finger swipe the row to queue the song. None when the row sits in
@@ -373,15 +378,19 @@ const songRowArtists = (config: SongRowConfig): string => {
 }
 
 const songRowDetails = (config: SongRowConfig): string =>
-  joinDetails([
-    songRowArtists(config),
-    config.isAlbumHidden
-      ? ''
-      : Option.match(config.song.maybeAlbum, {
-          onNone: () => '',
-          onSome: ({ name }) => name,
-        }),
-  ])
+  Option.match(config.maybeDetails ?? Option.none(), {
+    onSome: details => details(config.song),
+    onNone: () =>
+      joinDetails([
+        songRowArtists(config),
+        config.isAlbumHidden
+          ? ''
+          : Option.match(config.song.maybeAlbum, {
+              onNone: () => '',
+              onSome: ({ name }) => name,
+            }),
+      ]),
+  })
 
 /** The small boxed E that marks an explicit song, as music apps show it. */
 export const explicitBadge = (h: HtmlBuilder<Message>): Html =>
@@ -638,6 +647,7 @@ export const songList = (
      * karaoke, and other songs that only share some words.
      */
     playsAlone?: boolean
+    maybeDetails?: Option.Option<(song: Song) => string>
   }>,
   h: HtmlBuilder<Message>,
 ): Html => {
@@ -665,6 +675,7 @@ export const songList = (
               isAlbumHidden: config.isAlbumHidden,
               isTitleWrapped: config.isTitleWrapped === true,
               maybeAlbumContext: config.maybeAlbumContext ?? Option.none(),
+              maybeDetails: config.maybeDetails ?? Option.none(),
               playing: config.playing,
               maybeSwipe: Option.some(config.swipe),
             },
@@ -905,8 +916,51 @@ const cardTitle = (
 
 /** An album cover card for a horizontal shelf. */
 export const albumCard = (album: AlbumSummary, h: HtmlBuilder<Message>): Html =>
+  albumCardWith(
+    cardClass,
+    joinDetails([
+      Option.getOrElse(album.maybeYear, () => ''),
+      Array.isReadonlyArrayNonEmpty(album.artists)
+        ? artistNames(album.artists)
+        : Option.getOrElse(album.maybeKind, () => ''),
+    ]),
+    album,
+    h,
+  )
+
+/** Its year and kind, for a release on its own artist's page. */
+const releaseDetails = (album: AlbumSummary): string =>
+  joinDetails([
+    Option.getOrElse(album.maybeYear, () => ''),
+    Option.getOrElse(album.maybeKind, () => ''),
+  ])
+
+/** An artist's own release on a shelf of their page: year and kind. */
+export const releaseCard = (
+  album: AlbumSummary,
+  h: HtmlBuilder<Message>,
+): Html => albumCardWith(cardClass, releaseDetails(album), album, h)
+
+/** An artist's own release in a grid, as wide as its column. */
+export const releaseGridCard = (
+  album: AlbumSummary,
+  h: HtmlBuilder<Message>,
+): Html =>
+  albumCardWith(
+    'pressable flex min-w-0 flex-col',
+    releaseDetails(album),
+    album,
+    h,
+  )
+
+const albumCardWith = (
+  className: string,
+  subtitle: string,
+  album: AlbumSummary,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.a(
-    [h.Href(albumHref(album.id)), h.Class(cardClass)],
+    [h.Href(albumHref(album.id)), h.Class(className)],
     [
       artworkImage(
         {
@@ -918,17 +972,7 @@ export const albumCard = (album: AlbumSummary, h: HtmlBuilder<Message>): Html =>
         },
         h,
       ),
-      ...cardTitle(
-        album.title,
-        joinDetails([
-          Option.getOrElse(album.maybeYear, () => ''),
-          Array.isReadonlyArrayNonEmpty(album.artists)
-            ? artistNames(album.artists)
-            : Option.getOrElse(album.maybeKind, () => ''),
-        ]),
-        false,
-        h,
-      ),
+      ...cardTitle(album.title, subtitle, false, h),
     ],
   )
 
@@ -1023,12 +1067,60 @@ export const section = (
     [sectionHeading(title, h), ...children],
   )
 
-/** A button at the end of a section's heading, such as See All. */
-export type SectionAction = Readonly<{
-  label: string
-  accessibleLabel: string
-  onClick: Message
-}>
+/**
+ * The end of a section's heading, such as See All: a button that sends
+ * `onClick`, or a link to `href`, a page with everything in the section.
+ */
+export type SectionAction = Readonly<
+  { label: string; accessibleLabel: string } & (
+    | { onClick: Message }
+    | { href: string }
+  )
+>
+
+/** See All, opening a page with everything in the section `title`. */
+export const seeAllLink = (title: string, href: string): SectionAction => ({
+  label: 'See All',
+  accessibleLabel: `See all ${title}`,
+  href,
+})
+
+const sectionActionClass = 'text-primary shrink-0 text-[17px] active:opacity-50'
+
+const sectionActionView = (
+  action: SectionAction,
+  h: HtmlBuilder<Message>,
+): Html =>
+  'href' in action
+    ? h.a(
+        [
+          h.Href(action.href),
+          h.AriaLabel(action.accessibleLabel),
+          h.Class(sectionActionClass),
+        ],
+        [action.label],
+      )
+    : h.button(
+        [
+          h.Type('button'),
+          h.OnClick(action.onClick),
+          h.AriaLabel(action.accessibleLabel),
+          h.Class(sectionActionClass),
+        ],
+        [action.label],
+      )
+
+/** A section with `maybeAction` at the end of its heading, when there is one. */
+const sectionWithMaybeAction = (
+  title: string,
+  maybeAction: Option.Option<SectionAction>,
+  children: ReadonlyArray<Html>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(maybeAction, {
+    onNone: () => section(title, children, h),
+    onSome: action => sectionWithAction(title, action, children, h),
+  })
 
 /** A section whose heading ends in a button, as See All does in music apps. */
 export const sectionWithAction = (
@@ -1042,18 +1134,7 @@ export const sectionWithAction = (
     [
       h.div(
         [h.Class('flex items-baseline justify-between gap-4 pr-4')],
-        [
-          sectionHeading(title, h),
-          h.button(
-            [
-              h.Type('button'),
-              h.OnClick(action.onClick),
-              h.AriaLabel(action.accessibleLabel),
-              h.Class('text-primary shrink-0 text-[17px] active:opacity-50'),
-            ],
-            [action.label],
-          ),
-        ],
+        [sectionHeading(title, h), sectionActionView(action, h)],
       ),
       ...children,
     ],
@@ -1121,11 +1202,12 @@ export const shelf = <A>(
           ),
         ),
       )
-      return Option.match(config.maybeAction ?? Option.none(), {
-        onNone: () => section(config.title, [scroller], h),
-        onSome: action =>
-          sectionWithAction(config.title, action, [scroller], h),
-      })
+      return sectionWithMaybeAction(
+        config.title,
+        config.maybeAction ?? Option.none(),
+        [scroller],
+        h,
+      )
     },
   })
 
@@ -1207,12 +1289,17 @@ export const songSection = (
     songs: ReadonlyArray<Song>
     playing: NowPlaying
     swipe: Swipe
+    /** The line under each title, in place of its artists and album. */
+    maybeDetails?: Option.Option<(song: Song) => string>
+    /** At the end of the heading, such as See All. */
+    maybeAction?: Option.Option<SectionAction>
   }>,
   h: HtmlBuilder<Message>,
 ): Html =>
   Array.isReadonlyArrayNonEmpty(config.songs)
-    ? section(
+    ? sectionWithMaybeAction(
         config.title,
+        config.maybeAction ?? Option.none(),
         [
           songList(
             {
@@ -1221,6 +1308,7 @@ export const songSection = (
               swipe: config.swipe,
               isNumbered: false,
               isAlbumHidden: false,
+              maybeDetails: config.maybeDetails ?? Option.none(),
             },
             h,
           ),
