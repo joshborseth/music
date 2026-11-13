@@ -27,6 +27,12 @@ export const SavedSession = Schema.Struct({
   shuffle: Schema.optionalKey(Schema.Boolean),
   unshuffled: Schema.optionalKey(Schema.Array(Schema.String)),
   sleepTimer: Schema.optionalKey(Schema.NullOr(Session.SleepTimer)),
+  /**
+   * The server paused only because the player went away. A deploy closes
+   * every socket and can take longer to stop than `PLAYER_GRACE`, so the
+   * pause for the lost player is often what gets written.
+   */
+  pausedForLostPlayer: Schema.optionalKey(Schema.Boolean),
 })
 export type SavedSession = typeof SavedSession.Type
 
@@ -48,6 +54,7 @@ export const toSaved = (model: Model, now: number): SavedSession => ({
   shuffle: model.shuffle,
   unshuffled: model.unshuffled,
   sleepTimer: model.sleepTimer,
+  pausedForLostPlayer: model.pausedForLostPlayer,
 })
 
 /**
@@ -78,7 +85,10 @@ export const fromSaved = (saved: SavedSession, now: number): Model => {
     repeat: saved.repeat ?? 'Off',
     shuffle: saved.shuffle ?? false,
     unshuffled: saved.unshuffled ?? [],
-    pausedForLostPlayer: saved.playing,
+    // NOTE: a pause the server made because the player went away, before
+    // or during the restart, still yields to a player that played on.
+    pausedForLostPlayer:
+      saved.playing || (saved.pausedForLostPlayer ?? false),
     // NOTE: a player that played on through the restart takes the session
     // back, and must still stop when its timer said. One whose time passed
     // while the server was down has nothing left to stop.
