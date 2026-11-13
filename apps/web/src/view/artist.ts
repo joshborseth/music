@@ -1,24 +1,37 @@
-import { Array, Option } from 'effect'
+import { Array, Option, Record } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import { Check, User } from 'lucide'
 
 import { icon } from '@/lib/icons'
-import { type ArtistDetails, type MyLibrary } from '@music/shared'
+import {
+  type AlbumSummary,
+  type ArtistDetails,
+  type MyLibrary,
+  type Song,
+} from '@music/shared'
 
 import { isArtistFollowed } from '../library'
 import { Message } from '../message'
 import { SyncTitleBarReveal } from '../mount'
 import { artistQuery, myLibraryQuery } from '../query'
+import { artistAlbumsRouter, artistSinglesRouter } from '../route'
 import { type PageModel } from './page'
 import {
-  albumCard,
+  artistCard,
+  artistHref,
   artworkUrl,
+  emptyState,
   expandableText,
+  joinDetails,
   loadingPage,
   playActions,
+  playlistHref,
+  releaseCard,
+  releaseGridCard,
   remote,
   section,
+  seeAllLink,
   shelf,
   songSection,
 } from './shared'
@@ -59,6 +72,30 @@ const followButton = (
       )
     },
   })
+/** Releases a shelf shows before "See All" opens the rest in a grid. */
+const SHELF_RELEASES = 10
+
+/** A shelf with more releases than this links to all of them. */
+const RELEASES_WITHOUT_SEE_ALL = 4
+
+/** Which of an artist's releases a page lists. */
+export type ReleaseKind = 'Albums' | 'Singles'
+
+export const ARTIST_RELEASE_TITLES: Readonly<Record<ReleaseKind, string>> = {
+  Albums: 'Albums',
+  Singles: 'Singles & EPs',
+}
+
+const releasesOf = (
+  details: ArtistDetails,
+  kind: ReleaseKind,
+): ReadonlyArray<AlbumSummary> =>
+  kind === 'Albums' ? details.albums : details.singles
+
+const releasesHref = (artistId: string, kind: ReleaseKind): string =>
+  kind === 'Albums'
+    ? artistAlbumsRouter({ artistId })
+    : artistSinglesRouter({ artistId })
 
 /** A photo that runs edge to edge under the status bar, name on top of it. */
 const artistHero = (
@@ -111,7 +148,54 @@ const artistHero = (
     ],
   )
 
-/** The artist page: photo, top songs, releases, and bio. */
+/**
+ * Under a top song's title: its album and how often it was played. The
+ * artists are left out, since the page is theirs, and so is a single's
+ * album, which only repeats the title.
+ */
+const topSongDetails =
+  (details: ArtistDetails) =>
+  (song: Song): string =>
+    joinDetails([
+      Option.match(song.maybeAlbum, {
+        onNone: () => '',
+        onSome: ({ name }) => (name === song.title ? '' : name),
+      }),
+      Option.getOrElse(
+        Record.get(details.topSongPlays, song.videoId),
+        () => '',
+      ),
+    ])
+
+/** A shelf of the artist's albums or singles, linking to all of them. */
+const releaseShelf = (
+  details: ArtistDetails,
+  kind: ReleaseKind,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const releases = releasesOf(details, kind)
+  return shelf(
+    {
+      title: ARTIST_RELEASE_TITLES[kind],
+      items: Array.take(releases, SHELF_RELEASES),
+      toKey: album => album.id,
+      toCard: releaseCard,
+      maybeAction: Option.liftPredicate(
+        seeAllLink(
+          ARTIST_RELEASE_TITLES[kind],
+          releasesHref(details.artist.id, kind),
+        ),
+        () => releases.length > RELEASES_WITHOUT_SEE_ALL,
+      ),
+    },
+    h,
+  )
+}
+
+/**
+ * The artist page: photo, top songs with their albums, releases, artists
+ * their fans also like, and bio.
+ */
 export const artistView = (
   model: PageModel,
   artistId: string,
@@ -138,28 +222,27 @@ export const artistView = (
             ),
             songSection(
               {
-                title: 'Top songs',
+                title: 'Top Songs',
                 songs: details.topSongs,
                 playing: model.playing,
                 swipe: model.swipe,
+                maybeDetails: Option.some(topSongDetails(details)),
+                maybeAction: Option.map(
+                  details.maybeAllSongsPlaylistId,
+                  playlistId =>
+                    seeAllLink('Top Songs', playlistHref(playlistId)),
+                ),
               },
               h,
             ),
+            releaseShelf(details, 'Albums', h),
+            releaseShelf(details, 'Singles', h),
             shelf(
               {
-                title: 'Albums',
-                items: details.albums,
-                toKey: album => album.id,
-                toCard: albumCard,
-              },
-              h,
-            ),
-            shelf(
-              {
-                title: 'Singles & EPs',
-                items: details.singles,
-                toKey: album => album.id,
-                toCard: albumCard,
+                title: 'Fans Also Like',
+                items: details.relatedArtists,
+                toKey: artist => artist.id,
+                toCard: artistCard,
               },
               h,
             ),
@@ -174,6 +257,79 @@ export const artistView = (
                   ['YouTube Music has no songs listed for this artist.'],
                 )
               : h.empty,
+          ],
+        ),
+    },
+    h,
+  )
+
+/** Every album, or every single and EP, by an artist, newest first. */
+export const artistReleasesView = (
+  model: PageModel,
+  artistId: string,
+  kind: ReleaseKind,
+  h: HtmlBuilder<Message>,
+): Html =>
+  remote(
+    artistQuery.read(model.artists, { artistId }),
+    {
+      onLoading: () => loadingPage(h),
+      onData: details =>
+        h.div(
+          [h.Class('flex flex-col gap-4 pb-6')],
+          [
+            h.header(
+              [
+                h.Class(
+                  'flex flex-col gap-0.5 px-4 pt-[calc(var(--safe-top)+3.75rem)]',
+                ),
+              ],
+              [
+                h.h1(
+                  [
+                    h.OnMount(SyncTitleBarReveal()),
+                    h.Class(
+                      'text-[34px] leading-tight font-bold tracking-tight',
+                    ),
+                  ],
+                  [ARTIST_RELEASE_TITLES[kind]],
+                ),
+                h.a(
+                  [
+                    h.Href(artistHref(details.artist.id)),
+                    h.Class(
+                      'text-primary self-start text-[17px] font-medium active:opacity-60',
+                    ),
+                  ],
+                  [details.artist.name],
+                ),
+              ],
+            ),
+            Array.match(releasesOf(details, kind), {
+              onEmpty: () =>
+                emptyState(
+                  {
+                    title: `No ${ARTIST_RELEASE_TITLES[kind].toLowerCase()}`,
+                    description: `YouTube Music lists none for ${details.artist.name}.`,
+                    kind: 'Album',
+                  },
+                  h,
+                ),
+              onNonEmpty: releases =>
+                h.div(
+                  [
+                    h.Role('list'),
+                    h.Class('grid grid-cols-2 gap-x-3 gap-y-5 px-4'),
+                  ],
+                  Array.map(releases, album =>
+                    h.keyed('div')(
+                      album.id,
+                      [h.Role('listitem'), h.Class('flex min-w-0')],
+                      [releaseGridCard(album, h)],
+                    ),
+                  ),
+                ),
+            }),
           ],
         ),
     },

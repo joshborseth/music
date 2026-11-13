@@ -125,8 +125,19 @@ export const ArtistDetails = Schema.Struct({
   artist: ArtistSummary,
   maybeDescription: Schema.Option(Schema.String),
   topSongs: Schema.Array(Song),
+  /**
+   * How often each top song was played, as YouTube Music words it
+   * ("1.2B plays"), by video id. Songs it gives no count for are missing.
+   */
+  topSongPlays: Schema.Record(Schema.String, Schema.String),
+  /** YouTube Music's playlist of every song by the artist, most played first. */
+  maybeAllSongsPlaylistId: Schema.Option(Schema.String),
+  /** Every album, newest first, even past the few the artist page lists. */
   albums: Schema.Array(AlbumSummary),
+  /** Every single and EP, newest first. */
   singles: Schema.Array(AlbumSummary),
+  /** Artists their fans also listen to ("Fans might also like"). */
+  relatedArtists: Schema.Array(ArtistSummary),
 })
 export type ArtistDetails = typeof ArtistDetails.Type
 
@@ -145,6 +156,11 @@ export type PlaylistSummary = typeof PlaylistSummary.Type
 /** Everything the playlist page shows. */
 export const PlaylistDetails = Schema.Struct({
   playlist: PlaylistSummary,
+  /**
+   * Who made it, when YouTube Music says: an artist (with a page to open),
+   * YouTube Music itself, or someone's channel.
+   */
+  maybeOwner: Schema.Option(ArtistLink),
   maybeDescription: Schema.Option(Schema.String),
   maybeLengthSummary: Schema.Option(Schema.String),
   tracks: Schema.Array(Song),

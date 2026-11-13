@@ -1093,6 +1093,85 @@ describe('moving a queued song', () => {
   })
 })
 
+describe('clearing the songs to come', () => {
+  const ids = (model: Model) => model.queue.map(entry => entry.track.videoId)
+  let counter = 0
+  beforeEach(() => {
+    counter = 0
+  })
+  const apply = (model: Model, message: SessionMessage) =>
+    update(model, message, {
+      ...makeContext('phone', 2_000),
+      makeEntryId: () => `x${counter++}`,
+    })
+  const clear = (model: Model) => apply(model, { _tag: 'ClearUpcoming' })
+  /** a, b (playing), c, d, e: entries e0–e4. */
+  const five = () =>
+    update(
+      initialModel,
+      {
+        _tag: 'PlayQueue',
+        tracks: ['a', 'b', 'c', 'd', 'e'].map(track),
+        startIndex: 1,
+      },
+      makeContext('phone', 1_000),
+    ).model
+  /** five(), then autoplay's p and q (x0, x1) after it. */
+  const withRadio = () =>
+    appendAutoplay(five(), 'e', [track('p'), track('q')], () => `x${counter++}`)
+      .model
+
+  test('drops the songs after the current one, which plays on without a reload', () => {
+    const model = five()
+    const outcome = clear(model)
+    expect(outcome.broadcast).toBe(true)
+    expect(ids(outcome.model)).toEqual(['a', 'b'])
+    expect(outcome.model.currentEntryId).toBe('e1')
+    expect(outcome.model.playing).toBe(true)
+    expect(outcome.model.seekSeq).toBe(model.seekSeq)
+    expect(outcome.model.positionSeconds).toBe(model.positionSeconds)
+  })
+
+  test("keeps autoplay's songs, which now follow the current one", () => {
+    const outcome = clear(withRadio())
+    expect(ids(outcome.model)).toEqual(['a', 'b', 'p', 'q'])
+    expect(lookahead(outcome.model).download).toEqual(['b', 'p', 'q'])
+  })
+
+  test('does nothing when no song someone queued is still to come', () => {
+    const cleared = clear(withRadio()).model
+    const again = clear(cleared)
+    expect(again.broadcast).toBe(false)
+    expect(again.model).toBe(cleared)
+  })
+
+  test('lets autoplay top the queue up again', () => {
+    const cleared = clear(five()).model
+    expect(lookahead(cleared).maybeAutoplayAfter).toEqual(Option.some('b'))
+    const refilled = appendAutoplay(cleared, 'b', [track('r')], () => 'y0')
+    expect(ids(refilled.model)).toEqual(['a', 'b', 'r'])
+  })
+
+  test('while shuffled, stays shuffled, and turning it off brings back none of the cleared songs', () => {
+    const shuffledModel = apply(five(), {
+      _tag: 'SetShuffle',
+      enabled: true,
+    }).model
+    const added = apply(shuffledModel, {
+      _tag: 'Enqueue',
+      tracks: [track('z')],
+      placement: 'Last',
+    }).model
+    const cleared = clear(added).model
+    expect(ids(cleared)).toEqual(['a', 'b'])
+    expect(cleared.shuffle).toBe(true)
+    expect(cleared.unshuffled).toEqual(['e0', 'e1'])
+    const back = apply(cleared, { _tag: 'SetShuffle', enabled: false }).model
+    expect(ids(back)).toEqual(['a', 'b'])
+    expect(back.currentEntryId).toBe('e1')
+  })
+})
+
 describe('protocol fixtures shared with the TV app', () => {
   const read = (name: string) => Bun.file(new URL(name, FIXTURES)).text()
 
@@ -1119,6 +1198,7 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-skip-to.json',
     'client-remove-entry.json',
     'client-move-entry.json',
+    'client-clear-upcoming.json',
     'client-transfer.json',
     'client-wake.json',
     'client-volume.json',

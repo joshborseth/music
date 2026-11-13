@@ -492,9 +492,11 @@ const trackTitle = (
   )
 
 /**
- * One line of text that, when too long to fit, scrolls slowly sideways
- * and back around instead of ending in "…", as the player does in music
- * apps. The edges cut off plainly; nothing fades. `Marquee` measures it.
+ * One line of text. When it is too long to fit, it rests ending in "…" on a
+ * whole letter, then now and then scrolls slowly sideways, its copy
+ * following a gap behind, until the copy is back where it started, as the
+ * player does in music apps. Nothing fades: the resting line is a separate
+ * element from the moving one (`styles.css`, MARQUEE). `Marquee` measures it.
  */
 const marqueeText = (
   text: string,
@@ -504,11 +506,12 @@ const marqueeText = (
   h.h2(
     [h.OnMount(Marquee()), h.Class(cn('marquee', className))],
     [
+      h.span([h.Class('marquee-rest')], [text]),
       h.span(
-        [h.Class('marquee-track')],
+        [h.AriaHidden(true), h.Class('marquee-track')],
         [
           h.span([h.Class('marquee-text')], [text]),
-          h.span([h.AriaHidden(true), h.Class('marquee-copy')], [text]),
+          h.span([h.Class('marquee-copy')], [text]),
         ],
       ),
     ],
@@ -616,7 +619,7 @@ const compactNowPlaying = (
   )
 
 const scrollPanelClass =
-  'no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(transparent,black_1.5rem,black_calc(100%-1.5rem),transparent)]'
+  'no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain'
 
 const plainPanel = (content: Html, h: HtmlBuilder<Message>): Html =>
   h.div(
@@ -801,9 +804,22 @@ const queuePanel = (
           h.section(
             [],
             [
-              h.h3(
-                [h.Class('pt-4 pb-2 text-[17px] font-bold')],
-                ['Playing next'],
+              h.div(
+                [h.Class('flex items-center justify-between pt-4 pb-2')],
+                [
+                  h.h3([h.Class('text-[17px] font-bold')], ['Playing next']),
+                  h.button(
+                    [
+                      h.Type('button'),
+                      h.OnClick(Message.ClickedClearUpcoming()),
+                      h.AriaLabel('Clear Playing next'),
+                      h.Class(
+                        '-my-2 -mr-2 h-10 rounded-full px-3 text-[15px] font-semibold text-white/80 active:bg-white/10',
+                      ),
+                    ],
+                    ['Clear'],
+                  ),
+                ],
               ),
               queueList(model, entries, h),
             ],

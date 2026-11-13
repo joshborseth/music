@@ -12,6 +12,7 @@ import {
   PrefetchSongs,
   SeekPhoneAudio,
   SendLocalChange,
+  SendQueueClear,
   SendQueueMove,
   SendToSession,
   SetPhoneAudioPlaying,
@@ -30,7 +31,7 @@ import {
   PROGRESS_INTERVAL_MS,
   PhoneAudio,
   PlayerSheet,
-  type QueueMove,
+  QueueEdit,
   RESTART_THRESHOLD_SECONDS,
   SEEK_TOLERANCE_SECONDS,
   type SessionSnapshot,
@@ -355,9 +356,9 @@ export const acquireSessionSocket = (model: Model): PlaybackReturn =>
         // phone changed while it was away goes in the Hello's report.
         localChanges: changes =>
           modifyFields(changes, { untilAck: () => 0, ownJumps: () => 0 }),
-        // NOTE: a move sent on the old connection may or may not have
+        // NOTE: an edit sent on the old connection may or may not have
         // arrived; the new connection's first state says which.
-        queueMoves: () => [],
+        queueEdits: () => [],
       }),
       commands: [
         send({
@@ -492,8 +493,8 @@ export const receiveSessionState = (
   receivedAt: number,
 ): PlaybackReturn => {
   const kept = keepLocalChanges(model, state, serverNow, ack)
-  const queueMoves = Array.filter(model.queueMoves, move =>
-    Option.match(move.maybeSeq, {
+  const queueEdits = Array.filter(model.queueEdits, edit =>
+    Option.match(edit.maybeSeq, {
       onNone: () => true,
       onSome: seq => seq > ack,
     }),
@@ -502,112 +503,150 @@ export const receiveSessionState = (
     modifyFields(model, {
       maybeSession: () =>
         Option.some({
-          state: withQueueMoves(kept.state, queueMoves),
+          state: withQueueEdits(kept.state, queueEdits),
           clockOffsetMs: serverNow - receivedAt,
         }),
       phoneAudio: () => kept.phoneAudio,
       localChanges: () => kept.localChanges,
-      queueMoves: () => queueMoves,
+      queueEdits: () => queueEdits,
       now: () => receivedAt,
     }),
   )
 }
 
-// QUEUE MOVES
+// QUEUE EDITS
 
-/** The queue with `move` made, as the server makes it. */
-const withQueueMove = (
+/** The queue with `edit` made, as the server makes it. */
+const withQueueEdit = (
   state: Session.SessionState,
-  move: Pick<QueueMove, 'entryId' | 'maybeBeforeEntryId'>,
+  edit: QueueEdit,
 ): Option.Option<Session.SessionState> =>
   Option.map(
-    Session.moveEntry(
-      state.queue,
-      state.currentEntryId,
-      move.entryId,
-      Option.getOrNull(move.maybeBeforeEntryId),
-    ),
+    QueueEdit.match(edit, {
+      Move: ({ entryId, maybeBeforeEntryId }) =>
+        Session.moveEntry(
+          state.queue,
+          state.currentEntryId,
+          entryId,
+          Option.getOrNull(maybeBeforeEntryId),
+        ),
+      ClearUpcoming: () =>
+        Session.clearUpcoming(state.queue, state.currentEntryId),
+    }),
     queue => modifyFields(state, { queue: () => queue }),
   )
 
-/** The queue with this phone's moves the server has not confirmed yet. */
-const withQueueMoves = (
+/** The queue with this phone's edits the server has not confirmed yet. */
+const withQueueEdits = (
   state: Session.SessionState,
-  moves: ReadonlyArray<QueueMove>,
+  edits: ReadonlyArray<QueueEdit>,
 ): Session.SessionState =>
-  Array.reduce(moves, state, (moved, move) =>
-    Option.getOrElse(withQueueMove(moved, move), () => moved),
+  Array.reduce(edits, state, (edited, edit) =>
+    Option.getOrElse(withQueueEdit(edited, edit), () => edited),
   )
 
 /**
- * A queue row was dragged to a new place: show it there at once, and tell
- * the server, whose answer confirms it.
+ * Show a queue edit at once, and send it; the server's answer confirms it.
+ * An edit that changes nothing sends nothing.
  */
-export const moveQueueEntry = (
+const editQueue = (
   model: Model,
-  entryId: string,
-  maybeBeforeEntryId: Option.Option<string>,
+  edit: QueueEdit,
+  command: ReturnType<typeof SendQueueMove> | ReturnType<typeof SendQueueClear>,
 ): PlaybackReturn => {
-  const maybeMoved = Option.flatMap(model.maybeSession, snapshot =>
-    Option.map(
-      withQueueMove(snapshot.state, { entryId, maybeBeforeEntryId }),
-      state => ({ ...snapshot, state }),
-    ),
+  const maybeEdited = Option.flatMap(model.maybeSession, snapshot =>
+    Option.map(withQueueEdit(snapshot.state, edit), state => ({
+      ...snapshot,
+      state,
+    })),
   )
-  return Option.match(maybeMoved, {
+  return Option.match(maybeEdited, {
     onNone: () => ({ model }),
     onSome: snapshot => ({
       model: modifyFields(model, {
         maybeSession: () => Option.some(snapshot),
-        queueMoves: moves => [
-          ...moves,
-          { entryId, maybeBeforeEntryId, maybeSeq: Option.none() },
-        ],
+        queueEdits: edits => [...edits, edit],
       }),
-      commands: [
-        SendQueueMove({
-          message: {
-            _tag: 'MoveEntry',
-            entryId,
-            beforeEntryId: Option.getOrNull(maybeBeforeEntryId),
-          },
-        }),
-      ],
+      commands: [command],
     }),
   })
 }
 
-/**
- * A move's message went out, or could not (no connection). One that never
- * went out is forgotten, and the next state shows the queue as it is.
- */
-export const completeSendQueueMove = (
+/** A queue row was dragged to a new place. */
+export const moveQueueEntry = (
   model: Model,
   entryId: string,
+  maybeBeforeEntryId: Option.Option<string>,
+): PlaybackReturn =>
+  editQueue(
+    model,
+    QueueEdit.Move({ entryId, maybeBeforeEntryId, maybeSeq: Option.none() }),
+    SendQueueMove({
+      message: {
+        _tag: 'MoveEntry',
+        entryId,
+        beforeEntryId: Option.getOrNull(maybeBeforeEntryId),
+      },
+    }),
+  )
+
+/** "Clear" over Playing next: the songs someone queued go at once. */
+export const clearUpcoming = (model: Model): PlaybackReturn =>
+  editQueue(
+    model,
+    QueueEdit.ClearUpcoming({ maybeSeq: Option.none() }),
+    SendQueueClear(),
+  )
+
+/**
+ * The first unsent edit `isSent` picks went out, or could not (no
+ * connection). One that never went out is forgotten, and the next state
+ * shows the queue as it is.
+ */
+const completeSendQueueEdit = (
+  model: Model,
+  isSent: (edit: QueueEdit) => boolean,
   maybeSeq: Option.Option<number>,
 ): PlaybackReturn => {
   const maybeIndex = Array.findFirstIndex(
-    model.queueMoves,
-    move => move.entryId === entryId && Option.isNone(move.maybeSeq),
+    model.queueEdits,
+    edit => isSent(edit) && Option.isNone(edit.maybeSeq),
   )
   return Option.match(maybeIndex, {
     onNone: () => ({ model }),
     onSome: index => ({
       model: modifyFields(model, {
-        queueMoves: moves =>
+        queueEdits: edits =>
           Option.match(maybeSeq, {
-            onNone: () => Array.remove(moves, index),
+            onNone: () => Array.remove(edits, index),
             onSome: seq =>
-              Array.map(moves, (move, moveIndex) =>
-                moveIndex === index
-                  ? modifyFields(move, { maybeSeq: () => Option.some(seq) })
-                  : move,
+              Array.map(edits, (edit, editIndex) =>
+                editIndex === index
+                  ? modifyFields(edit, { maybeSeq: () => Option.some(seq) })
+                  : edit,
               ),
           }),
       }),
     }),
   })
 }
+
+export const completeSendQueueMove = (
+  model: Model,
+  entryId: string,
+  maybeSeq: Option.Option<number>,
+): PlaybackReturn =>
+  completeSendQueueEdit(
+    model,
+    edit => edit._tag === 'Move' && edit.entryId === entryId,
+    maybeSeq,
+  )
+
+export const completeSendQueueClear = (
+  model: Model,
+  maybeSeq: Option.Option<number>,
+): PlaybackReturn =>
+  completeSendQueueEdit(model, edit => edit._tag === 'ClearUpcoming', maybeSeq)
 
 export const receiveNotice = showNotice
 

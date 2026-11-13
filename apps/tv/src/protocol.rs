@@ -196,6 +196,9 @@ pub enum ClientMessage {
     SkipTo {
         entry_id: String,
     },
+    /// Clear the songs still to come that someone queued; the current song
+    /// and autoplay's songs stay.
+    ClearUpcoming {},
     Resume {},
     #[serde(rename_all = "camelCase")]
     Pause {
@@ -467,6 +470,7 @@ mod tests {
                     entry_id: "e1".into(),
                 },
             ),
+            ("client-clear-upcoming.json", ClientMessage::ClearUpcoming {}),
             (
                 "client-transfer.json",
                 ClientMessage::Transfer {

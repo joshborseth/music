@@ -321,8 +321,11 @@ describe('collections', () => {
       },
       maybeDescription: Option.some('Singer.'),
       topSongs: [song('a')],
+      topSongPlays: {},
+      maybeAllSongsPlaylistId: Option.none(),
       albums: [album()],
       singles: [],
+      relatedArtists: [],
     }
     const collection = artistCollection(details)
     expect(collection).toMatchObject({

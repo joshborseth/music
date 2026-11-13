@@ -873,6 +873,11 @@ const LYRIC_GLIDE_EASING = 'cubic-bezier(0.2, 0.9, 0.25, 1.06)'
 
 const LYRIC_ROW_SELECTOR = '[data-lyric-row]'
 const ACTIVE_LYRIC_SELECTOR = '[data-lyric-row][data-state="active"]'
+const CUTTABLE_LYRIC_SELECTOR = '[data-lyric-row], [data-lyrics-source]'
+const CUT_LYRIC_ATTRIBUTE = 'data-cut'
+
+/** How far a line may overhang the panel's edge and still count as whole. */
+const CUT_TOLERANCE_PX = 1
 
 /**
  * Keeps the line being sung near the top of the lyrics panel. When it moves
@@ -880,6 +885,8 @@ const ACTIVE_LYRIC_SELECTOR = '[data-lyric-row][data-state="active"]'
  * was, the rows above first and the rows below a beat later, so the lines
  * ripple up like a wave. A finger on the panel pauses this while the lyrics
  * are read, and marks the panel `data-browsing` so every line brightens.
+ * Wherever it settles, it marks the rows the panel's edges cut through
+ * `data-cut`, which hides them, so no line shows sliced in half.
  */
 const followLyrics = (scroller: HTMLElement) => {
   const maybeWindow = scroller.ownerDocument.defaultView
@@ -939,11 +946,44 @@ const followLyrics = (scroller: HTMLElement) => {
     })
   }
 
+  /**
+   * Marks the rows the panel's edges cut through, so the panel shows only
+   * whole lines while it follows the song (see `.lyrics` in styles.css). A
+   * row counts by its text, not its padding, and by where it settles, not
+   * where a glide has it now.
+   */
+  const markCutRows = () => {
+    const viewTop = scroller.scrollTop
+    const viewBottom = viewTop + scroller.clientHeight
+    scroller.querySelectorAll(CUTTABLE_LYRIC_SELECTOR).forEach(row => {
+      if (!(row instanceof HTMLElement)) {
+        return
+      }
+      // NOTE: measured on the row itself, whose offset parent is the panel.
+      // A row gliding has a transform, which makes it the offset parent of
+      // what it holds.
+      const style = getComputedStyle(row)
+      const textTop = row.offsetTop + Number.parseFloat(style.paddingTop)
+      const textBottom =
+        row.offsetTop +
+        row.offsetHeight -
+        Number.parseFloat(style.paddingBottom)
+      const isCut =
+        textTop < viewTop - CUT_TOLERANCE_PX ||
+        textBottom > viewBottom + CUT_TOLERANCE_PX
+      row.toggleAttribute(CUT_LYRIC_ATTRIBUTE, isCut)
+    })
+  }
+
   const follow = (isGliding: boolean) => {
     const row = scroller.querySelector(ACTIVE_LYRIC_SELECTOR)
     const isNewRow = row !== maybeActiveRow
     maybeActiveRow = row
-    if (!(row instanceof HTMLElement) || isBrowsing) {
+    if (isBrowsing) {
+      return
+    }
+    if (!(row instanceof HTMLElement)) {
+      markCutRows()
       return
     }
     if (isGliding && isNewRow && !prefersLessMotion) {
@@ -951,6 +991,7 @@ const followLyrics = (scroller: HTMLElement) => {
     } else {
       scroller.scrollTop = targetTop(row)
     }
+    markCutRows()
   }
 
   const scheduleFollow = () => {

@@ -5,11 +5,15 @@ import { YTNodes } from 'youtubei.js'
 import { type Song } from '@music/shared'
 
 import {
+  artistFromTwoRowItem,
   audioTrackFor,
   filterSome,
   hexFromArgb,
   isExplicit,
+  playlistOwnerFromResponse,
+  playsFromListItem,
   secondsFromClock,
+  songFromListItem,
   toArtwork,
   toMoodGroups,
   topResultFromCard,
@@ -400,5 +404,145 @@ describe('isExplicit', () => {
       ),
     ).toBe(true)
     expect(isExplicit(row([]))).toBe(false)
+  })
+})
+
+const column = (runs: ReadonlyArray<object>) => ({
+  musicResponsiveListItemFlexColumnRenderer: { text: { runs } },
+})
+
+describe('an artist’s top songs', () => {
+  // As the artist page lists them: title, artists, plays, album.
+  const topSong = new YTNodes.MusicResponsiveListItem({
+    playlistItemData: { videoId: 'crush' },
+    flexColumns: [
+      column([
+        {
+          text: 'Instant Crush',
+          navigationEndpoint: {
+            watchEndpoint: {
+              videoId: 'crush',
+              watchEndpointMusicSupportedConfigs: {
+                watchEndpointMusicConfig: {
+                  musicVideoType: 'MUSIC_VIDEO_TYPE_ATV',
+                },
+              },
+            },
+          },
+        },
+      ]),
+      column([
+        artistRun('Daft Punk', 'UC1'),
+        { text: ' & ' },
+        artistRun('Julian Casablancas', 'UC2'),
+      ]),
+      column([{ text: '1.2B plays' }]),
+      column([
+        {
+          text: 'Random Access Memories',
+          navigationEndpoint: browseTo('MPREb_ram', 'MUSIC_PAGE_TYPE_ALBUM'),
+        },
+      ]),
+    ],
+  })
+
+  test('name the album from their last column', () => {
+    expect(Option.getOrThrow(songFromListItem(topSong))).toMatchObject({
+      videoId: 'crush',
+      title: 'Instant Crush',
+      maybeAlbum: Option.some({
+        id: 'MPREb_ram',
+        name: 'Random Access Memories',
+      }),
+    })
+  })
+
+  test('say how often they were played', () => {
+    expect(playsFromListItem(topSong)).toEqual(Option.some('1.2B plays'))
+  })
+})
+
+describe('artistFromTwoRowItem', () => {
+  test('reads an artist fans also like, with their audience', () => {
+    const card = new YTNodes.MusicTwoRowItem({
+      title: {
+        runs: [
+          {
+            text: 'Justice',
+            navigationEndpoint: browseTo('UCj', 'MUSIC_PAGE_TYPE_ARTIST'),
+          },
+        ],
+      },
+      subtitle: { runs: [{ text: '24.1M monthly audience' }] },
+      navigationEndpoint: browseTo('UCj', 'MUSIC_PAGE_TYPE_ARTIST'),
+      thumbnailRenderer: {
+        musicThumbnailRenderer: { thumbnail: { thumbnails: [] } },
+      },
+    })
+    expect(Option.getOrThrow(artistFromTwoRowItem(card))).toMatchObject({
+      id: 'UCj',
+      name: 'Justice',
+      maybeAudience: Option.some('24.1M monthly audience'),
+    })
+  })
+})
+
+describe('playlistOwnerFromResponse', () => {
+  const page = (facepile: object | undefined) => ({
+    contents: {
+      twoColumnBrowseResultsRenderer: {
+        tabs: [
+          {
+            tabRenderer: {
+              content: {
+                sectionListRenderer: {
+                  contents: [
+                    {
+                      musicResponsiveHeaderRenderer:
+                        facepile === undefined ? {} : { facepile },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    },
+  })
+  const facepile = (name: string, onTap: object | undefined) => ({
+    avatarStackViewModel: {
+      text: { content: name },
+      rendererContext:
+        onTap === undefined
+          ? {}
+          : { commandContext: { onTap: { innertubeCommand: onTap } } },
+    },
+  })
+
+  test('links an artist who made it to their page', () => {
+    expect(
+      playlistOwnerFromResponse(
+        page(facepile('Daft Punk', browseTo('UCd', 'MUSIC_PAGE_TYPE_ARTIST'))),
+      ),
+    ).toEqual(Option.some({ maybeId: Option.some('UCd'), name: 'Daft Punk' }))
+  })
+
+  test('names YouTube Music or a channel without a link', () => {
+    expect(
+      playlistOwnerFromResponse(page(facepile('YouTube Music', undefined))),
+    ).toEqual(Option.some({ maybeId: Option.none(), name: 'YouTube Music' }))
+    expect(
+      playlistOwnerFromResponse(
+        page(
+          facepile('Someone', browseTo('UCs', 'MUSIC_PAGE_TYPE_USER_CHANNEL')),
+        ),
+      ),
+    ).toEqual(Option.some({ maybeId: Option.none(), name: 'Someone' }))
+  })
+
+  test('is None when the header names nobody', () => {
+    expect(playlistOwnerFromResponse(page(undefined))).toEqual(Option.none())
+    expect(playlistOwnerFromResponse({})).toEqual(Option.none())
   })
 })

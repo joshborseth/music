@@ -115,7 +115,10 @@ export const timedLyrics = (
         onNone: () => h.empty,
         onSome: source =>
           h.p(
-            [h.Class('lyrics-source text-xs text-white/50')],
+            [
+              h.DataAttribute('lyrics-source', ''),
+              h.Class('lyrics-source text-xs text-white/50'),
+            ],
             [`Lyrics from ${source}`],
           ),
       }),

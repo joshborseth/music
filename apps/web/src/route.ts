@@ -42,6 +42,10 @@ export const AppRoute = defineRouteUnion({
   Library: {},
   Song: { videoId: Schema.String },
   Artist: { artistId: Schema.String },
+  /** Every album by an artist. */
+  ArtistAlbums: { artistId: Schema.String },
+  /** Every single and EP by an artist. */
+  ArtistSingles: { artistId: Schema.String },
   Album: { albumId: Schema.String },
   Playlist: { playlistId: Schema.String },
   /** One of the playlists made in the app. */
@@ -83,6 +87,20 @@ export const artistRouter = pipe(
   Route.mapTo(AppRoute.Artist),
 )
 
+export const artistAlbumsRouter = pipe(
+  literal('artist'),
+  slash(string('artistId')),
+  slash(literal('albums')),
+  Route.mapTo(AppRoute.ArtistAlbums),
+)
+
+export const artistSinglesRouter = pipe(
+  literal('artist'),
+  slash(string('artistId')),
+  slash(literal('singles')),
+  Route.mapTo(AppRoute.ArtistSingles),
+)
+
 export const albumRouter = pipe(
   literal('album'),
   slash(string('albumId')),
@@ -112,6 +130,8 @@ const routeParser = Route.oneOf(
   myPlaylistRouter,
   moodRouter,
   songRouter,
+  artistAlbumsRouter,
+  artistSinglesRouter,
   artistRouter,
   albumRouter,
   playlistRouter,
@@ -162,11 +182,35 @@ export const routeTab = (route: AppRoute): Option.Option<Tab> =>
     Library: () => Option.some<Tab>('Library'),
     Song: () => Option.none(),
     Artist: () => Option.none(),
+    ArtistAlbums: () => Option.none(),
+    ArtistSingles: () => Option.none(),
     Album: () => Option.none(),
     Playlist: () => Option.none(),
     MyPlaylist: () => Option.none(),
     Mood: () => Option.none(),
     NotFound: () => Option.none(),
+  })
+
+/**
+ * The tab a page opened straight from a link belongs under, since nothing
+ * in the app led there: the top of a tab is its own, one of my playlists
+ * is in the Library, and YouTube Music's songs, artists, albums,
+ * playlists, and moods are what Search finds.
+ */
+export const openingTab = (route: AppRoute): Tab =>
+  AppRoute.match(route, {
+    Home: (): Tab => 'Home',
+    Search: (): Tab => 'Search',
+    Library: (): Tab => 'Library',
+    Song: (): Tab => 'Search',
+    Artist: (): Tab => 'Search',
+    ArtistAlbums: (): Tab => 'Search',
+    ArtistSingles: (): Tab => 'Search',
+    Album: (): Tab => 'Search',
+    Playlist: (): Tab => 'Search',
+    MyPlaylist: (): Tab => 'Library',
+    Mood: (): Tab => 'Search',
+    NotFound: (): Tab => 'Home',
   })
 
 /**
@@ -180,6 +224,8 @@ export const pageKey = (route: AppRoute): string =>
     Library: () => 'library',
     Song: ({ videoId }) => `song/${videoId}`,
     Artist: ({ artistId }) => `artist/${artistId}`,
+    ArtistAlbums: ({ artistId }) => `artist/${artistId}/albums`,
+    ArtistSingles: ({ artistId }) => `artist/${artistId}/singles`,
     Album: ({ albumId }) => `album/${albumId}`,
     Playlist: ({ playlistId }) => `playlist/${playlistId}`,
     MyPlaylist: ({ playlistId }) => `my-playlist/${playlistId}`,

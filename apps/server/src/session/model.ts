@@ -546,6 +546,22 @@ const transition = (
           },
         ),
 
+      // NOTE: the current song plays on, so nobody reloads. Shuffle stays
+      // on, and turning it off later puts back only the songs still queued.
+      // With autoplay on, the hub tops the queue up again as it runs low.
+      ClearUpcoming: () =>
+        Option.match(Session.clearUpcoming(model.queue, model.currentEntryId), {
+          onNone: () => quiet(model),
+          onSome: queue => {
+            const kept = new Set(queue.map(entry => entry.entryId))
+            return changed({
+              ...model,
+              queue,
+              unshuffled: model.unshuffled.filter(id => kept.has(id)),
+            })
+          },
+        }),
+
       Resume: () => {
         if (model.queue.length === 0) return quiet(model)
         const withEntry =

@@ -20,7 +20,7 @@ import {
 import { AppRoute } from '../route'
 import { routeQuery } from '../update'
 import { albumView } from './album'
-import { artistView } from './artist'
+import { ARTIST_RELEASE_TITLES, artistReleasesView, artistView } from './artist'
 import { detailNavBar, navBarButton, page, tabBar } from './chrome'
 import { homeView } from './home'
 import { libraryView } from './library'
@@ -47,6 +47,8 @@ const pageTitle = (model: Model): string =>
     Library: () => `Library · ${APP_NAME}`,
     Song: () => `Song · ${APP_NAME}`,
     Artist: () => `Artist · ${APP_NAME}`,
+    ArtistAlbums: () => `Albums · ${APP_NAME}`,
+    ArtistSingles: () => `Singles & EPs · ${APP_NAME}`,
     Album: () => `Album · ${APP_NAME}`,
     Playlist: () => `Playlist · ${APP_NAME}`,
     MyPlaylist: () => `Playlist · ${APP_NAME}`,
@@ -153,6 +155,18 @@ const routeParts = (
           ({ artist }) => artist.name,
         ),
         artistView(model, artistId, h),
+        h,
+      ),
+    ArtistAlbums: ({ artistId }) =>
+      detailPage(
+        Option.some(ARTIST_RELEASE_TITLES.Albums),
+        artistReleasesView(model, artistId, 'Albums', h),
+        h,
+      ),
+    ArtistSingles: ({ artistId }) =>
+      detailPage(
+        Option.some(ARTIST_RELEASE_TITLES.Singles),
+        artistReleasesView(model, artistId, 'Singles', h),
         h,
       ),
     Album: ({ albumId }) => {

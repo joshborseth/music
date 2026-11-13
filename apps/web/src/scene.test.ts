@@ -46,6 +46,7 @@ import {
   albumSearchQuery,
   artistQuery,
   artistSearchQuery,
+  playlistQuery,
   songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
@@ -522,6 +523,231 @@ describe('tab bar', () => {
   })
 })
 
+describe('a page opened straight from a link', () => {
+  test('marks Search for an artist, not Home', () => {
+    scene(
+      { update, view },
+      given(initialModel(AppRoute.Artist({ artistId: 'abc' }), '/artist/abc')),
+      pageScrolled,
+      expect(role('tab', { name: 'Search' })).toHaveAttr(
+        'aria-selected',
+        'true',
+      ),
+      expect(role('tab', { name: 'Home' })).toHaveAttr(
+        'aria-selected',
+        'false',
+      ),
+    )
+  })
+})
+
+const release = (index: number, kind: 'Album' | 'Single') => ({
+  id: `${kind}-${index}`,
+  title: `${kind} ${index}`,
+  artists: [{ maybeId: Option.some('abc'), name: 'Daft Punk' }],
+  maybeKind: Option.some(kind),
+  maybeYear: Option.some(`${2020 - index}`),
+  artwork: [],
+})
+
+const instantCrush: Song = {
+  videoId: 'instant-crush',
+  title: 'Instant Crush',
+  artists: [
+    { maybeId: Option.some('abc'), name: 'Daft Punk' },
+    { maybeId: Option.some('jc'), name: 'Julian Casablancas' },
+  ],
+  maybeAlbum: Option.some({ id: 'ram', name: 'Random Access Memories' }),
+  maybeDurationSeconds: Option.some(337),
+  artwork: [],
+}
+
+/** A page opened at `path`, which starts loading what it shows. */
+const openedAt = (route: AppRoute, path: string): Model =>
+  update(
+    initialModel(route, path),
+    Message.ChangedUrl({ url: urlOrThrow(`http://localhost${path}`) }),
+  ).model
+
+const artistModel = (route: AppRoute, path: string): Model =>
+  update(
+    openedAt(route, path),
+    Message.GotArtistMessage({
+      message: artistQuery.Message.CompletedFetch({
+        args: { artistId: 'abc' },
+        generation: FIRST_REQUEST_GENERATION,
+        result: Result.succeed({
+          artist: {
+            id: 'abc',
+            name: 'Daft Punk',
+            maybeAudience: Option.none(),
+            artwork: [],
+          },
+          maybeDescription: Option.none(),
+          topSongs: [instantCrush],
+          topSongPlays: { 'instant-crush': '1.2B plays' },
+          maybeAllSongsPlaylistId: Option.some('VLOLAK5uy_top'),
+          albums: Array.from({ length: 12 }, (_, index) =>
+            release(index, 'Album'),
+          ),
+          singles: [release(0, 'Single'), release(1, 'Single')],
+          relatedArtists: [
+            {
+              id: 'justice',
+              name: 'Justice',
+              maybeAudience: Option.some('24.1M monthly audience'),
+              artwork: [],
+            },
+          ],
+        }),
+      }),
+    }),
+  ).model
+
+describe('artist page', () => {
+  test('names each top song’s album and plays, and links to every song', () => {
+    scene(
+      { update, view },
+      given(artistModel(AppRoute.Artist({ artistId: 'abc' }), '/artist/abc')),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(text('Random Access Memories · 1.2B plays')).toExist(),
+      expect(role('link', { name: 'See all Top Songs' })).toHaveAttr(
+        'href',
+        '/playlist/VLOLAK5uy_top',
+      ),
+    )
+  })
+
+  test('links a long shelf of releases to all of them, but not a short one', () => {
+    scene(
+      { update, view },
+      given(artistModel(AppRoute.Artist({ artistId: 'abc' }), '/artist/abc')),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(role('link', { name: 'See all Albums' })).toHaveAttr(
+        'href',
+        '/artist/abc/albums',
+      ),
+      expect(role('link', { name: /Album 9/ })).toExist(),
+      expect(role('link', { name: /Album 10/ })).not.toExist(),
+      expect(role('heading', { name: 'Singles & EPs' })).toExist(),
+      expect(role('link', { name: 'See all Singles & EPs' })).not.toExist(),
+    )
+  })
+
+  test('shelves the artists their fans also like', () => {
+    scene(
+      { update, view },
+      given(artistModel(AppRoute.Artist({ artistId: 'abc' }), '/artist/abc')),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(role('heading', { name: 'Fans Also Like' })).toExist(),
+      expect(role('link', { name: /Justice/ })).toHaveAttr(
+        'href',
+        '/artist/justice',
+      ),
+    )
+  })
+
+  test('See All lists every album with its year and kind', () => {
+    scene(
+      { update, view },
+      given(
+        artistModel(
+          AppRoute.ArtistAlbums({ artistId: 'abc' }),
+          '/artist/abc/albums',
+        ),
+      ),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(role('heading', { name: 'Albums', level: 1 })).toExist(),
+      expect(role('link', { name: 'Daft Punk' })).toHaveAttr(
+        'href',
+        '/artist/abc',
+      ),
+      expect(role('link', { name: /Album 11/ })).toHaveAttr(
+        'href',
+        '/album/Album-11',
+      ),
+      expect(text('2009 · Album')).toExist(),
+    )
+  })
+})
+
+const playlistModel = (
+  maybeOwner: Option.Option<{
+    maybeId: Option.Option<string>
+    name: string
+  }>,
+): Model =>
+  update(
+    openedAt(AppRoute.Playlist({ playlistId: 'VLp' }), '/playlist/VLp'),
+    Message.GotPlaylistMessage({
+      message: playlistQuery.Message.CompletedFetch({
+        args: { playlistId: 'VLp' },
+        generation: FIRST_REQUEST_GENERATION,
+        result: Result.succeed({
+          playlist: {
+            id: 'VLp',
+            title: 'Daft Punk Essentials',
+            maybeSubtitle: Option.some('Playlist · 2024'),
+            artwork: [],
+          },
+          maybeOwner,
+          maybeDescription: Option.some('The essentials.'),
+          maybeLengthSummary: Option.some('30 tracks • 2 hours, 19 minutes'),
+          tracks: [theChain],
+        }),
+      }),
+    }),
+  ).model
+
+describe('playlist page', () => {
+  test('links an artist who made it, and says how many songs and how long', () => {
+    scene(
+      { update, view },
+      given(
+        playlistModel(
+          Option.some({ maybeId: Option.some('abc'), name: 'Daft Punk' }),
+        ),
+      ),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(role('link', { name: 'Daft Punk' })).toHaveAttr(
+        'href',
+        '/artist/abc',
+      ),
+      expect(text('30 tracks · 2 hours, 19 minutes')).toExist(),
+      expect(text('The essentials.')).toExist(),
+    )
+  })
+
+  test('names anyone else, or the kind and year, as plain text', () => {
+    scene(
+      { update, view },
+      given(
+        playlistModel(
+          Option.some({ maybeId: Option.none(), name: 'YouTube Music' }),
+        ),
+      ),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(text('YouTube Music · 30 tracks · 2 hours, 19 minutes')).toExist(),
+      expect(role('link', { name: 'YouTube Music' })).not.toExist(),
+    )
+    scene(
+      { update, view },
+      given(playlistModel(Option.none())),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(
+        text('Playlist · 2024 · 30 tracks · 2 hours, 19 minutes'),
+      ).toExist(),
+    )
+  })
+})
+
 describe('library', () => {
   test('lists my playlists, Liked songs first', () => {
     const model = modifyFields(initialModel(AppRoute.Library(), '/library'), {
@@ -856,8 +1082,11 @@ describe('saving to the Library', () => {
               artist: fleetwoodMac,
               maybeDescription: Option.none(),
               topSongs: [theChain],
+              topSongPlays: {},
+              maybeAllSongsPlaylistId: Option.none(),
               albums: [rumours],
               singles: [],
+              relatedArtists: [],
             }),
           }),
         ).model,
