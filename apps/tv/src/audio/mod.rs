@@ -41,18 +41,6 @@ pub enum Event {
         entry_id: String,
         seconds: f64,
     },
-    /// The song from the last `Load` is open and about to fill the device,
-    /// so it plays as soon as it is told to.
-    Ready {
-        entry_id: String,
-    },
-    /// The next song is queued right behind this one and starts without a
-    /// gap in `in_seconds`, once the audio ahead of it has played.
-    Advancing {
-        from_entry_id: String,
-        to_entry_id: String,
-        in_seconds: f64,
-    },
     /// The next song started without a gap.
     Advanced {
         from_entry_id: String,
@@ -343,9 +331,6 @@ impl EngineThread {
         }
         match (opened.kind, opened.result) {
             (OpenKind::Load, Ok(decoder)) => {
-                self.emit(Event::Ready {
-                    entry_id: opened.entry_id.clone(),
-                });
                 self.current = Some(Decoding {
                     entry_id: opened.entry_id,
                     decoder,
@@ -395,15 +380,6 @@ impl EngineThread {
         let Some((entry_id, decoder)) = self.prepared_next.take() else {
             return;
         };
-        if let Some(from) = self.current.as_ref() {
-            let rate = self.output.as_ref().map_or(44_100, |output| output.rate);
-            let queued = self.written_frames.saturating_sub(self.played_frames());
-            self.emit(Event::Advancing {
-                from_entry_id: from.entry_id.clone(),
-                to_entry_id: entry_id.clone(),
-                in_seconds: queued as f64 / f64::from(rate),
-            });
-        }
         self.next = None;
         self.segments.push_back(Segment {
             entry_id: entry_id.clone(),
@@ -579,7 +555,6 @@ mod tests {
         });
         let started = Instant::now();
         let mut first_position = None;
-        let mut advancing = None;
         let advanced = runtime.block_on(async {
             tokio::time::timeout(Duration::from_secs(40), async {
                 while let Some(event) = receiver.recv().await {
@@ -589,26 +564,10 @@ mod tests {
                         {
                             first_position.get_or_insert((seconds, started.elapsed()));
                         }
-                        Event::Advancing {
-                            from_entry_id,
-                            to_entry_id,
-                            in_seconds,
-                        } => {
-                            assert_eq!((from_entry_id.as_str(), to_entry_id.as_str()), ("a", "b"));
-                            advancing = Some(Instant::now() + Duration::from_secs_f64(in_seconds));
-                        }
                         Event::Advanced {
                             from_entry_id,
                             to_entry_id,
                         } => {
-                            let expected = advancing.expect("said when it would advance");
-                            let off = if Instant::now() > expected {
-                                Instant::now() - expected
-                            } else {
-                                expected - Instant::now()
-                            };
-                            // The engine looks every 20 ms.
-                            assert!(off < Duration::from_millis(60), "advanced {off:?} off");
                             return (from_entry_id, to_entry_id);
                         }
                         Event::Failed { message, .. } => panic!("failed: {message}"),

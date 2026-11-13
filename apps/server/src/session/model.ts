@@ -31,12 +31,6 @@ export interface Model {
   readonly pausedForLostPlayer: boolean
   /** Devices the server asked to wake that have not connected yet. */
   readonly waking: ReadonlyArray<string>
-  /**
-   * The TV holds the song it just jumped to until it is loaded and the house
-   * lights can change with it (`holdForLights`). `playing` is false
-   * meanwhile; `startHeld` starts it.
-   */
-  readonly waitingToStart: boolean
 }
 
 export const initialModel: Model = {
@@ -51,17 +45,15 @@ export const initialModel: Model = {
   foreignSeekSeq: 0,
   pausedForLostPlayer: false,
   waking: [],
-  waitingToStart: false,
 }
 
 /**
- * Messages the hub handles itself: a device's own volume, which it keeps
- * with the connections because it belongs to devices, not to the session,
- * and the player's signals for the lights (`Loaded`, `Advancing`).
+ * Messages about a device's own volume. The hub keeps volumes with the
+ * connections, because they belong to devices, not to the session.
  */
 export type DeviceMessage = Extract<
   Session.ClientMessage,
-  { readonly _tag: 'Volume' | 'SetDeviceVolume' | 'Loaded' | 'Advancing' }
+  { readonly _tag: 'Volume' | 'SetDeviceVolume' }
 >
 
 /** Messages that change the session. */
@@ -74,11 +66,6 @@ export interface Context {
   readonly isOnline: (deviceId: string) => boolean
   readonly isWakeable: (deviceId: string) => boolean
   readonly makeEntryId: () => string
-  /**
-   * The lights follow songs on this device, so it holds each song it jumps
-   * to until they can change with it.
-   */
-  readonly holdsForLights: (deviceId: string) => boolean
 }
 
 /** What a transition asks the hub to do besides storing the new model. */
@@ -130,7 +117,6 @@ export const toSessionState = (
   positionAt: model.positionAt,
   seekSeq: model.seekSeq,
   autoplay: model.autoplay,
-  waitingToStart: model.waitingToStart,
 })
 
 export const currentPosition = (model: Model, now: number): number =>
@@ -249,66 +235,16 @@ const forgetLostPlayerPause = (
     ? { ...outcome, model: { ...outcome.model, pausedForLostPlayer: false } }
     : outcome
 
-/**
- * Hold a song the TV jumps to while playing until the lights can change with
- * it; keep holding while nothing moves it on. A song that follows the last
- * with no gap (`Advanced`) is never held: the lights get it ahead of time.
- */
-const holdForLights = (
-  before: Model,
-  outcome: Outcome,
-  context: Context,
-): Outcome => {
-  const after = outcome.model
-  const isNewSong =
-    after.currentEntryId !== null &&
-    after.currentEntryId !== before.currentEntryId &&
-    after.seekSeq !== before.seekSeq
-  const isStillHeld =
-    before.waitingToStart &&
-    after.currentEntryId === before.currentEntryId &&
-    after.seekSeq === before.seekSeq &&
-    after.activeDeviceId === before.activeDeviceId
-  const shouldHold =
-    after.playing &&
-    after.activeDeviceId !== null &&
-    context.holdsForLights(after.activeDeviceId) &&
-    (isNewSong || isStillHeld)
-  if (shouldHold) {
-    return {
-      ...outcome,
-      model: {
-        ...settle(after, context.now),
-        playing: false,
-        waitingToStart: true,
-      },
-    }
-  }
-  // NOTE: a hold that ends makes the song play or stop, which every device
-  // needs to hear, even after a message that changed nothing else.
-  return before.waitingToStart ? { ...outcome, broadcast: true } : outcome
-}
-
 /** Apply a message, and remember a jump the player did not make itself. */
 export const update = (
   model: Model,
   message: SessionMessage,
   context: Context,
 ): Outcome => {
-  // NOTE: a held song counts as playing, from the spot where it waits, so a
-  // pause stops it and a skip holds the next one.
-  const live: Model = model.waitingToStart
-    ? {
-        ...model,
-        playing: true,
-        waitingToStart: false,
-        positionAt: context.now,
-      }
-    : model
   const outcome = forgetLostPlayerPause(
-    live,
+    model,
     message,
-    transition(live, message, context),
+    transition(model, message, context),
   )
   const isForeignJump =
     outcome.model.seekSeq !== model.seekSeq &&
@@ -316,38 +252,13 @@ export const update = (
       PLAYER_OWN_JUMPS.has(message._tag) &&
       outcome.model.activeDeviceId === context.senderId
     )
-  return holdForLights(
-    model,
-    isForeignJump
-      ? {
-          ...outcome,
-          model: { ...outcome.model, foreignSeekSeq: outcome.model.seekSeq },
-        }
-      : outcome,
-    context,
-  )
+  return isForeignJump
+    ? {
+        ...outcome,
+        model: { ...outcome.model, foreignSeekSeq: outcome.model.seekSeq },
+      }
+    : outcome
 }
-
-/**
- * Start the song the TV held for the lights: it is loaded and its color is
- * known, or the wait ran out. Only the hold for that very jump.
- */
-export const startHeld = (
-  model: Model,
-  entryId: string,
-  seekSeq: number,
-  now: number,
-): Outcome =>
-  model.waitingToStart &&
-  model.currentEntryId === entryId &&
-  model.seekSeq === seekSeq
-    ? changed({
-        ...model,
-        playing: true,
-        waitingToStart: false,
-        positionAt: now,
-      })
-    : unchanged(model)
 
 const transition = (
   model: Model,
@@ -681,11 +592,10 @@ export const playerLost = (
   deviceId: string,
   now: number,
 ): Outcome =>
-  model.activeDeviceId === deviceId && (model.playing || model.waitingToStart)
+  model.activeDeviceId === deviceId && model.playing
     ? changed({
         ...settle(model, now),
         playing: false,
-        waitingToStart: false,
         pausedForLostPlayer: true,
       })
     : quiet(model)
@@ -701,8 +611,6 @@ export const wakeTimedOut = (
     ...settle(model, now),
     waking: model.waking.filter(id => id !== deviceId),
     playing: model.activeDeviceId === deviceId ? false : model.playing,
-    waitingToStart:
-      model.activeDeviceId === deviceId ? false : model.waitingToStart,
   }
   return {
     ...changed(stopped),

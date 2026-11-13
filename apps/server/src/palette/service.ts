@@ -2,11 +2,10 @@ import { Cache, Context, Data, Duration, Effect, Exit, Layer } from 'effect'
 import sharp from 'sharp'
 
 import { allowedArtworkUrl } from '../artwork.ts'
-import { type ArtworkColors, colorsFromPixels } from './extract.ts'
+import { backdropFromPixels } from './extract.ts'
 
 /*
- * The color of a song's artwork (for the lights, and dimmed as the full
- * player's backdrop), cached by URL. Google's square artwork is
+ * The full player's backdrop color for a song's artwork, cached by URL. Google's square artwork is
  * fetched at a small size; anything else is shrunk after download. Video
  * thumbnails (i.ytimg.com) are letterboxed, so their black bars are trimmed
  * first.
@@ -29,8 +28,6 @@ export class ArtworkFetchError extends Data.TaggedError('ArtworkFetchError')<{
 export class ArtworkPalette extends Context.Service<
   ArtworkPalette,
   {
-    /** Never fails: artwork that cannot be read has no color. */
-    readonly colorFor: (url: string) => Effect.Effect<string | null>
     /** Never fails: artwork that cannot be read has no backdrop. */
     readonly backdropFor: (url: string) => Effect.Effect<string | null>
   }
@@ -86,7 +83,7 @@ export const samplePixels = (image: Uint8Array, letterboxed: boolean) =>
       new ArtworkFetchError({ url: 'decode', reason: String(error) }),
   })
 
-const lookup = (raw: string): Effect.Effect<ArtworkColors, ArtworkFetchError> =>
+const lookup = (raw: string): Effect.Effect<string | null, ArtworkFetchError> =>
   Effect.gen(function* () {
     const url = allowedArtworkUrl(raw)
     if (url === undefined) {
@@ -97,7 +94,7 @@ const lookup = (raw: string): Effect.Effect<ArtworkColors, ArtworkFetchError> =>
       image,
       LETTERBOXED_HOST.test(url.hostname),
     )
-    return colorsFromPixels(pixels)
+    return backdropFromPixels(pixels)
   })
 
 export const ArtworkPaletteLive = Layer.effect(ArtworkPalette)(
@@ -107,20 +104,14 @@ export const ArtworkPaletteLive = Layer.effect(ArtworkPalette)(
       timeToLive: exit =>
         Exit.isSuccess(exit) ? Duration.infinity : FAILURE_TTL,
     })
-    const colorsFor = (url: string) =>
-      Cache.get(cache, url).pipe(
-        Effect.tapError(error =>
-          Effect.logWarning('Artwork colors unavailable', error.reason),
-        ),
-        Effect.orElseSucceed((): ArtworkColors => ({
-          color: null,
-          backdrop: null,
-        })),
-      )
     return ArtworkPalette.of({
-      colorFor: url => Effect.map(colorsFor(url), ({ color }) => color),
       backdropFor: url =>
-        Effect.map(colorsFor(url), ({ backdrop }) => backdrop),
+        Cache.get(cache, url).pipe(
+          Effect.tapError(error =>
+            Effect.logWarning('Artwork colors unavailable', error.reason),
+          ),
+          Effect.orElseSucceed(() => null),
+        ),
     })
   }),
 )

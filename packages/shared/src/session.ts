@@ -88,19 +88,8 @@ export const SessionState = Schema.Struct({
   seekSeq: Schema.Number,
   /** Similar songs are added as the queue runs out, so music keeps playing. */
   autoplay: Schema.Boolean,
-  /**
-   * A new song is loading on the TV, which holds it at the start until the
-   * house lights can change with it (see `nowPlaying.ts`). `playing` is false
-   * meanwhile, so the position stays put; players show it as loading, and
-   * pausing cancels the start.
-   */
-  waitingToStart: Schema.Boolean,
 })
 export type SessionState = typeof SessionState.Type
-
-/** Playing, or about to: a song held for the lights counts as playing. */
-export const isPlayingOrStarting = (state: SessionState): boolean =>
-  state.playing || state.waitingToStart
 
 // CLIENT → SERVER
 
@@ -216,25 +205,6 @@ export const TrackEnded = Schema.TaggedStruct('TrackEnded', {
   entryId: Schema.String,
 })
 
-/**
- * The player has the song it was told to load ready, at the session jump
- * `seekSeq`. A song held for the lights starts once it is ready.
- */
-export const Loaded = Schema.TaggedStruct('Loaded', {
-  entryId: Schema.String,
-  seekSeq: Schema.Number,
-})
-
-/**
- * The player has queued the next entry right behind this one, and it starts
- * with no gap in `inSeconds`. The lights change with it.
- */
-export const Advancing = Schema.TaggedStruct('Advancing', {
-  fromEntryId: Schema.String,
-  toEntryId: Schema.String,
-  inSeconds: Schema.Number,
-})
-
 export const TrackFailed = Schema.TaggedStruct('TrackFailed', {
   entryId: Schema.String,
   message: Schema.String,
@@ -275,8 +245,6 @@ export const ClientMessage = Schema.Union([
   TrackFailed,
   Volume,
   SetDeviceVolume,
-  Loaded,
-  Advancing,
 ])
 export type ClientMessage = typeof ClientMessage.Type
 

@@ -2,12 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { Effect } from 'effect'
 import sharp from 'sharp'
 
-import {
-  backdropFromPixels,
-  colorFromPixels,
-  oklabToRgb,
-  rgbToOklab,
-} from './extract.ts'
+import { backdropFromPixels, oklabToRgb, rgbToOklab } from './extract.ts'
 import { samplePixels } from './service.ts'
 
 type Rgb = readonly [number, number, number]
@@ -26,16 +21,16 @@ const channels = (hex: string): Rgb => [
   Number.parseInt(hex.slice(5, 7), 16),
 ]
 
-const near = (hex: string, [red, green, blue]: Rgb, tolerance = 6) => {
-  const [r, g, b] = channels(hex)
-  return (
-    Math.abs(r - red) <= tolerance &&
-    Math.abs(g - green) <= tolerance &&
-    Math.abs(b - blue) <= tolerance
-  )
-}
+const lab = (hex: string) => rgbToOklab(...channels(hex))
+const hue = ({ a, b }: { a: number; b: number }) => Math.atan2(b, a)
 
-describe('colorFromPixels', () => {
+/** True when the backdrop for `rgb` has the hue of `[red, green, blue]`. */
+const backdropHue = (rgb: Uint8Array, [red, green, blue]: Rgb) =>
+  Math.abs(
+    hue(lab(backdropFromPixels(rgb) ?? '')) - hue(rgbToOklab(red, green, blue)),
+  ) < 0.1
+
+describe('OKLab', () => {
   test('round-trips sRGB through OKLab', () => {
     const colors: ReadonlyArray<Rgb> = [
       [255, 0, 0],
@@ -52,68 +47,35 @@ describe('colorFromPixels', () => {
       ])
     }
   })
-
-  test('a single-color cover gives that color', () => {
-    expect(colorFromPixels(pixels([[139, 206, 0], 2304]))).toBe('#8bce00')
-  })
-
-  test('black, white, and grey covers give no color', () => {
-    expect(
-      colorFromPixels(
-        pixels(
-          [[0, 0, 0], 1500],
-          [[255, 255, 255], 500],
-          [[128, 128, 128], 300],
-        ),
-      ),
-    ).toBeNull()
-  })
-
-  test('a large colorful area beats a small brighter one', () => {
-    const color = colorFromPixels(
-      pixels([[20, 60, 160], 1600], [[250, 220, 20], 120], [[0, 0, 0], 584]),
-    )
-    expect(near(color ?? '', [20, 60, 160])).toBe(true)
-  })
-
-  test('a colored area beats a larger black one', () => {
-    const color = colorFromPixels(
-      pixels([[0, 0, 0], 1400], [[20, 60, 160], 900]),
-    )
-    expect(near(color ?? '', [20, 60, 160])).toBe(true)
-  })
-
-  test('merges shades that look alike', () => {
-    const color = colorFromPixels(
-      pixels(
-        [[200, 30, 30], 1000],
-        [[205, 34, 32], 1000],
-        [[30, 200, 30], 20],
-        [[255, 255, 255], 284],
-      ),
-    )
-    expect(near(color ?? '', [202, 32, 31])).toBe(true)
-  })
-
-  test('the lights and the backdrop share one hue', () => {
-    const rgb = pixels([[250, 200, 30], 1200], [[20, 60, 160], 1100])
-    const color = rgbToOklab(...channels(colorFromPixels(rgb) ?? ''))
-    const backdrop = rgbToOklab(...channels(backdropFromPixels(rgb) ?? ''))
-    expect(
-      Math.abs(
-        Math.atan2(color.b, color.a) - Math.atan2(backdrop.b, backdrop.a),
-      ),
-    ).toBeLessThan(0.1)
-  })
-
-  test('an empty image gives no color', () => {
-    expect(colorFromPixels(new Uint8Array())).toBeNull()
-  })
 })
 
 describe('backdropFromPixels', () => {
-  const lab = (hex: string) => rgbToOklab(...channels(hex))
-  const hue = ({ a, b }: { a: number; b: number }) => Math.atan2(b, a)
+  test('a single-color cover gives its hue', () => {
+    expect(backdropHue(pixels([[139, 206, 0], 2304]), [139, 206, 0])).toBe(true)
+  })
+
+  test('a large colorful area beats a small brighter one', () => {
+    expect(
+      backdropHue(
+        pixels([[20, 60, 160], 1600], [[250, 220, 20], 120], [[0, 0, 0], 584]),
+        [20, 60, 160],
+      ),
+    ).toBe(true)
+  })
+
+  test('merges shades that look alike', () => {
+    expect(
+      backdropHue(
+        pixels(
+          [[200, 30, 30], 1000],
+          [[205, 34, 32], 1000],
+          [[30, 200, 30], 20],
+          [[255, 255, 255], 284],
+        ),
+        [202, 32, 31],
+      ),
+    ).toBe(true)
+  })
 
   test('a bright cover gives a dark color of the same hue', () => {
     const backdrop = backdropFromPixels(pixels([[250, 200, 30], 2304])) ?? ''
@@ -184,7 +146,7 @@ describe('samplePixels', () => {
       return matching / (rgb.length / 3)
     }
     const trimmed = await Effect.runPromise(samplePixels(image, true))
-    expect(colorFromPixels(trimmed)).toBe('#e03070')
+    expect(backdropHue(trimmed, [224, 48, 112])).toBe(true)
     expect(share(trimmed)).toBeGreaterThan(0.95)
     const untrimmed = await Effect.runPromise(samplePixels(image, false))
     expect(share(untrimmed)).toBeLessThan(0.8)

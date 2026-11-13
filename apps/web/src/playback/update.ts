@@ -90,11 +90,8 @@ const showNotice = (model: Model, message: string): PlaybackReturn => ({
   commands: [WaitBeforeHideNotice({ message })],
 })
 
-/** A song the TV holds for the lights counts as playing: a tap pauses it. */
 const isPlaying = (model: Model): boolean =>
-  Option.exists(model.maybeSession, ({ state }) =>
-    Session.isPlayingOrStarting(state),
-  )
+  Option.exists(model.maybeSession, ({ state }) => state.playing)
 
 const myDeviceId = (model: Model): Option.Option<string> =>
   Option.map(model.maybeIdentity, ({ deviceId }) => deviceId)

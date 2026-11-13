@@ -175,8 +175,8 @@ export const deviceStatus = (
   if (device.waking) {
     return 'TurningOn'
   } else if (isPlayer && device.online && hasSong) {
-    return Session.isPlayingOrStarting(state) ? 'Playing' : 'Paused'
-  } else if (isPlayer && hasSong && Session.isPlayingOrStarting(state)) {
+    return state.playing ? 'Playing' : 'Paused'
+  } else if (isPlayer && hasSong && state.playing) {
     return 'Reconnecting'
   } else if (device.online) {
     return 'Ready'
