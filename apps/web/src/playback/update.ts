@@ -1230,7 +1230,8 @@ export const clickPlaySongs = (
 /**
  * Play `song` with its radio after it: autoplay adds YouTube Music's similar
  * songs as soon as the queue holds only that song. Asking for a radio asks
- * for those songs, so it turns autoplay back on when it was off.
+ * for those songs, so it turns autoplay back on when it was off, and a radio
+ * plays in its own order, so it turns shuffle off.
  */
 export const startRadio = (model: Model, song: Song): PlaybackReturn => {
   const play = clickPlaySongs(
@@ -1242,6 +1243,7 @@ export const startRadio = (model: Model, song: Song): PlaybackReturn => {
       title: song.title,
       id: Session.songRadioPlaylistId(song.videoId),
     }),
+    'InOrder',
   )
   return Option.exists(model.maybeSession, ({ state }) => !state.autoplay)
     ? {
@@ -1256,14 +1258,15 @@ export const startRadio = (model: Model, song: Song): PlaybackReturn => {
 
 /**
  * Play an album's or artist's radio, which came as songs. Like a song's
- * radio, it turns autoplay on, so the music goes on after them.
+ * radio, it plays in order and turns autoplay on, so the music goes on
+ * after them.
  */
 export const playStationRadio = (
   model: Model,
   songs: ReadonlyArray<Song>,
   playingFrom: Session.PlayingFrom,
 ): PlaybackReturn => {
-  const play = playSongs(model, songs, 0, Option.some(playingFrom))
+  const play = playSongs(model, songs, 0, Option.some(playingFrom), 'InOrder')
   return Option.exists(model.maybeSession, ({ state }) => !state.autoplay)
     ? {
         model: play.model,

@@ -567,7 +567,7 @@ describe('starting a radio', () => {
         title: radioSong.title,
         id: `RDAMVM${radioSong.videoId}`,
       },
-      shuffle: null,
+      shuffle: false,
     },
   })
 
