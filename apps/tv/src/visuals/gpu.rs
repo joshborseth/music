@@ -36,7 +36,6 @@ use super::look::{COVER_SIDE, Cover, DEFAULT_COLORS};
 use super::motion::{Motion, hash, unit};
 use super::music::{BANDS, HISTORY_ROWS, LEVELS, Listener, Music, WAVE};
 use super::sizing::{Change, Sizing};
-use super::timing::{Part, Timer};
 
 const COMMON: &str = include_str!("shaders/common.glsl");
 const FRAGMENT: &str = include_str!("shaders/fragment.glsl");
@@ -139,8 +138,6 @@ pub struct Renderer {
     /// The scene the last frame drew alone, and how many frames in a row.
     alone: Option<usize>,
     steady: u32,
-    /// GPU time for each part of a frame, where the GPU can tell.
-    timer: Option<Timer>,
 }
 
 impl Renderer {
@@ -266,7 +263,6 @@ impl Renderer {
                 frame: 0,
                 alone: None,
                 steady: 0,
-                timer: Timer::new(gl),
             })
         }
     }
@@ -295,14 +291,6 @@ impl Renderer {
         } else {
             sizes.join(", ")
         }
-    }
-
-    /// The GPU time each part of a frame took since the last call, for the
-    /// server's log; `None` where the GPU can't tell.
-    pub fn timings(&mut self) -> Option<String> {
-        self.timer
-            .as_mut()
-            .map(|timer| timer.report(|scene| SCENES[scene].name))
     }
 
     /// Show `cover` (or none) from now on.
@@ -453,10 +441,6 @@ impl Renderer {
                 0
             };
             self.alone = alone;
-            if let Some(timer) = &mut self.timer {
-                timer.frame(gl, alone.filter(|_| draw_a));
-                timer.begin(gl, Part::Scenes);
-            }
 
             if draw_a {
                 self.draw_scene(gl, a, shot.current, music, listener);
@@ -464,16 +448,8 @@ impl Renderer {
             if draw_b && let (Some(b), Some((next, _))) = (b, shot.next) {
                 self.draw_scene(gl, b, next, music, listener);
             }
-            if let Some(timer) = &mut self.timer {
-                timer.end(gl);
-                timer.begin(gl, Part::Effects);
-            }
             if draw_a || draw_b {
                 self.compose(gl, a, b, shot.current, mix, fade, music, listener);
-            }
-            if let Some(timer) = &mut self.timer {
-                timer.end(gl);
-                timer.begin(gl, Part::Screen);
             }
 
             // The screen. Skia cleared it and has moved on to our passes,
@@ -490,9 +466,6 @@ impl Renderer {
             set_f32(gl, &self.present, "uCentre", shade.centre);
             bind_texture(gl, &self.present, "uPicture", 0, self.picture.texture);
             fullscreen(gl);
-            if let Some(timer) = &mut self.timer {
-                timer.end(gl);
-            }
         }
         saved.restore(gl);
     }
@@ -828,9 +801,6 @@ impl Renderer {
                 gl.delete_texture(texture);
             }
             gl.delete_vertex_array(self.vao);
-            if let Some(timer) = self.timer {
-                timer.delete(gl);
-            }
         }
     }
 }
