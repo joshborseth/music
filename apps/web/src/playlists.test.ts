@@ -57,7 +57,7 @@ const summary = (
   updatedAt: 1,
 })
 
-const liked = summary(LIKED_PLAYLIST_ID, 'Liked songs', 0)
+const liked = summary(LIKED_PLAYLIST_ID, 'Liked Songs', 0)
 const roadTrip = summary('road-trip', 'Road trip', 1)
 
 const libraryOf = (

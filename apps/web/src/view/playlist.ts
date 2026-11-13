@@ -1,17 +1,62 @@
-import { Option } from 'effect'
+import { Array, Option, pipe } from 'effect'
 import { Html, HtmlBuilder } from 'foldkit/html'
 
-import { type PlaylistDetails } from '@music/shared'
+import { type Artwork, type PlaylistDetails } from '@music/shared'
 
 import { downloadStatus } from '../downloads/domain'
 import { Message } from '../message'
 import { playlistQuery } from '../query'
-import { collectionView } from './collection'
+import {
+  HERO_ARTWORK_CLASS,
+  HERO_ARTWORK_WIDTH,
+  collectionView,
+} from './collection'
 import { type PageModel } from './page'
-import { artistLinks, joinDetails, loadingPage, remote } from './shared'
+import {
+  ArtworkShape,
+  MOSAIC_COVERS,
+  artistLinks,
+  coverMosaic,
+  joinDetails,
+  loadingPage,
+  remote,
+} from './shared'
 
 const formatLengthSummary = (summary: string): string =>
   summary.replaceAll(' • ', ' · ')
+
+/** One image whatever its size: Google's image links end in `=w120-h120…`. */
+const imageKey = (artwork: Artwork): Option.Option<string> =>
+  Option.map(Array.head(artwork), ({ url }) => url.split(/[=?]/)[0] ?? url)
+
+/**
+ * The covers to show two by two when the playlist only borrows one of its
+ * songs' covers, as an artist's Top songs does: its own cover is the same
+ * image as one of its songs', and its songs come from four albums or more.
+ * None when the playlist has a cover of its own.
+ */
+export const borrowedCoverMosaic = (
+  details: PlaylistDetails,
+): Option.Option<ReadonlyArray<Artwork>> =>
+  Option.flatMap(imageKey(details.playlist.artwork), playlistKey => {
+    const covers = pipe(
+      details.tracks,
+      Array.map(({ artwork }) =>
+        Option.map(imageKey(artwork), key => ({ key, artwork })),
+      ),
+      Array.getSomes,
+      Array.dedupeWith((left, right) => left.key === right.key),
+    )
+    const isBorrowed = Array.some(covers, ({ key }) => key === playlistKey)
+    return isBorrowed && covers.length >= MOSAIC_COVERS
+      ? Option.some(
+          Array.map(
+            Array.take(covers, MOSAIC_COVERS),
+            ({ artwork }) => artwork,
+          ),
+        )
+      : Option.none()
+  })
 
 /**
  * Who made the playlist, in the accent color only when it opens their
@@ -66,6 +111,18 @@ export const playlistView = (
           {
             title: details.playlist.title,
             artwork: details.playlist.artwork,
+            maybeCover: Option.map(borrowedCoverMosaic(details), covers =>
+              coverMosaic(
+                {
+                  covers,
+                  displayWidth: HERO_ARTWORK_WIDTH,
+                  shape: ArtworkShape.Card,
+                  className: HERO_ARTWORK_CLASS,
+                  isEager: true,
+                },
+                h,
+              ),
+            ),
             credits: lines.credits,
             details: lines.details,
             maybeDescription: details.maybeDescription,

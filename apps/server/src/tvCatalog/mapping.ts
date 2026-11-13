@@ -332,7 +332,7 @@ export const homeShelves = (
       },
       yourPlaylistsShelf(library),
       {
-        title: 'Liked songs',
+        title: 'Liked Songs',
         cards: Array.map(Array.take(likedSongs, HOME_LIKED_SONGS), songCard),
       },
       ...Array.map(playlists, playlistSongsShelf),

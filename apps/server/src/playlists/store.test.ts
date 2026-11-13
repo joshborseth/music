@@ -60,7 +60,7 @@ describe('playlist store', () => {
     expect(library.likedVideoIds).toEqual([])
     expect(
       library.playlists.map(({ id, title, isLiked }) => [id, title, isLiked]),
-    ).toEqual([[LIKED_PLAYLIST_ID, 'Liked songs', true]])
+    ).toEqual([[LIKED_PLAYLIST_ID, 'Liked Songs', true]])
   })
 
   test('creates a playlist holding a copy of the songs, each once', () => {
@@ -118,7 +118,7 @@ describe('playlist store', () => {
     })
 
     expect(result.library.playlists.map(({ title }) => title)).toEqual([
-      'Liked songs',
+      'Liked Songs',
       'First',
       'Second',
     ])
@@ -183,7 +183,7 @@ describe('playlist store', () => {
 
     expect(Option.isNone(deleted.maybePlaylist)).toBe(true)
     const library = Result.getOrThrow(run(store.library()))
-    expect(library.playlists.map(({ title }) => title)).toEqual(['Liked songs'])
+    expect(library.playlists.map(({ title }) => title)).toEqual(['Liked Songs'])
   })
 
   test('a missing playlist is not found', () => {
@@ -348,6 +348,19 @@ describe('saved albums and followed artists', () => {
       isSaved: true,
     })
     expect(ids(saved.library.albums)).toEqual(['a'])
+  })
+
+  test('a file from before the title case names Liked Songs the new way', () => {
+    const db = new Database(':memory:', { strict: true })
+    const options = { now: () => 1, newId: () => 'kept' }
+    makePlaylistStore(db, options)
+    db.run("UPDATE playlists SET title = 'Liked songs' WHERE id = 'liked'")
+    db.run('PRAGMA user_version = 3')
+
+    const library = Result.getOrThrow(
+      run(makePlaylistStore(db, options).library()),
+    )
+    expect(library.playlists.map(({ title }) => title)).toEqual(['Liked Songs'])
   })
 })
 

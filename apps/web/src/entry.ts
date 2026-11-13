@@ -28,4 +28,7 @@ const application = Runtime.makeApplication({
   },
 })
 
-Runtime.run(application)
+// NOTE: the app starts in a task of its own, once every module has run, so
+// a cold start is two shorter tasks the browser can breathe between rather
+// than one long one. The page has nothing to show before then anyway.
+setTimeout(() => Runtime.run(application), 0)

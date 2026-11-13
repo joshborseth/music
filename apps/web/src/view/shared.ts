@@ -258,6 +258,48 @@ export const artworkImage = (
 
 // PLAYLIST COVERS
 
+/** How many covers a mosaic shows, two by two. */
+export const MOSAIC_COVERS = 4
+
+type CoverMosaicConfig = Readonly<{
+  covers: ReadonlyArray<Artwork>
+  displayWidth: number
+  shape: ArtworkShape
+  className: string
+  isEager?: boolean
+}>
+
+/** The first four of `covers`, two by two, as a playlist's cover. */
+export const coverMosaic = (
+  config: CoverMosaicConfig,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [
+      h.Class(
+        cn(
+          'bg-muted grid shrink-0 grid-cols-2 grid-rows-2 overflow-hidden',
+          config.shape,
+          config.className,
+        ),
+      ),
+    ],
+    Array.map(Array.take(config.covers, MOSAIC_COVERS), artwork =>
+      Option.match(artworkUrl(artwork, config.displayWidth / 2), {
+        onNone: () => h.span([h.Class('bg-muted')]),
+        onSome: url =>
+          h.img([
+            h.Src(url),
+            h.Alt(''),
+            h.Loading(config.isEager === true ? 'eager' : 'lazy'),
+            h.Decoding('async'),
+            h.Referrerpolicy('no-referrer'),
+            h.Class('size-full object-cover'),
+          ]),
+      }),
+    ),
+  )
+
 type PlaylistCoverConfig = Readonly<{
   playlist: MyPlaylistSummary
   displayWidth: number
@@ -288,32 +330,8 @@ export const playlistCover = (
       ],
       [icon(h, Heart, 'size-2/5 fill-current')],
     )
-  } else if (playlist.covers.length >= 4) {
-    return h.div(
-      [
-        h.Class(
-          cn(
-            'bg-muted grid shrink-0 grid-cols-2 grid-rows-2 overflow-hidden',
-            config.shape,
-            config.className,
-          ),
-        ),
-      ],
-      Array.map(playlist.covers, artwork =>
-        Option.match(artworkUrl(artwork, config.displayWidth / 2), {
-          onNone: () => h.span([h.Class('bg-muted')]),
-          onSome: url =>
-            h.img([
-              h.Src(url),
-              h.Alt(''),
-              h.Loading(config.isEager === true ? 'eager' : 'lazy'),
-              h.Decoding('async'),
-              h.Referrerpolicy('no-referrer'),
-              h.Class('size-full object-cover'),
-            ]),
-        }),
-      ),
-    )
+  } else if (playlist.covers.length >= MOSAIC_COVERS) {
+    return coverMosaic({ ...config, covers: playlist.covers }, h)
   } else {
     return artworkImage(
       {
@@ -589,12 +607,12 @@ export const songRow = (
               target._tag === 'SongRow' && target.song.videoId === song.videoId,
           ),
           maybeRightReveal: Option.some({
-            label: 'Add to queue',
+            label: 'Add to Queue',
             icon: ListEnd,
             isDestructive: false,
           }),
           maybeLeftReveal: Option.some({
-            label: 'Play next',
+            label: 'Play Next',
             icon: ListStart,
             isDestructive: false,
           }),
@@ -859,15 +877,27 @@ export const list = <A>(
 // ACTIONS
 
 const playActionClass =
-  'pressable bg-secondary text-primary flex h-12 items-center justify-center gap-2 rounded-xl text-[15px] font-semibold'
+  'pressable flex h-12 items-center justify-center gap-2 rounded-xl text-[15px] font-semibold'
+
+/** Play, the page's main action, in Joshify green. */
+const primaryPlayActionClass = cn(
+  playActionClass,
+  'bg-brand text-brand-foreground',
+)
+
+/** Shuffle and Radio beside Play, in grey. */
+const secondaryPlayActionClass = cn(
+  playActionClass,
+  'bg-secondary text-foreground',
+)
 
 /** Columns for one, two, or three play buttons. */
 const PLAY_ACTION_COLUMNS = ['grid-cols-1', 'grid-cols-2', 'grid-cols-3']
 
 /**
- * The big buttons under a header: Play in order, Shuffle, and Radio when
- * YouTube Music has a
- * radio for the album or artist: songs like these from many artists.
+ * The big buttons under a header: Play in order, filled in Joshify green as
+ * the page's main action, then in grey Shuffle, and Radio when YouTube Music
+ * has a radio for the album or artist: songs like these from many artists.
  */
 export const playActions = (
   songs: ReadonlyArray<Song>,
@@ -881,7 +911,7 @@ export const playActions = (
             [
               h.Type('button'),
               h.OnClick(Message.ClickedPlaySongs({ songs, startIndex: 0 })),
-              h.Class(playActionClass),
+              h.Class(primaryPlayActionClass),
             ],
             [icon(h, Play, 'size-4 fill-current'), 'Play'],
           ),
@@ -889,7 +919,7 @@ export const playActions = (
             [
               h.Type('button'),
               h.OnClick(Message.ClickedShuffleSongs({ songs })),
-              h.Class(playActionClass),
+              h.Class(secondaryPlayActionClass),
             ],
             [icon(h, Shuffle, 'size-4'), 'Shuffle'],
           ),
@@ -902,8 +932,8 @@ export const playActions = (
           [
             h.Type('button'),
             h.OnClick(Message.ClickedStartStationRadio({ station })),
-            h.AriaLabel('Start radio'),
-            h.Class(playActionClass),
+            h.AriaLabel('Start Radio'),
+            h.Class(secondaryPlayActionClass),
           ],
           [icon(h, Radio, 'size-4'), 'Radio'],
         ),

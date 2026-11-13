@@ -7,6 +7,7 @@ import {
   History,
   ListMusic,
   LoaderCircle,
+  Pause,
   Play,
   Search,
   User,
@@ -22,6 +23,7 @@ import {
   type TopResult,
 } from '@music/shared'
 
+import { textToneOn } from '../color'
 import {
   SEARCH_BAR_ATTRIBUTE,
   SEARCH_INPUT_ID,
@@ -43,6 +45,7 @@ import { largeTitle, statusBarCover } from './chrome'
 import { type PageModel } from './page'
 import {
   ArtworkShape,
+  type NowPlaying,
   type SectionAction,
   albumCard,
   albumHref,
@@ -53,6 +56,7 @@ import {
   artistRow,
   artworkImage,
   emptyState,
+  equalizer,
   joinDetails,
   list,
   loadingRows,
@@ -161,6 +165,7 @@ const stickySearchBar = (
   model: PageModel,
   kind: SearchKind,
   isSearching: boolean,
+  hasTyped: boolean,
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
@@ -172,7 +177,9 @@ const stickySearchBar = (
     ],
     [
       searchField(model, isSearching, h),
-      Option.isSome(routeQuery(model.route)) ? kindPicker(kind, h) : h.empty,
+      hasTyped || Option.isSome(routeQuery(model.route))
+        ? kindPicker(kind, h)
+        : h.empty,
     ],
   )
 
@@ -231,21 +238,58 @@ const topResultParts = (topResult: TopResult): TopResultParts =>
 const topResultCardClass =
   'pressable bg-secondary mx-4 flex items-center gap-4 rounded-2xl p-3 text-left'
 
+/**
+ * Whether the top result is a song, and if so whether it is the one playing:
+ * the card then marks it as song rows do and pauses or resumes it.
+ */
+type TopResultPlayback = 'NotASong' | 'Ready' | 'Playing' | 'Paused'
+
+const topResultPlayback = (
+  topResult: TopResult,
+  playing: NowPlaying,
+): TopResultPlayback => {
+  if (topResult._tag !== 'Song') {
+    return 'NotASong'
+  } else if (!Option.contains(playing.maybeVideoId, topResult.song.videoId)) {
+    return 'Ready'
+  } else {
+    return playing.isPlaying ? 'Playing' : 'Paused'
+  }
+}
+
 const topResultContent = (
   parts: TopResultParts,
-  isPlayable: boolean,
+  playback: TopResultPlayback,
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => [
-  artworkImage(
-    {
-      artwork: parts.artwork,
-      displayWidth: TOP_RESULT_ARTWORK_WIDTH,
-      shape: parts.shape,
-      className: 'size-24',
-      placeholderIcon: parts.placeholderIcon,
-      isEager: true,
-    },
-    h,
+  h.span(
+    [h.Class('relative shrink-0')],
+    [
+      artworkImage(
+        {
+          artwork: parts.artwork,
+          displayWidth: TOP_RESULT_ARTWORK_WIDTH,
+          shape: parts.shape,
+          className: 'size-24',
+          placeholderIcon: parts.placeholderIcon,
+          isEager: true,
+        },
+        h,
+      ),
+      playback === 'Playing' || playback === 'Paused'
+        ? h.span(
+            [
+              h.Class(
+                cn(
+                  'absolute inset-0 flex items-center justify-center bg-black/45 text-white',
+                  parts.shape,
+                ),
+              ),
+            ],
+            [equalizer(playback === 'Playing', 'h-5 [&>*]:w-1', h)],
+          )
+        : h.empty,
+    ],
   ),
   h.span(
     [h.Class('flex min-w-0 flex-1 flex-col gap-1')],
@@ -268,29 +312,38 @@ const topResultContent = (
       ),
     ],
   ),
-  isPlayable
-    ? h.span(
+  playback === 'NotASong'
+    ? h.empty
+    : h.span(
         [
           h.AriaHidden(true),
           h.Class(
-            'bg-primary text-primary-foreground flex size-11 shrink-0 items-center justify-center rounded-full',
+            'bg-brand text-brand-foreground flex size-11 shrink-0 items-center justify-center rounded-full',
           ),
         ],
-        [icon(h, Play, 'size-5 fill-current ml-0.5')],
-      )
-    : h.empty,
+        [
+          playback === 'Playing'
+            ? icon(h, Pause, 'size-5 fill-current')
+            : icon(h, Play, 'size-5 fill-current ml-0.5'),
+        ],
+      ),
 ]
 
 /**
  * The best match, big, above the songs: an artist, album, or playlist opens;
- * a song plays.
+ * a song plays, and once it is the song playing, pauses and resumes it.
  */
-const topResultCard = (topResult: TopResult, h: HtmlBuilder<Message>): Html => {
+const topResultCard = (
+  topResult: TopResult,
+  playing: NowPlaying,
+  h: HtmlBuilder<Message>,
+): Html => {
   const parts = topResultParts(topResult)
+  const playback = topResultPlayback(topResult, playing)
   const link = (href: string) =>
     h.a(
       [h.Href(href), h.Class(topResultCardClass)],
-      topResultContent(parts, false, h),
+      topResultContent(parts, playback, h),
     )
   return Match.valueTags(topResult, {
     Artist: ({ artist }) => link(artistHref(artist.id)),
@@ -300,11 +353,17 @@ const topResultCard = (topResult: TopResult, h: HtmlBuilder<Message>): Html => {
       h.button(
         [
           h.Type('button'),
-          h.OnClick(Message.ClickedPlaySongs({ songs: [song], startIndex: 0 })),
-          h.AriaLabel(`Play ${song.title}`),
+          h.OnClick(
+            playback === 'Ready'
+              ? Message.ClickedPlaySongs({ songs: [song], startIndex: 0 })
+              : Message.ClickedTogglePlayback(),
+          ),
+          h.AriaLabel(
+            `${playback === 'Playing' ? 'Pause' : 'Play'} ${song.title}`,
+          ),
           h.Class(cn(topResultCardClass, 'w-[calc(100%-2rem)]')),
         ],
-        topResultContent(parts, true, h),
+        topResultContent(parts, playback, h),
       ),
   })
 }
@@ -444,7 +503,7 @@ const topView = (
                     [h.Class('flex flex-col')],
                     [
                       resultsHeading('Top Result', h),
-                      topResultCard(topResult, h),
+                      topResultCard(topResult, model.playing, h),
                     ],
                   ),
               }),
@@ -626,9 +685,11 @@ const resultsView = (
 
 /**
  * The search whose results the page shows: this one once it has answered,
- * and until then the one before it. With neither, the page keeps what it
- * showed before anything was typed, so typing never fills the page with
- * placeholders. The search field shows a spinner meanwhile.
+ * and until then the one before it, so each pause in typing does not refill
+ * the page with placeholders. With neither, from the first letter typed, the
+ * page shows placeholder rows instead of the moods and genres it showed
+ * before, so they never flash up while the first results load. The search
+ * field shows a spinner from the first letter until results arrive.
  */
 const shownSearch = (
   model: PageModel,
@@ -711,30 +772,36 @@ const recentSearchesView = (model: PageModel, h: HtmlBuilder<Message>): Html =>
 
 // BROWSE
 
-const moodTile = (category: MoodCategory, h: HtmlBuilder<Message>): Html =>
-  h.a(
+/**
+ * A mood or genre as a tile filled with YouTube Music's color for it, its
+ * name in whichever of white or near-black reads better on that color.
+ * Without a color, a plain grey tile.
+ */
+const moodTile = (category: MoodCategory, h: HtmlBuilder<Message>): Html => {
+  const maybeFill = Option.flatMap(category.maybeColor, color =>
+    Option.map(textToneOn(color), tone => ({ color, tone })),
+  )
+  return h.a(
     [
       h.Href(moodRouter({ params: category.params })),
       h.Class(
-        'pressable bg-secondary flex h-14 items-center gap-3 rounded-xl pr-3 pl-3 text-[15px] leading-tight font-semibold',
+        cn(
+          'pressable flex h-16 items-start rounded-xl px-3 pt-2.5 text-[15px] leading-tight font-bold',
+          Option.match(maybeFill, {
+            onNone: () => 'bg-secondary text-foreground',
+            onSome: ({ tone }) =>
+              tone === 'Dark' ? 'text-[#0b0d12]' : 'text-white',
+          }),
+        ),
       ),
+      ...Option.match(maybeFill, {
+        onNone: () => [],
+        onSome: ({ color }) => [h.Style({ backgroundColor: color })],
+      }),
     ],
-    [
-      // NOTE: the stripe sits inside the tile with its own rounded ends, so
-      // the tile's corners never bend it.
-      h.span([
-        h.AriaHidden(true),
-        h.Class('h-7 w-1 shrink-0 rounded-full'),
-        h.Style({
-          backgroundColor: Option.getOrElse(
-            category.maybeColor,
-            () => 'var(--primary)',
-          ),
-        }),
-      ]),
-      h.span([h.Class('line-clamp-2')], [category.title]),
-    ],
+    [h.span([h.Class('line-clamp-2')], [category.title])],
   )
+}
 
 const moodGroupView = (group: MoodGroup, h: HtmlBuilder<Message>): Html =>
   section(
@@ -753,7 +820,7 @@ const moodGroupView = (group: MoodGroup, h: HtmlBuilder<Message>): Html =>
 const loadingTiles = (h: HtmlBuilder<Message>): Html =>
   h.div(
     [h.Class('grid grid-cols-2 gap-2.5 px-4'), h.AriaLabel('Loading')],
-    Array.makeBy(8, () => h.div([h.Class('bg-muted shimmer h-14 rounded-xl')])),
+    Array.makeBy(8, () => h.div([h.Class('bg-muted shimmer h-16 rounded-xl')])),
   )
 
 /** YouTube Music's moods and genres, each opening its playlists. */
@@ -799,21 +866,29 @@ export const searchView = (
 ): ReadonlyArray<Html> => {
   const kind = routeSearchKind(model.route)
   const maybeQuery = routeQuery(model.route)
-  const isSearching = Option.exists(
-    maybeQuery,
-    query => !isSearchSettled(model, query, kind),
-  )
+  const typedQuery = model.searchInput.trim()
+  const hasTyped = typedQuery !== ''
+  const isSearching =
+    Option.exists(maybeQuery, query => !isSearchSettled(model, query, kind)) ||
+    (hasTyped &&
+      !Option.exists(
+        maybeQuery,
+        query => query === typedQuery && isSearchSettled(model, query, kind),
+      ))
   return [
     statusBarCover(h),
     largeTitle('Search', h.empty, h),
-    stickySearchBar(model, kind, isSearching, h),
+    stickySearchBar(model, kind, isSearching, hasTyped, h),
     h.div(
       [h.DataAttribute(SEARCH_RESULTS_ATTRIBUTE, ''), h.Class('pb-6')],
       [
         Option.match(
           Option.flatMap(maybeQuery, query => shownSearch(model, query, kind)),
           {
-            onNone: () => emptySearchView(model, h),
+            onNone: () =>
+              hasTyped || Option.isSome(maybeQuery)
+                ? h.div([h.Class('pt-1')], [loadingRows(h)])
+                : emptySearchView(model, h),
             onSome: query => resultsView(model, query, kind, h),
           },
         ),

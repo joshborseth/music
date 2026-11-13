@@ -85,6 +85,13 @@ const titleBarFollowsScroll = Mount.resolve(
   Message.CompletedSyncTitleBarReveal(),
 )
 
+/** The Mounts the mini player and the closed full player start with. */
+const playerMounted = [
+  sheetFollowsDrags,
+  Mount.resolve(Marquee, Message.CompletedSyncMarquee()),
+  Mount.resolve(FollowSeekBarDrags, Message.CompletedFollowSeekBarDrags()),
+]
+
 const emptySearchModel: Model = initialModel(
   AppRoute.Search({ q: Option.none(), kind: Option.none() }),
   '/search',
@@ -418,7 +425,7 @@ describe('search page', () => {
     )
   })
 
-  test('with no results yet, keeps what the page showed until they arrive', () => {
+  test('with no results yet, shows placeholder rows until they arrive', () => {
     const typed = update(
       modifyFields(emptySearchModel, { recentSearches: () => ['rumours'] }),
       searchUrlChange('the chain', 'Top'),
@@ -428,8 +435,104 @@ describe('search page', () => {
       given(typed),
       pageScrolled,
       expect(role('status', { name: 'Searching' })).toExist(),
-      expect(role('heading', { name: 'Recently Searched' })).toExist(),
+      expect(label('Loading')).toExist(),
+      expect(role('heading', { name: 'Recently Searched' })).toBeAbsent(),
       expect(role('heading', { name: 'Songs' })).toBeAbsent(),
+    )
+  })
+
+  test('the first letter typed swaps the moods for placeholder rows at once', () => {
+    const browsing = modifyFields(emptySearchModel, {
+      moodGroups: query =>
+        modifyFields(query, {
+          data: () =>
+            AsyncData.succeed([
+              {
+                title: 'Moods & moments',
+                categories: [
+                  {
+                    params: 'chill-params',
+                    title: 'Chill',
+                    maybeColor: Option.some('#a4c5ff'),
+                  },
+                ],
+              },
+            ]),
+        }),
+    })
+    const typed = update(browsing, Message.UpdatedSearchInput({ value: 'f' }))
+    scene(
+      { update, view },
+      given(typed.model),
+      pageScrolled,
+      expect(role('status', { name: 'Searching' })).toExist(),
+      expect(role('tablist', { name: 'Search in' })).toExist(),
+      expect(label('Loading')).toExist(),
+      expect(role('heading', { name: 'Moods & moments' })).toBeAbsent(),
+    )
+  })
+
+  test('a song as the top result shows when it is the one playing', () => {
+    const searched = searchResultModel('the chain', Result.succeed([]), 'Top')
+    const withTopResult = update(
+      searched,
+      Message.GotTopResultSearchMessage({
+        message: topResultSearchQuery.Message.CompletedFetch({
+          args: { query: 'the chain' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed(
+            Option.some({ _tag: 'Song' as const, song: theChain }),
+          ),
+        }),
+      }),
+    ).model
+    scene(
+      { update, view },
+      given(withTopResult),
+      pageScrolled,
+      expect(role('button', { name: 'Play The Chain' })).toExist(),
+    )
+    const playingIt = (playing: boolean): Model =>
+      modifyFields(withTopResult, {
+        maybeSession: () =>
+          Option.some({
+            state: {
+              devices: [],
+              activeDeviceId: 'tv',
+              queue: [
+                {
+                  entryId: 'e0',
+                  track: toQueueTrack(theChain),
+                  autoplay: false,
+                },
+              ],
+              currentEntryId: 'e0',
+              playing,
+              positionSeconds: 0,
+              autoplay: true,
+              repeat: 'Off',
+              shuffle: false,
+              positionAt: 0,
+              seekSeq: 0,
+              sleepTimer: null,
+            },
+            clockOffsetMs: 0,
+          }),
+      })
+    scene(
+      { update, view },
+      given(playingIt(true)),
+      pageScrolled,
+      ...playerMounted,
+      expect(role('button', { name: 'Pause The Chain' })).toExist(),
+      expect(role('button', { name: 'Play The Chain' })).toBeAbsent(),
+    )
+    scene(
+      { update, view },
+      given(playingIt(false)),
+      pageScrolled,
+      ...playerMounted,
+      expect(role('button', { name: 'Play The Chain' })).toExist(),
     )
   })
   test('the more button opens a sheet of what else can be done', () => {
@@ -442,12 +545,12 @@ describe('search page', () => {
       Command.resolveAll([LockScroll, Message.CompletedLockScroll()]),
       sheetFollowsDrags,
       expect(role('dialog', { name: 'The Chain' })).toExist(),
-      expect(role('button', { name: 'Play next' })).toExist(),
-      expect(role('link', { name: 'Go to album' })).toHaveAttr(
+      expect(role('button', { name: 'Play Next' })).toExist(),
+      expect(role('link', { name: 'Go to Album' })).toHaveAttr(
         'href',
         '/album/MPREb_1SbgcDGdrT4',
       ),
-      expect(role('link', { name: 'Go to artist' })).toHaveAttr(
+      expect(role('link', { name: 'Go to Artist' })).toHaveAttr(
         'href',
         '/artist/UCCzULu3prrEaPvM2ZtkJlYQ',
       ),
@@ -462,7 +565,7 @@ describe('search page', () => {
       click(role('button', { name: 'More for The Chain' })),
       Command.resolveAll([LockScroll, Message.CompletedLockScroll()]),
       sheetFollowsDrags,
-      click(role('button', { name: 'Start radio' })),
+      click(role('button', { name: 'Start Radio' })),
       Command.expectExact(
         UnlockScroll(),
         UnlockPhoneAudio(),
@@ -669,7 +772,7 @@ describe('artist page', () => {
       given(artistModel(AppRoute.Artist({ artistId: 'abc' }), '/artist/abc')),
       pageScrolled,
       titleBarFollowsScroll,
-      click(role('button', { name: 'Start radio' })),
+      click(role('button', { name: 'Start Radio' })),
       Command.expectExact(
         UnlockPhoneAudio(),
         FetchRadio({ station: ARTIST_RADIO }),
@@ -844,7 +947,7 @@ describe('library', () => {
               playlists: [
                 {
                   id: 'liked',
-                  title: 'Liked songs',
+                  title: 'Liked Songs',
                   isLiked: true,
                   songCount: 1,
                   totalSeconds: 270,
@@ -871,7 +974,7 @@ describe('library', () => {
       { update, view },
       given(model),
       pageScrolled,
-      expect(role('link', { name: /Liked songs/ })).toHaveAttr(
+      expect(role('link', { name: /Liked Songs/ })).toHaveAttr(
         'href',
         '/library/playlist/liked',
       ),
@@ -944,16 +1047,16 @@ describe('library', () => {
       { update, view },
       given(model),
       pageScrolled,
-      expect(role('heading', { name: 'Recently viewed' })).toExist(),
+      expect(role('heading', { name: 'Recently Viewed' })).toExist(),
       expect(role('link', { name: /Rumours/ })).toHaveAttr(
         'href',
         '/album/MPREb_1SbgcDGdrT4',
       ),
-      click(role('button', { name: 'Clear recently viewed' })),
+      click(role('button', { name: 'Clear Recently Viewed' })),
       Command.expectExact(LockScroll()),
       Command.resolveAll([LockScroll, Message.CompletedLockScroll()]),
       sheetFollowsDrags,
-      expect(role('dialog', { name: 'Clear recently viewed' })).toContainText(
+      expect(role('dialog', { name: 'Clear Recently Viewed' })).toContainText(
         'Your library stays.',
       ),
     )
@@ -980,7 +1083,7 @@ const fleetwoodMac: ArtistSummary = {
 
 const likedSongs: MyPlaylistSummary = {
   id: 'liked',
-  title: 'Liked songs',
+  title: 'Liked Songs',
   isLiked: true,
   songCount: 0,
   totalSeconds: 0,
@@ -1478,7 +1581,7 @@ describe('sleep timer', () => {
       given(playingOnTv(null)),
       pageScrolled,
       playerMounts,
-      click(role('button', { name: 'Sleep timer' })),
+      click(role('button', { name: 'Sleep Timer' })),
       Command.expectExact(LockScroll()),
       Command.resolve(LockScroll, Message.CompletedLockScroll()),
       sheetFollowsDrags,
@@ -1509,8 +1612,8 @@ describe('sleep timer', () => {
       ),
       pageScrolled,
       playerMounts,
-      expect(role('button', { name: 'Sleep timer: 29:30' })).toExist(),
-      click(role('button', { name: 'Sleep timer: 29:30' })),
+      expect(role('button', { name: 'Sleep Timer: 29:30' })).toExist(),
+      click(role('button', { name: 'Sleep Timer: 29:30' })),
       Command.expectExact(LockScroll()),
       Command.resolve(LockScroll, Message.CompletedLockScroll()),
       sheetFollowsDrags,
@@ -1533,7 +1636,7 @@ describe('sleep timer', () => {
       given(playingOnTv({ _tag: 'EndOfSong' })),
       pageScrolled,
       playerMounts,
-      expect(role('button', { name: 'Sleep timer: End of song' })).toExist(),
+      expect(role('button', { name: 'Sleep Timer: End of song' })).toExist(),
     )
   })
 })

@@ -14,6 +14,8 @@
     --color-popover-foreground: var(--popover-foreground);
     --color-primary: var(--primary);
     --color-primary-foreground: var(--primary-foreground);
+    --color-brand: var(--brand);
+    --color-brand-foreground: var(--brand-foreground);
     --color-secondary: var(--secondary);
     --color-secondary-foreground: var(--secondary-foreground);
     --color-muted: var(--muted);
@@ -89,6 +91,9 @@
     --border: oklch(0.9 0.003 260);
     --input: oklch(0.92 0.003 260);
     --ring: oklch(0.58 0.16 152);
+    /* Joshify green, the same in light and dark: the filled Play button. */
+    --brand: #22d46f;
+    --brand-foreground: #0b0d12;
     --chart-1: oklch(0.646 0.222 41.116);
     --chart-2: oklch(0.6 0.118 184.704);
     --chart-3: oklch(0.398 0.07 227.392);
@@ -774,10 +779,11 @@
   animation: marquee-resting var(--marquee-duration, 12s) step-end infinite;
 }
 
-/* Still while the player is closed. */
+/* Stopped while the player is closed, so it opens on the resting line from
+   the start of a cycle rather than mid-scroll, with a word cut at the edge. */
 .sheet[data-state='closed'] .marquee-track,
 .sheet[data-state='closed'] .marquee-rest {
-  animation-play-state: paused;
+  animation: none;
 }
 
 /* The rest share (30%) is MARQUEE_REST_SHARE in `mount.ts`. */

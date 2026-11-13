@@ -6,7 +6,7 @@
         {
           "kind": "MyPlaylist",
           "id": "liked",
-          "title": "Liked songs",
+          "title": "Liked Songs",
           "subtitle": "Playlist · 12 songs",
           "artworkUrl": null,
           "track": null
