@@ -263,6 +263,7 @@ pub struct Ui {
     pending_search: Option<(String, Instant)>,
     shown_clock: String,
     shown_notice: String,
+    shown_scan_code: bool,
     /// Where playback is, to the millisecond, for timed lyrics.
     clock: PlayClock,
     shown_lyric_rows: Vec<lyrics::Row>,
@@ -327,6 +328,7 @@ impl Ui {
             pending_search: None,
             shown_clock: String::new(),
             shown_notice: String::new(),
+            shown_scan_code: false,
             clock,
             shown_lyric_rows: Vec::new(),
         };
@@ -648,7 +650,10 @@ impl Ui {
         }
         let clock = LocalTime::now(self.nav.session.utc_offset_minutes).clock();
         let notice = self.notice_text(now);
-        if clock != self.shown_clock || notice != self.shown_notice {
+        if clock != self.shown_clock
+            || notice != self.shown_notice
+            || self.nav.scan_code_shown(now) != self.shown_scan_code
+        {
             changed = true;
         }
         if changed {
@@ -991,6 +996,8 @@ impl Ui {
         app.set_clock(self.shown_clock.clone().into());
         app.set_notice(self.shown_notice.clone().into());
         app.set_controls_shown(nav.controls_shown());
+        self.shown_scan_code = nav.scan_code_shown(now);
+        app.set_scan_code_shown(self.shown_scan_code);
         app.set_tab(nav.tab.index() as i32);
         app.set_tabs_focused(nav.focus == Focus::Tabs && nav.menu.is_none());
         app.set_settings_focused(nav.focus == Focus::Settings && nav.menu.is_none());
@@ -1219,6 +1226,12 @@ impl Ui {
             let upcoming = session.queue.get(after..).unwrap_or_default();
             let autoplay = upcoming.iter().filter(|entry| entry.autoplay).count();
             app.set_queue_summary(queue_summary(upcoming.len(), autoplay).into());
+            app.set_queue_shuffle(session.shuffle);
+            app.set_queue_repeat(match session.repeat {
+                RepeatMode::Off => 0,
+                RepeatMode::All => 1,
+                RepeatMode::One => 2,
+            });
         }
         // The lyrics beside the song: none (the song takes the middle), timed,
         // or plain text that scrolls with the song.

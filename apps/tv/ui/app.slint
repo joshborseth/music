@@ -474,6 +474,41 @@ component Hint inherits HorizontalLayout {
     }
 }
 
+/// A setting's state, as a pill: "Shuffle on", "Repeat off". Lit green
+/// while it is on.
+component StateChip inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> on;
+    width: chip-row.preferred-width;
+    height: Metrics.u * 2.2;
+    border-radius: self.height / 2;
+    background: on ? #22d46f2e : Theme.surface;
+    border-width: 1px;
+    border-color: on ? #3ee08666 : transparent;
+    chip-row := HorizontalLayout {
+        padding-left: Metrics.u * 0.8;
+        padding-right: Metrics.u * 0.95;
+        spacing: Metrics.u * 0.45;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                name: root.icon;
+                width: Metrics.u * 1.1;
+                height: self.width;
+                color: root.on ? Theme.green : Theme.text-3;
+            }
+        }
+        Text {
+            text: root.label;
+            color: root.on ? white : Theme.text-2;
+            font-size: Metrics.u * 0.9;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
 /// The scannable code, on white so every phone camera reads it.
 component QrCard inherits Rectangle {
     in property <image> code;
@@ -585,6 +620,8 @@ export component App inherits Window {
     in property <[UpNextData]> up-next;
     // The controls and tab bar; hidden while nobody uses the remote.
     in property <bool> controls-shown: true;
+    // The scan code: with the controls, and for a while as each song starts.
+    in property <bool> scan-code-shown: true;
     // The music's visuals are drawn on the GPU under this window; while they
     // show, the background stays clear so they show through.
     in property <bool> has-visuals;
@@ -604,6 +641,9 @@ export component App inherits Window {
     in property <[RowData]> queue-rows;
     in property <int> queue-top;
     in property <string> queue-summary;
+    in property <bool> queue-shuffle;
+    // 0 off, 1 the whole queue, 2 one song.
+    in property <int> queue-repeat;
 
     // Nothing playing
     in property <[ButtonData]> idle-buttons;
@@ -696,7 +736,10 @@ export component App inherits Window {
     // and the controls only come up when the remote is used.
 
     if root.page == 0: stage := Rectangle {
-        property <bool> side: root.lyrics-mode != 0;
+        // The lyrics beside the song. The open queue covers where they run,
+        // so then they make way and the song takes the middle of what is
+        // left, rather than lines cut off at the queue's edge.
+        property <bool> side: root.lyrics-mode != 0 && root.panel == 0;
         property <length> shift-x: root.drift-x * Metrics.u * 0.9;
         property <length> shift-y: root.drift-y * Metrics.u * 0.9;
         animate shift-x, shift-y { duration: 8s; easing: ease-in-out; }
@@ -722,7 +765,7 @@ export component App inherits Window {
         song := VerticalLayout {
             // Everything but the cover and the title: the gaps, the line
             // above the title, the artists, the seek bar, and the times.
-            property <length> rest: Metrics.u * 9.6;
+            property <length> rest: Metrics.u * 10.1;
             property <length> band-top: root.controls-shown ? Metrics.u * 6.8 : 0;
             property <length> band-bottom: root.controls-shown ? root.height - Metrics.u * 8.8 : root.height;
             property <length> full-art: stage.side ? Metrics.u * 24 : Metrics.u * 26;
@@ -825,30 +868,34 @@ export component App inherits Window {
                     animate x { duration: root.scrubbing ? 90ms : 250ms; }
                 }
             }
+            // The times, big and bright enough to read from the couch, in
+            // solid greys (see `lyric-sung`) so the visuals don't wash them out.
             HorizontalLayout {
                 Text {
                     text: root.position-text;
-                    color: root.seek-focused ? white : Theme.text-3;
-                    font-size: Metrics.u * 0.85;
-                    font-weight: root.scrubbing ? 700 : 400;
+                    color: root.seek-focused ? white : Theme.lyric-plain;
+                    font-size: Metrics.u * 1.2;
+                    font-weight: root.scrubbing ? 700 : 600;
                 }
                 if root.scrubbing: Text {
                     text: root.seek-delta;
                     color: Theme.green;
-                    font-size: Metrics.u * 0.85;
+                    font-size: Metrics.u * 1.2;
                     font-weight: 700;
                     horizontal-alignment: center;
                 }
                 if root.loading && !root.scrubbing: Text {
                     text: "Loading…";
-                    color: Theme.text-3;
-                    font-size: Metrics.u * 0.85;
+                    color: Theme.lyric-next;
+                    font-size: Metrics.u * 1.2;
+                    font-weight: 600;
                     horizontal-alignment: center;
                 }
                 Text {
                     text: root.duration-text;
-                    color: Theme.text-3;
-                    font-size: Metrics.u * 0.85;
+                    color: Theme.lyric-next;
+                    font-size: Metrics.u * 1.2;
+                    font-weight: 600;
                     horizontal-alignment: right;
                 }
             }
@@ -1035,12 +1082,16 @@ export component App inherits Window {
             }
         }
 
-        // The scan code stays up even while the controls rest, so anyone in
-        // the room can pick up their phone and change the queue. It drifts
-        // with the song so it never burns in.
+        // The scan code comes up with the controls, and for a while as each
+        // song starts, so anyone in the room can pick up their phone and
+        // change the queue; it never sits there for a whole song. Nothing
+        // makes room for it (the lyrics already end above it), so nothing
+        // moves when it comes and goes.
         QrCard {
             x: root.width - self.width - Metrics.safe-x + stage.shift-x;
             y: root.height - self.height - Metrics.u * 2.2 + stage.shift-y;
+            opacity: root.scan-code-shown ? 1 : 0;
+            animate opacity { duration: 400ms; }
             code: root.qr;
             size: Metrics.u * 5;
             title: "Add songs";
@@ -1488,12 +1539,34 @@ export component App inherits Window {
             spacing: Metrics.u * 1.2;
             VerticalLayout {
                 spacing: Metrics.u * 0.2;
-                Text {
-                    text: "Queue";
-                    color: white;
-                    font-family: "Inter Display";
-                    font-size: Metrics.u * 2.2;
-                    font-weight: 800;
+                HorizontalLayout {
+                    spacing: Metrics.u * 0.6;
+                    Text {
+                        text: "Queue";
+                        color: white;
+                        font-family: "Inter Display";
+                        font-size: Metrics.u * 2.2;
+                        font-weight: 800;
+                        horizontal-stretch: 1;
+                    }
+                    // What plays after this, at a glance: the controls
+                    // change them, this says how they are set.
+                    VerticalLayout {
+                        alignment: center;
+                        StateChip {
+                            icon: "shuffle";
+                            label: root.queue-shuffle ? "Shuffle on" : "Shuffle off";
+                            on: root.queue-shuffle;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        StateChip {
+                            icon: root.queue-repeat == 2 ? "repeat-one" : "repeat";
+                            label: root.queue-repeat == 2 ? "Repeat one" : root.queue-repeat == 1 ? "Repeat all" : "Repeat off";
+                            on: root.queue-repeat != 0;
+                        }
+                    }
                 }
                 Text {
                     text: root.queue-summary;

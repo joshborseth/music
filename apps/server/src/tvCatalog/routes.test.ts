@@ -178,10 +178,34 @@ describe('TV catalog routes', () => {
     Effect.runSync(playlistStore.recordPlay(song('played')))
     const response = await get('/tv/home')
     const body = Schema.decodeUnknownSync(Tv.TvShelves)(await response.json())
-    expect(body.shelves.map(({ title }) => title)).toEqual(['Recently played'])
+    expect(body.shelves.map(({ title }) => title)).toEqual([
+      'Recently played',
+      'Your playlists',
+    ])
     expect(body.shelves[0]?.cards[0]).toMatchObject({
       kind: 'Song',
       id: 'played',
+    })
+  })
+
+  test('home ends with the songs of a playlist you made', async () => {
+    Effect.runSync(
+      playlistStore.edit({
+        _tag: 'Create',
+        title: 'Road trip',
+        songs: [song('trip')],
+      }),
+    )
+    const response = await get('/tv/home')
+    const body = Schema.decodeUnknownSync(Tv.TvShelves)(await response.json())
+    expect(body.shelves.map(({ title }) => title)).toEqual([
+      'Recently played',
+      'Your playlists',
+      'Road trip',
+    ])
+    expect(body.shelves[2]?.cards[0]).toMatchObject({
+      kind: 'Song',
+      id: 'trip',
     })
   })
 

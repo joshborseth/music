@@ -12,11 +12,14 @@ import {
 
 import {
   HOME_LIKED_SONGS,
+  HOME_PLAYLIST_SHELVES,
+  HOME_PLAYLIST_SONGS,
   HOME_RECENT_ALBUMS,
   HOME_RECENT_SONGS,
   SEARCH_SHELF_SIZE,
   albumCard,
   artistCollection,
+  homePlaylists,
   homeShelves,
   labelled,
   largestArtworkUrl,
@@ -180,31 +183,34 @@ describe('cards', () => {
 })
 
 describe('shelves', () => {
-  test('home is your playlists, then your latest liked songs, until something plays', () => {
+  test('home is your playlists and your latest liked songs until something plays, the fuller first', () => {
     const liked = Array.from({ length: HOME_LIKED_SONGS + 5 }, (_, index) =>
       song(`l${index}`),
     )
     const { shelves } = homeShelves(library, liked, [])
+    // Two playlists leave most of their row empty, so they go second.
     expect(shelves.map(({ title }) => title)).toEqual([
-      'Your playlists',
       'Liked songs',
+      'Your playlists',
     ])
-    expect(shelves[0]?.cards.map(({ id }) => id)).toEqual(['liked', 'p1'])
-    expect(shelves[1]?.cards).toHaveLength(HOME_LIKED_SONGS)
-    expect(shelves[1]?.cards[0]).toMatchObject({ kind: 'Song', id: 'l0' })
+    expect(shelves[0]?.cards).toHaveLength(HOME_LIKED_SONGS)
+    expect(shelves[0]?.cards[0]).toMatchObject({ kind: 'Song', id: 'l0' })
+    expect(shelves[1]?.cards.map(({ id }) => id)).toEqual(['liked', 'p1'])
   })
 
-  test('home leads with what played lately, each album under its own artist, and leaves playlists to Library', () => {
+  test('home leads with what played lately, each album under its own artist, and keeps your playlists', () => {
     const recent = [
       song('r0', { maybeAlbum: Option.some({ id: 'A', name: 'Album A' }) }),
       song('r1', { maybeAlbum: Option.none() }),
       song('r2', { maybeAlbum: Option.some({ id: 'B', name: 'Album B' }) }),
       song('r3', { maybeAlbum: Option.some({ id: 'A', name: 'Album A' }) }),
+      song('r4', { maybeAlbum: Option.some({ id: 'C', name: 'Album C' }) }),
     ]
     const { shelves } = homeShelves(library, [song('l0')], recent)
     expect(shelves.map(({ title }) => title)).toEqual([
       'Jump back in',
       'Recently played',
+      'Your playlists',
       'Liked songs',
     ])
     expect(shelves[0]?.cards).toEqual([
@@ -217,12 +223,14 @@ describe('shelves', () => {
         track: null,
       },
       expect.objectContaining({ kind: 'Album', id: 'B' }),
+      expect.objectContaining({ kind: 'Album', id: 'C' }),
     ])
     expect(shelves[1]?.cards.map(({ id }) => id)).toEqual([
       'r0',
       'r1',
       'r2',
       'r3',
+      'r4',
     ])
     expect(shelves[1]?.cards[0]?.track).toEqual(toQueueTrack(recent[0]!))
   })
@@ -241,6 +249,44 @@ describe('shelves', () => {
   test('home leaves out Liked songs while it is empty', () => {
     const { shelves } = homeShelves(library, [], [])
     expect(shelves.map(({ title }) => title)).toEqual(['Your playlists'])
+  })
+
+  test('home adds the songs of your latest playlists, and leads with full shelves while little has played', () => {
+    const roadTrip = library.playlists[1]!
+    const songs = Array.from({ length: HOME_PLAYLIST_SONGS + 5 }, (_, index) =>
+      song(`p${index}`),
+    )
+    const { shelves } = homeShelves(
+      library,
+      [song('l0')],
+      [song('r0')],
+      [{ playlist: roadTrip, songs }],
+    )
+    // One song played: its shelves hold a card each, so the playlist leads.
+    expect(shelves.map(({ title }) => title)).toEqual([
+      'Road trip',
+      'Jump back in',
+      'Recently played',
+      'Your playlists',
+      'Liked songs',
+    ])
+    expect(shelves[0]?.cards).toHaveLength(HOME_PLAYLIST_SONGS)
+    expect(shelves[0]?.cards[0]).toMatchObject({ kind: 'Song', id: 'p0' })
+  })
+
+  test('home picks playlists with songs, latest first, never Liked songs', () => {
+    const playlists = [
+      myPlaylist(),
+      myPlaylist({ id: 'empty', isLiked: false, songCount: 0 }),
+      ...Array.from({ length: HOME_PLAYLIST_SHELVES + 2 }, (_, index) =>
+        myPlaylist({ id: `p${index}`, isLiked: false, songCount: 3 }),
+      ),
+    ]
+    expect(
+      homePlaylists({ playlists, likedVideoIds: [] }).map(({ id }) => id),
+    ).toEqual(
+      Array.from({ length: HOME_PLAYLIST_SHELVES }, (_, index) => `p${index}`),
+    )
   })
 
   test('search caps each shelf and drops empty ones', () => {

@@ -107,6 +107,15 @@ fn main() {
             Step::Key(ok),
             wait(1500),
             Step::Shot("07-queue"),
+            // The queue's header says how shuffle and repeat are set.
+            Step::Session(music_tv::view::View {
+                shuffle: true,
+                repeat: music_tv::protocol::RepeatMode::One,
+                ..sample_view(tracks.clone(), current, true)
+            }),
+            wait(500),
+            Step::Shot("07b-queue-shuffle-repeat"),
+            Step::Session(sample_view(tracks.clone(), current, true)),
             Step::Key(back),
             Step::Key(right),
             Step::Key(ok),
@@ -169,6 +178,10 @@ fn main() {
             Step::Key(fast_forward),
             Step::Key(fast_forward),
             Step::Shot("15-fast-forward"),
+            // Once the controls rest and the song has been on a while, the
+            // scan code goes too.
+            wait(21_000),
+            Step::Shot("16-resting"),
         ],
     );
 }

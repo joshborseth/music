@@ -7,6 +7,7 @@ import {
   type ArtistLink,
   type ArtistSummary,
   type Artwork,
+  LIKED_PLAYLIST_ID,
   type MyLibrary,
   type MyPlaylistDetails,
   type MyPlaylistSummary,
@@ -240,6 +241,10 @@ export const HOME_LIKED_SONGS = 30
 export const HOME_RECENT_SONGS = 20
 /** The most albums "Jump back in" shows. */
 export const HOME_RECENT_ALBUMS = 12
+/** How many of your own playlists get a shelf of their songs on Home. */
+export const HOME_PLAYLIST_SHELVES = 4
+/** The most songs a playlist's shelf on Home shows. */
+export const HOME_PLAYLIST_SONGS = 20
 
 /**
  * The albums of the songs played lately, latest first, each once. A song
@@ -268,30 +273,71 @@ export const recentAlbumCards = (
   )
 
 /**
- * What played lately on any device: its albums to jump back into, then the
- * songs themselves, then your latest liked songs. Your playlists live in
- * Library, so Home shows them only until something has played. Nothing
- * from YouTube's feed.
+ * The playlists you made that get a shelf of their songs on Home: the
+ * latest changed first, as the library lists them, and only ones with
+ * songs. Liked songs has a shelf of its own.
+ */
+export const homePlaylists = (
+  library: MyLibrary,
+): ReadonlyArray<MyPlaylistSummary> =>
+  pipe(
+    library.playlists,
+    Array.filter(
+      playlist => playlist.id !== LIKED_PLAYLIST_ID && playlist.songCount > 0,
+    ),
+    Array.take(HOME_PLAYLIST_SHELVES),
+  )
+
+/** A playlist you made, as a shelf of its songs under its own name. */
+export const playlistSongsShelf = (details: MyPlaylistDetails): Tv.TvShelf => ({
+  title: details.playlist.title,
+  cards: Array.map(Array.take(details.songs, HOME_PLAYLIST_SONGS), songCard),
+})
+
+/** A shelf with fewer cards than this leaves most of its row empty. */
+export const HOME_FULL_SHELF = 3
+
+/**
+ * Fuller shelves first, keeping their order, so the top of Home is not a
+ * row of single cards while little has played yet.
+ */
+export const fullerFirst = (
+  shelves: ReadonlyArray<Tv.TvShelf>,
+): ReadonlyArray<Tv.TvShelf> => {
+  const isFull = (shelf: Tv.TvShelf) => shelf.cards.length >= HOME_FULL_SHELF
+  return [
+    ...Array.filter(shelves, isFull),
+    ...Array.filter(shelves, shelf => !isFull(shelf)),
+  ]
+}
+
+/**
+ * Only your own music, nothing from YouTube's feed: what played lately on
+ * any device (its albums to jump back into, then the songs themselves),
+ * your playlists, your latest liked songs, and then the songs of each of
+ * `playlists` (see `homePlaylists`), so Home is full from the start.
  */
 export const homeShelves = (
   library: MyLibrary,
   likedSongs: ReadonlyArray<Song>,
   recentSongs: ReadonlyArray<Song>,
+  playlists: ReadonlyArray<MyPlaylistDetails> = [],
 ): Tv.TvShelves => ({
-  shelves: nonEmptyShelves([
-    { title: 'Jump back in', cards: recentAlbumCards(recentSongs) },
-    {
-      title: 'Recently played',
-      cards: Array.map(Array.take(recentSongs, HOME_RECENT_SONGS), songCard),
-    },
-    Array.isReadonlyArrayEmpty(recentSongs)
-      ? yourPlaylistsShelf(library)
-      : { title: YOUR_PLAYLISTS_TITLE, cards: [] },
-    {
-      title: 'Liked songs',
-      cards: Array.map(Array.take(likedSongs, HOME_LIKED_SONGS), songCard),
-    },
-  ]),
+  shelves: fullerFirst(
+    nonEmptyShelves([
+      { title: 'Jump back in', cards: recentAlbumCards(recentSongs) },
+      {
+        title: 'Recently played',
+        cards: Array.map(Array.take(recentSongs, HOME_RECENT_SONGS), songCard),
+      },
+      yourPlaylistsShelf(library),
+      {
+        title: 'Liked songs',
+        cards: Array.map(Array.take(likedSongs, HOME_LIKED_SONGS), songCard),
+      },
+      ...Array.map(playlists, playlistSongsShelf),
+    ]),
+  ),
 })
 
 /** The most cards a search shelf shows. */

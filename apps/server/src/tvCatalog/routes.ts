@@ -1,4 +1,4 @@
-import { Array, Duration, Effect, Match, Schema } from 'effect'
+import { Array, Duration, Effect, Match, Option, Schema } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
 import {
@@ -20,6 +20,7 @@ import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import {
   albumCollection,
   artistCollection,
+  homePlaylists,
   homeShelves,
   likedOf,
   lyricsOf,
@@ -159,7 +160,24 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
         ],
         { concurrency: 'unbounded' },
       )
-      return homeShelves(library, liked.songs, recent)
+      // A playlist deleted meanwhile just has no shelf.
+      const playlists = yield* Effect.forEach(
+        homePlaylists(library),
+        playlist =>
+          playlistStore.playlist(playlist.id).pipe(
+            Effect.map(Option.some),
+            Effect.catchTag('MusicNotFoundError', () =>
+              Effect.succeed(Option.none()),
+            ),
+          ),
+        { concurrency: 'unbounded' },
+      )
+      return homeShelves(
+        library,
+        liked.songs,
+        recent,
+        Array.getSomes(playlists),
+      )
     }).pipe(Effect.mapError(toRouteError))
 
     const library = playlistStore.library().pipe(

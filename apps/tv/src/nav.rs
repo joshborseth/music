@@ -549,6 +549,9 @@ const BACK_TO_LEAVE: Duration = Duration::from_millis(2500);
 pub const CONTROLS_LINGER: Duration = Duration::from_secs(6);
 /// An open queue closes after this long without a key.
 pub const QUEUE_LINGER: Duration = Duration::from_secs(30);
+/// The scan code shows this long after each song starts, then only with
+/// the controls, so it never sits on the screen for a whole song.
+pub const SCAN_CODE_AFTER_START: Duration = Duration::from_secs(20);
 const NOTICE_DURATION: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -587,6 +590,8 @@ pub struct Nav {
     queue_followed: Option<String>,
     /// No session state has arrived yet.
     first_session: bool,
+    /// When the song playing now came up, for the scan code.
+    song_started: Option<Instant>,
 }
 
 impl Default for Nav {
@@ -621,6 +626,7 @@ impl Nav {
             back_pressed: None,
             queue_followed: None,
             first_session: true,
+            song_started: None,
         }
     }
 
@@ -690,6 +696,7 @@ impl Nav {
             self.liked = None;
             self.scrub = None;
             self.seek_sent = None;
+            self.song_started = current.is_some().then(Instant::now);
             if let Some(video_id) = &current {
                 effects.push(Effect::LoadLiked(video_id.clone()));
                 effects.extend(self.request_lyrics());
@@ -765,6 +772,16 @@ impl Nav {
     /// Other screens always do.
     pub fn controls_shown(&self) -> bool {
         self.tab != Tab::NowPlaying || self.session.is_idle() || self.controls.is_some()
+    }
+
+    /// Whether the now-playing screen shows the scan code: with the
+    /// controls, and for a short while after each song starts. Nothing
+    /// playing has its own, larger code.
+    pub fn scan_code_shown(&self, now: Instant) -> bool {
+        self.controls_shown()
+            || self
+                .song_started
+                .is_some_and(|at| now.saturating_duration_since(at) < SCAN_CODE_AFTER_START)
     }
 
     fn hide_controls(&mut self) {
@@ -2053,6 +2070,25 @@ mod tests {
         assert!(nav.settle(now + CONTROLS_LINGER));
         assert!(!nav.controls_shown());
         assert_eq!((nav.control, nav.focus), (1, Focus::Content));
+    }
+
+    #[test]
+    fn the_scan_code_shows_as_a_song_starts_and_with_the_controls() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        let start = Instant::now();
+        assert!(nav.scan_code_shown(start), "a song just started");
+        let later = start + SCAN_CODE_AFTER_START + Duration::from_secs(1);
+        assert!(!nav.scan_code_shown(later), "then it goes");
+        nav.key(Key::Right, later);
+        assert!(nav.scan_code_shown(later), "the controls bring it back");
+        assert!(nav.settle(later + CONTROLS_LINGER));
+        assert!(!nav.scan_code_shown(later + CONTROLS_LINGER));
+        // The next song shows it again.
+        let mut next = playing_view();
+        next.current = Some(1);
+        nav.on_session(next);
+        assert!(nav.scan_code_shown(Instant::now()));
     }
 
     #[test]
