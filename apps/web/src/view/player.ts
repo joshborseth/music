@@ -61,7 +61,7 @@ import { artworkBackdropQuery, songQuery } from '../query'
 import { type PlayerPanel } from '../sheet'
 import { likedVideoIds } from '../update'
 import { timedLyrics } from './lyrics'
-import { formatDuration } from './shared'
+import { formatDuration, sizedArtworkUrl } from './shared'
 import { onSwipeStart, swipeTransitionClass, swipeableRow } from './swipe'
 
 // STATUS
@@ -124,13 +124,18 @@ const progressFraction = (
 
 // ARTWORK
 
+/** The width of the big cover at its largest: 24rem. */
+const BIG_ARTWORK_WIDTH = 384
+
 const artwork = (
   track: Session.QueueTrack,
   className: string,
+  displayWidth: number,
   h: HtmlBuilder<Message>,
 ): Html =>
   pipe(
     Option.fromNullishOr(track.artworkUrl),
+    Option.map(url => sizedArtworkUrl(url, displayWidth)),
     Option.match({
       onNone: () =>
         h.div(
@@ -263,7 +268,7 @@ const miniPlayer = (
               ),
             ],
             [
-              artwork(entry.track, 'size-10 rounded-lg', h),
+              artwork(entry.track, 'size-10 rounded-lg', 40, h),
               h.span(
                 [h.Class('flex min-w-0 flex-col')],
                 [
@@ -602,6 +607,7 @@ const artworkPanel = (
             ? 'scale-100 shadow-2xl shadow-black/50'
             : 'scale-[0.8] shadow-lg shadow-black/30',
         ),
+        BIG_ARTWORK_WIDTH,
         h,
       ),
     ],
@@ -616,7 +622,7 @@ const compactNowPlaying = (
   h.div(
     [h.Class('flex items-center gap-3 py-3')],
     [
-      artwork(entry.track, 'size-14 rounded-lg shadow-md', h),
+      artwork(entry.track, 'size-14 rounded-lg shadow-md', 56, h),
       trackTitle(entry.track, false, h),
       trackActions(model, entry.track, h),
     ],
@@ -945,7 +951,7 @@ const queueRow = (entry: Session.QueueEntry, h: HtmlBuilder<Message>): Html =>
           ),
         ],
         [
-          artwork(entry.track, 'size-12 rounded-md', h),
+          artwork(entry.track, 'size-12 rounded-md', 48, h),
           h.span(
             [h.Class('flex min-w-0 flex-col')],
             [

@@ -338,6 +338,9 @@ export const songFromListItem = (
       maybeDurationSeconds: Option.fromNullishOr(item.duration?.seconds),
       artwork: toArtwork(item.thumbnail?.contents),
     })),
+    Option.map(song =>
+      Option.isSome(musicVideoIdOf(item)) ? withVideoTitle(song) : song,
+    ),
   )
 
 const PLAY_COUNT = /^[\d.,]+[KMB]? plays?$/
@@ -396,6 +399,9 @@ export const songFromPlaylistPanelVideo = (
       ),
       artwork: toArtwork(video.thumbnail),
     })),
+    Option.map(song =>
+      Option.isSome(musicVideoIdOf(video)) ? withVideoTitle(song) : song,
+    ),
   )
 
 /** Lyrics from the song's lyrics tab. */
@@ -1033,7 +1039,8 @@ const topResultFromPage = (
 }
 
 /** The labels a song or video subtitle starts with, before its credits. */
-const WATCH_LABELS: ReadonlyArray<string> = ['Song', 'Video']
+const SONG_LABEL = 'Song'
+const WATCH_LABELS: ReadonlyArray<string> = [SONG_LABEL, 'Video']
 
 const COUNT = /\b(views|plays)$/
 
@@ -1067,9 +1074,8 @@ const topResultFromVideo = (
   card: TopResultCard,
   title: string,
   videoId: string,
-): TopResult => ({
-  _tag: 'Song',
-  song: {
+): TopResult => {
+  const song: Song = {
     videoId,
     title,
     artists: watchArtistLinks(card.subtitle),
@@ -1079,8 +1085,13 @@ const topResultFromVideo = (
       secondsFromClock,
     ),
     artwork: toArtwork(card.thumbnail?.contents),
-  },
-})
+  }
+  const isSong = Option.contains(
+    Array.head(subtitleSegments(card.subtitle)),
+    SONG_LABEL,
+  )
+  return { _tag: 'Song', song: isSong ? song : withVideoTitle(song) }
+}
 
 /**
  * The card YouTube Music puts above its search results: an artist, album,
@@ -1173,14 +1184,16 @@ export const musicVideoIds = (
 export type MusicVideo = Pick<Song, 'videoId' | 'title' | 'artists'>
 
 /** Words that name a kind of video, not a version of the song. */
-const VIDEO_WORDS = globalThis.String.raw`\b(official|video|audio|lyrics?|visuali[sz]er|m\/?v|hd|4k)\b`
+const VIDEO_WORDS = globalThis.String
+  .raw`\b(official|video|audio|lyrics?|visuali[sz]er|m\/?v|hd|4k)\b`
 
 /**
  * A bracket that names a kind of video: "(Official Video)", "[4K]", or one
  * that YouTube cut short, "[Official Music ...", up to the next bracket.
  */
 const VIDEO_BRACKET = new RegExp(
-  globalThis.String.raw`\s*(\([^()]*${VIDEO_WORDS}[^()]*\)|\[[^[\]()]*${VIDEO_WORDS}[^[\]()]*(\]|(?=\s*\(|$)))`,
+  globalThis.String
+    .raw`\s*(\([^()]*${VIDEO_WORDS}[^()]*\)|\[[^[\]()]*${VIDEO_WORDS}[^[\]()]*(\]|(?=\s*\(|$)))`,
   'gi',
 )
 
@@ -1229,6 +1242,111 @@ const isSameArtist = (left: ArtistLink, right: ArtistLink): boolean =>
     Option.isSome(right.maybeId) &&
     left.maybeId.value === right.maybeId.value) ||
   left.name.toLowerCase() === right.name.toLowerCase()
+
+// VIDEO TITLES
+
+/**
+ * Words that make a bracket name a version of the song, which the title
+ * keeps even when it also says "Official": "(Official Remix)", "(Live
+ * Audio)", "(4K Remaster)", "(8D Audio)".
+ */
+const VERSION_WORDS =
+  /\b(remix|mix|live|version|edit|acoustic|cover|remaster(ed)?|demo|session|instrumental|extended|slowed|sped|reverb|unplugged|stripped|karaoke|feat|ft|with|from|prod|8d|nightcore|tiktok)\b/i
+
+/** A " | Official Music Video" tail. */
+const VIDEO_PIPE_TAIL = new RegExp(
+  globalThis.String.raw`\s+\|\s+[^|]*${VIDEO_WORDS}[^|]*$`,
+  'i',
+)
+
+/** A " - by Tobias Stretch" tail, naming who made the video. */
+const BY_TAIL = /\s+[-–—|]\s+by\s+[^-–—|]+$/i
+
+/** The dashes that set an artist apart from a title: "Pixies - Debaser". */
+const DASH_SEPARATOR = /\s+[-–—]\s+/
+
+/** What joins the artists in front of a title: "A & B", "A x B", "A ft. B". */
+const ARTIST_JOINER =
+  /\s*(?:,|&|\+|\/|\bx\b|\band\b|\bwith\b|\bfeat\.?|\bft\.?)\s*/i
+
+/** Separators and spaces left hanging at either end of a title. */
+const DANGLING_SEPARATORS = /^[\s\-–—|:·•]+|[\s\-–—|:·•]+$/g
+
+const DOUBLED_SPACES = /\s{2,}/g
+
+/**
+ * Whether `text` names a credited artist: the whole text is one of their
+ * names, or the artists it joins start with one ("Daft Punk ft. Pharrell").
+ */
+const namesCreditedArtist = (
+  text: string,
+  artists: ReadonlyArray<ArtistLink>,
+): boolean => {
+  const names = Array.filter(
+    Array.map(artists, ({ name }) => compactName(name)),
+    String.isNonEmpty,
+  )
+  const firstName = compactName(text.split(ARTIST_JOINER)[0] ?? '')
+  return (
+    Array.contains(names, compactName(text)) || Array.contains(names, firstName)
+  )
+}
+
+/** The title without a credited artist before or after a dash. */
+const withoutArtistAround = (
+  title: string,
+  artists: ReadonlyArray<ArtistLink>,
+): string => {
+  const [first = '', ...rest] = title.split(DASH_SEPARATOR)
+  if (Array.isArrayEmpty(rest)) {
+    return title
+  }
+  if (namesCreditedArtist(first, artists)) {
+    return title.slice(title.search(DASH_SEPARATOR)).replace(DASH_SEPARATOR, '')
+  }
+  const last = rest.at(-1) ?? ''
+  if (namesCreditedArtist(last, artists)) {
+    return title
+      .slice(0, title.length - last.length)
+      .replace(/\s+[-–—]\s+$/, '')
+  }
+  return title
+}
+
+const withoutVideoBrackets = (title: string): string =>
+  title.replace(VIDEO_BRACKET, bracket =>
+    VERSION_WORDS.test(bracket) ? bracket : ' ',
+  )
+
+/**
+ * A music video's title as a song's: "HOTEL UGLY - SHUT UP MY MOMS CALLING
+ * (Official Music Video)" by Hotel Ugly becomes "SHUT UP MY MOMS CALLING".
+ * It takes off a credited artist before or after a dash, brackets that only
+ * name the kind of video ("(Official HD Video)", "[Official Audio]",
+ * "(Visualizer)"), a " - by …" tail naming who made the video, and the
+ * spaces and separators they leave. Anything else stays: "Hold On -
+ * Remastered", "(feat. X)", "(Live at Wembley)", "(Official Remix)".
+ */
+export const cleanVideoTitle = (
+  title: string,
+  artists: ReadonlyArray<ArtistLink>,
+): string => {
+  const cleaned = pipe(
+    title.replace(DOUBLED_SPACES, ' ').trim(),
+    withoutVideoBrackets,
+    text => text.replace(VIDEO_PIPE_TAIL, ''),
+    text => text.replace(BY_TAIL, ''),
+    text => withoutArtistAround(text, artists),
+    text => text.replace(DOUBLED_SPACES, ' ').replace(DANGLING_SEPARATORS, ''),
+  )
+  return String.isNonEmpty(cleaned) ? cleaned : title.trim()
+}
+
+/** A music video as a song, with its title cleaned. */
+const withVideoTitle = (song: Song): Song => ({
+  ...song,
+  title: cleanVideoTitle(song.title, song.artists),
+})
 
 /**
  * The words to search songs for to find a music video's song: its first
@@ -1316,34 +1434,151 @@ export const searchNamesArtist = (
   )
 }
 
-/** 2 when the search names a song's main artist, 1 another credit, else 0. */
-const artistRank = (query: string, song: Song): number =>
+/** 2 when `isWanted` picks a song's main artist, 1 another credit, else 0. */
+const creditRank = (
+  song: Song,
+  isWanted: (artist: ArtistLink) => boolean,
+): number =>
   Array.match(song.artists, {
     onEmpty: () => 0,
     onNonEmpty: ([first, ...others]) =>
-      searchNamesArtist(query, first)
-        ? 2
-        : Array.some(others, artist => searchNamesArtist(query, artist))
-          ? 1
-          : 0,
+      isWanted(first) ? 2 : Array.some(others, isWanted) ? 1 : 0,
   })
 
 /**
- * A song search with the songs by the artist searched for first: "daft
- * punk" lists Daft Punk's songs, then songs they are featured on, then the
- * remixes and covers that only mention them. Otherwise YouTube's order
- * stays.
+ * Words that mark another take on a song rather than the song: a remix, a
+ * cover, karaoke, or a slowed, sped up, 8D, or nightcore edit. Albums of
+ * covers and karaoke say so in their names too.
+ */
+const VERSION_OF_SONG =
+  /\b(remix(es|ed)?|rmx|covers?|karaoke|tribute|slowed|sped[\s-]?up|8d|nightcore|reverb|bass[\s-]?boosted|mashup|bootleg|instrumental|originally performed|in the style of|made famous)\b/i
+
+/**
+ * A bracket that names a version: "(Metal Version)", "(Jive 43BPM)", "(Afro
+ * House)". Only another artist's version counts: the artist's own "(Taylor's
+ * Version)" or "(Single Version)" is the song.
+ */
+const VERSION_BRACKET =
+  /[([][^)\]]*\b(version|edition|bpm|vocal|house)\b[^)\]]*[)\]]/i
+
+/** Words that ask for a version: "blinding lights metal version". */
+const ASKS_FOR_VERSION =
+  /\b(version|edition|bpm|vocal|house|live|acoustic|piano|metal|lo-?fi)\b/i
+
+/** Whether a song is a remix, a cover, karaoke, or an edit of a song. */
+const isVersion = (song: Song): boolean =>
+  VERSION_OF_SONG.test(song.title) ||
+  Option.exists(song.maybeAlbum, ({ name }) => VERSION_OF_SONG.test(name))
+
+const asksForVersion = (query: string): boolean =>
+  VERSION_OF_SONG.test(query) || ASKS_FOR_VERSION.test(query)
+
+/** The song YouTube Music picked as its top result, with its artist's hits. */
+export type TopSong = Readonly<{
+  song: Song
+  artistSongs: ReadonlyArray<Song>
+}>
+
+/** Where a title's own name ends: " | Emotional Deep", " - Slowed". */
+const TITLE_TAIL = /\s[|–—-]\s.*$/
+
+/**
+ * A title without brackets or a tail after a separator, for telling covers
+ * of a song apart: "Blinding Lights | Emotional Deep" and "Blinding Lights
+ * (Afro House)" are both "blindinglights".
+ */
+const bareTitle = (title: string): string =>
+  compactName(title.replace(ANY_BRACKET, '').replace(TITLE_TAIL, ''))
+
+/** The same song: the same video, or the same title by the same artist. */
+const isSameSong = (left: Song, right: Song): boolean =>
+  left.videoId === right.videoId ||
+  (comparableTitle(left.title, left.artists) ===
+    comparableTitle(right.title, right.artists) &&
+    Array.some(left.artists, artist =>
+      Array.some(right.artists, other => isSameArtist(artist, other)),
+    ))
+
+type Candidate = Readonly<{ song: Song; isArtistHit: boolean }>
+
+/**
+ * How high a song goes in a search, highest first. The songs by the artist
+ * searched for or of the top result come first, then their hits, then songs
+ * they are featured on, then other songs. Remixes, covers, karaoke, and
+ * slowed or 8D edits go last, unless the search asks for one, and so do
+ * other artists' songs with the top result's title.
+ */
+const searchRank = (
+  query: string,
+  maybeTop: Option.Option<TopSong>,
+  { song, isArtistHit }: Candidate,
+): number => {
+  const rank = Math.max(
+    creditRank(song, artist => searchNamesArtist(query, artist)),
+    Option.match(maybeTop, {
+      onNone: () => 0,
+      onSome: top =>
+        creditRank(song, artist =>
+          Array.some(top.song.artists, other => isSameArtist(artist, other)),
+        ),
+    }),
+  )
+  const isCoverOfTop =
+    rank === 0 &&
+    Option.exists(
+      maybeTop,
+      top => bareTitle(top.song.title) === bareTitle(song.title),
+    )
+  const isUnasked =
+    !asksForVersion(query) &&
+    (isVersion(song) ||
+      (rank === 0 && VERSION_BRACKET.test(song.title)) ||
+      isCoverOfTop)
+  if (isUnasked) {
+    return rank
+  }
+  if (isArtistHit) {
+    return 15
+  }
+  return rank === 2 ? 20 : 10 + rank
+}
+
+/**
+ * A song search, ranked as Apple Music and Spotify would: "daft punk" lists
+ * Daft Punk's songs, then songs they are featured on, then the remixes and
+ * covers that only mention them. When YouTube Music's top result is a song,
+ * its artist's songs come first and their hits after them, and covers of it
+ * go last: "blinding lights" lists The Weeknd, not a metal cover. Remixes,
+ * karaoke, and slowed or 8D edits go last unless the search asks for one.
+ * Otherwise YouTube's order stays.
  */
 export const rankSongsForQuery = (
   query: string,
   songs: ReadonlyArray<Song>,
-): ReadonlyArray<Song> =>
-  Array.sort(
-    songs,
-    Order.mapInput(Order.flip(Order.Number), (song: Song) =>
-      artistRank(query, song),
+  maybeTop: Option.Option<TopSong> = Option.none(),
+): ReadonlyArray<Song> => {
+  const hits = Option.match(maybeTop, {
+    onNone: (): ReadonlyArray<Song> => [],
+    onSome: ({ song: top, artistSongs }) =>
+      Array.filter(
+        artistSongs,
+        hit => !Array.some([top, ...songs], song => isSameSong(song, hit)),
+      ),
+  })
+  const candidates: ReadonlyArray<Candidate> = [
+    ...Array.map(songs, song => ({ song, isArtistHit: false })),
+    ...Array.map(hits, song => ({ song, isArtistHit: true })),
+  ]
+  return Array.map(
+    Array.sort(
+      candidates,
+      Order.mapInput(Order.flip(Order.Number), (candidate: Candidate) =>
+        searchRank(query, maybeTop, candidate),
+      ),
     ),
+    ({ song }) => song,
   )
+}
 
 // MOODS AND GENRES
 

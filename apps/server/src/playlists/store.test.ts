@@ -406,6 +406,36 @@ describe('play history', () => {
   })
 })
 
+describe('songs saved with a music video’s title', () => {
+  const taxes: Song = {
+    ...song('Phh3oVCtzBg'),
+    title: 'Geese - Taxes (Official Music Video)',
+    artists: [{ maybeId: Option.some('UCgeese'), name: 'Geese' }],
+  }
+
+  test('show a clean title in the play history', () => {
+    const store = makeStore()
+    run(store.recordPlay(taxes))
+
+    const [played] = Result.getOrThrow(run(store.recentlyPlayed(1)))
+    const [most] = Result.getOrThrow(run(store.mostPlayed(1)))
+    expect(played?.title).toBe('Taxes')
+    expect(most?.song.title).toBe('Taxes')
+  })
+
+  test('show a clean title in playlists and Liked Songs', () => {
+    const store = makeStore()
+    edit(store, { _tag: 'Create', title: 'Mix', songs: [taxes] })
+    edit(store, { _tag: 'SetLiked', song: taxes, isLiked: true })
+
+    const [, mine] = Result.getOrThrow(run(store.library())).playlists
+    const mix = Result.getOrThrow(run(store.playlist(mine?.id ?? '')))
+    const liked = Result.getOrThrow(run(store.playlist(LIKED_PLAYLIST_ID)))
+    expect(mix.songs.map(({ title }) => title)).toEqual(['Taxes'])
+    expect(liked.songs.map(({ title }) => title)).toEqual(['Taxes'])
+  })
+})
+
 describe('normalizeTitle', () => {
   test('trims, shortens, and names an empty title', () => {
     expect(normalizeTitle('  Mix  ')).toBe('Mix')

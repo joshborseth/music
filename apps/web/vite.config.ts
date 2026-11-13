@@ -16,6 +16,15 @@ const YOUTUBE_IMAGE_HOSTS =
 const IMAGE_CACHE_MAX_ENTRIES = 500
 const IMAGE_CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
 
+/**
+ * Covers asked for at 1080 pixels (the full player and the heroes of album,
+ * playlist, and artist pages) are about ten times the bytes of a list's, so
+ * they get their own, smaller cache.
+ */
+const LARGE_IMAGE =
+  /^https:\/\/(lh3|yt3)\.googleusercontent\.com\/.*=w1080-h1080/
+const LARGE_IMAGE_CACHE_MAX_ENTRIES = 60
+
 export default defineConfig({
   plugins: [
     tailwindcss(),
@@ -55,6 +64,18 @@ export default defineConfig({
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/rpc/, /^\/audio\//, /^\/session/],
         runtimeCaching: [
+          {
+            urlPattern: LARGE_IMAGE,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'artwork-large',
+              expiration: {
+                maxEntries: LARGE_IMAGE_CACHE_MAX_ENTRIES,
+                maxAgeSeconds: IMAGE_CACHE_MAX_AGE_SECONDS,
+              },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
           {
             urlPattern: YOUTUBE_IMAGE_HOSTS,
             handler: 'CacheFirst',

@@ -823,10 +823,15 @@ const transition = (
             onSome: entry => `“${entry.track.title}”`,
           }),
         )
+        const next = finishCurrent(model, now, 'Off')
+        // NOTE: the player's own words ("MEDIA_ELEMENT_ERROR: Format
+        // error") go to the server's log, not on screen.
         return {
-          ...changed(finishCurrent(model, now, 'Off')),
+          ...changed(next),
           maybeNotice: Option.some(
-            `Couldn't play ${title}: ${message.message}`,
+            next.currentEntryId === model.currentEntryId
+              ? `Couldn't play ${title}.`
+              : `Couldn't play ${title}. Skipping to the next one.`,
           ),
         }
       },

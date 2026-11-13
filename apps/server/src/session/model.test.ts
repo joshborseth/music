@@ -324,6 +324,32 @@ describe('session model', () => {
     expect(outcome.seekSeq).toBe(skipped.seekSeq)
   })
 
+  test('a failed song says so in plain words and keeps the error off screen', () => {
+    const failed = update(
+      playing(),
+      {
+        _tag: 'TrackFailed',
+        entryId: 'e0',
+        message: 'MEDIA_ELEMENT_ERROR: Format error',
+      },
+      makeContext('phone', 2_000),
+    )
+    expect(failed.maybeNotice).toEqual(
+      Option.some("Couldn't play “a”. Skipping to the next one."),
+    )
+    const atLast = update(
+      playing(),
+      { _tag: 'SkipTo', entryId: 'e2' },
+      makeContext('phone', 2_000),
+    ).model
+    const lastFailed = update(
+      atLast,
+      { _tag: 'TrackFailed', entryId: 'e2', message: 'gone' },
+      makeContext('phone', 3_000),
+    )
+    expect(lastFailed.maybeNotice).toEqual(Option.some("Couldn't play “c”."))
+  })
+
   test('a failed song moves on even if the player reports it after reconnecting', () => {
     const model = playing()
     const failed = update(

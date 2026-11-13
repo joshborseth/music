@@ -38,6 +38,7 @@ import {
   type DiscographyLink,
   type MoodShelf,
   type MusicVideo,
+  type TopSong,
   albumFromListItem,
   artistFromListItem,
   audioTrackFor,
@@ -131,6 +132,12 @@ const ARTIST_PAGE_CAPACITY = 128
  * search under it instead.
  */
 const TOP_SONGS_WAIT = Duration.seconds(4)
+
+/**
+ * How long a song search waits for the top song's artist page, whose hits
+ * it lists after the artist's matching songs. The page is kept for an hour.
+ */
+const ARTIST_HITS_WAIT = Duration.millis(1500)
 
 /**
  * The song found for a music video is kept this long. The answer rarely
@@ -256,25 +263,38 @@ const make = Effect.gen(function* () {
       ),
     )
 
-  const songSearches = yield* Cache.makeWith(
+  const searchCacheOptions = {
+    capacity: SONG_SEARCH_CAPACITY,
+    timeToLive: Exit.match({
+      onFailure: () => Duration.zero,
+      onSuccess: () => SONG_SEARCH_TTL,
+    }),
+  }
+
+  /** A song search in YouTube's order. */
+  const songShelves = yield* Cache.makeWith(
     (query: string) =>
       Effect.map(searchShelf(query, 'song'), items =>
-        rankSongsForQuery(query, filterSome(items, songFromListItem)),
+        filterSome(items, songFromListItem),
       ),
-    {
-      capacity: SONG_SEARCH_CAPACITY,
-      timeToLive: Exit.match({
-        onFailure: () => Duration.zero,
-        onSuccess: () => SONG_SEARCH_TTL,
-      }),
-    },
+    searchCacheOptions,
   )
 
-  const searchSongs = Effect.fn('YouTubeMusic.searchSongs')(function* (
-    query: string,
-  ) {
-    return yield* Cache.get(songSearches, query)
-  })
+  /** The card YouTube Music shows above its results, as it shows it. */
+  const topCards = yield* Cache.makeWith(
+    (query: string) =>
+      Effect.map(
+        callYouTube(() => music.search(query)),
+        search =>
+          Option.flatMap(
+            Option.fromNullishOr(
+              search.contents?.firstOfType(YTNodes.MusicCardShelf),
+            ),
+            topResultFromCard,
+          ),
+      ),
+    searchCacheOptions,
+  )
 
   const audioTrackSearches = yield* Semaphore.make(AUDIO_TRACK_CONCURRENCY)
 
@@ -311,22 +331,20 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<
     ReadonlyArray<Readonly<{ song: Song; maybeTrack: Option.Option<Song> }>>
   > =>
-    Effect.forEach(
-      songs,
-      song =>
-        videoIds.has(song.videoId)
-          ? Effect.map(Effect.forkDetach(audioTrackOf(song)), lookup =>
-              Fiber.join(lookup).pipe(
-                Effect.timeoutOption(AUDIO_TRACK_WAIT),
-                Effect.map(maybeFound => ({
-                  song,
-                  maybeTrack: Option.flatten(maybeFound),
-                })),
-              ),
-            )
-          : Effect.succeed(
-              Effect.succeed({ song, maybeTrack: Option.none<Song>() }),
+    Effect.forEach(songs, song =>
+      videoIds.has(song.videoId)
+        ? Effect.map(Effect.forkDetach(audioTrackOf(song)), lookup =>
+            Fiber.join(lookup).pipe(
+              Effect.timeoutOption(AUDIO_TRACK_WAIT),
+              Effect.map(maybeFound => ({
+                song,
+                maybeTrack: Option.flatten(maybeFound),
+              })),
             ),
+          )
+        : Effect.succeed(
+            Effect.succeed({ song, maybeTrack: Option.none<Song>() }),
+          ),
     ).pipe(
       Effect.flatMap(waits => Effect.all(waits, { concurrency: 'unbounded' })),
     )
@@ -440,34 +458,73 @@ const make = Effect.gen(function* () {
     },
   )
 
-  /** The top artist's most played songs, or none if their page is slow. */
-  const topSongsOf = (artistId: string) =>
-    getArtistOverview(artistId).pipe(
+  /**
+   * An artist's most played songs, or none if their page takes longer than
+   * `wait`. A slow page carries on loading, so the cache has it next time.
+   */
+  const topSongsOf = (artistId: string, wait: Duration.Duration) =>
+    Effect.forkDetach(getArtistOverview(artistId)).pipe(
+      Effect.flatMap(Fiber.join),
       Effect.map(({ topSongs }) => topSongs),
-      Effect.timeoutOption(TOP_SONGS_WAIT),
+      Effect.timeoutOption(wait),
       Effect.map(Option.getOrElse((): ReadonlyArray<Song> => [])),
       Effect.orElseSucceed((): ReadonlyArray<Song> => []),
     )
 
+  /**
+   * The song YouTube Music's top result is, with its artist's hits, which a
+   * song search ranks by.
+   */
+  const topSongFor = (query: string) =>
+    Effect.gen(function* () {
+      const maybeTopResult = yield* Cache.get(topCards, query).pipe(
+        Effect.orElseSucceed(() => Option.none<TopResult>()),
+      )
+      if (Option.isNone(maybeTopResult)) return Option.none<TopSong>()
+      const topResult = maybeTopResult.value
+      if (topResult._tag !== 'Song') return Option.none<TopSong>()
+      const maybeArtistId = pipe(
+        Array.findFirst(topResult.song.artists, ({ maybeId }) =>
+          Option.isSome(maybeId),
+        ),
+        Option.flatMap(({ maybeId }) => maybeId),
+      )
+      const artistSongs = Option.isSome(maybeArtistId)
+        ? yield* topSongsOf(maybeArtistId.value, ARTIST_HITS_WAIT)
+        : []
+      return Option.some<TopSong>({ song: topResult.song, artistSongs })
+    })
+
+  const songSearches = yield* Cache.makeWith(
+    (query: string) =>
+      Effect.map(
+        Effect.all([Cache.get(songShelves, query), topSongFor(query)], {
+          concurrency: 'unbounded',
+        }),
+        ([songs, maybeTop]) => rankSongsForQuery(query, songs, maybeTop),
+      ),
+    searchCacheOptions,
+  )
+
+  const searchSongs = Effect.fn('YouTubeMusic.searchSongs')(function* (
+    query: string,
+  ) {
+    return yield* Cache.get(songSearches, query)
+  })
+
   const searchTopResult = Effect.fn('YouTubeMusic.searchTopResult')(function* (
     query: string,
   ) {
-    const search = yield* callYouTube(() => music.search(query))
-    const maybeTopResult = Option.flatMap(
-      Option.fromNullishOr(
-        search.contents?.firstOfType(YTNodes.MusicCardShelf),
-      ),
-      topResultFromCard,
-    )
+    const maybeTopResult = yield* Cache.get(topCards, query)
     if (Option.isNone(maybeTopResult)) return maybeTopResult
     const topResult = maybeTopResult.value
     if (topResult._tag === 'Artist') {
-      const topSongs = yield* topSongsOf(topResult.artist.id)
+      const topSongs = yield* topSongsOf(topResult.artist.id, TOP_SONGS_WAIT)
       return Option.some({ ...topResult, topSongs })
     }
     if (topResult._tag !== 'Song') return maybeTopResult
     // A song found as its music video plays as its audio track instead.
-    const songs = yield* searchSongs(query).pipe(
+    const songs = yield* Cache.get(songShelves, query).pipe(
       Effect.orElseSucceed((): ReadonlyArray<Song> => []),
     )
     return Option.some(
@@ -562,8 +619,9 @@ const make = Effect.gen(function* () {
 
   /** YouTube's "up next" for a song, as it sends it: the song comes first. */
   const upNextSongs = (videoId: string) =>
-    Effect.map(lookUp(videoId, () => music.getUpNext(videoId)), queue =>
-      queueSongs(queue.contents),
+    Effect.map(
+      lookUp(videoId, () => music.getUpNext(videoId)),
+      queue => queueSongs(queue.contents),
     )
 
   /**
