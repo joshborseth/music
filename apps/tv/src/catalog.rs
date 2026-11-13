@@ -177,6 +177,49 @@ pub struct LikeRequest {
     pub liked: bool,
 }
 
+/// What can be saved to the library: an album, or an artist to follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SaveKind {
+    Album,
+    Artist,
+}
+
+impl SaveKind {
+    /// Albums and artists can be saved; playlists can't.
+    pub fn from_collection(kind: CollectionKind) -> Option<Self> {
+        match kind {
+            CollectionKind::Album => Some(Self::Album),
+            CollectionKind::Artist => Some(Self::Artist),
+            CollectionKind::Playlist | CollectionKind::MyPlaylist => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Album => "Album",
+            Self::Artist => "Artist",
+        }
+    }
+}
+
+/// Whether an album is saved to the library, or an artist followed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Saved {
+    pub kind: SaveKind,
+    pub id: String,
+    pub saved: bool,
+}
+
+/// Save an album or follow an artist, or undo it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveRequest {
+    pub kind: SaveKind,
+    pub id: String,
+    pub saved: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Version {
@@ -265,16 +308,41 @@ impl Client {
     }
 
     pub async fn set_liked(&self, request: &LikeRequest) -> Result<bool, String> {
-        let body = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+        self.post::<Liked>("/tv/like", request)
+            .await
+            .map(|liked| liked.liked)
+    }
+
+    pub async fn saved(&self, kind: SaveKind, id: &str) -> Result<bool, String> {
+        let path = format!(
+            "/tv/saved?kind={}&id={}",
+            kind.as_str(),
+            crate::view::percent_encode(id)
+        );
+        self.get::<Saved>(&path).await.map(|saved| saved.saved)
+    }
+
+    pub async fn set_saved(&self, request: &SaveRequest) -> Result<bool, String> {
+        self.post::<Saved>("/tv/save", request)
+            .await
+            .map(|saved| saved.saved)
+    }
+
+    async fn post<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T, String> {
+        let body = serde_json::to_vec(body).map_err(|error| error.to_string())?;
         let response = self
             .http
-            .post(format!("{}/tv/like", self.server))
+            .post(format!("{}{path}", self.server))
             .header("content-type", "application/json")
             .body(body)
             .send()
             .await
             .map_err(|_| "Can't reach the music server".to_owned())?;
-        decode::<Liked>(response).await.map(|liked| liked.liked)
+        decode(response).await
     }
 }
 
@@ -361,6 +429,22 @@ mod tests {
         assert_eq!(analysis.downbeats.len() * 4, analysis.beats.len());
         assert_eq!(analysis.sections[1].kind, SectionKind::Drop);
         assert_eq!(analysis.drops, vec![4.5]);
+    }
+
+    #[test]
+    fn decodes_saved_and_encodes_a_save_request_like_the_fixture() {
+        let saved: Saved = fixture("saved.json");
+        assert_eq!(saved.kind, SaveKind::Album);
+        assert!(saved.saved);
+        let request: SaveRequest = fixture("save-request.json");
+        assert_eq!(request.kind, SaveKind::Artist);
+        let expected: serde_json::Value = fixture("save-request.json");
+        assert_eq!(serde_json::to_value(&request).unwrap(), expected);
+        assert_eq!(
+            SaveKind::from_collection(CollectionKind::Artist),
+            Some(SaveKind::Artist)
+        );
+        assert_eq!(SaveKind::from_collection(CollectionKind::MyPlaylist), None);
     }
 
     #[test]

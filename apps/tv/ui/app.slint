@@ -64,7 +64,8 @@ export struct ShelfData {
 }
 
 export struct RowData {
-    /// "track", "link" (opens a page), or "header" (a section title).
+    /// "track", "link" (opens a page), "header" (a section title), or
+    /// "search" (a recent search).
     kind: string,
     title: string,
     subtitle: string,
@@ -148,6 +149,7 @@ component Icon inherits Path {
         : name == "now" ? "M3.5 9.5 H7 V20.5 H3.5 Z M10.25 3.5 H13.75 V20.5 H10.25 Z M17 12.5 H20.5 V20.5 H17 Z"
         : name == "backspace" ? "M8.2 4.5 H20 C20.8 4.5 21.5 5.2 21.5 6 V18 C21.5 18.8 20.8 19.5 20 19.5 H8.2 L2 12 Z M11.3 8.4 L10 9.7 L12.3 12 L10 14.3 L11.3 15.6 L13.6 13.3 L15.9 15.6 L17.2 14.3 L14.9 12 L17.2 9.7 L15.9 8.4 L13.6 10.7 Z"
         : name == "add" ? "M10.7 4 H13.3 V10.7 H20 V13.3 H13.3 V20 H10.7 V13.3 H4 V10.7 H10.7 Z"
+        : name == "check" ? "M9.4 15.6 L19.1 5.9 L20.9 7.7 L9.4 19.2 L3.1 12.9 L4.9 11.1 Z"
         : name == "play-next" ? "M3 4.5 H14 V7 H3 Z M3 10.5 H14 V13 H3 Z M3 16.5 H9 V19 H3 Z M17.7 12 H20.3 V15.7 H24 V18.3 H20.3 V22 H17.7 V18.3 H14 V15.7 H17.7 Z"
         : name == "remove" ? "M4 10.7 H20 V13.3 H4 Z"
         : name == "close" ? "M6.1 4.3 L12 10.2 L17.9 4.3 L19.7 6.1 L13.8 12 L19.7 17.9 L17.9 19.7 L12 13.8 L6.1 19.7 L4.3 17.9 L10.2 12 L4.3 6.1 Z"
@@ -375,7 +377,16 @@ component Row inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
         }
-        if root.data.number == "": VerticalLayout {
+        if root.data.kind == "search": VerticalLayout {
+            alignment: center;
+            Icon {
+                name: "search";
+                width: Metrics.u * 1.4;
+                height: self.width;
+                color: root.data.selected ? #0b0d12 : Theme.text-3;
+            }
+        }
+        if root.data.number == "" && root.data.kind != "search": VerticalLayout {
             alignment: center;
             Artwork {
                 width: Metrics.u * 3.2;
@@ -641,6 +652,9 @@ export component App inherits Window {
     in property <[RowData]> queue-rows;
     in property <int> queue-top;
     in property <string> queue-summary;
+    // Clear, beside the summary while songs are queued after this one.
+    in property <bool> queue-clear-shown;
+    in property <ButtonData> queue-clear;
     in property <bool> queue-shuffle;
     // 0 off, 1 the whole queue, 2 one song.
     in property <int> queue-repeat;
@@ -660,6 +674,8 @@ export component App inherits Window {
     // Search
     in property <string> query;
     in property <[KeyData]> keys;
+    // Before anything is typed: the searches used lately, latest first.
+    in property <[RowData]> recent-searches;
     in property <bool> keyboard-focused;
 
     // A collection
@@ -970,8 +986,15 @@ export component App inherits Window {
                             color: row.kind == 1 ? white : row.kind == 0 ? Theme.lyric-sung : Theme.lyric-next;
                             animate color { duration: 450ms; easing: ease-out; }
                             transform-origin: { x: 0, y: self.height / 2 };
-                            transform-scale: row.kind == 1 ? 1.0 : 0.88;
-                            animate transform-scale { duration: 720ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
+                            // Skia draws text at its size on the screen, so each
+                            // new scale rasterises the line's glyphs again. In
+                            // steps of 2% the spring passes through the same few
+                            // sizes every time, and those stay in Skia's glyph
+                            // cache: after the first lines, a line springing up
+                            // rasterises nothing new on the TV's slow CPU.
+                            property <float> spring: row.kind == 1 ? 1.0 : 0.88;
+                            animate spring { duration: 720ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
+                            transform-scale: Math.round(self.spring * 50) / 50;
                         }
                         if row.kind >= 3: Rectangle {
                             x: 0;
@@ -1288,6 +1311,21 @@ export component App inherits Window {
                     color: Theme.text-3;
                     font-size: Metrics.u * 1.1;
                 }
+                if root.recent-searches.length > 0: Text {
+                    text: "Recent searches";
+                    color: white;
+                    font-size: Metrics.u * 1.25;
+                    font-weight: 700;
+                    // A section title, as in a list (`Row`'s header).
+                    height: Metrics.u * 3.4;
+                    vertical-alignment: bottom;
+                }
+                if root.recent-searches.length > 0: List {
+                    width: min(results.width, Metrics.u * 34);
+                    height: root.recent-searches.length * Metrics.u * 4.4;
+                    rows: root.recent-searches;
+                    top: 0;
+                }
             }
             Shelves {
                 x: -self.pad;
@@ -1571,10 +1609,21 @@ export component App inherits Window {
                         }
                     }
                 }
-                Text {
-                    text: root.queue-summary;
-                    color: Theme.text-3;
-                    font-size: Metrics.u * 0.95;
+                HorizontalLayout {
+                    spacing: Metrics.u * 0.6;
+                    Text {
+                        text: root.queue-summary;
+                        color: Theme.text-3;
+                        font-size: Metrics.u * 0.95;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    // Up from the first song reaches it.
+                    if root.queue-clear-shown: RoundButton {
+                        data: root.queue-clear;
+                        size: Metrics.u * 2.2;
+                        flat: true;
+                    }
                 }
             }
             List {

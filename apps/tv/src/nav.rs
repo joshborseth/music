@@ -4,9 +4,10 @@
 //! (session commands, catalog loads); their results come back through the
 //! `on_*` methods.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::catalog::{Card, Collection, CollectionKind, Shelf};
+use crate::catalog::{Card, Collection, CollectionKind, SaveKind, Shelf};
 use crate::controller::UiAction;
 use crate::lyrics::SongLyrics;
 use crate::protocol::{Placement, QueueTrack};
@@ -94,6 +95,19 @@ pub enum Effect {
         track: QueueTrack,
         liked: bool,
     },
+    /// Ask whether an album is saved or an artist followed.
+    LoadSaved {
+        kind: SaveKind,
+        id: String,
+    },
+    /// Save an album or follow an artist, or undo it.
+    SetSaved {
+        kind: SaveKind,
+        id: String,
+        saved: bool,
+    },
+    /// Keep these recent searches on the TV, latest first.
+    SaveSearches(Vec<String>),
     OpenUpdateSettings,
     /// Open the settings menu ([`Nav::show_settings`]), which shows the
     /// version and how updates stand.
@@ -118,8 +132,20 @@ pub enum MenuAction {
     AddToQueue(Target),
     Open(CollectionKind, String),
     Like(QueueTrack),
+    /// Save an album or follow an artist (`saved: true`), or undo it.
+    SetSaved {
+        kind: SaveKind,
+        id: String,
+        title: String,
+        saved: bool,
+    },
     PlayEntry(String),
     RemoveEntry(String),
+    /// Ask before clearing the songs queued after this one.
+    AskClearUpcoming,
+    ClearUpcoming,
+    RemoveSearch(String),
+    ClearSearches,
     OpenUpdateSettings,
     CheckForUpdates,
     Close,
@@ -135,8 +161,18 @@ impl MenuAction {
             MenuAction::Open(CollectionKind::Artist, _) => "Go to artist",
             MenuAction::Open(_, _) => "Open",
             MenuAction::Like(_) => "Add to Liked songs",
+            MenuAction::SetSaved { kind, saved, .. } => match (kind, saved) {
+                (SaveKind::Album, true) => "Save to library",
+                (SaveKind::Album, false) => "Remove from library",
+                (SaveKind::Artist, true) => "Follow",
+                (SaveKind::Artist, false) => "Unfollow",
+            },
             MenuAction::PlayEntry(_) => "Play now",
             MenuAction::RemoveEntry(_) => "Remove from queue",
+            MenuAction::AskClearUpcoming => "Clear the queue",
+            MenuAction::ClearUpcoming => "Clear",
+            MenuAction::RemoveSearch(_) => "Remove from recent searches",
+            MenuAction::ClearSearches => "Clear recent searches",
             MenuAction::OpenUpdateSettings => "Open settings",
             MenuAction::CheckForUpdates => "Check for updates",
             MenuAction::Close => "Not now",
@@ -152,7 +188,13 @@ impl MenuAction {
             MenuAction::Open(CollectionKind::Artist, _) => "artist",
             MenuAction::Open(_, _) => "album",
             MenuAction::Like(_) => "heart",
-            MenuAction::RemoveEntry(_) => "remove",
+            MenuAction::SetSaved { saved: true, .. } => "add",
+            MenuAction::SetSaved { saved: false, .. } => "remove",
+            MenuAction::RemoveEntry(_)
+            | MenuAction::AskClearUpcoming
+            | MenuAction::ClearUpcoming
+            | MenuAction::RemoveSearch(_)
+            | MenuAction::ClearSearches => "remove",
             MenuAction::OpenUpdateSettings => "settings",
             MenuAction::CheckForUpdates => "update",
             MenuAction::Close => "close",
@@ -386,13 +428,9 @@ pub enum CollectionButton {
     Play,
     Shuffle,
     Queue,
+    /// Save an album to the library, or follow an artist; or undo it.
+    Save,
 }
-
-pub const COLLECTION_BUTTONS: [CollectionButton; 3] = [
-    CollectionButton::Play,
-    CollectionButton::Shuffle,
-    CollectionButton::Queue,
-];
 
 impl CollectionNav {
     fn new(kind: CollectionKind, id: String) -> Self {
@@ -420,6 +458,27 @@ impl CollectionNav {
             rows.extend((0..shelf.cards.len()).map(|card| RowRef::Card(shelf_index, card)));
         }
         rows
+    }
+
+    /// The buttons beside the collection: Play, Shuffle, and Queue when it
+    /// has songs, then Save for an album or Follow for an artist.
+    pub fn buttons(&self) -> Vec<CollectionButton> {
+        let Some(collection) = self.content.loaded() else {
+            return Vec::new();
+        };
+        let mut buttons = if collection.tracks.is_empty() {
+            Vec::new()
+        } else {
+            vec![
+                CollectionButton::Play,
+                CollectionButton::Shuffle,
+                CollectionButton::Queue,
+            ]
+        };
+        if SaveKind::from_collection(self.kind).is_some() {
+            buttons.push(CollectionButton::Save);
+        }
+        buttons
     }
 
     fn first_selectable(&self) -> usize {
@@ -467,7 +526,16 @@ pub struct SearchNav {
     pub browse: BrowseNav,
     /// The query the shown results are for.
     pub results_for: String,
+    /// The searches whose results were used lately, latest first. They show
+    /// before anything is typed.
+    pub recent: Vec<String>,
+    /// The recent searches have the selection.
+    pub in_recent: bool,
+    pub recent_row: usize,
 }
+
+/// How many recent searches the TV keeps, as many as the phone.
+pub const MAX_RECENT_SEARCHES: usize = 8;
 
 impl SearchNav {
     fn new() -> Self {
@@ -477,6 +545,33 @@ impl SearchNav {
             in_results: false,
             browse: BrowseNav::new(),
             results_for: String::new(),
+            recent: Vec::new(),
+            in_recent: false,
+            recent_row: 0,
+        }
+    }
+
+    /// Before anything is typed, Search lists the recent searches.
+    pub fn showing_recent(&self) -> bool {
+        self.query.trim().is_empty() && !self.recent.is_empty()
+    }
+
+    /// Put `query` first among the recent searches. Returns whether they changed.
+    fn remember(&mut self, query: &str) -> bool {
+        let query = query.trim();
+        if query.is_empty() || self.recent.first().is_some_and(|first| first == query) {
+            return false;
+        }
+        self.recent.retain(|recent| recent != query);
+        self.recent.insert(0, query.to_owned());
+        self.recent.truncate(MAX_RECENT_SEARCHES);
+        true
+    }
+
+    fn clamp_recent(&mut self) {
+        self.recent_row = self.recent_row.min(self.recent.len().saturating_sub(1));
+        if !self.showing_recent() {
+            self.in_recent = false;
         }
     }
 
@@ -575,6 +670,8 @@ pub struct Nav {
     pub show_lyrics: bool,
     pub queue_row: usize,
     pub queue_top: usize,
+    /// The queue's Clear button has the selection instead of a song.
+    pub queue_on_clear: bool,
     pub home: BrowseNav,
     pub library: BrowseNav,
     pub search: SearchNav,
@@ -582,6 +679,8 @@ pub struct Nav {
     pub session: View,
     /// Whether the current song is in Liked songs, once known.
     pub liked: Option<(String, bool)>,
+    /// Which albums are saved and artists followed, as last heard.
+    pub saved: HashMap<(SaveKind, String), bool>,
     /// Lyrics for the song with this videoId.
     pub lyrics: Option<(String, Load<Option<SongLyrics>>)>,
     notice: Option<(String, Instant)>,
@@ -615,12 +714,14 @@ impl Nav {
             show_lyrics: true,
             queue_row: 0,
             queue_top: 0,
+            queue_on_clear: false,
             home: BrowseNav::new(),
             library: BrowseNav::new(),
             search: SearchNav::new(),
             menu: None,
             session: View::default(),
             liked: None,
+            saved: HashMap::new(),
             lyrics: None,
             notice: None,
             back_pressed: None,
@@ -720,6 +821,9 @@ impl Nav {
         }
         if self.session.is_idle() && self.panel != Panel::None {
             self.panel = Panel::None;
+        }
+        if self.clearable() == 0 {
+            self.queue_on_clear = false;
         }
         self.follow_queue();
         self.clamp_queue();
@@ -996,14 +1100,9 @@ impl Nav {
             if page.kind == kind && page.id == id && page.content == Load::Loading {
                 page.content = to_load(result.clone());
                 page.row = page.first_selectable();
-                page.in_list = false;
-                if page
-                    .content
-                    .loaded()
-                    .is_some_and(|collection| collection.tracks.is_empty())
-                {
-                    page.in_list = true;
-                }
+                page.button = 0;
+                // With no buttons (a playlist with no songs), the list has it.
+                page.in_list = page.content.loaded().is_some() && page.buttons().is_empty();
             }
         }
     }
@@ -1024,6 +1123,45 @@ impl Nav {
         {
             self.liked = Some((video_id.to_owned(), liked));
         }
+    }
+
+    /// Whether an album is saved or an artist followed, from the server. An
+    /// open menu's Save or Follow item follows it.
+    pub fn on_saved(&mut self, kind: SaveKind, id: &str, saved: bool) {
+        self.saved.insert((kind, id.to_owned()), saved);
+        if let Some(menu) = &mut self.menu {
+            for item in &mut menu.items {
+                if let MenuAction::SetSaved {
+                    kind: item_kind,
+                    id: item_id,
+                    saved: wanted,
+                    ..
+                } = item
+                    && *item_kind == kind
+                    && item_id == id
+                {
+                    *wanted = !saved;
+                }
+            }
+        }
+    }
+
+    pub fn is_saved(&self, kind: SaveKind, id: &str) -> bool {
+        self.saved
+            .get(&(kind, id.to_owned()))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// The recent searches kept on the TV, latest first.
+    pub fn set_recent_searches(&mut self, recent: Vec<String>) {
+        self.search.recent = recent
+            .into_iter()
+            .map(|query| query.trim().to_owned())
+            .filter(|query| !query.is_empty())
+            .take(MAX_RECENT_SEARCHES)
+            .collect();
+        self.search.clamp_recent();
     }
 
     /// The server could not play a collection the menu asked for.
@@ -1264,6 +1402,7 @@ impl Nav {
             }
             Control::Queue => {
                 self.panel = Panel::Queue;
+                self.queue_on_clear = false;
                 self.queue_followed = None;
                 self.follow_queue();
             }
@@ -1292,9 +1431,72 @@ impl Nav {
         vec![Effect::LoadLyrics(video_id)]
     }
 
+    /// How many songs Clear would take out of the queue: those someone
+    /// queued after the song playing (all of them with none), not
+    /// autoplay's. The same rule as the server's `clearUpcoming`.
+    pub fn clearable(&self) -> usize {
+        let after = self.session.current.map_or(0, |index| index + 1);
+        self.session
+            .queue
+            .iter()
+            .skip(after)
+            .filter(|entry| !entry.autoplay)
+            .count()
+    }
+
+    /// Clear takes songs out of the queue, so it asks first. "Not now" has
+    /// the selection, so a stray OK changes nothing.
+    fn ask_clear_upcoming(&mut self) {
+        let count = self.clearable();
+        if count == 0 {
+            return;
+        }
+        let songs = if count == 1 {
+            "the song".to_owned()
+        } else {
+            format!("the {count} songs")
+        };
+        let after = self.session.current.map_or(0, |index| index + 1);
+        let autoplay = self
+            .session
+            .queue
+            .iter()
+            .skip(after)
+            .any(|entry| entry.autoplay);
+        let after_this = if self.session.current.is_some() {
+            " after this one"
+        } else {
+            ""
+        };
+        let mut subtitle = format!("This takes out {songs} queued{after_this}.");
+        if autoplay {
+            subtitle.push_str(" Autoplay’s songs stay.");
+        }
+        self.menu = Some(Menu {
+            title: "Clear the queue?".into(),
+            subtitle,
+            items: vec![MenuAction::ClearUpcoming, MenuAction::Close],
+            selected: 1,
+        });
+    }
+
     fn queue_key(&mut self, key: Key, effects: &mut Vec<Effect>) -> bool {
         let count = self.session.queue.len();
+        if self.queue_on_clear {
+            match key {
+                Key::Down => self.queue_on_clear = false,
+                Key::Ok => self.ask_clear_upcoming(),
+                Key::Back | Key::Left => {
+                    self.queue_on_clear = false;
+                    self.panel = Panel::None;
+                }
+                _ => {}
+            }
+            return true;
+        }
         match key {
+            // Clear sits over the first song.
+            Key::Up if self.queue_row == 0 && self.clearable() > 0 => self.queue_on_clear = true,
             Key::Up => self.queue_row = self.queue_row.saturating_sub(1),
             Key::Down => self.queue_row = (self.queue_row + 1).min(count.saturating_sub(1)),
             Key::Back | Key::Left => self.panel = Panel::None,
@@ -1311,6 +1513,9 @@ impl Nav {
                     ];
                     if Some(self.queue_row) != self.session.current {
                         items.push(MenuAction::RemoveEntry(entry.entry_id.clone()));
+                    }
+                    if self.clearable() > 0 {
+                        items.push(MenuAction::AskClearUpcoming);
                     }
                     items.push(MenuAction::Close);
                     self.menu = Some(Menu {
@@ -1364,7 +1569,7 @@ impl Nav {
             }
             Key::Hold => {
                 if let Some(card) = browse.shelves.selected_card().cloned() {
-                    self.card_menu(&card);
+                    self.card_menu(&card, effects);
                 }
             }
             Key::Back => self.focus = Focus::Tabs,
@@ -1397,10 +1602,39 @@ impl Nav {
             return;
         };
         browse.stack.push(CollectionNav::new(kind, id.clone()));
+        if let Some(save_kind) = SaveKind::from_collection(kind) {
+            effects.push(Effect::LoadSaved {
+                kind: save_kind,
+                id: id.clone(),
+            });
+        }
         effects.push(Effect::LoadCollection { tab, kind, id });
     }
 
-    fn card_menu(&mut self, card: &Card) {
+    /// Save an album or follow an artist, or undo it, showing it at once.
+    fn set_saved(
+        &mut self,
+        kind: SaveKind,
+        id: String,
+        title: &str,
+        saved: bool,
+        now: Instant,
+        effects: &mut Vec<Effect>,
+    ) {
+        self.saved.insert((kind, id.clone()), saved);
+        effects.push(Effect::SetSaved { kind, id, saved });
+        self.say(
+            match (kind, saved) {
+                (SaveKind::Album, true) => "Saved to your library".to_owned(),
+                (SaveKind::Album, false) => "Removed from your library".to_owned(),
+                (SaveKind::Artist, true) => format!("Following {title}"),
+                (SaveKind::Artist, false) => format!("Unfollowed {title}"),
+            },
+            now,
+        );
+    }
+
+    fn card_menu(&mut self, card: &Card, effects: &mut Vec<Effect>) {
         let target = match (&card.track, CollectionKind::from_card(card.kind)) {
             (Some(track), _) => Target::Tracks(vec![track.clone()]),
             (None, Some(kind)) => Target::Collection(kind, card.id.clone()),
@@ -1415,6 +1649,19 @@ impl Nav {
             (Some(track), _) => items.push(MenuAction::Like(track.clone())),
             (None, Some(kind)) => {
                 items.insert(1, MenuAction::Shuffle(target));
+                if let Some(save_kind) = SaveKind::from_collection(kind) {
+                    // Shown as last heard, and corrected when the server answers.
+                    items.push(MenuAction::SetSaved {
+                        kind: save_kind,
+                        id: card.id.clone(),
+                        title: card.title.clone(),
+                        saved: !self.is_saved(save_kind, &card.id),
+                    });
+                    effects.push(Effect::LoadSaved {
+                        kind: save_kind,
+                        id: card.id.clone(),
+                    });
+                }
                 items.push(MenuAction::Open(kind, card.id.clone()));
             }
             _ => {}
@@ -1447,12 +1694,14 @@ impl Nav {
                     let card = shelves.selected_card().cloned();
                     let songs = shelves.row_songs();
                     if let Some(card) = card {
+                        self.remember_search(effects);
                         self.open_card(&card, songs, now, effects);
                     }
                 }
                 Key::Hold => {
                     if let Some(card) = shelves.selected_card().cloned() {
-                        self.card_menu(&card);
+                        self.remember_search(effects);
+                        self.card_menu(&card, effects);
                     }
                 }
                 Key::Back => self.search.in_results = false,
@@ -1460,13 +1709,19 @@ impl Nav {
             }
             return true;
         }
+        if self.search.in_recent {
+            return self.recent_key(key, effects);
+        }
         match key {
             Key::Up | Key::Down | Key::Left | Key::Right => {
                 let at_right_edge = key == Key::Right
                     && (self.search.key % KEY_COLUMNS == KEY_COLUMNS - 1
                         || self.search.key == SearchNav::key_count() - 1);
                 if at_right_edge {
-                    if self.search.browse.shelves.selected().is_some() {
+                    if self.search.showing_recent() {
+                        self.search.clamp_recent();
+                        self.search.in_recent = true;
+                    } else if self.search.browse.shelves.selected().is_some() {
                         self.search.in_results = true;
                     }
                 } else if !self.search.move_key(key) && key == Key::Up {
@@ -1479,6 +1734,53 @@ impl Nav {
                 }
             }
             Key::Back => self.focus = Focus::Tabs,
+            _ => {}
+        }
+        true
+    }
+
+    /// The results of a search were used: keep it among the recent ones,
+    /// as the phone does.
+    fn remember_search(&mut self, effects: &mut Vec<Effect>) {
+        let query = self.search.results_for.clone();
+        if self.search.remember(&query) {
+            effects.push(Effect::SaveSearches(self.search.recent.clone()));
+        }
+    }
+
+    /// The recent searches, listed before anything is typed: OK searches
+    /// again, and holding OK removes one or all.
+    fn recent_key(&mut self, key: Key, effects: &mut Vec<Effect>) -> bool {
+        let search = &mut self.search;
+        search.clamp_recent();
+        if !search.in_recent {
+            return true;
+        }
+        let count = search.recent.len();
+        match key {
+            Key::Up if search.recent_row == 0 => self.focus = Focus::Tabs,
+            Key::Up => search.recent_row -= 1,
+            Key::Down => search.recent_row = (search.recent_row + 1).min(count - 1),
+            Key::Left | Key::Back => search.in_recent = false,
+            Key::Ok => {
+                let query = search.recent[search.recent_row].clone();
+                search.query = query;
+                search.in_recent = false;
+                effects.extend(self.query_changed());
+            }
+            Key::Hold => {
+                let query = search.recent[search.recent_row].clone();
+                self.menu = Some(Menu {
+                    title: format!("“{query}”"),
+                    subtitle: "Recent search".into(),
+                    items: vec![
+                        MenuAction::RemoveSearch(query),
+                        MenuAction::ClearSearches,
+                        MenuAction::Close,
+                    ],
+                    selected: 0,
+                });
+            }
             _ => {}
         }
         true
@@ -1512,6 +1814,7 @@ impl Nav {
         }
         self.focus = Focus::Content;
         self.search.in_results = false;
+        self.search.in_recent = false;
         effects.extend(self.query_changed());
         true
     }
@@ -1531,16 +1834,32 @@ impl Nav {
         };
         let rows = page.rows();
         if !page.in_list {
+            let buttons = page.buttons();
             match key {
                 Key::Left => page.button = page.button.saturating_sub(1),
-                Key::Right if page.button + 1 < COLLECTION_BUTTONS.len() => page.button += 1,
+                Key::Right if page.button + 1 < buttons.len() => page.button += 1,
                 Key::Right | Key::Down if !rows.is_empty() => page.in_list = true,
                 Key::Up => self.focus = Focus::Tabs,
-                Key::Ok => {
-                    let tracks = page.tracks();
-                    let button = COLLECTION_BUTTONS[page.button];
-                    self.play_tracks(tracks, button, now, effects);
-                }
+                Key::Ok => match buttons.get(page.button).copied() {
+                    Some(CollectionButton::Save) => {
+                        let Some(kind) = SaveKind::from_collection(page.kind) else {
+                            return true;
+                        };
+                        let id = page.id.clone();
+                        let title = page
+                            .content
+                            .loaded()
+                            .map(|collection| collection.title.clone())
+                            .unwrap_or_default();
+                        let saved = !self.is_saved(kind, &id);
+                        self.set_saved(kind, id, &title, saved, now, effects);
+                    }
+                    Some(button) => {
+                        let tracks = page.tracks();
+                        self.play_tracks(tracks, button, now, effects);
+                    }
+                    None => {}
+                },
                 _ => {}
             }
             return true;
@@ -1614,7 +1933,7 @@ impl Nav {
                                 let songs = (card.track.clone().into_iter().collect(), 0);
                                 self.open_card(&card, songs, now, effects);
                             } else {
-                                self.card_menu(&card);
+                                self.card_menu(&card, effects);
                             }
                         }
                     }
@@ -1642,6 +1961,7 @@ impl Nav {
             return;
         }
         match button {
+            CollectionButton::Save => {}
             CollectionButton::Play => {
                 effects.push(Effect::Session(UiAction::PlayTracks { tracks, start: 0 }));
             }
@@ -1734,6 +2054,38 @@ impl Nav {
             MenuAction::RemoveEntry(entry_id) => {
                 effects.push(Effect::Session(UiAction::Remove(entry_id)));
                 self.say("Removed from the queue", now);
+            }
+            MenuAction::SetSaved {
+                kind,
+                id,
+                title,
+                saved,
+            } => self.set_saved(kind, id, &title, saved, now, effects),
+            MenuAction::AskClearUpcoming => self.ask_clear_upcoming(),
+            MenuAction::ClearUpcoming => {
+                let count = self.clearable();
+                if count > 0 {
+                    effects.push(Effect::Session(UiAction::ClearUpcoming));
+                    self.queue_on_clear = false;
+                    self.say(
+                        if count == 1 {
+                            "Took 1 song out of the queue".to_owned()
+                        } else {
+                            format!("Took {count} songs out of the queue")
+                        },
+                        now,
+                    );
+                }
+            }
+            MenuAction::RemoveSearch(query) => {
+                self.search.recent.retain(|recent| *recent != query);
+                self.search.clamp_recent();
+                effects.push(Effect::SaveSearches(self.search.recent.clone()));
+            }
+            MenuAction::ClearSearches => {
+                self.search.recent.clear();
+                self.search.clamp_recent();
+                effects.push(Effect::SaveSearches(Vec::new()));
             }
             MenuAction::OpenUpdateSettings => effects.push(Effect::OpenUpdateSettings),
             MenuAction::CheckForUpdates => effects.push(Effect::CheckForUpdates),
@@ -1871,11 +2223,17 @@ mod tests {
         let effects = press(&mut nav, &[Key::Down, Key::Right, Key::Ok]);
         assert_eq!(
             effects,
-            vec![Effect::LoadCollection {
-                tab: Tab::Home,
-                kind: CollectionKind::Album,
-                id: "a1".into(),
-            }]
+            vec![
+                Effect::LoadSaved {
+                    kind: SaveKind::Album,
+                    id: "a1".into(),
+                },
+                Effect::LoadCollection {
+                    tab: Tab::Home,
+                    kind: CollectionKind::Album,
+                    id: "a1".into(),
+                }
+            ]
         );
         nav.on_collection(
             Tab::Home,
@@ -1892,9 +2250,17 @@ mod tests {
                 shelves: Vec::new(),
             }),
         );
+        // Past Shuffle, Queue, and Save into the list.
         let effects = press(
             &mut nav,
-            &[Key::Right, Key::Right, Key::Right, Key::Down, Key::Ok],
+            &[
+                Key::Right,
+                Key::Right,
+                Key::Right,
+                Key::Right,
+                Key::Down,
+                Key::Ok,
+            ],
         );
         let Effect::Session(UiAction::PlayTracks { start, .. }) = &effects[0] else {
             panic!("expected PlayTracks, got {effects:?}");
@@ -2504,6 +2870,331 @@ mod tests {
         nav.key_held(Key::Right, now);
         assert_eq!(nav.control, 3);
         assert_eq!(nav.scrub, None);
+    }
+
+    fn collection(kind: CollectionKind, id: &str, tracks: usize) -> Collection {
+        Collection {
+            kind,
+            id: id.into(),
+            title: format!("Collection {id}"),
+            subtitle: String::new(),
+            description: None,
+            artwork_url: None,
+            tracks: (0..tracks)
+                .map(|index| track(&format!("t{index}")))
+                .collect(),
+            shelves: Vec::new(),
+        }
+    }
+
+    fn artist_card(id: &str) -> Card {
+        Card {
+            kind: CardKind::Artist,
+            id: id.into(),
+            title: format!("Artist {id}"),
+            subtitle: "Artist".into(),
+            artwork_url: None,
+            track: None,
+        }
+    }
+
+    #[test]
+    fn saves_an_album_from_its_page_and_takes_the_servers_word() {
+        let mut nav = Nav::new();
+        nav.on_home(Ok(shelves()));
+        press(&mut nav, &[Key::Down, Key::Ok]);
+        nav.on_collection(
+            Tab::Home,
+            CollectionKind::Album,
+            "a0",
+            Ok(collection(CollectionKind::Album, "a0", 2)),
+        );
+        let page = nav.collection().unwrap();
+        assert_eq!(
+            page.buttons(),
+            vec![
+                CollectionButton::Play,
+                CollectionButton::Shuffle,
+                CollectionButton::Queue,
+                CollectionButton::Save,
+            ]
+        );
+        // Right past Shuffle and Queue to Save.
+        let effects = press(&mut nav, &[Key::Right, Key::Right, Key::Right, Key::Ok]);
+        assert_eq!(
+            effects,
+            vec![Effect::SetSaved {
+                kind: SaveKind::Album,
+                id: "a0".into(),
+                saved: true,
+            }]
+        );
+        assert!(nav.is_saved(SaveKind::Album, "a0"));
+        assert_eq!(nav.notice(Instant::now()), Some("Saved to your library"));
+        // Pressing again undoes it.
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(
+            effects,
+            vec![Effect::SetSaved {
+                kind: SaveKind::Album,
+                id: "a0".into(),
+                saved: false,
+            }]
+        );
+        // The server has the last word.
+        nav.on_saved(SaveKind::Album, "a0", true);
+        assert!(nav.is_saved(SaveKind::Album, "a0"));
+    }
+
+    #[test]
+    fn an_artist_without_songs_still_has_follow() {
+        let mut nav = Nav::new();
+        nav.on_home(Ok(vec![Shelf {
+            title: "Artists".into(),
+            cards: vec![artist_card("UC1")],
+        }]));
+        press(&mut nav, &[Key::Ok]);
+        nav.on_collection(
+            Tab::Home,
+            CollectionKind::Artist,
+            "UC1",
+            Ok(collection(CollectionKind::Artist, "UC1", 0)),
+        );
+        let page = nav.collection().unwrap();
+        assert_eq!(page.buttons(), vec![CollectionButton::Save]);
+        assert!(!page.in_list);
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(
+            effects,
+            vec![Effect::SetSaved {
+                kind: SaveKind::Artist,
+                id: "UC1".into(),
+                saved: true,
+            }]
+        );
+        assert_eq!(nav.notice(Instant::now()), Some("Following Collection UC1"));
+    }
+
+    #[test]
+    fn a_playlist_has_no_save_button() {
+        let mut nav = Nav::new();
+        nav.on_home(Ok(vec![Shelf {
+            title: "Playlists".into(),
+            cards: vec![Card {
+                kind: CardKind::Playlist,
+                ..album_card("p1")
+            }],
+        }]));
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::LoadSaved { .. }))
+        );
+        nav.on_collection(
+            Tab::Home,
+            CollectionKind::Playlist,
+            "p1",
+            Ok(collection(CollectionKind::Playlist, "p1", 0)),
+        );
+        let page = nav.collection().unwrap();
+        assert!(page.buttons().is_empty());
+        assert!(page.in_list);
+    }
+
+    #[test]
+    fn the_menu_on_an_artist_card_follows_and_tracks_the_server() {
+        let mut nav = Nav::new();
+        nav.on_home(Ok(vec![Shelf {
+            title: "Artists".into(),
+            cards: vec![artist_card("UC1")],
+        }]));
+        let effects = press(&mut nav, &[Key::Hold]);
+        assert_eq!(
+            effects,
+            vec![Effect::LoadSaved {
+                kind: SaveKind::Artist,
+                id: "UC1".into(),
+            }]
+        );
+        let follow = |nav: &Nav| {
+            nav.menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| matches!(item, MenuAction::SetSaved { .. }))
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(follow(&nav).label(), "Follow");
+        // The server says they're followed already: the item offers Unfollow.
+        nav.on_saved(SaveKind::Artist, "UC1", true);
+        assert_eq!(follow(&nav).label(), "Unfollow");
+        let index = nav
+            .menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|item| matches!(item, MenuAction::SetSaved { .. }))
+            .unwrap();
+        nav.menu.as_mut().unwrap().selected = index;
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(
+            effects,
+            vec![Effect::SetSaved {
+                kind: SaveKind::Artist,
+                id: "UC1".into(),
+                saved: false,
+            }]
+        );
+        assert_eq!(nav.notice(Instant::now()), Some("Unfollowed Artist UC1"));
+    }
+
+    /// Twelve songs, the first playing, the last four added by autoplay.
+    fn view_with_autoplay() -> View {
+        let mut view = playing_view();
+        for entry in view.queue.iter_mut().skip(8) {
+            entry.autoplay = true;
+        }
+        view
+    }
+
+    #[test]
+    fn clears_the_queue_after_asking() {
+        let mut nav = Nav::new();
+        nav.tab = Tab::NowPlaying;
+        nav.on_session(view_with_autoplay());
+        assert_eq!(nav.clearable(), 7);
+        // Controls, over to Queue, open it.
+        press(&mut nav, &[Key::Ok]);
+        nav.control = CONTROLS
+            .iter()
+            .position(|control| *control == Control::Queue)
+            .unwrap();
+        press(&mut nav, &[Key::Ok]);
+        assert_eq!(nav.panel, Panel::Queue);
+        // Up from the first song reaches Clear, which asks first.
+        press(&mut nav, &[Key::Up]);
+        assert!(nav.queue_on_clear);
+        assert_eq!(press(&mut nav, &[Key::Ok]), vec![]);
+        let menu = nav.menu.clone().unwrap();
+        assert_eq!(menu.title, "Clear the queue?");
+        assert_eq!(
+            menu.subtitle,
+            "This takes out the 7 songs queued after this one. Autoplay’s songs stay."
+        );
+        // "Not now" has the selection: OK changes nothing.
+        assert_eq!(menu.items[menu.selected], MenuAction::Close);
+        assert_eq!(press(&mut nav, &[Key::Ok]), vec![]);
+        assert!(nav.menu.is_none());
+        let effects = press(&mut nav, &[Key::Ok, Key::Up, Key::Ok]);
+        assert_eq!(effects, vec![Effect::Session(UiAction::ClearUpcoming)]);
+        assert_eq!(
+            nav.notice(Instant::now()),
+            Some("Took 7 songs out of the queue")
+        );
+        // Once only autoplay's songs follow, Clear goes and the songs have it.
+        let mut cleared = view_with_autoplay();
+        cleared.queue.drain(1..8);
+        nav.on_session(cleared);
+        assert_eq!(nav.clearable(), 0);
+        assert!(!nav.queue_on_clear);
+        press(&mut nav, &[Key::Up]);
+        assert!(!nav.queue_on_clear);
+    }
+
+    #[test]
+    fn the_queue_menu_offers_clear_too() {
+        let mut nav = Nav::new();
+        nav.tab = Tab::NowPlaying;
+        nav.on_session(playing_view());
+        press(&mut nav, &[Key::Ok]);
+        nav.control = CONTROLS
+            .iter()
+            .position(|control| *control == Control::Queue)
+            .unwrap();
+        press(&mut nav, &[Key::Ok, Key::Down, Key::Hold]);
+        let menu = nav.menu.clone().unwrap();
+        let index = menu
+            .items
+            .iter()
+            .position(|item| *item == MenuAction::AskClearUpcoming)
+            .unwrap();
+        nav.menu.as_mut().unwrap().selected = index;
+        press(&mut nav, &[Key::Ok]);
+        assert_eq!(nav.menu.as_ref().unwrap().title, "Clear the queue?");
+    }
+
+    /// Type `query` on a real keyboard, and answer the search.
+    fn search_for(nav: &mut Nav, query: &str) {
+        for character in query.chars() {
+            nav.key(Key::Char(character), Instant::now());
+        }
+        nav.on_search(query, Ok(shelves()));
+    }
+
+    #[test]
+    fn remembers_searches_whose_results_were_used() {
+        let mut nav = Nav::new();
+        nav.tab = Tab::Search;
+        search_for(&mut nav, "daft");
+        // Merely typing remembers nothing.
+        assert!(nav.search.recent.is_empty());
+        nav.search.in_results = true;
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(effects[0], Effect::SaveSearches(vec!["daft".into()]));
+        // Clear the query: the recent searches show, Right reaches them.
+        for _ in 0..4 {
+            nav.key(Key::Backspace, Instant::now());
+        }
+        assert!(nav.search.showing_recent());
+        nav.search.key = KEY_COLUMNS - 1;
+        press(&mut nav, &[Key::Right]);
+        assert!(nav.search.in_recent);
+        // OK searches again.
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(nav.search.query, "daft");
+        assert_eq!(effects, vec![Effect::Search("daft".into())]);
+        assert!(!nav.search.in_recent);
+    }
+
+    #[test]
+    fn keeps_the_latest_eight_searches_once_each() {
+        let mut nav = Nav::new();
+        nav.set_recent_searches(
+            ["a", " ", "b", "c", "d", "e", "f", "g", "h", "i"]
+                .map(String::from)
+                .to_vec(),
+        );
+        assert_eq!(nav.search.recent.len(), MAX_RECENT_SEARCHES);
+        assert_eq!(nav.search.recent[1], "b");
+        assert!(nav.search.remember("c"));
+        assert_eq!(nav.search.recent[..3], ["c", "a", "b"]);
+        assert!(!nav.search.remember("c"));
+        assert!(nav.search.remember("new"));
+        assert_eq!(nav.search.recent.len(), MAX_RECENT_SEARCHES);
+        assert_eq!(nav.search.recent[0], "new");
+    }
+
+    #[test]
+    fn removes_and_clears_recent_searches() {
+        let mut nav = Nav::new();
+        nav.tab = Tab::Search;
+        nav.set_recent_searches(vec!["one".into(), "two".into()]);
+        nav.search.key = KEY_COLUMNS - 1;
+        press(&mut nav, &[Key::Right, Key::Down, Key::Hold]);
+        let menu = nav.menu.clone().unwrap();
+        assert_eq!(menu.items[0], MenuAction::RemoveSearch("two".into()));
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(effects, vec![Effect::SaveSearches(vec!["one".into()])]);
+        assert_eq!(nav.search.recent_row, 0);
+        press(&mut nav, &[Key::Hold, Key::Down]);
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(effects, vec![Effect::SaveSearches(Vec::new())]);
+        assert!(!nav.search.in_recent);
+        assert!(!nav.search.showing_recent());
     }
 
     #[test]
