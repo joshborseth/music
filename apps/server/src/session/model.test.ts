@@ -131,6 +131,35 @@ describe('session model', () => {
     expect(outcome.broadcast).toBe(false)
   })
 
+  test('progress close to what every device holds stays quiet', () => {
+    const model = playing()
+    const outcome = update(
+      model,
+      { _tag: 'Progress', entryId: 'e0', positionSeconds: 9.9, playing: true },
+      makeContext('phone', 11_000),
+    )
+    expect(outcome.broadcast).toBe(false)
+    expect(currentPosition(outcome.model, 11_000)).toBe(10)
+  })
+
+  test('small slips add up until every device resyncs', () => {
+    // The player stalls a little at a time: each report is only 0.2 s
+    // behind the one before, but together they pass the tolerance.
+    const first = update(
+      playing(),
+      { _tag: 'Progress', entryId: 'e0', positionSeconds: 4.8, playing: true },
+      makeContext('phone', 6_000),
+    )
+    expect(first.broadcast).toBe(false)
+    const second = update(
+      first.model,
+      { _tag: 'Progress', entryId: 'e0', positionSeconds: 9.6, playing: true },
+      makeContext('phone', 11_000),
+    )
+    expect(second.broadcast).toBe(true)
+    expect(currentPosition(second.model, 11_000)).toBeCloseTo(9.6)
+  })
+
   test('the queue stops after its last song', () => {
     const last = update(
       playing(),

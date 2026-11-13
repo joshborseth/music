@@ -77,8 +77,12 @@ export interface Outcome {
   readonly maybeNotice: Option.Option<string>
 }
 
-/** A player reporting a position this far off the server's guess resyncs. */
-const DRIFT_TOLERANCE_SECONDS = 2
+/**
+ * A player reporting a position this far off what the other devices were
+ * last told resyncs them. Small enough that lyrics on a device that is not
+ * playing stay with the song.
+ */
+const DRIFT_TOLERANCE_SECONDS = 0.3
 /** Previous restarts the song when it is past this point. */
 const RESTART_THRESHOLD_SECONDS = 3
 
@@ -528,17 +532,19 @@ const transition = (
 
       Progress: message => {
         if (!isFromPlayer(model, context, message.entryId)) return quiet(model)
+        // Measured against the anchor every device holds, so small slips
+        // (a stall while loading) add up until they resync everyone,
+        // instead of each one being absorbed unseen.
         const drift = Math.abs(
           currentPosition(model, now) - message.positionSeconds,
         )
-        const anchored: Model = {
-          ...model,
-          positionSeconds: message.positionSeconds,
-          positionAt: now,
-        }
         return drift > DRIFT_TOLERANCE_SECONDS
-          ? changed(anchored)
-          : quiet(anchored)
+          ? changed({
+              ...model,
+              positionSeconds: message.positionSeconds,
+              positionAt: now,
+            })
+          : quiet(model)
       },
 
       Advanced: message => {

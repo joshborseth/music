@@ -524,7 +524,10 @@ impl EngineThread {
         };
         let rate = self.output.as_ref().map_or(44_100, |output| output.rate);
         let played = self.played_frames().saturating_sub(segment.start_frame);
-        let seconds = segment.base_seconds + played as f64 / f64::from(rate);
+        // Where the song is as heard: what the device was handed plays this
+        // much later. Lyrics, visuals, and the session all follow this.
+        let heard = played as f64 / f64::from(rate) - scope::SCOPE.latency().as_secs_f64();
+        let seconds = segment.base_seconds + heard.max(0.0);
         self.emit(Event::Position {
             entry_id: segment.entry_id.clone(),
             seconds,
