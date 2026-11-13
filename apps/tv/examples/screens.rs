@@ -42,10 +42,11 @@ fn main() {
     // As the patched Slint Android backend sends the media key.
     let fast_forward = "\u{E006}";
     let back = "\u{1b}";
+    let backspace = "\u{8}";
     let wait = |ms| Step::Wait(Duration::from_millis(ms));
-    run(
-        &server,
-        &out,
+    // The queue opens on the song playing; Clear sits above the first song.
+    let up_to_clear = (0..=current).map(|_| Step::Key(up)).collect::<Vec<_>>();
+    let steps = vec![
         vec![
             Step::Session(music_tv::view::View {
                 connected: true,
@@ -116,6 +117,14 @@ fn main() {
             wait(500),
             Step::Shot("07b-queue-shuffle-repeat"),
             Step::Session(sample_view(tracks.clone(), current, true)),
+        ],
+        up_to_clear,
+        vec![
+            Step::Shot("07c-queue-clear"),
+            // Clear asks first, with "Not now" selected.
+            Step::Key(ok),
+            Step::Shot("07d-queue-clear-confirm"),
+            Step::Key(back),
             Step::Key(back),
             Step::Key(right),
             Step::Key(ok),
@@ -162,12 +171,42 @@ fn main() {
             Step::Key(ok),
             wait(4000),
             Step::Shot("12-collection"),
+            // Past Shuffle and Queue to Follow, and follow.
             Step::Key(right),
             Step::Key(right),
+            Step::Key(right),
+            Step::Shot("12a-follow-button"),
+            Step::Key(ok),
+            wait(1000),
+            Step::Shot("12b-following"),
             Step::Key(right),
             Step::Key(down),
             wait(1500),
             Step::Shot("13-collection-list"),
+            // Down past the songs to the first album, and hold for its menu.
+            Step::Key(down),
+            Step::Key(down),
+            Step::Key(down),
+            Step::Key(down),
+            Step::Hold,
+            wait(1000),
+            Step::Shot("13a-album-menu"),
+            Step::Key(back),
+            // Back to search; the search just used is now a recent one.
+            Step::Key(back),
+            Step::Key(backspace),
+            Step::Key(backspace),
+            Step::Key(backspace),
+            Step::Key(backspace),
+            wait(500),
+            Step::Shot("13b-search-recent"),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Key(right),
+            Step::Shot("13c-search-recent-selected"),
             // Back to now playing.
             Step::Key(back),
             Step::Session(sample_view(tracks.clone(), current, true)),
@@ -183,5 +222,6 @@ fn main() {
             wait(21_000),
             Step::Shot("16-resting"),
         ],
-    );
+    ];
+    run(&server, &out, steps.into_iter().flatten().collect());
 }
