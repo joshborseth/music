@@ -221,6 +221,33 @@ describe('search page', () => {
     )
   })
 
+  test('a song listed twice keeps both rows, each playing from its own place', () => {
+    // YouTube sometimes gives two tracks of an album the same video.
+    const interlude: Song = { ...theChain, title: 'The Chain (Interlude)' }
+    const songs = [theChain, interlude]
+    scene(
+      { update, view },
+      given(searchResultModel('the chain', Result.succeed(songs))),
+      pageScrolled,
+      expect(role('button', { name: /^The Chain ·/ })).toExist(),
+      click(role('button', { name: /^The Chain \(Interlude\)/ })),
+      Command.expectExact(
+        UnlockPhoneAudio(),
+        SendToSession({
+          message: {
+            _tag: 'PlayQueue',
+            tracks: songs.map(toQueueTrack),
+            startIndex: 1,
+          },
+        }),
+      ),
+      Command.resolveAll(
+        [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
+        [SendToSession, Message.CompletedSendToSession()],
+      ),
+    )
+  })
+
   test('the more button opens a sheet of what else can be done', () => {
     scene(
       { update, view },

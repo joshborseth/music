@@ -344,6 +344,11 @@ type SongRowConfig = Readonly<{
   song: Song
   /** The list tapping this row plays, starting from this song. */
   playlist: ReadonlyArray<Song>
+  /**
+   * Where this row sits in `playlist`, when the list can hold one song
+   * twice. Without it, tapping plays from the song's first copy.
+   */
+  maybeIndex?: Option.Option<number>
   maybeTrackNumber: Option.Option<number>
   isAlbumHidden: boolean
   /** Lets a long title take two lines, where versions of a song differ only at the end. */
@@ -475,7 +480,16 @@ export const songRow = (
       h.button(
         [
           h.Type('button'),
-          h.OnClick(playFrom(config.playlist, song.videoId)),
+          h.OnClick(
+            Option.match(config.maybeIndex ?? Option.none(), {
+              onNone: () => playFrom(config.playlist, song.videoId),
+              onSome: startIndex =>
+                Message.ClickedPlaySongs({
+                  songs: config.playlist,
+                  startIndex,
+                }),
+            }),
+          ),
           h.AriaLabel(joinDetails([song.title, details])),
           h.Class(
             'flex min-w-0 flex-1 items-center gap-3 py-2 pl-4 text-left outline-none',
@@ -599,18 +613,22 @@ export const songList = (
   }>,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const songs = uniqueSongs(config.songs)
+  // Every row stays, even a song listed twice: YouTube sometimes gives two
+  // tracks of an album the same video, and dropping one would renumber the
+  // rest. Each row plays from its own place.
+  const { songs } = config
   return h.div(
     [h.Role('list'), h.Class('flex flex-col')],
     Array.map(songs, (song, index) =>
       h.keyed('div')(
-        song.videoId,
+        `${index}:${song.videoId}`,
         [h.Role('listitem')],
         [
           songRow(
             {
               song,
               playlist: songs,
+              maybeIndex: Option.some(index),
               maybeTrackNumber: config.isNumbered
                 ? Option.some(index + 1)
                 : Option.none(),
