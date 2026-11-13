@@ -438,6 +438,14 @@ impl Ui {
         self.render();
     }
 
+    /// Show Home with these shelves, for screenshots of layouts the server
+    /// isn't sending today.
+    #[cfg(feature = "screenshots")]
+    pub fn show_home(&mut self, shelves: Vec<catalog::Shelf>) {
+        self.nav.on_home(Ok(shelves));
+        self.render();
+    }
+
     /// Show the updater's state in the top bar; ask for permission once.
     /// Answer a check someone asked for.
     pub fn on_update_status(&mut self, status: &UpdateStatus) {
@@ -1094,6 +1102,7 @@ impl Ui {
             _ => {}
         }
         self.draw_menu(&app);
+        app.set_scan_card_open(nav_scan_card(&self.nav));
         self.draw_hints(page);
         self.update_visuals();
     }
@@ -1369,7 +1378,7 @@ impl Ui {
         sync(&self.models.idle_buttons, buttons);
     }
 
-    fn card_data(&mut self, card: &Card, selected: bool) -> CardData {
+    fn card_data(&mut self, card: &Card, shelf: &str, selected: bool) -> CardData {
         let liked = card.is_liked_songs();
         let image = if liked {
             None
@@ -1382,7 +1391,7 @@ impl Ui {
         };
         CardData {
             title: card.title.clone().into(),
-            subtitle: card.subtitle.clone().into(),
+            subtitle: card_subtitle(shelf, &card.subtitle).into(),
             has_image: image.is_some(),
             image: image.unwrap_or_default(),
             round: card.kind == CardKind::Artist,
@@ -1424,11 +1433,11 @@ impl Ui {
                             shape_of(card.kind),
                         ))
                     {
-                        self.card_data(card, is_selected)
+                        self.card_data(card, &shelf.title, is_selected)
                     } else {
                         CardData {
                             title: card.title.clone().into(),
-                            subtitle: card.subtitle.clone().into(),
+                            subtitle: card_subtitle(&shelf.title, &card.subtitle).into(),
                             round: card.kind == CardKind::Artist,
                             liked: card.is_liked_songs(),
                             selected: is_selected,
@@ -1811,6 +1820,40 @@ fn map_key(text: &str) -> Option<Key> {
     }
 }
 
+/// Whether the large scan code shows, over everything but a menu.
+fn nav_scan_card(nav: &Nav) -> bool {
+    nav.scan_card && nav.menu.is_none()
+}
+
+/// The kinds a card's subtitle may lead with ("Artist · 66.1M monthly
+/// audience").
+const CARD_KINDS: [&str; 7] = ["Artist", "Album", "Single", "EP", "Playlist", "Song", "Mix"];
+
+/// A card's subtitle as the TV shows it, short enough to fit under the
+/// cover: the kind it leads with goes where the shelf's title already says
+/// it ("Artist" under Artists, but not "EP" under Albums), and an artist's
+/// monthly audience reads as listeners.
+fn card_subtitle(shelf: &str, subtitle: &str) -> String {
+    let shelf = shelf.to_lowercase();
+    let mut parts: Vec<&str> = subtitle.split(" · ").collect();
+    if parts.len() > 1
+        && CARD_KINDS.contains(&parts[0])
+        && shelf
+            .split(|character: char| !character.is_alphanumeric())
+            .any(|word| word.starts_with(&parts[0].to_lowercase()))
+    {
+        parts.remove(0);
+    }
+    parts
+        .iter()
+        .map(|part| match part.strip_suffix(" monthly audience") {
+            Some(count) => format!("{count} listeners"),
+            None => (*part).to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// How far a seek being picked goes: "+0:30", "−1:05".
 fn seek_delta(offset: f64) -> String {
     let sign = if offset < 0.0 { '−' } else { '+' };
@@ -1873,7 +1916,35 @@ fn encode_png(screenshot: Screenshot) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, map_key, plain_lyric_lines, queue_summary, seek_delta};
+    use super::{Key, card_subtitle, map_key, plain_lyric_lines, queue_summary, seek_delta};
+
+    #[test]
+    fn shortens_card_subtitles_for_their_shelf() {
+        assert_eq!(
+            card_subtitle("Artists", "Artist · 66.1M monthly audience"),
+            "66.1M listeners"
+        );
+        assert_eq!(
+            card_subtitle("Albums", "Album · Daft Punk · 2013"),
+            "Daft Punk · 2013"
+        );
+        // An EP among albums says so.
+        assert_eq!(
+            card_subtitle("Albums", "EP · Kid Brutal · 2024"),
+            "EP · Kid Brutal · 2024"
+        );
+        assert_eq!(
+            card_subtitle("Your playlists", "Playlist · 11 songs"),
+            "11 songs"
+        );
+        // Where the shelf doesn't say, the kind stays.
+        assert_eq!(
+            card_subtitle("Top result", "Artist · 236M monthly audience"),
+            "Artist · 236M listeners"
+        );
+        assert_eq!(card_subtitle("Songs", "Daft Punk"), "Daft Punk");
+        assert_eq!(card_subtitle("Artists", "Artist"), "Artist");
+    }
 
     #[test]
     fn says_how_far_a_seek_goes() {

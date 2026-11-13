@@ -26,6 +26,7 @@ use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferTyp
 use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
 use slint::{ComponentHandle, PhysicalSize, Rgb8Pixel};
 
+use crate::catalog::Shelf;
 use crate::protocol::{PlayingFrom, PlayingFromKind, QueueEntry, QueueTrack};
 use crate::view::View;
 use crate::{App, ui};
@@ -76,6 +77,8 @@ pub enum Step {
     /// Rest on the now-playing screen. Its visuals need the GPU, so the
     /// screenshots show the cover backdrop in their place.
     Rest,
+    /// Home as if the server had sent these shelves.
+    Home(Vec<Shelf>),
     Shot(&'static str),
 }
 
@@ -234,6 +237,10 @@ pub fn run(server: &str, out: &std::path::Path, steps: Vec<Step>) {
             Step::Wait(duration) => runner.pump(duration),
             Step::Rest => {
                 ui::with(ui::Ui::rest);
+                runner.pump(Duration::from_millis(60));
+            }
+            Step::Home(shelves) => {
+                ui::with(|ui| ui.show_home(shelves));
                 runner.pump(Duration::from_millis(60));
             }
             Step::Shot(name) => {

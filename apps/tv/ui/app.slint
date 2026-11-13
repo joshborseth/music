@@ -162,6 +162,8 @@ component Icon inherits Path {
         : name == "settings" ? "M10.2 2.5 H13.8 L14.3 5.2 L16.4 6.4 L19 5.4 L20.8 8.6 L18.7 10.3 V13.7 L20.8 15.4 L19 18.6 L16.4 17.6 L14.3 18.8 L13.8 21.5 H10.2 L9.7 18.8 L7.6 17.6 L5 18.6 L3.2 15.4 L5.3 13.7 V10.3 L3.2 8.6 L5 5.4 L7.6 6.4 L9.7 5.2 Z M12 8.6 C10.1 8.6 8.6 10.1 8.6 12 C8.6 13.9 10.1 15.4 12 15.4 C13.9 15.4 15.4 13.9 15.4 12 C15.4 10.1 13.9 8.6 12 8.6 Z"
         : name == "update" ? "M10.7 3 H13.3 V12.2 L16.6 8.9 L18.4 10.7 L12 17.1 L5.6 10.7 L7.4 8.9 L10.7 12.2 Z M4 18.5 H20 V21 H4 Z"
         : name == "artist" ? "M12 3 C14.5 3 16.5 5 16.5 7.5 C16.5 10 14.5 12 12 12 C9.5 12 7.5 10 7.5 7.5 C7.5 5 9.5 3 12 3 Z M3.5 21 C3.5 16.6 7.3 14 12 14 C16.7 14 20.5 16.6 20.5 21 Z"
+        : name == "open" ? "M3.5 10.7 H15.3 L10.7 6.1 L12.5 4.3 L20.2 12 L12.5 19.7 L10.7 17.9 L15.3 13.3 H3.5 Z"
+        : name == "qr" ? "M3 3 H10.5 V10.5 H3 Z M5 5 V8.5 H8.5 V5 Z M13.5 3 H21 V10.5 H13.5 Z M15.5 5 V8.5 H19 V5 Z M3 13.5 H10.5 V21 H3 Z M5 15.5 V19 H8.5 V15.5 Z M13.5 13.5 H16.5 V16.5 H13.5 Z M18 13.5 H21 V16.5 H18 Z M13.5 18 H16.5 V21 H13.5 Z M18 18 H21 V21 H18 Z"
         : name == "album" ? "M12 2.5 C17.2 2.5 21.5 6.8 21.5 12 C21.5 17.2 17.2 21.5 12 21.5 C6.8 21.5 2.5 17.2 2.5 12 C2.5 6.8 6.8 2.5 12 2.5 Z M12 9.5 C10.6 9.5 9.5 10.6 9.5 12 C9.5 13.4 10.6 14.5 12 14.5 C13.4 14.5 14.5 13.4 14.5 12 C14.5 10.6 13.4 9.5 12 9.5 Z"
         : "M12 3 V14.6 C11.4 14.2 10.7 14 10 14 C7.8 14 6 15.8 6 18 C6 20.2 7.8 22 10 22 C12.2 22 14 20.2 14 18 V7 H18 V3 Z";
 }
@@ -236,15 +238,15 @@ component RoundButton inherits Rectangle {
     }
 }
 
-/// One tile on a shelf. The selected one lifts and gets a ring that
-/// follows the cover's shape: a circle for an artist, else the cover's
-/// own corners one ring-width out.
-component Card inherits Rectangle {
+/// A card's cover. Selected, it lifts and gets a ring that follows the
+/// cover's shape: a circle for an artist, else the cover's own corners one
+/// ring-width out.
+component CardCover inherits Rectangle {
     in property <CardData> data;
     in property <length> size;
     property <length> ring: root.data.selected ? Metrics.u * 0.22 : 0;
     width: size;
-    height: size + Metrics.u * 4.6;
+    height: size;
     art := Rectangle {
         y: root.data.selected ? -Metrics.u * 0.5 : 0;
         width: root.size;
@@ -284,18 +286,36 @@ component Card inherits Rectangle {
             }
         }
     }
-    Text {
-        y: root.size + Metrics.u * 0.75;
+}
+
+/// One tile on a shelf: the cover, a title of up to two lines, and a
+/// line under it.
+component Card inherits Rectangle {
+    in property <CardData> data;
+    in property <length> size;
+    width: size;
+    height: size + Metrics.u * 5.4;
+    CardCover {
+        x: 0;
+        y: 0;
+        data: root.data;
+        size: root.size;
+    }
+    card-title := Text {
+        y: root.size + Metrics.u * 0.7;
         width: root.size;
+        // Two lines at most: the line under it moves down when it takes both.
+        height: min(self.preferred-height, Metrics.u * 3);
         text: root.data.title;
         color: root.data.selected ? white : Theme.text-2;
         font-size: Metrics.u * 1.2;
         font-weight: 600;
+        wrap: word-wrap;
         overflow: elide;
         horizontal-alignment: root.data.round ? center : left;
     }
     Text {
-        y: root.size + Metrics.u * 2.45;
+        y: card-title.y + card-title.height + Metrics.u * 0.15;
         width: root.size;
         text: root.data.subtitle;
         color: Theme.text-3;
@@ -305,12 +325,60 @@ component Card inherits Rectangle {
     }
 }
 
+/// A card in a short row, which spreads its few cards across the row: the
+/// cover with its title and line beside it, on a panel that lights up with
+/// the selection.
+component WideCard inherits Rectangle {
+    in property <CardData> data;
+    in property <length> size;
+    height: size;
+    Rectangle {
+        x: root.size / 2;
+        width: root.width - self.x;
+        border-radius: Metrics.corner(root.size);
+        background: root.data.selected ? #ffffff24 : #ffffff0d;
+        animate background { duration: Theme.quick; }
+    }
+    CardCover {
+        x: 0;
+        y: 0;
+        data: root.data;
+        size: root.size;
+    }
+    VerticalLayout {
+        x: root.size + Metrics.u * 1;
+        y: 0;
+        width: root.width - self.x - Metrics.u * 1;
+        height: root.size;
+        alignment: center;
+        spacing: Metrics.u * 0.35;
+        Text {
+            text: root.data.title;
+            color: root.data.selected ? white : Theme.text-2;
+            font-size: Metrics.u * 1.3;
+            font-weight: 700;
+            wrap: word-wrap;
+            overflow: elide;
+            height: min(self.preferred-height, Metrics.u * 5.2);
+        }
+        if root.data.subtitle != "": Text {
+            text: root.data.subtitle;
+            color: Theme.text-3;
+            font-size: Metrics.u * 1.15;
+            wrap: word-wrap;
+            overflow: elide;
+            height: min(self.preferred-height, Metrics.u * 2.9);
+        }
+    }
+}
+
 /// Titled rows of cards, scrolled by the selection. `columns` whole cards
 /// fit across between `pad` on either side: the selected card's glow
 /// spills into the pad, and the cards past either end stay hidden beyond
 /// it, so a row ends at a whole card. Down the page, likewise, only the
 /// shelves that fit whole show. `columns` matches `*_CARDS_VISIBLE` in
-/// nav.rs.
+/// nav.rs. A row of only a few cards spreads them across as wide tiles
+/// (`WideCard`), unless it has a tip to fill the room.
 component Shelves inherits Rectangle {
     in property <[ShelfData]> shelves;
     in property <[int]> offsets;
@@ -319,7 +387,8 @@ component Shelves inherits Rectangle {
     in property <length> pad: Metrics.u * 1.2;
     property <length> gap: Metrics.u * 1.4;
     property <length> card: (root.width - root.pad * 2 - root.gap * (root.columns - 1)) / root.columns;
-    property <length> shelf-height: card + Metrics.u * 8.4;
+    // The title above (3), a card's text below (5.4), and a gap.
+    property <length> shelf-height: card + Metrics.u * 9.1;
     Rectangle {
         y: 0;
         height: max(1, floor(root.height / root.shelf-height)) * root.shelf-height;
@@ -327,14 +396,19 @@ component Shelves inherits Rectangle {
         Rectangle {
             y: -root.top * root.shelf-height;
             animate y { duration: Theme.smooth; easing: ease-in-out; }
-            for shelf[s] in root.shelves: Rectangle {
+            for shelf[s] in root.shelves: shelf-row := Rectangle {
+                // A short row's wide tiles: at most three cards wide, and
+                // only when there is room beside each cover for its text.
+                property <int> count: shelf.cards.length;
+                property <length> tile: min(root.card * 3 + root.gap * 2, (root.width - root.pad * 2 - root.gap * (self.count - 1)) / max(1, self.count));
+                property <bool> spread: shelf.tip-title == "" && self.count > 0 && self.tile >= root.card * 1.7;
                 x: 0;
                 y: s * root.shelf-height;
                 width: root.width;
                 height: root.shelf-height;
                 Text {
                     x: root.pad;
-                    y: Metrics.u * 0.4;
+                    y: Metrics.u * 0.2;
                     width: root.width - root.pad * 2;
                     text: shelf.title;
                     color: white;
@@ -342,9 +416,20 @@ component Shelves inherits Rectangle {
                     font-weight: 700;
                     overflow: elide;
                 }
-                Rectangle {
+                if shelf-row.spread: Rectangle {
+                    x: root.pad;
+                    y: Metrics.u * 3;
+                    for card[c] in shelf.cards: WideCard {
+                        x: c * (shelf-row.tile + root.gap);
+                        y: 0;
+                        width: shelf-row.tile;
+                        data: card;
+                        size: root.card;
+                    }
+                }
+                if !shelf-row.spread: Rectangle {
                     x: root.pad - root.offsets[s] * (root.card + root.gap);
-                    y: Metrics.u * 3.6;
+                    y: Metrics.u * 3;
                     animate x { duration: Theme.smooth; easing: ease-in-out; }
                     for card[c] in shelf.cards: Card {
                         x: c * (root.card + root.gap);
@@ -686,8 +771,11 @@ export component App inherits Window {
     in property <[UpNextData]> up-next;
     // The controls and tab bar; hidden while nobody uses the remote.
     in property <bool> controls-shown: true;
-    // The scan code: with the controls, and for a while as each song starts.
+    // The scan code: for a while as each song starts, and with the controls
+    // while few songs are queued (`scan_code_shown` in nav.rs).
     in property <bool> scan-code-shown: true;
+    // The scan code, large, over any screen (from the settings menu).
+    in property <bool> scan-card-open;
     // The music's visuals are drawn on the GPU under this window; while they
     // show, the background stays clear so they show through.
     in property <bool> has-visuals;
@@ -837,7 +925,9 @@ export component App inherits Window {
             // Everything but the cover and the title: the gaps, what the
             // queue plays from, the line above the title, the artists, the
             // seek bar, and the times.
-            property <length> rest: Metrics.u * (root.from-title != "" ? 13.1 : 10.1);
+            // (The heading's box stays when there is none, at no height,
+            // and its gap with it.)
+            property <length> rest: Metrics.u * 10.55 + (root.from-title != "" ? from-block.height + Metrics.u * 1.05 : 0);
             property <length> band-top: root.controls-shown ? Metrics.u * 6.8 : 0;
             property <length> band-bottom: root.controls-shown ? root.height - Metrics.u * 8.8 : root.height;
             property <length> full-art: stage.side ? Metrics.u * 24 : Metrics.u * 26;
@@ -850,28 +940,37 @@ export component App inherits Window {
             animate x, y, width { duration: 800ms; easing: cubic-bezier(0.2, 0.9, 0.25, 1); }
             spacing: Metrics.u * 0.45;
             // What the queue plays from heads the song, as at the top of
-            // the phone's player: the kind small, the title beside it, cut
-            // short to the song's width. Solid greys, as for the times.
-            if root.from-title != "": HorizontalLayout {
-                alignment: stage.side ? LayoutAlignment.start : LayoutAlignment.center;
-                spacing: Metrics.u * 0.7;
-                Text {
-                    min-width: self.preferred-width;
-                    text: root.from-kind;
-                    color: Theme.lyric-next;
-                    font-size: Metrics.u * 1.1;
-                    font-weight: 700;
-                    letter-spacing: Metrics.u * 0.06;
-                    vertical-alignment: center;
-                }
-                Text {
-                    min-width: 0;
-                    text: root.from-title;
-                    color: Theme.lyric-plain;
-                    font-size: Metrics.u * 1.25;
-                    font-weight: 600;
-                    overflow: elide;
-                    vertical-alignment: center;
+            // the phone's player: the kind small, the title under it in up
+            // to two lines. Beside the lyrics it may run wider than the
+            // song, up to the lyrics. Solid greys, as for the times.
+            from-block := Rectangle {
+                property <length> wide: stage.side ? lyrics-box.x - song.x - Metrics.u * 1.5 : song.width;
+                height: root.from-title != "" ? from-column.preferred-height : 0;
+                visible: root.from-title != "";
+                from-column := VerticalLayout {
+                    x: 0;
+                    y: 0;
+                    width: from-block.wide;
+                    height: self.preferred-height;
+                    spacing: Metrics.u * 0.15;
+                    Text {
+                        text: root.from-kind;
+                        color: Theme.lyric-next;
+                        font-size: Metrics.u * 1.1;
+                        font-weight: 700;
+                        letter-spacing: Metrics.u * 0.06;
+                        horizontal-alignment: stage.side ? left : center;
+                    }
+                    Text {
+                        text: root.from-title;
+                        color: Theme.lyric-plain;
+                        font-size: Metrics.u * 1.25;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        horizontal-alignment: stage.side ? left : center;
+                        height: min(self.preferred-height, Metrics.u * 3.1);
+                    }
                 }
             }
             if root.from-title != "": Rectangle { height: Metrics.u * 0.6; }
@@ -1157,14 +1256,14 @@ export component App inherits Window {
                     RoundButton { data: button; flat: root.has-visuals; }
                 }
             }
-            // The next song, in the room between the buttons and the scan
-            // code: it ends before the code (which drifts by under a unit),
-            // its title cut short to fit, and stays away when there is too
-            // little room to read it.
+            // The next song, in the room right of the buttons: it ends
+            // before the scan code while that shows (the code drifts by under
+            // a unit), else at the safe area, its title cut short to fit, and
+            // stays away when there is too little room to read it.
             for item in root.up-next: HorizontalLayout {
                 x: buttons.x + buttons.width + Metrics.u * 1.8;
                 y: buttons.y;
-                width: scan.x - stage.shift-x - Metrics.u * 1.6 - self.x;
+                width: (root.scan-code-shown ? scan.x - stage.shift-x - Metrics.u * 1.6 : root.width - Metrics.safe-x) - self.x;
                 height: buttons.height;
                 visible: self.width >= Metrics.u * 10;
                 spacing: Metrics.u * 0.8;
@@ -1205,11 +1304,10 @@ export component App inherits Window {
             }
         }
 
-        // The scan code comes up with the controls, and for a while as each
-        // song starts, so anyone in the room can pick up their phone and
-        // change the queue; it never sits there for a whole song. Nothing
-        // makes room for it (the lyrics already end above it), so nothing
-        // moves when it comes and goes.
+        // The scan code comes up for a while as each song starts, and with
+        // the controls while few songs are queued, so anyone in the room can
+        // pick up their phone and add some; it never sits there for a whole
+        // song. Nothing makes room for it (the lyrics already end above it).
         scan := QrCard {
             x: root.width - self.width - Metrics.safe-x + stage.shift-x;
             y: root.height - self.height - Metrics.u * 2.2 + stage.shift-y;
@@ -1289,27 +1387,36 @@ export component App inherits Window {
     // SHELVES: home, library
 
     if root.page == 2: Rectangle {
-        VerticalLayout {
+        HorizontalLayout {
             x: Metrics.safe-x;
-            y: Metrics.u * 6.6;
+            y: Metrics.u * 6.2;
+            width: root.width - Metrics.safe-x * 2;
             height: self.preferred-height;
-            spacing: Metrics.u * 0.2;
+            spacing: Metrics.u * 1.4;
+            alignment: start;
             Text {
                 text: root.page-title;
                 color: white;
                 font-family: "Inter Display";
                 font-size: Metrics.u * 2.4;
                 font-weight: 800;
+                vertical-alignment: bottom;
             }
-            if root.page-subtitle != "": Text {
-                text: root.page-subtitle;
-                color: Theme.text-3;
-                font-size: Metrics.u * 1.2;
+            // On the title's baseline: the two fonts' descents differ.
+            if root.page-subtitle != "": VerticalLayout {
+                alignment: end;
+                padding-bottom: Metrics.u * 0.3;
+                Text {
+                    text: root.page-subtitle;
+                    color: Theme.text-3;
+                    font-size: Metrics.u * 1.2;
+                    overflow: elide;
+                }
             }
         }
         Shelves {
             x: Metrics.safe-x - self.pad;
-            y: Metrics.u * 11.4;
+            y: Metrics.u * 9.4;
             width: root.width - self.x * 2;
             height: root.height - self.y;
             shelves: root.shelves;
@@ -1436,7 +1543,7 @@ export component App inherits Window {
                 shelves: root.shelves;
                 offsets: root.shelf-offsets;
                 top: root.shelf-top;
-                columns: 6;
+                columns: 5;
             }
         }
     }
@@ -1654,7 +1761,7 @@ export component App inherits Window {
         background: @linear-gradient(180deg, #0b0d1200 0%, #0b0d12f0 60%, #0b0d12 100%);
     }
 
-    if !root.menu-open && root.hints.length > 0 && root.page != 0: HorizontalLayout {
+    if !root.menu-open && !root.scan-card-open && root.hints.length > 0 && root.page != 0: HorizontalLayout {
         x: Metrics.safe-x;
         y: root.height - Metrics.u * 3.1;
         height: Metrics.u * 2.2;
@@ -1804,6 +1911,30 @@ export component App inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // THE SCAN CODE, large: the settings menu's "Show code to add songs".
+
+    if root.scan-card-open: Rectangle {
+        background: #000000d0;
+        VerticalLayout {
+            alignment: center;
+            spacing: Metrics.u * 2;
+            HorizontalLayout {
+                alignment: center;
+                QrCard {
+                    code: root.qr;
+                    size: Metrics.u * 18;
+                    vertical: true;
+                    title: "Scan to add songs";
+                    subtitle: "With a phone on this Wi-Fi, or open " + root.qr-url;
+                }
+            }
+            HorizontalLayout {
+                alignment: center;
+                Hint { key: "Back"; label: "Close"; }
             }
         }
     }
