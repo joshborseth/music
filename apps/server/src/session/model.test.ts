@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 import { Option, Schema } from 'effect'
 
 import { Session } from '@music/shared'
@@ -43,6 +43,8 @@ const makeContext = (
     isOnline: id => online.includes(id),
     isWakeable: id => id === 'tv',
     makeEntryId: () => `e${counter++}`,
+    // A fixed shuffle, so tests can name its order.
+    random: () => 0,
   }
 }
 
@@ -651,6 +653,140 @@ describe('session model', () => {
   })
 })
 
+describe('repeat and shuffle', () => {
+  const ids = (model: Model) => model.queue.map(entry => entry.entryId)
+  // Entries added in these tests are x0, x1, …, after playing()'s e0–e2.
+  let added = 0
+  beforeEach(() => {
+    added = 0
+  })
+  const set = (model: Model, message: SessionMessage, at = 2_000) =>
+    update(model, message, {
+      ...makeContext('phone', at),
+      makeEntryId: () => `x${added++}`,
+    }).model
+  const atLast = () => set(playing(), { _tag: 'SkipTo', entryId: 'e2' })
+
+  test('repeat all starts over after the last song', () => {
+    const repeating = set(atLast(), { _tag: 'SetRepeat', mode: 'All' })
+    const ended = set(repeating, { _tag: 'TrackEnded', entryId: 'e2' }, 3_000)
+    expect(ended.currentEntryId).toBe('e0')
+    expect(ended.playing).toBe(true)
+    expect(ended.seekSeq).toBe(repeating.seekSeq + 1)
+  })
+
+  test('repeat one plays the same song again, and asks the player to restart it', () => {
+    const repeating = set(playing(), { _tag: 'SetRepeat', mode: 'One' })
+    const ended = set(repeating, { _tag: 'TrackEnded', entryId: 'e0' }, 3_000)
+    expect(ended.currentEntryId).toBe('e0')
+    expect(ended.playing).toBe(true)
+    expect(ended.seekSeq).toBe(repeating.seekSeq + 1)
+    // A player that looped it with no gap only says so: no reload.
+    const looped = set(
+      repeating,
+      { _tag: 'Advanced', fromEntryId: 'e0' },
+      3_000,
+    )
+    expect(looped.currentEntryId).toBe('e0')
+    expect(looped.seekSeq).toBe(repeating.seekSeq)
+    expect(currentPosition(looped, 3_000)).toBe(0)
+  })
+
+  test('next moves on even with repeat one, and wraps with repeat on', () => {
+    const one = set(playing(), { _tag: 'SetRepeat', mode: 'One' })
+    expect(set(one, { _tag: 'Next' }).currentEntryId).toBe('e1')
+    const last = set(atLast(), { _tag: 'SetRepeat', mode: 'One' })
+    expect(set(last, { _tag: 'Next' }).currentEntryId).toBe('e0')
+    expect(set(atLast(), { _tag: 'Next' }).currentEntryId).toBe('e2')
+  })
+
+  test('previous from the first song goes to the last with repeat on', () => {
+    const all = set(playing(), { _tag: 'SetRepeat', mode: 'All' })
+    expect(set(all, { _tag: 'Previous' }, 1_500).currentEntryId).toBe('e2')
+    expect(set(playing(), { _tag: 'Previous' }, 1_500).currentEntryId).toBe(
+      'e0',
+    )
+  })
+
+  test('a song that fails moves on, even with repeat one', () => {
+    const one = set(playing(), { _tag: 'SetRepeat', mode: 'One' })
+    const failed = set(
+      one,
+      { _tag: 'TrackFailed', entryId: 'e0', message: 'gone' },
+      3_000,
+    )
+    expect(failed.currentEntryId).toBe('e1')
+  })
+
+  test('a repeating queue never asks autoplay for more', () => {
+    const last = atLast()
+    expect(Option.isSome(lookahead(last).maybeAutoplayAfter)).toBe(true)
+    const all = set(last, { _tag: 'SetRepeat', mode: 'All' })
+    expect(lookahead(all).maybeAutoplayAfter).toEqual(Option.none())
+  })
+
+  test('shuffle reorders only the songs to come, and turning it off puts them back', () => {
+    const longer = set(playing(), {
+      _tag: 'Enqueue',
+      tracks: [track('d'), track('e')],
+      placement: 'Last',
+    })
+    expect(ids(longer)).toEqual(['e0', 'e1', 'e2', 'x0', 'x1'])
+    const shuffledModel = set(longer, { _tag: 'SetShuffle', enabled: true })
+    expect(shuffledModel.shuffle).toBe(true)
+    expect(shuffledModel.currentEntryId).toBe('e0')
+    expect(ids(shuffledModel)[0]).toBe('e0')
+    expect(ids(shuffledModel)).not.toEqual(ids(longer))
+    expect([...ids(shuffledModel)].sort()).toEqual(ids(longer))
+    // A song added to play next while shuffled still plays next.
+    const added = set(shuffledModel, {
+      _tag: 'Enqueue',
+      tracks: [track('f')],
+      placement: 'Next',
+    })
+    const back = set(added, { _tag: 'SetShuffle', enabled: false })
+    expect(back.shuffle).toBe(false)
+    expect(ids(back)).toEqual(['e0', 'x2', 'e1', 'e2', 'x0', 'x1'])
+  })
+
+  test('playing a list while shuffled starts with the chosen song', () => {
+    const on = set(playing(), { _tag: 'SetShuffle', enabled: true })
+    const fresh = set(on, {
+      _tag: 'PlayQueue',
+      tracks: [track('p'), track('q'), track('r'), track('s')],
+      startIndex: 2,
+    })
+    expect(fresh.queue[0]?.track.videoId).toBe('r')
+    expect(fresh.queue[0]?.entryId ?? null).toBe(fresh.currentEntryId)
+    expect(fresh.queue.map(entry => entry.track.videoId).sort()).toEqual([
+      'p',
+      'q',
+      'r',
+      's',
+    ])
+    // Back in the album's order: what came before the chosen song counts
+    // as played, and the rest plays on.
+    const back = set(fresh, { _tag: 'SetShuffle', enabled: false })
+    expect(back.queue.map(entry => entry.track.videoId)).toEqual([
+      'p',
+      'q',
+      'r',
+      's',
+    ])
+    expect(back.currentEntryId).toBe(fresh.currentEntryId)
+  })
+
+  test('the state says how it repeats and whether it is shuffled', () => {
+    const model = set(set(playing(), { _tag: 'SetRepeat', mode: 'All' }), {
+      _tag: 'SetShuffle',
+      enabled: true,
+    })
+    const state = toSessionState(model, [])
+    expect(state.repeat).toBe('All')
+    expect(state.shuffle).toBe(true)
+  })
+})
+
 describe('autoplay', () => {
   const ids = (model: Model) => model.queue.map(entry => entry.track.videoId)
   const autoplayed = (model: Model) =>
@@ -802,6 +938,8 @@ describe('protocol fixtures shared with the TV app', () => {
     'client-volume-fixed.json',
     'client-set-device-volume.json',
     'client-set-autoplay.json',
+    'client-set-repeat.json',
+    'client-set-shuffle.json',
   ])('%s decodes as a client message', async name => {
     const decoded = Schema.decodeExit(Session.ClientMessageJson)(
       await read(name),

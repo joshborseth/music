@@ -188,15 +188,19 @@ pub enum Control {
     PlayPause,
     Next,
     Like,
+    Shuffle,
+    Repeat,
     Queue,
     Lyrics,
 }
 
-pub const CONTROLS: [Control; 6] = [
+pub const CONTROLS: [Control; 8] = [
     Control::Previous,
     Control::PlayPause,
     Control::Next,
     Control::Like,
+    Control::Shuffle,
+    Control::Repeat,
     Control::Queue,
     Control::Lyrics,
 ];
@@ -1216,6 +1220,8 @@ impl Nav {
             Control::Previous => effects.push(Effect::Session(UiAction::Previous)),
             Control::Next => effects.push(Effect::Session(UiAction::Next)),
             Control::PlayPause => effects.push(Effect::Session(UiAction::PlayPause)),
+            Control::Shuffle => effects.push(Effect::Session(UiAction::ToggleShuffle)),
+            Control::Repeat => effects.push(Effect::Session(UiAction::CycleRepeat)),
             Control::Like => {
                 let Some(entry) = self.session.current_entry() else {
                     return;
@@ -1976,8 +1982,17 @@ mod tests {
             press(&mut nav, &[Key::Right, Key::Ok]),
             vec![Effect::Session(UiAction::Next)]
         );
+        // Shuffle and repeat are next.
+        assert_eq!(
+            press(&mut nav, &[Key::Right, Key::Right, Key::Ok]),
+            vec![Effect::Session(UiAction::ToggleShuffle)]
+        );
+        assert_eq!(
+            press(&mut nav, &[Key::Right, Key::Ok]),
+            vec![Effect::Session(UiAction::CycleRepeat)]
+        );
         // Open the queue, go down three, and skip to that song.
-        press(&mut nav, &[Key::Right, Key::Right, Key::Ok]);
+        press(&mut nav, &[Key::Right, Key::Ok]);
         assert_eq!(nav.panel, Panel::Queue);
         let effects = press(&mut nav, &[Key::Down, Key::Down, Key::Down, Key::Ok]);
         assert_eq!(
@@ -2045,7 +2060,15 @@ mod tests {
         let mut nav = Nav::new();
         nav.on_session(playing_view());
         let now = Instant::now();
-        for key in [Key::Down, Key::Right, Key::Right, Key::Right, Key::Ok] {
+        let to_queue = [
+            Key::Down,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+        ];
+        for key in to_queue.into_iter().chain([Key::Ok]) {
             nav.key(key, now);
         }
         assert_eq!(nav.panel, Panel::Queue);
@@ -2090,7 +2113,15 @@ mod tests {
         nav.on_session(playing_view());
         nav.on_lyrics("q0", Err("offline".into()));
         assert!(nav.show_lyrics);
-        let keys = [Key::Down, Key::Right, Key::Right, Key::Right, Key::Right];
+        let keys = [
+            Key::Down,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+            Key::Right,
+        ];
         press(&mut nav, &keys);
         assert_eq!(CONTROLS[nav.control], Control::Lyrics);
         assert_eq!(press(&mut nav, &[Key::Ok]), vec![]);

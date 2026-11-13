@@ -35,6 +35,8 @@ The session protocol is defined twice: Effect Schemas in `packages/shared/src/se
 
 Volume is per device, not session state: `hub.ts` keeps each connection's `Volume` report in the device list and forwards `SetDeviceVolume` to that device as `SetVolume`; `model.ts` never sees either. The TV reads and sets Android's music volume in `apps/tv/src/volume/`.
 
+Repeat and shuffle live on the server. Shuffle reorders the queue there, so players only follow it. What plays after a song is `Session.followingIndex` (and `skipIndex` for Next), mirrored as `following_index` in `protocol.rs`: the server, the phone acting on its own while locked, and the TV queueing its next song without a gap must all agree.
+
 Autoplay lives on the server too. When two or fewer songs are left, `hub.ts` (`prepareQueueEnd`) asks YouTube Music for the last song's "up next" and `model.ts` (`appendAutoplay`) adds them with `autoplay: true`, unless the queue changed meanwhile. Players only show them: the phone under its own heading in the queue, the TV in the queue's summary line. Songs someone enqueues go before them, and `SetAutoplay` turns it on or off.
 
 The server owns the session. Players follow `State` and report `Progress`, `Advanced`, `TrackEnded`, and `TrackFailed`. A player reloads when `currentEntryId` or `seekSeq` changes.

@@ -548,6 +548,7 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       isOnline,
       isWakeable,
       makeEntryId,
+      random: Math.random,
     })
 
     const handle = (socket: Socket.Socket) =>

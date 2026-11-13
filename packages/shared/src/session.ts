@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import { Option, Schema } from 'effect'
 
 /*
  * The playback session protocol: JSON text frames over the WebSocket at
@@ -77,6 +77,14 @@ export type Device = typeof Device.Type
  * `seekSeq` increases whenever the position jumps (seek, skip, transfer), so
  * the active player knows to load or seek even when the entry is unchanged.
  */
+/**
+ * What happens at the end of a song: go on to the next (`Off`, stopping
+ * after the last), go on and start over after the last (`All`), or play the
+ * same song again (`One`).
+ */
+export const RepeatMode = Schema.Literals(['Off', 'All', 'One'])
+export type RepeatMode = typeof RepeatMode.Type
+
 export const SessionState = Schema.Struct({
   devices: Schema.Array(Device),
   activeDeviceId: Schema.NullOr(Schema.String),
@@ -88,6 +96,12 @@ export const SessionState = Schema.Struct({
   seekSeq: Schema.Number,
   /** Similar songs are added as the queue runs out, so music keeps playing. */
   autoplay: Schema.Boolean,
+  repeat: RepeatMode,
+  /**
+   * The songs after the current one were put in a random order. Turning it
+   * off puts them back.
+   */
+  shuffle: Schema.Boolean,
 })
 export type SessionState = typeof SessionState.Type
 
@@ -175,6 +189,16 @@ export const SetAutoplay = Schema.TaggedStruct('SetAutoplay', {
   enabled: Schema.Boolean,
 })
 
+export const SetRepeat = Schema.TaggedStruct('SetRepeat', { mode: RepeatMode })
+
+/**
+ * Shuffle the songs after the current one, or put them back in the order
+ * they were in.
+ */
+export const SetShuffle = Schema.TaggedStruct('SetShuffle', {
+  enabled: Schema.Boolean,
+})
+
 /** Move playback to another device, waking it first if it can be woken. */
 export const Transfer = Schema.TaggedStruct('Transfer', {
   deviceId: Schema.String,
@@ -237,6 +261,8 @@ export const ClientMessage = Schema.Union([
   Next,
   Previous,
   SetAutoplay,
+  SetRepeat,
+  SetShuffle,
   Transfer,
   Wake,
   Progress,
@@ -297,3 +323,31 @@ export const positionAt = (state: SessionState, serverNow: number): number =>
   state.playing
     ? state.positionSeconds + Math.max(0, serverNow - state.positionAt) / 1000
     : state.positionSeconds
+
+/**
+ * The queue index that plays after `index` when that song ends by itself
+ * (or plays on without a gap), in a queue of `length`. None at the end of
+ * the queue with repeat off. Every player and the server follow this, so
+ * they agree on what comes next; `apps/tv/src/protocol.rs` mirrors it.
+ */
+export const followingIndex = (
+  length: number,
+  index: number,
+  repeat: RepeatMode,
+): Option.Option<number> => {
+  if (index < 0 || index >= length) return Option.none()
+  if (repeat === 'One') return Option.some(index)
+  if (index + 1 < length) return Option.some(index + 1)
+  return repeat === 'All' ? Option.some(0) : Option.none()
+}
+
+/**
+ * The queue index Next goes to from `index`. Next always moves on, even
+ * with repeat one, and starts over after the last song unless repeat is off.
+ */
+export const skipIndex = (
+  length: number,
+  index: number,
+  repeat: RepeatMode,
+): Option.Option<number> =>
+  followingIndex(length, index, repeat === 'One' ? 'All' : repeat)

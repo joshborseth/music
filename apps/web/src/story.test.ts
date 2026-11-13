@@ -535,30 +535,38 @@ describe('tab bar', () => {
 })
 
 describe('shuffle', () => {
-  test('unlocks audio during the tap, then plays the shuffled order', () => {
+  test('turns shuffle on and plays the list from a random song, in its order', () => {
+    // The server shuffles the rest and remembers this order for later.
+    const dreams: Song = {
+      ...theChain,
+      videoId: 'mrZRURcb1cM',
+      title: 'Dreams',
+    }
+    const songs = [theChain, dreams]
     story(
       update,
       given(homeModel),
-      message(Message.ClickedShuffleSongs({ songs: [theChain] })),
-      Command.expectExact(
-        UnlockPhoneAudio(),
-        ShuffleSongs({ songs: [theChain] }),
-      ),
+      message(Message.ClickedShuffleSongs({ songs })),
+      Command.expectExact(UnlockPhoneAudio(), ShuffleSongs({ songs })),
       Command.resolve(UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()),
       Command.resolve(
         ShuffleSongs,
-        Message.CompletedShuffleSongs({ songs: [theChain] }),
+        Message.CompletedShuffleSongs({ songs, startIndex: 1 }),
       ),
       Command.expectExact(
+        SendToSession({ message: { _tag: 'SetShuffle', enabled: true } }),
         SendToSession({
           message: {
             _tag: 'PlayQueue',
-            tracks: [toQueueTrack(theChain)],
-            startIndex: 0,
+            tracks: songs.map(toQueueTrack),
+            startIndex: 1,
           },
         }),
       ),
-      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      Command.resolveAll(
+        [SendToSession, Message.CompletedSendToSession()],
+        [SendToSession, Message.CompletedSendToSession()],
+      ),
     )
   })
 })
@@ -670,6 +678,8 @@ describe('lyrics that fail to load', () => {
           playing: true,
           positionSeconds: 0,
           autoplay: true,
+          repeat: 'Off',
+          shuffle: false,
           positionAt: 0,
           seekSeq: 0,
         },

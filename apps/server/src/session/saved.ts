@@ -22,6 +22,10 @@ export const SavedSession = Schema.Struct({
   seekSeq: Schema.Number,
   foreignSeekSeq: Schema.Number,
   autoplay: Schema.Boolean,
+  // Added later: files saved before have none.
+  repeat: Schema.optionalKey(Session.RepeatMode),
+  shuffle: Schema.optionalKey(Schema.Boolean),
+  unshuffled: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export type SavedSession = typeof SavedSession.Type
 
@@ -39,6 +43,9 @@ export const toSaved = (model: Model, now: number): SavedSession => ({
   seekSeq: model.seekSeq,
   foreignSeekSeq: model.foreignSeekSeq,
   autoplay: model.autoplay,
+  repeat: model.repeat,
+  shuffle: model.shuffle,
+  unshuffled: model.unshuffled,
 })
 
 /**
@@ -66,6 +73,9 @@ export const fromSaved = (saved: SavedSession, now: number): Model => {
     seekSeq: saved.seekSeq,
     foreignSeekSeq: saved.foreignSeekSeq,
     autoplay: saved.autoplay,
+    repeat: saved.repeat ?? 'Off',
+    shuffle: saved.shuffle ?? false,
+    unshuffled: saved.unshuffled ?? [],
     pausedForLostPlayer: saved.playing,
   }
 }

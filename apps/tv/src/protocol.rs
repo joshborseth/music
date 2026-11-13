@@ -65,6 +65,49 @@ pub struct SessionState {
     /// Similar songs are added as the queue runs out.
     #[serde(default)]
     pub autoplay: bool,
+    #[serde(default)]
+    pub repeat: RepeatMode,
+    /// The songs after the current one were put in a random order.
+    #[serde(default)]
+    pub shuffle: bool,
+}
+
+/// What happens at the end of a song. Mirrors `RepeatMode` and
+/// `followingIndex` in `packages/shared/src/session.ts`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RepeatMode {
+    /// Go on to the next song, and stop after the last.
+    #[default]
+    Off,
+    /// Go on, and start over after the last.
+    All,
+    /// Play the same song again.
+    One,
+}
+
+impl RepeatMode {
+    /// The repeat button steps off → all → one → off.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::All,
+            Self::All => Self::One,
+            Self::One => Self::Off,
+        }
+    }
+}
+
+/// The index that plays after `index` when that song ends by itself (or
+/// plays on with no gap), in a queue of `len`.
+pub fn following_index(len: usize, index: usize, repeat: RepeatMode) -> Option<usize> {
+    if index >= len {
+        return None;
+    }
+    match repeat {
+        RepeatMode::One => Some(index),
+        _ if index + 1 < len => Some(index + 1),
+        RepeatMode::All => Some(0),
+        RepeatMode::Off => None,
+    }
 }
 
 impl SessionState {
@@ -77,9 +120,12 @@ impl SessionState {
         self.current_index().map(|index| &self.queue[index])
     }
 
+    /// What plays when the current song ends by itself, as `repeat` says:
+    /// with repeat one, the same entry again.
     pub fn next_after_current(&self) -> Option<&QueueEntry> {
         self.current_index()
-            .and_then(|index| self.queue.get(index + 1))
+            .and_then(|index| following_index(self.queue.len(), index, self.repeat))
+            .and_then(|index| self.queue.get(index))
     }
 
     /// Where playback is at server time `server_now` (epoch ms).
@@ -167,6 +213,13 @@ pub enum ClientMessage {
     SetAutoplay {
         enabled: bool,
     },
+    SetRepeat {
+        mode: RepeatMode,
+    },
+    /// Shuffle the songs to come, or put them back in order.
+    SetShuffle {
+        enabled: bool,
+    },
     #[serde(rename_all = "camelCase")]
     Transfer {
         device_id: String,
@@ -244,6 +297,18 @@ mod tests {
     }
 
     #[test]
+    fn repeat_decides_what_follows_like_the_server() {
+        use RepeatMode::{All, Off, One};
+        assert_eq!(following_index(3, 0, Off), Some(1));
+        assert_eq!(following_index(3, 2, Off), None);
+        assert_eq!(following_index(3, 2, All), Some(0));
+        assert_eq!(following_index(3, 1, One), Some(1));
+        assert_eq!(following_index(3, 3, All), None);
+        assert_eq!(following_index(0, 0, All), None);
+        assert_eq!([Off.next(), All.next(), One.next()], [All, One, Off]);
+    }
+
+    #[test]
     fn decodes_server_state() {
         let ServerMessage::State {
             state,
@@ -266,6 +331,8 @@ mod tests {
         assert_eq!(state.devices[0].powered_on, None);
         assert_eq!(state.devices[1].powered_on, Some(false));
         assert!(state.autoplay);
+        assert_eq!(state.repeat, RepeatMode::All);
+        assert!(state.shuffle);
         assert!(!state.queue[0].autoplay);
         assert!(state.queue[1].autoplay);
         assert!(server_now > state.position_at);
@@ -423,6 +490,16 @@ mod tests {
             (
                 "client-set-autoplay.json",
                 ClientMessage::SetAutoplay { enabled: false },
+            ),
+            (
+                "client-set-repeat.json",
+                ClientMessage::SetRepeat {
+                    mode: RepeatMode::One,
+                },
+            ),
+            (
+                "client-set-shuffle.json",
+                ClientMessage::SetShuffle { enabled: true },
             ),
             (
                 "client-set-device-volume.json",
