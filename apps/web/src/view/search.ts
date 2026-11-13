@@ -23,7 +23,7 @@ import {
   type TopResult,
 } from '@music/shared'
 
-import { textToneOn } from '../color'
+import { textToneOn, tileColors } from '../color'
 import {
   SEARCH_BAR_ATTRIBUTE,
   SEARCH_INPUT_ID,
@@ -772,36 +772,43 @@ const recentSearchesView = (model: PageModel, h: HtmlBuilder<Message>): Html =>
 
 // BROWSE
 
+/** How many tiles a row of moods and genres holds. */
+const MOOD_COLUMNS = 2
+
 /**
- * A mood or genre as a tile filled with YouTube Music's color for it, its
- * name in whichever of white or near-black reads better on that color.
- * Without a color, a plain grey tile.
+ * The color of each tile in a group of moods and genres: YouTube Music's own,
+ * unless it is grey or another tile's, as `tileColors` decides.
  */
-const moodTile = (category: MoodCategory, h: HtmlBuilder<Message>): Html => {
-  const maybeFill = Option.flatMap(category.maybeColor, color =>
-    Option.map(textToneOn(color), tone => ({ color, tone })),
+export const moodGroupColors = (group: MoodGroup): ReadonlyArray<string> =>
+  tileColors(
+    Array.map(group.categories, ({ maybeColor }) => maybeColor),
+    MOOD_COLUMNS,
   )
-  return h.a(
+
+/**
+ * A mood or genre as a tile filled with its color, its name in whichever of
+ * white or near-black reads better on that color.
+ */
+const moodTile = (
+  category: MoodCategory,
+  color: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.a(
     [
       h.Href(moodRouter({ params: category.params })),
       h.Class(
         cn(
           'pressable flex h-16 items-start rounded-xl px-3 pt-2.5 text-[15px] leading-tight font-bold',
-          Option.match(maybeFill, {
-            onNone: () => 'bg-secondary text-foreground',
-            onSome: ({ tone }) =>
-              tone === 'Dark' ? 'text-[#0b0d12]' : 'text-white',
-          }),
+          Option.contains(textToneOn(color), 'Dark')
+            ? 'text-[#0b0d12]'
+            : 'text-white',
         ),
       ),
-      ...Option.match(maybeFill, {
-        onNone: () => [],
-        onSome: ({ color }) => [h.Style({ backgroundColor: color })],
-      }),
+      h.Style({ backgroundColor: color }),
     ],
     [h.span([h.Class('line-clamp-2')], [category.title])],
   )
-}
 
 const moodGroupView = (group: MoodGroup, h: HtmlBuilder<Message>): Html =>
   section(
@@ -809,8 +816,11 @@ const moodGroupView = (group: MoodGroup, h: HtmlBuilder<Message>): Html =>
     [
       h.div(
         [h.Class('grid grid-cols-2 gap-2.5 px-4')],
-        Array.map(group.categories, category =>
-          h.keyed('div')(category.params, [], [moodTile(category, h)]),
+        Array.zipWith(
+          group.categories,
+          moodGroupColors(group),
+          (category, color) =>
+            h.keyed('div')(category.params, [], [moodTile(category, color, h)]),
         ),
       ),
     ],

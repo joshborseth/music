@@ -9,6 +9,7 @@ import {
   artistFromTwoRowItem,
   audioTrackFor,
   audioTrackQuery,
+  cleanVideoTitle,
   filterSome,
   hexFromArgb,
   isExplicit,
@@ -335,6 +336,102 @@ describe('audioTrackFor', () => {
   })
 })
 
+describe('cleanVideoTitle', () => {
+  const by = (...names: ReadonlyArray<string>) =>
+    names.map(name => ({ maybeId: Option.none(), name }))
+
+  test.each([
+    ['Reptilia (Official HD Video)', by('The Strokes'), 'Reptilia'],
+    ['Location (Official Video)', by('Khalid'), 'Location'],
+    [
+      'Pixies - Where Is My Mind? (Official Lyric Video)',
+      by('Pixies'),
+      'Where Is My Mind?',
+    ],
+    [
+      'HOTEL UGLY - SHUT UP MY MOMS CALLING (Official Music Video)',
+      by('Hotel Ugly'),
+      'SHUT UP MY MOMS CALLING',
+    ],
+    [
+      'Radiohead - Weird Fishes -  by Tobias Stretch',
+      by('Radiohead'),
+      'Weird Fishes',
+    ],
+    ['Geese - Taxes (Official Music Video)', by('Geese'), 'Taxes'],
+    ['Mk.gee - I Want (Official Audio)', by('Mk.gee'), 'I Want'],
+    ['Selfless (Official Audio)', by('The Strokes'), 'Selfless'],
+    ['1979 (Official Music Video)', by('The Smashing Pumpkins'), '1979'],
+    ['Galaxy [Official Audio]', by('JID'), 'Galaxy'],
+    ['Midnight City (Visualizer)', by('M83'), 'Midnight City'],
+    ['Motion Sickness (Lyric Video)', by('Phoebe Bridgers'), 'Motion Sickness'],
+    ['Creep [HD]', by('Radiohead'), 'Creep'],
+    ['Stars (Audio) (feat. Yasiin Bey)', by('JID'), 'Stars (feat. Yasiin Bey)'],
+    [
+      'Surround Sound [Official Music ... (feat. 21 Savage & Baby Tate)',
+      by('JID'),
+      'Surround Sound (feat. 21 Savage & Baby Tate)',
+    ],
+    [
+      'Half Alive (From The Hunger Games: Sunrise on the Reaping - The Album) (Official Music Video)',
+      by('Mckenna Grace', 'The Hunger Games'),
+      'Half Alive (From The Hunger Games: Sunrise on the Reaping - The Album)',
+    ],
+    ['AC/DC - Thunderstruck (Official Video)', by('AC/DC'), 'Thunderstruck'],
+    [
+      'Daft Punk ft. Pharrell Williams - Get Lucky (Official Audio)',
+      by('Daft Punk', 'Pharrell Williams'),
+      'Get Lucky',
+    ],
+    [
+      'Tyler, The Creator - EARFQUAKE (Official Video)',
+      by('Tyler, The Creator'),
+      'EARFQUAKE',
+    ],
+    ['Bad Guy – Billie Eilish', by('Billie Eilish'), 'Bad Guy'],
+    [
+      'Blinding Lights | Official Music Video',
+      by('The Weeknd'),
+      'Blinding Lights',
+    ],
+  ])('cleans %p', (title, artists, expected) => {
+    expect(cleanVideoTitle(title, artists)).toBe(expected)
+  })
+
+  test.each([
+    ['Hold On - Remastered', by('Alabama Shakes')],
+    ['Hold On - Remastered 2011', by('The Beatles')],
+    ['Song 2 (feat. X)', by('Blur')],
+    ['Live at Wembley', by('Queen')],
+    ['Bohemian Rhapsody (Live Aid 1985)', by('Queen')],
+    ['Get Lucky (Official Remix)', by('Daft Punk')],
+    ['Paranoid Android (Live Audio)', by('Radiohead')],
+    ['Wish You Were Here (4K Remaster)', by('Pink Floyd')],
+    ['Blinding Lights (8D Audio)', by('8D Labs')],
+    ['Video Killed the Radio Star', by('The Buggles')],
+    ['Stand by Me', by('Ben E. King')],
+    ['Where Is My Mind?', by('Pixies')],
+    ['Radio - Edit', by('Some Artist')],
+    ['Pixies', by('Pixies')],
+    ['Re: Stacks', by('Bon Iver')],
+    ['Weird Fishes/Arpeggi', by('Radiohead')],
+  ])('leaves %p alone', (title, artists) => {
+    expect(cleanVideoTitle(title, artists)).toBe(title)
+  })
+
+  test('keeps a title that is all video words', () => {
+    expect(cleanVideoTitle('(Official Video)', by('Someone'))).toBe(
+      '(Official Video)',
+    )
+  })
+
+  test('collapses doubled spaces', () => {
+    expect(cleanVideoTitle('Weird  Fishes  (Official Video)', by('X'))).toBe(
+      'Weird Fishes',
+    )
+  })
+})
+
 describe('audioTrackQuery', () => {
   test('searches the first artist and the title without brackets', () => {
     expect(
@@ -428,10 +525,18 @@ describe('rankSongsForQuery', () => {
 
   test('keeps YouTube’s order when the search names no artist', () => {
     expect(
-      rankSongsForQuery('life is sweet', [remix, veridis, alive]).map(
+      rankSongsForQuery('alive', [starboy, veridis, alive]).map(
         ({ videoId }) => videoId,
       ),
-    ).toEqual(['r', 'v', 'a'])
+    ).toEqual(['s', 'v', 'a'])
+  })
+
+  test('keeps a remix where it is when the search asks for one', () => {
+    expect(
+      rankSongsForQuery('life is sweet remix', [remix, veridis]).map(
+        ({ videoId }) => videoId,
+      ),
+    ).toEqual(['r', 'v'])
   })
 
   test('knows an artist by name with a song, and past case and punctuation', () => {
@@ -446,6 +551,138 @@ describe('rankSongsForQuery', () => {
     ).toBe(true)
     expect(searchNamesArtist('daft punk remix', theWeeknd)).toBe(false)
     expect(searchNamesArtist('daft punks', daftPunk)).toBe(false)
+  })
+})
+
+describe('rankSongsForQuery with a top song', () => {
+  const weeknd = { maybeId: Option.some('UCweeknd'), name: 'The Weeknd' }
+  const song = (
+    videoId: string,
+    title: string,
+    artist: string,
+    album: string,
+  ): Song => ({
+    videoId,
+    title,
+    artists: [{ maybeId: Option.some(`UC${artist}`), name: artist }],
+    maybeAlbum: Option.some({ id: `MPREb_${videoId}`, name: album }),
+    maybeDurationSeconds: Option.some(200),
+    artwork: [],
+  })
+  const original: Song = {
+    ...song('J7p4bzqLvCw', 'Blinding Lights', 'x', 'Blinding Lights'),
+    artists: [weeknd],
+  }
+  // YouTube Music's song search for "blinding lights", in its order.
+  const searched: ReadonlyArray<Song> = [
+    original,
+    song(
+      'MomOlmprVO8',
+      'Blinded by the Lights (Nero Remix)',
+      'The Streets',
+      'Remixes & B-Sides Too',
+    ),
+    song('a4bFefGrMwg', 'Blinding Lights', 'Leo', 'Leo Metal Covers Volume 28'),
+    song('_X9NOlZbiKA', 'Blinding Lights', 'EV', 'Blinding Lights'),
+    song(
+      '70pqakiB2OY',
+      'Blinding Lights (Afro House)',
+      'Sunrize',
+      'Blinding Lights (Afro House)',
+    ),
+    song(
+      'Rzk3x3HZbJI',
+      'Blinded By The Light',
+      "Manfred Mann's Earth Band",
+      'Best Of Vol 1',
+    ),
+    song(
+      'ATiXC08Omw0',
+      'Blinding Lights (vocal)',
+      'Party Tyme',
+      'Pop Male Hits 2019, Vol. 1 (vocal)',
+    ),
+    song(
+      '86nbCFXnDXk',
+      'Blinding Lights (8D Audio)',
+      '8D Labs',
+      'Blinding Lights (8D Audio)',
+    ),
+    song(
+      'Wlk8NoeMfGY',
+      'Blinding Lights | Emotional Deep',
+      'ELARIS',
+      'Blinding Lights | Emotional Deep',
+    ),
+  ]
+  const saveYourTears: Song = {
+    ...song('RmYCOm4ehKs', 'Save Your Tears', 'x', 'After Hours'),
+    artists: [weeknd],
+  }
+  const albumCut: Song = { ...original, videoId: 'otherCut' }
+  const top = {
+    song: { ...original, videoId: '4NRXx6U8ABQ', title: 'Blinding Lights' },
+    artistSongs: [albumCut, saveYourTears],
+  }
+
+  const ids = (songs: ReadonlyArray<Song>) =>
+    songs.map(({ videoId }) => videoId)
+
+  test('lists the artist, their hits, and other songs before covers and remixes', () => {
+    expect(
+      ids(rankSongsForQuery('blinding lights', searched, Option.some(top))),
+    ).toEqual([
+      'J7p4bzqLvCw',
+      'RmYCOm4ehKs',
+      'Rzk3x3HZbJI',
+      'MomOlmprVO8',
+      'a4bFefGrMwg',
+      '_X9NOlZbiKA',
+      '70pqakiB2OY',
+      'ATiXC08Omw0',
+      '86nbCFXnDXk',
+      'Wlk8NoeMfGY',
+    ])
+  })
+
+  test('keeps covers in YouTube’s order when the search asks for one', () => {
+    expect(
+      ids(
+        rankSongsForQuery(
+          'blinding lights metal cover',
+          searched,
+          Option.some({ ...top, artistSongs: [] }),
+        ),
+      ),
+    ).toEqual(ids(searched))
+  })
+
+  test("keeps an artist's own version of their song", () => {
+    const taylor = { maybeId: Option.some('UCtaylor'), name: 'Taylor Swift' }
+    const theirs: Song = {
+      ...song(
+        'tv',
+        'Love Story (Taylor’s Version)',
+        'x',
+        'Fearless (Taylor’s Version)',
+      ),
+      artists: [taylor],
+    }
+    const karaoke = song(
+      'k',
+      'Love Story (Karaoke Version)',
+      'Sing King',
+      'Karaoke Hits',
+    )
+    expect(
+      ids(
+        rankSongsForQuery(
+          'love story',
+          [karaoke, theirs],
+          Option.some({ song: theirs, artistSongs: [] }),
+        ),
+      ),
+    ).toEqual(['tv', 'k'])
   })
 })
 

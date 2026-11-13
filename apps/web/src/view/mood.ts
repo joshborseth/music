@@ -8,6 +8,7 @@ import { Message } from '../message'
 import { SyncTitleBarReveal } from '../mount'
 import { moodGroupsQuery, moodQuery } from '../query'
 import { type PageModel } from './page'
+import { moodGroupColors } from './search'
 import {
   albumCard,
   loadingPage,
@@ -19,17 +20,21 @@ import {
 
 const SONGS_ON_MOOD_PAGE = 20
 
-/** The category's own color, when the moods and genres list is loaded. */
+/** The color of the category's tile, when the moods and genres list is loaded. */
 const moodColor = (model: PageModel, params: string): Option.Option<string> =>
   pipe(
     AsyncData.getData(moodGroupsQuery.read(model.moodGroups)),
     Option.flatMap(groups =>
-      Array.findFirst(
-        Array.flatMap(groups, ({ categories }) => categories),
-        category => category.params === params,
+      Array.findFirst(groups, group =>
+        pipe(
+          Array.findFirstIndex(
+            group.categories,
+            category => category.params === params,
+          ),
+          Option.flatMap(index => Array.get(moodGroupColors(group), index)),
+        ),
       ),
     ),
-    Option.flatMap(({ maybeColor }) => maybeColor),
   )
 
 const moodHeader = (

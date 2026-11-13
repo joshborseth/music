@@ -31,6 +31,8 @@ import {
   Song,
 } from '@music/shared'
 
+import { cleanVideoTitle } from '../youtubeMusic/mapping.ts'
+
 const LIKED_TITLE = 'Liked Songs'
 const UNTITLED = 'Untitled playlist'
 
@@ -101,6 +103,18 @@ export const PLAY_HISTORY_SIZE = 200
 const SongJson = Schema.fromJsonString(Schema.toCodecJson(Song))
 const encodeSong = Schema.encodeSync(SongJson)
 const decodeSong = Schema.decodeUnknownOption(SongJson)
+
+/**
+ * A song kept in a playlist, Liked Songs, or the play history. Songs saved
+ * before the app swapped music videos for their songs kept the video's
+ * title, so it is cleaned on the way out: "Geese - Taxes (Official Music
+ * Video)" shows as "Taxes".
+ */
+const decodeStoredSong = (json: string): Option.Option<Song> =>
+  Option.map(decodeSong(json), song => ({
+    ...song,
+    title: cleanVideoTitle(song.title, song.artists),
+  }))
 
 /** Saved albums and followed artists are kept whole too, as JSON. */
 const AlbumJson = Schema.fromJsonString(Schema.toCodecJson(AlbumSummary))
@@ -257,7 +271,7 @@ export const makePlaylistStore = (
         )
         .all(playlistId, limit),
       decodeRows(SongRow),
-      Array.map(row => decodeSong(row.song)),
+      Array.map(row => decodeStoredSong(row.song)),
       Array.getSomes,
     )
 
@@ -563,7 +577,7 @@ export const makePlaylistStore = (
         )
         .all(limit),
       decodeRows(SongRow),
-      Array.map(row => decodeSong(row.song)),
+      Array.map(row => decodeStoredSong(row.song)),
       Array.getSomes,
     )
 
@@ -577,7 +591,7 @@ export const makePlaylistStore = (
         .all(limit),
       decodeRows(PlayedRow),
       Array.map(row =>
-        Option.map(decodeSong(row.song), song => ({
+        Option.map(decodeStoredSong(row.song), song => ({
           song,
           playCount: row.play_count,
         })),

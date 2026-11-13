@@ -688,6 +688,13 @@ export const SessionHubLive = Layer.effect(SessionHub)(
             if (message._tag === 'SetDeviceVolume') {
               yield* forwardVolume(message.deviceId, message.level)
             }
+            if (message._tag === 'TrackFailed') {
+              yield* Effect.logWarning('A player could not play a song', {
+                deviceId: senderId,
+                entryId: message.entryId,
+                error: message.message,
+              })
+            }
             yield* apply(current => {
               // NOTE: a connection joins as its Hello is applied, and each
               // message is counted as it is applied, both under the lock. So

@@ -188,21 +188,68 @@ export const equalizer = (
 
 // ARTWORK
 
-const RETINA_SCALE = 2
+/**
+ * Device pixels per CSS pixel, from 1 up to 3 (an iPhone Pro). It never
+ * changes while the app runs, so it is read once.
+ */
+const PIXEL_RATIO = Math.min(3, Math.max(1, globalThis.devicePixelRatio || 2))
 
-/** The smallest image at least `displayWidth` pixels wide on a retina screen. */
+/**
+ * The sizes a square Google image is asked for when the artwork lists none
+ * big enough: 544 for covers on a page, 1080 for the full player and the
+ * heroes of album, playlist, and artist pages. A few fixed sizes keep the
+ * service worker's artwork cache from holding one image at many sizes.
+ */
+const LARGE_ARTWORK_SIZES: ReadonlyArray<number> = [544, 1080]
+
+const RESIZABLE_GOOGLE_IMAGE = /=w(\d+)-h(\d+)/
+
+/**
+ * The URL of a square Google image at the smallest of
+ * `LARGE_ARTWORK_SIZES` that is at least `pixels` wide, or the largest. Any
+ * other image keeps its URL.
+ */
+const resizedUrl = (url: string, pixels: number): string => {
+  const match = RESIZABLE_GOOGLE_IMAGE.exec(url)
+  if (match === null || match[1] !== match[2] || Number(match[1]) >= pixels) {
+    return url
+  }
+  const size = pipe(
+    Array.findFirst(LARGE_ARTWORK_SIZES, large => large >= pixels),
+    Option.orElse(() => Array.last(LARGE_ARTWORK_SIZES)),
+    Option.getOrElse(() => pixels),
+  )
+  return url.replace(RESIZABLE_GOOGLE_IMAGE, `=w${size}-h${size}`)
+}
+
+/** The pixels an image `displayWidth` CSS pixels wide needs on this screen. */
+const devicePixels = (displayWidth: number): number =>
+  Math.ceil(displayWidth * PIXEL_RATIO)
+
+/**
+ * The smallest image at least `displayWidth` CSS pixels wide on this screen.
+ * When none is, a square Google image is asked for at a size that is.
+ */
 export const artworkUrl = (
   artwork: Artwork,
   displayWidth: number,
-): Option.Option<string> =>
-  pipe(
-    Array.findFirst(
-      artwork,
-      ({ width }) => width >= displayWidth * RETINA_SCALE,
-    ),
-    Option.orElse(() => Array.last(artwork)),
+): Option.Option<string> => {
+  const pixels = devicePixels(displayWidth)
+  return pipe(
+    Array.findFirst(artwork, ({ width }) => width >= pixels),
     Option.map(({ url }) => url),
+    Option.orElse(() =>
+      Option.map(Array.last(artwork), ({ url }) => resizedUrl(url, pixels)),
+    ),
   )
+}
+
+/**
+ * A cover's URL at a size sharp at `displayWidth` CSS pixels on this
+ * screen, for a cover that comes as one URL, such as a queued song's.
+ */
+export const sizedArtworkUrl = (url: string, displayWidth: number): string =>
+  resizedUrl(url, devicePixels(displayWidth))
 
 export const ArtworkShape = {
   Square: 'rounded-md',

@@ -283,15 +283,50 @@ const deviceRowStatus = (
  * Turn the TV on and open Joshify, without moving the music: to pick songs on
  * it, or to watch what plays. Only while the app is not open on it.
  */
+/** The TV's wake button, if it shows one: Turn On or Open. */
+const maybeWakeStatus = (
+  state: Session.SessionState,
+  device: Session.Device,
+): Option.Option<'Off' | 'Closed'> => {
+  const status = deviceStatus(state, device)
+  return device.kind === 'Tv' && (status === 'Off' || status === 'Closed')
+    ? Option.some(status)
+    : Option.none()
+}
+
+/**
+ * What the device list says under it. It names only the buttons on screen:
+ * Turn On for a TV that is off, Open for one that is on without Joshify.
+ */
+const devicePickerHelp = (state: Session.SessionState): string => {
+  const wakeStatuses = Array.getSomes(
+    Array.map(state.devices, device => maybeWakeStatus(state, device)),
+  )
+  const hasTurnOn = Array.contains(wakeStatuses, 'Off')
+  const hasOpen = Array.contains(wakeStatuses, 'Closed')
+  const tap = 'Tap a device to play the music there.'
+  if (hasTurnOn && hasOpen) {
+    return `${tap} Turn On and Open start Joshify on the TV, and the music keeps playing where it is.`
+  }
+  if (hasTurnOn) {
+    return `${tap} Turn On switches the TV on and opens Joshify, and the music keeps playing where it is.`
+  }
+  if (hasOpen) {
+    return `${tap} Open starts Joshify on the TV, and the music keeps playing where it is.`
+  }
+  return tap
+}
+
 const wakeButton = (
   state: Session.SessionState,
   device: Session.Device,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const status = deviceStatus(state, device)
-  if (device.kind !== 'Tv' || (status !== 'Off' && status !== 'Closed')) {
+  const maybeStatus = maybeWakeStatus(state, device)
+  if (Option.isNone(maybeStatus)) {
     return h.empty
   }
+  const status = maybeStatus.value
   return h.button(
     [
       h.Type('button'),
@@ -410,9 +445,7 @@ const devicePicker = (model: Model, h: HtmlBuilder<Message>): Html =>
               }),
               h.p(
                 [h.Class('text-muted-foreground px-5 pt-2 text-[13px]')],
-                [
-                  'Tap a device to move the music there. Open and Turn on start Joshify on the TV without moving the music.',
-                ],
+                [devicePickerHelp(state)],
               ),
             ],
           )
