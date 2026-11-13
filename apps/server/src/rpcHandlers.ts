@@ -45,6 +45,9 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
       searchArtists: ({ query }) => youTubeMusic.searchArtists(query),
       searchAlbums: ({ query }) => youTubeMusic.searchAlbums(query),
       searchPlaylists: ({ query }) => youTubeMusic.searchPlaylists(query),
+      searchTopResult: ({ query }) => youTubeMusic.searchTopResult(query),
+      getMoodsAndGenres: () => youTubeMusic.getMoodsAndGenres(),
+      getMood: ({ params }) => youTubeMusic.getMood(params),
       getSong: ({ videoId }) =>
         youTubeMusic.getSong(videoId).pipe(
           Effect.tap(details => prepare([details.song], 1, 0)),

@@ -5,7 +5,13 @@ import { Message } from '../message'
 import { albumQuery } from '../query'
 import { collectionView } from './collection'
 import { type PageModel } from './page'
-import { artistLinks, joinDetails, loadingPage, remote } from './shared'
+import {
+  artistLinks,
+  artistNames,
+  joinDetails,
+  loadingPage,
+  remote,
+} from './shared'
 
 const formatLengthSummary = (summary: string): string =>
   summary.replaceAll(' • ', ' · ')
@@ -20,7 +26,13 @@ export const albumView = (
     albumQuery.read(model.albums, { albumId }),
     {
       onLoading: () => loadingPage(h),
-      onData: ({ album, maybeDescription, maybeLengthSummary, tracks }) =>
+      onData: ({
+        album,
+        maybeDescription,
+        maybeLengthSummary,
+        tracks,
+        explicitVideoIds,
+      }) =>
         collectionView(
           {
             title: album.title,
@@ -41,6 +53,10 @@ export const albumView = (
             }),
             playing: model.playing,
             swipe: model.swipe,
+            maybeAlbumContext: Option.some({
+              artistNames: artistNames(album.artists),
+              explicitVideoIds,
+            }),
           },
           h,
         ),

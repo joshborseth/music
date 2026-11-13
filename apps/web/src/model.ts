@@ -19,12 +19,15 @@ import {
   artistQuery,
   artistSearchQuery,
   artworkBackdropQuery,
+  moodGroupsQuery,
+  moodQuery,
   myLibraryQuery,
   myPlaylistQuery,
   playlistQuery,
   playlistSearchQuery,
   songQuery,
   songSearchQuery,
+  topResultSearchQuery,
 } from './query'
 import { AppRoute } from './route'
 import { ActionSheet, PlayerPanel } from './sheet'
@@ -40,6 +43,9 @@ export const Model = Schema.Struct({
   artistSearch: artistSearchQuery.Model,
   albumSearch: albumSearchQuery.Model,
   playlistSearch: playlistSearchQuery.Model,
+  topResultSearch: topResultSearchQuery.Model,
+  moodGroups: moodGroupsQuery.Model,
+  moods: moodQuery.Model,
   songs: songQuery.Model,
   artists: artistQuery.Model,
   albums: albumQuery.Model,
@@ -52,6 +58,8 @@ export const Model = Schema.Struct({
   playlistTitleInput: Schema.String,
   actionSheet: ActionSheet,
   playerPanel: PlayerPanel,
+  /** The song whose lyrics already failed to load and were tried again. */
+  maybeLyricsRetriedVideoId: Schema.Option(Schema.String),
   maybeIdentity: Schema.Option(DeviceIdentity),
   connection: Connection,
   maybeSession: Schema.Option(SessionSnapshot),

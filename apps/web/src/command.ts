@@ -1,4 +1,4 @@
-import { Effect, Option, Random, Schema } from 'effect'
+import { Duration, Effect, Option, Random, Schema } from 'effect'
 import { KeyValueStore } from 'effect/persistence'
 import { Command, Dom } from 'foldkit'
 import { back, load, pushUrl, replaceUrl } from 'foldkit/navigation'
@@ -199,6 +199,18 @@ export const WaitBeforeSearch = Command.define('WaitBeforeSearch', {
   execute: ({ query }) =>
     Effect.sleep(SEARCH_DEBOUNCE).pipe(
       Effect.as(Message.CompletedWaitBeforeSearch({ query })),
+    ),
+})
+
+/** A pause before lyrics that failed to load are asked for once more. */
+const LYRICS_RETRY_DELAY = Duration.seconds(2)
+
+export const WaitBeforeRetryLyrics = Command.define('WaitBeforeRetryLyrics', {
+  args: { videoId: Schema.String },
+  messages: [Message.CompletedWaitBeforeRetryLyrics],
+  execute: ({ videoId }) =>
+    Effect.sleep(LYRICS_RETRY_DELAY).pipe(
+      Effect.as(Message.CompletedWaitBeforeRetryLyrics({ videoId })),
     ),
 })
 

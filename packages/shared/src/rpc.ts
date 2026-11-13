@@ -6,6 +6,8 @@ import {
   AlbumSummary,
   ArtistDetails,
   ArtistSummary,
+  MoodDetails,
+  MoodGroup,
   MusicNotFoundError,
   MyLibrary,
   MyPlaylistDetails,
@@ -16,6 +18,7 @@ import {
   PlaylistSummary,
   Song,
   SongDetails,
+  TopResult,
   YouTubeMusicError,
 } from './domain.ts'
 
@@ -48,6 +51,25 @@ export const searchPlaylistsRpc = Rpc.make('searchPlaylists', {
   payload: SearchPayload,
   success: Schema.Array(PlaylistSummary),
   error: YouTubeMusicError,
+})
+
+/** What YouTube Music shows first for a search, when it picks anything. */
+export const searchTopResultRpc = Rpc.make('searchTopResult', {
+  payload: SearchPayload,
+  success: Schema.Option(TopResult),
+  error: YouTubeMusicError,
+})
+
+/** YouTube Music's moods and genres, for browsing. */
+export const getMoodsAndGenresRpc = Rpc.make('getMoodsAndGenres', {
+  success: Schema.Array(MoodGroup),
+  error: YouTubeMusicError,
+})
+
+export const getMoodRpc = Rpc.make('getMood', {
+  payload: Schema.Struct({ params: Schema.String }),
+  success: MoodDetails,
+  error: LookupError,
 })
 
 export const getSongRpc = Rpc.make('getSong', {
@@ -109,6 +131,9 @@ export const MusicRpcs = RpcGroup.make(
   searchArtistsRpc,
   searchAlbumsRpc,
   searchPlaylistsRpc,
+  searchTopResultRpc,
+  getMoodsAndGenresRpc,
+  getMoodRpc,
   getSongRpc,
   getArtistRpc,
   getAlbumRpc,

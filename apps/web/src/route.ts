@@ -42,6 +42,8 @@ export const AppRoute = defineRouteUnion({
   Playlist: { playlistId: Schema.String },
   /** One of the playlists made in the app. */
   MyPlaylist: { playlistId: Schema.String },
+  /** One of YouTube Music's moods or genres. */
+  Mood: { params: Schema.String },
   NotFound: { path: Schema.String },
 })
 export type AppRoute = typeof AppRoute.Type
@@ -96,8 +98,15 @@ export const myPlaylistRouter = pipe(
   Route.mapTo(AppRoute.MyPlaylist),
 )
 
+export const moodRouter = pipe(
+  literal('browse'),
+  slash(string('params')),
+  Route.mapTo(AppRoute.Mood),
+)
+
 const routeParser = Route.oneOf(
   myPlaylistRouter,
+  moodRouter,
   songRouter,
   artistRouter,
   albumRouter,
@@ -152,6 +161,7 @@ export const routeTab = (route: AppRoute): Option.Option<Tab> =>
     Album: () => Option.none(),
     Playlist: () => Option.none(),
     MyPlaylist: () => Option.none(),
+    Mood: () => Option.none(),
     NotFound: () => Option.none(),
   })
 
@@ -169,5 +179,6 @@ export const pageKey = (route: AppRoute): string =>
     Album: ({ albumId }) => `album/${albumId}`,
     Playlist: ({ playlistId }) => `playlist/${playlistId}`,
     MyPlaylist: ({ playlistId }) => `my-playlist/${playlistId}`,
+    Mood: ({ params }) => `mood/${params}`,
     NotFound: ({ path }) => `not-found/${path}`,
   })

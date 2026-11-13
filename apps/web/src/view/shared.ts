@@ -330,12 +330,25 @@ export const playlistCover = (
 
 const ROW_ARTWORK_WIDTH = 48
 
+/**
+ * What an album's tracklist knows about its rows: whose album it is, so a
+ * row names its artists only when they differ, and which tracks are
+ * explicit. Its rows also show their lengths.
+ */
+export type AlbumContext = Readonly<{
+  artistNames: string
+  explicitVideoIds: ReadonlyArray<string>
+}>
+
 type SongRowConfig = Readonly<{
   song: Song
   /** The list tapping this row plays, starting from this song. */
   playlist: ReadonlyArray<Song>
   maybeTrackNumber: Option.Option<number>
   isAlbumHidden: boolean
+  /** Lets a long title take two lines, where versions of a song differ only at the end. */
+  isTitleWrapped: boolean
+  maybeAlbumContext: Option.Option<AlbumContext>
   playing: NowPlaying
   /**
    * Lets a finger swipe the row to queue the song. None when the row sits in
@@ -344,9 +357,19 @@ type SongRowConfig = Readonly<{
   maybeSwipe: Option.Option<Swipe>
 }>
 
+const songRowArtists = (config: SongRowConfig): string => {
+  const names = artistNames(config.song.artists)
+  return Option.exists(
+    config.maybeAlbumContext,
+    context => context.artistNames === names,
+  )
+    ? ''
+    : names
+}
+
 const songRowDetails = (config: SongRowConfig): string =>
   joinDetails([
-    artistNames(config.song.artists),
+    songRowArtists(config),
     config.isAlbumHidden
       ? ''
       : Option.match(config.song.maybeAlbum, {
@@ -354,6 +377,27 @@ const songRowDetails = (config: SongRowConfig): string =>
           onSome: ({ name }) => name,
         }),
   ])
+
+/** The small boxed E that marks an explicit song, as music apps show it. */
+export const explicitBadge = (h: HtmlBuilder<Message>): Html =>
+  h.span(
+    [
+      h.AriaLabel('Explicit'),
+      h.Role('img'),
+      h.Class(
+        'bg-muted-foreground/25 text-muted-foreground inline-flex size-[15px] shrink-0 items-center justify-center rounded-[3px] text-[10px] leading-none font-bold',
+      ),
+    ],
+    ['E'],
+  )
+
+const isExplicitIn = (
+  maybeAlbumContext: Option.Option<AlbumContext>,
+  videoId: string,
+): boolean =>
+  Option.exists(maybeAlbumContext, ({ explicitVideoIds }) =>
+    Array.contains(explicitVideoIds, videoId),
+  )
 
 /** Play `songs` from the one with this id. */
 export const playFrom = (
@@ -443,26 +487,55 @@ export const songRow = (
             [h.Class('flex min-w-0 flex-1 flex-col')],
             [
               h.span(
+                [h.Class('flex min-w-0 items-center gap-1.5')],
                 [
-                  h.Class(
-                    cn(
-                      'line-clamp-1 text-[15px] leading-snug',
-                      isCurrent ? 'text-primary font-semibold' : 'font-medium',
-                    ),
+                  h.span(
+                    [
+                      h.Class(
+                        cn(
+                          'min-w-0 text-[15px] leading-snug',
+                          config.isTitleWrapped
+                            ? 'line-clamp-2'
+                            : 'line-clamp-1',
+                          isCurrent
+                            ? 'text-primary font-semibold'
+                            : 'font-medium',
+                        ),
+                      ),
+                    ],
+                    [song.title],
                   ),
+                  isExplicitIn(config.maybeAlbumContext, song.videoId)
+                    ? explicitBadge(h)
+                    : h.empty,
                 ],
-                [song.title],
               ),
-              h.span(
-                [
-                  h.Class(
-                    'text-muted-foreground line-clamp-1 text-[13px] leading-snug',
+              details === ''
+                ? h.empty
+                : h.span(
+                    [
+                      h.Class(
+                        'text-muted-foreground line-clamp-1 text-[13px] leading-snug',
+                      ),
+                    ],
+                    [details],
                   ),
-                ],
-                [details],
-              ),
             ],
           ),
+          Option.isSome(config.maybeAlbumContext)
+            ? Option.match(song.maybeDurationSeconds, {
+                onNone: () => h.empty,
+                onSome: seconds =>
+                  h.span(
+                    [
+                      h.Class(
+                        'text-muted-foreground shrink-0 text-[13px] tabular-nums',
+                      ),
+                    ],
+                    [formatDuration(Math.round(seconds))],
+                  ),
+              })
+            : h.empty,
         ],
       ),
       h.button(
@@ -521,6 +594,8 @@ export const songList = (
     swipe: Swipe
     isNumbered: boolean
     isAlbumHidden: boolean
+    isTitleWrapped?: boolean
+    maybeAlbumContext?: Option.Option<AlbumContext>
   }>,
   h: HtmlBuilder<Message>,
 ): Html => {
@@ -540,6 +615,8 @@ export const songList = (
                 ? Option.some(index + 1)
                 : Option.none(),
               isAlbumHidden: config.isAlbumHidden,
+              isTitleWrapped: config.isTitleWrapped === true,
+              maybeAlbumContext: config.maybeAlbumContext ?? Option.none(),
               playing: config.playing,
               maybeSwipe: Option.some(config.swipe),
             },
@@ -554,6 +631,10 @@ export const songList = (
 const linkRowClass =
   'flex items-center gap-3 px-4 py-2 active:bg-muted/70 transition-colors'
 
+/**
+ * A row's title and subtitle. Titles take up to two lines, so editions and
+ * versions of one album, which differ only at the end, stay told apart.
+ */
 const rowText = (
   title: string,
   subtitle: string,
@@ -563,7 +644,7 @@ const rowText = (
     [h.Class('flex min-w-0 flex-1 flex-col')],
     [
       h.span(
-        [h.Class('line-clamp-1 text-[15px] leading-snug font-medium')],
+        [h.Class('line-clamp-2 text-[15px] leading-snug font-medium')],
         [title],
       ),
       subtitle === ''
@@ -752,7 +833,7 @@ const cardTitle = (
     [
       h.Class(
         cn(
-          'mt-2 line-clamp-1 text-[13px] leading-tight font-medium',
+          'mt-2 line-clamp-2 text-[13px] leading-tight font-medium',
           isCentered && 'text-center',
         ),
       ),
@@ -953,7 +1034,12 @@ export const songGridShelf = (
             [
               h.Role('list'),
               h.Class(
-                'no-scrollbar grid snap-x snap-mandatory auto-cols-[88%] grid-flow-col overflow-x-auto overscroll-x-contain',
+                cn(
+                  'no-scrollbar grid snap-x snap-mandatory grid-flow-col overflow-x-auto overscroll-x-contain',
+                  songs.length > SONGS_PER_GRID_COLUMN
+                    ? 'auto-cols-[88%]'
+                    : 'auto-cols-[100%]',
+                ),
               ),
               h.Style({
                 gridTemplateRows: `repeat(${Math.min(SONGS_PER_GRID_COLUMN, songs.length)}, auto)`,
@@ -975,6 +1061,8 @@ export const songGridShelf = (
                       playlist: songs,
                       maybeTrackNumber: Option.none(),
                       isAlbumHidden: false,
+                      isTitleWrapped: false,
+                      maybeAlbumContext: Option.none(),
                       playing: config.playing,
                       maybeSwipe: Option.none(),
                     },

@@ -9,11 +9,16 @@ import {
   type ArtistSummary,
   type Artwork,
   type Lyrics,
+  type MoodCategory,
+  type MoodDetails,
+  type MoodGroup,
   type PlaylistDetails,
+  type PlaylistShelf,
   type PlaylistSummary,
   ReleaseKind,
   type Song,
   type Thumbnail,
+  type TopResult,
 } from '@music/shared'
 
 // COLLECTIONS
@@ -301,11 +306,14 @@ export const albumFromListItem = (
   )
 
 /**
- * An album from an artist page carousel. Those cards omit the artist and
+ * An album from a carousel. Cards on an artist page omit the artist and
  * sometimes the release kind, so the caller supplies both.
  */
 export const albumFromTwoRowItem =
-  (artist: ArtistLink, defaultKind: Option.Option<ReleaseKind>) =>
+  (
+    fallbackArtists: ReadonlyArray<ArtistLink>,
+    defaultKind: Option.Option<ReleaseKind>,
+  ) =>
   (item: YTNodes.MusicTwoRowItem): Option.Option<AlbumSummary> =>
     Option.all({
       id: nonEmptyString(item.id),
@@ -316,7 +324,7 @@ export const albumFromTwoRowItem =
         title,
         artists: Array.match(toArtistLinks(item.artists), {
           onNonEmpty: links => links,
-          onEmpty: () => [artist],
+          onEmpty: () => fallbackArtists,
         }),
         maybeKind: Option.orElse(
           releaseKindFromSubtitle(item.subtitle),
@@ -343,6 +351,17 @@ const withAlbumContext =
       onEmpty: () => album.artwork,
     }),
   })
+
+const EXPLICIT_BADGE = 'MUSIC_EXPLICIT_BADGE'
+
+/** Whether YouTube Music marks a row explicit. */
+export const isExplicit = (item: YTNodes.MusicResponsiveListItem): boolean =>
+  Array.some(
+    item.badges ?? [],
+    badge =>
+      badge.is(YTNodes.MusicInlineBadge) &&
+      badge.as(YTNodes.MusicInlineBadge).icon_type === EXPLICIT_BADGE,
+  )
 
 /** The album page. Returns None when the page has no recognizable header. */
 export const toAlbumDetails = (
@@ -376,6 +395,9 @@ export const toAlbumDetails = (
           tracks: Array.map(
             filterSome(page.contents, songFromListItem),
             withAlbumContext(album),
+          ),
+          explicitVideoIds: filterSome(page.contents, item =>
+            isExplicit(item) ? nonEmptyString(item.id) : Option.none(),
           ),
         }
       }),
@@ -479,11 +501,11 @@ export const toArtistDetails = (
           ),
           albums: filterSome(
             carouselItems(page.sections, ALBUMS_SHELF_TITLE),
-            albumFromTwoRowItem(artistLink, Option.some('Album')),
+            albumFromTwoRowItem([artistLink], Option.some('Album')),
           ),
           singles: filterSome(
             carouselItems(page.sections, SINGLES_SHELF_TITLE),
-            albumFromTwoRowItem(artistLink, Option.none()),
+            albumFromTwoRowItem([artistLink], Option.none()),
           ),
         }
       }),
@@ -555,3 +577,365 @@ export const toPlaylistDetails = (
       })),
     ),
   )
+
+// TOP RESULT
+
+const PageTypePayload = Schema.Struct({
+  browseId: Schema.String,
+  browseEndpointContextSupportedConfigs: Schema.Struct({
+    browseEndpointContextMusicConfig: Schema.Struct({
+      pageType: Schema.String,
+    }),
+  }),
+})
+
+const decodePageTypePayload = Schema.decodeUnknownOption(PageTypePayload)
+
+const WatchPayload = Schema.Struct({ videoId: Schema.String })
+
+const decodeWatchPayload = Schema.decodeUnknownOption(WatchPayload)
+
+const ARTIST_PAGE = 'MUSIC_PAGE_TYPE_ARTIST'
+const ALBUM_PAGE = 'MUSIC_PAGE_TYPE_ALBUM'
+const PLAYLIST_PAGE = 'MUSIC_PAGE_TYPE_PLAYLIST'
+
+/**
+ * Playlist ids that start with `VLRD` are YouTube's generated mixes and
+ * radio stations, except `VLRDCLAK`, its own curated playlists.
+ */
+const isRadioPlaylist = (playlistId: string): boolean =>
+  playlistId.startsWith('VLRD') && !playlistId.startsWith('VLRDCLAK')
+
+const CLOCK = /^\d+(:\d{2}){1,2}$/
+
+/** `3:57` → `237`, `1:02:03` → `3723`. */
+export const secondsFromClock = (text: string): Option.Option<number> =>
+  pipe(
+    Option.liftPredicate(text, value => CLOCK.test(value)),
+    Option.map(value =>
+      Array.reduce(
+        value.split(':'),
+        0,
+        (total, part) => total * 60 + Number(part),
+      ),
+    ),
+  )
+
+/** The credits in a subtitle: the runs that link to an artist page. */
+const subtitleArtistLinks = (
+  subtitle: Misc.Text | null | undefined,
+): ReadonlyArray<ArtistLink> =>
+  filterSome(subtitle?.runs ?? [], run =>
+    pipe(
+      decodePageTypePayload(
+        'endpoint' in run ? run.endpoint?.payload : undefined,
+      ),
+      Option.filter(
+        payload =>
+          payload.browseEndpointContextSupportedConfigs
+            .browseEndpointContextMusicConfig.pageType === ARTIST_PAGE,
+      ),
+      Option.map(({ browseId }) => ({
+        maybeId: Option.some(browseId),
+        name: run.text,
+      })),
+    ),
+  )
+
+const YEAR = /^\d{4}$/
+
+const PLAYLIST_LABEL = 'Playlist'
+
+const playlistSubtitle = (
+  maybeSubtitle: TextLike | null | undefined,
+): Option.Option<string> =>
+  pipe(
+    subtitleSegments(maybeSubtitle),
+    Array.filter(segment => segment !== PLAYLIST_LABEL),
+    Array.join(' · '),
+    Option.liftPredicate(String.isNonEmpty),
+  )
+
+type TopResultCard = Readonly<{
+  title: Misc.Text
+  subtitle: Misc.Text
+  on_tap: YTNodes.NavigationEndpoint
+  thumbnail: Readonly<{ contents: ReadonlyArray<Misc.Thumbnail> }> | null
+}>
+
+const topResultFromPage = (
+  card: TopResultCard,
+  title: string,
+  browseId: string,
+  pageType: string,
+): Option.Option<TopResult> => {
+  const artwork = toArtwork(card.thumbnail?.contents)
+  if (pageType === ARTIST_PAGE) {
+    return Option.some({
+      _tag: 'Artist',
+      artist: {
+        id: browseId,
+        name: title,
+        maybeAudience: audienceFromSubtitle(card.subtitle),
+        artwork,
+      },
+    })
+  }
+  if (pageType === ALBUM_PAGE) {
+    return Option.some({
+      _tag: 'Album',
+      album: {
+        id: browseId,
+        title,
+        artists: subtitleArtistLinks(card.subtitle),
+        maybeKind: releaseKindFromSubtitle(card.subtitle),
+        maybeYear: Array.findFirst(subtitleSegments(card.subtitle), segment =>
+          YEAR.test(segment),
+        ),
+        artwork,
+      },
+    })
+  }
+  if (pageType === PLAYLIST_PAGE && !isRadioPlaylist(browseId)) {
+    return Option.some({
+      _tag: 'Playlist',
+      playlist: {
+        id: browseId,
+        title,
+        maybeSubtitle: playlistSubtitle(card.subtitle),
+        artwork,
+      },
+    })
+  }
+  return Option.none()
+}
+
+const topResultFromVideo = (
+  card: TopResultCard,
+  title: string,
+  videoId: string,
+): TopResult => ({
+  _tag: 'Song',
+  song: {
+    videoId,
+    title,
+    artists: subtitleArtistLinks(card.subtitle),
+    maybeAlbum: Option.none(),
+    maybeDurationSeconds: Array.findFirst(
+      Array.reverse(subtitleSegments(card.subtitle)),
+      secondsFromClock,
+    ),
+    artwork: toArtwork(card.thumbnail?.contents),
+  },
+})
+
+/**
+ * The card YouTube Music puts above its search results: an artist, album,
+ * playlist, or song (often its music video). Anything else, such as a
+ * radio station, is left out.
+ */
+export const topResultFromCard = (
+  card: TopResultCard,
+): Option.Option<TopResult> => {
+  const payload = (card.title.endpoint ?? card.on_tap).payload
+  return Option.flatMap(textToOption(card.title), title =>
+    Option.match(decodePageTypePayload(payload), {
+      onSome: ({ browseId, browseEndpointContextSupportedConfigs }) =>
+        topResultFromPage(
+          card,
+          title,
+          browseId,
+          browseEndpointContextSupportedConfigs.browseEndpointContextMusicConfig
+            .pageType,
+        ),
+      onNone: () =>
+        Option.map(decodeWatchPayload(payload), ({ videoId }) =>
+          topResultFromVideo(card, title, videoId),
+        ),
+    }),
+  )
+}
+
+// MOODS AND GENRES
+
+const RawText = Schema.Struct({
+  runs: Schema.Array(Schema.Struct({ text: Schema.String })),
+})
+
+const RawNavigationButton = Schema.Struct({
+  buttonText: RawText,
+  solid: Schema.optional(
+    Schema.Struct({ leftStripeColor: Schema.optional(Schema.Number) }),
+  ),
+  clickCommand: Schema.Struct({
+    browseEndpoint: Schema.Struct({ params: Schema.String }),
+  }),
+})
+
+const RawGrid = Schema.Struct({
+  header: Schema.optional(
+    Schema.Struct({ gridHeaderRenderer: Schema.Struct({ title: RawText }) }),
+  ),
+  items: Schema.Array(
+    Schema.Struct({
+      musicNavigationButtonRenderer: Schema.optional(RawNavigationButton),
+    }),
+  ),
+})
+
+/** The parts of the moods and genres page this app reads. */
+const RawMoodsPage = Schema.Struct({
+  contents: Schema.Struct({
+    singleColumnBrowseResultsRenderer: Schema.Struct({
+      tabs: Schema.Array(
+        Schema.Struct({
+          tabRenderer: Schema.Struct({
+            content: Schema.Struct({
+              sectionListRenderer: Schema.Struct({
+                contents: Schema.Array(
+                  Schema.Struct({ gridRenderer: Schema.optional(RawGrid) }),
+                ),
+              }),
+            }),
+          }),
+        }),
+      ),
+    }),
+  }),
+})
+
+const decodeRawMoodsPage = Schema.decodeUnknownOption(RawMoodsPage)
+
+const rawText = ({ runs }: typeof RawText.Type): string =>
+  pipe(
+    runs,
+    Array.map(({ text }) => text),
+    Array.join(''),
+    String.trim,
+  )
+
+const RGB_MASK = 0xffffff
+
+/** YouTube's colors are ARGB numbers: `0xffa4c5ff` → `#a4c5ff`. */
+export const hexFromArgb = (argb: number): string =>
+  `#${(argb & RGB_MASK).toString(16).padStart(6, '0')}`
+
+const toMoodCategory = (
+  button: typeof RawNavigationButton.Type,
+): Option.Option<MoodCategory> =>
+  Option.map(nonEmptyString(rawText(button.buttonText)), title => ({
+    params: button.clickCommand.browseEndpoint.params,
+    title,
+    maybeColor: Option.map(
+      Option.fromNullishOr(button.solid?.leftStripeColor),
+      hexFromArgb,
+    ),
+  }))
+
+const toMoodGroup = (grid: typeof RawGrid.Type): Option.Option<MoodGroup> => {
+  const categories = filterSome(grid.items, item =>
+    Option.flatMap(
+      Option.fromNullishOr(item.musicNavigationButtonRenderer),
+      toMoodCategory,
+    ),
+  )
+  return Array.isReadonlyArrayNonEmpty(categories)
+    ? Option.some({
+        title: Option.match(Option.fromNullishOr(grid.header), {
+          onNone: () => '',
+          onSome: ({ gridHeaderRenderer }) => rawText(gridHeaderRenderer.title),
+        }),
+        categories,
+      })
+    : Option.none()
+}
+
+/**
+ * The moods and genres page, read from YouTube's raw response because the
+ * parsed one drops each category's color. None when it no longer has the
+ * shape this expects.
+ */
+export const toMoodGroups = (
+  response: unknown,
+): Option.Option<ReadonlyArray<MoodGroup>> =>
+  Option.map(decodeRawMoodsPage(response), page =>
+    pipe(
+      page.contents.singleColumnBrowseResultsRenderer.tabs,
+      Array.flatMap(
+        ({ tabRenderer }) => tabRenderer.content.sectionListRenderer.contents,
+      ),
+      Array.flatMap(({ gridRenderer }) => Array.fromNullishOr(gridRenderer)),
+      grids => filterSome(grids, toMoodGroup),
+    ),
+  )
+
+/** A playlist card from a carousel. */
+export const playlistFromTwoRowItem = (
+  item: YTNodes.MusicTwoRowItem,
+): Option.Option<PlaylistSummary> =>
+  Option.all({
+    id: nonEmptyString(item.id),
+    title: textToOption(item.title),
+  }).pipe(
+    Option.map(({ id, title }) => ({
+      id,
+      title,
+      maybeSubtitle: playlistSubtitle(item.subtitle),
+      artwork: toArtwork(item.thumbnail),
+    })),
+  )
+
+/** One shelf of a mood or genre page: a carousel, or a grid. */
+export type MoodShelf = Readonly<{
+  title: string
+  items: ReadonlyArray<Helpers.YTNode>
+}>
+
+const twoRowItems = (
+  shelf: MoodShelf,
+): ReadonlyArray<YTNodes.MusicTwoRowItem> =>
+  filterSome(shelf.items, item =>
+    item.is(YTNodes.MusicTwoRowItem)
+      ? Option.some(item.as(YTNodes.MusicTwoRowItem))
+      : Option.none(),
+  )
+
+const PLAYLIST_ITEM = 'playlist'
+const ALBUM_ITEM = 'album'
+
+const toPlaylistShelf = (shelf: MoodShelf): Option.Option<PlaylistShelf> => {
+  const playlists = filterSome(twoRowItems(shelf), item =>
+    item.item_type === PLAYLIST_ITEM
+      ? playlistFromTwoRowItem(item)
+      : Option.none(),
+  )
+  return Array.isReadonlyArrayNonEmpty(playlists)
+    ? Option.some({ title: shelf.title, playlists })
+    : Option.none()
+}
+
+/**
+ * A mood or genre's page: its songs, its playlists in shelves, and its
+ * albums. Music videos are left out.
+ */
+export const toMoodDetails = (page: {
+  readonly title: string
+  readonly shelves: ReadonlyArray<MoodShelf>
+}): MoodDetails => ({
+  title: page.title,
+  songs: filterSome(
+    Array.flatMap(page.shelves, shelf => shelf.items),
+    item =>
+      item.is(YTNodes.MusicResponsiveListItem)
+        ? songFromListItem(item.as(YTNodes.MusicResponsiveListItem))
+        : Option.none(),
+  ),
+  playlistShelves: filterSome(page.shelves, toPlaylistShelf),
+  albums: filterSome(
+    Array.filter(
+      Array.flatMap(page.shelves, twoRowItems),
+      item => item.item_type === ALBUM_ITEM,
+    ),
+    albumFromTwoRowItem([], Option.none()),
+  ),
+})

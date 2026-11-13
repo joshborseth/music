@@ -28,7 +28,11 @@ import { type Model } from './model'
 import { DragToDismiss, RestoreScroll } from './mount'
 import { SendToSession, UnlockPhoneAudio } from './playback/command'
 import { toQueueTrack } from './playback/queueTrack'
-import { type RequestError, songSearchQuery } from './query'
+import {
+  type RequestError,
+  songSearchQuery,
+  topResultSearchQuery,
+} from './query'
 import { AppRoute, searchUrl } from './route'
 import { initialModel, update } from './update'
 import { view } from './view'
@@ -98,7 +102,7 @@ describe('search page', () => {
         modifyFields(emptySearchModel, { recentSearches: () => ['rumours'] }),
       ),
       pageScrolled,
-      expect(role('heading', { name: 'Recent searches' })).toExist(),
+      expect(role('heading', { name: 'Recently Searched' })).toExist(),
       click(role('button', { name: 'rumours' })),
       Command.expectExact(
         ReplaceSearchUrl({ url: '/search?q=rumours' }),
@@ -114,12 +118,73 @@ describe('search page', () => {
     )
   })
 
-  test('with no history, explains what the app does', () => {
+  test('with no query, offers moods and genres to browse', () => {
+    const model = modifyFields(emptySearchModel, {
+      moodGroups: query =>
+        modifyFields(query, {
+          data: () =>
+            AsyncData.succeed([
+              {
+                title: 'Moods & moments',
+                categories: [
+                  {
+                    params: 'chill-params',
+                    title: 'Chill',
+                    maybeColor: Option.some('#a4c5ff'),
+                  },
+                ],
+              },
+            ]),
+        }),
+    })
     scene(
       { update, view },
-      given(emptySearchModel),
+      given(model),
       pageScrolled,
-      expect(text('Search YouTube Music')).toExist(),
+      expect(role('heading', { name: 'Moods & moments' })).toExist(),
+      expect(role('link', { name: 'Chill' })).toHaveAttr(
+        'href',
+        '/browse/chill-params',
+      ),
+    )
+  })
+
+  test('puts the top result above the songs', () => {
+    const searched = searchResultModel(
+      'fleetwood mac',
+      Result.succeed([theChain]),
+    )
+    const withTopResult = update(
+      searched,
+      Message.GotTopResultSearchMessage({
+        message: topResultSearchQuery.Message.CompletedFetch({
+          args: { query: 'fleetwood mac' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed(
+            Option.some({
+              _tag: 'Artist' as const,
+              artist: {
+                id: 'UCCzULu3prrEaPvM2ZtkJlYQ',
+                name: 'Fleetwood Mac',
+                maybeAudience: Option.some('20M monthly audience'),
+                artwork: [],
+              },
+            }),
+          ),
+        }),
+      }),
+    ).model
+    scene(
+      { update, view },
+      given(withTopResult),
+      pageScrolled,
+      expect(role('heading', { name: 'Top Result' })).toExist(),
+      expect(role('link', { name: /Fleetwood Mac/ })).toHaveAttr(
+        'href',
+        '/artist/UCCzULu3prrEaPvM2ZtkJlYQ',
+      ),
+      expect(role('heading', { name: 'Songs' })).toExist(),
+      expect(role('button', { name: /The Chain/ })).toExist(),
     )
   })
 

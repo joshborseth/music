@@ -7,6 +7,8 @@ import {
   AlbumSummary,
   ArtistDetails,
   ArtistSummary,
+  MoodDetails,
+  MoodGroup,
   type MusicNotFoundError,
   MyLibrary,
   MyPlaylistDetails,
@@ -15,6 +17,7 @@ import {
   PlaylistSummary,
   Song,
   SongDetails,
+  TopResult,
   type YouTubeMusicError,
 } from '@music/shared'
 
@@ -89,6 +92,39 @@ export const playlistSearchQuery = Query.define({
   error: RequestError,
   execute: ({ query }) =>
     MusicClient.use(client => client.searchPlaylists({ query })).pipe(
+      withRequestError,
+    ),
+})
+
+/** What YouTube Music shows first for a search, if anything. */
+export const topResultSearchQuery = Query.define({
+  name: 'TopResultSearch',
+  args: SearchArgs,
+  data: Schema.Option(TopResult),
+  error: RequestError,
+  execute: ({ query }) =>
+    MusicClient.use(client => client.searchTopResult({ query })).pipe(
+      withRequestError,
+    ),
+})
+
+/** YouTube Music's moods and genres, for browsing from an empty search. */
+export const moodGroupsQuery = Query.define({
+  name: 'MoodGroups',
+  data: Schema.Array(MoodGroup),
+  error: RequestError,
+  execute: MusicClient.use(client => client.getMoodsAndGenres()).pipe(
+    withRequestError,
+  ),
+})
+
+export const moodQuery = Query.define({
+  name: 'Mood',
+  args: { params: Schema.String },
+  data: MoodDetails,
+  error: RequestError,
+  execute: ({ params }) =>
+    MusicClient.use(client => client.getMood({ params })).pipe(
       withRequestError,
     ),
 })

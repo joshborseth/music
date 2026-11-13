@@ -10,6 +10,7 @@ import { Model } from '../model'
 import {
   albumQuery,
   artistQuery,
+  moodQuery,
   myPlaylistQuery,
   playlistQuery,
   songQuery,
@@ -21,6 +22,7 @@ import { artistView } from './artist'
 import { detailNavBar, navBarButton, page, tabBar } from './chrome'
 import { homeView } from './home'
 import { libraryView } from './library'
+import { moodView } from './mood'
 import { myPlaylistView } from './myPlaylist'
 import { type PageModel, memoizedPage } from './page'
 import { hasMiniPlayer, playerView } from './player'
@@ -46,6 +48,7 @@ const pageTitle = (model: Model): string =>
     Album: () => `Album · ${APP_NAME}`,
     Playlist: () => `Playlist · ${APP_NAME}`,
     MyPlaylist: () => `Playlist · ${APP_NAME}`,
+    Mood: () => `Browse · ${APP_NAME}`,
     NotFound: () => `Not found · ${APP_NAME}`,
   })
 
@@ -185,6 +188,15 @@ const routeParts = (
         ),
       )
     },
+    Mood: ({ params }) =>
+      detailPage(
+        Option.map(
+          AsyncData.getData(moodQuery.read(model.moods, { params })),
+          ({ title }) => title,
+        ),
+        moodView(model, params, h),
+        h,
+      ),
     NotFound: () =>
       detailPage(
         Option.none(),

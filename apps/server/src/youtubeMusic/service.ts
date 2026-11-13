@@ -12,15 +12,19 @@ import {
   type AlbumSummary,
   type ArtistDetails,
   type ArtistSummary,
+  type MoodDetails,
+  type MoodGroup,
   MusicNotFoundError,
   type PlaylistDetails,
   type PlaylistSummary,
   type Song,
   type SongDetails,
+  type TopResult,
   YouTubeMusicError,
 } from '@music/shared'
 
 import {
+  type MoodShelf,
   albumFromListItem,
   artistFromListItem,
   filterSome,
@@ -30,7 +34,10 @@ import {
   toAlbumDetails,
   toArtistDetails,
   toLyrics,
+  toMoodDetails,
+  toMoodGroups,
   toPlaylistDetails,
+  topResultFromCard,
 } from './mapping.ts'
 
 /**
@@ -84,6 +91,9 @@ type PlaylistPage = YTMusic.Playlist
  */
 const MAX_PLAYLIST_SONGS = 500
 
+const MOODS_AND_GENRES_BROWSE_ID = 'FEmusic_moods_and_genres'
+const MOOD_BROWSE_ID = 'FEmusic_moods_and_genres_category'
+
 export interface YouTubeMusicShape {
   readonly searchSongs: (
     query: string,
@@ -97,6 +107,18 @@ export interface YouTubeMusicShape {
   readonly searchPlaylists: (
     query: string,
   ) => Effect.Effect<ReadonlyArray<PlaylistSummary>, YouTubeMusicError>
+  /** The card YouTube Music shows above its results, if it shows one. */
+  readonly searchTopResult: (
+    query: string,
+  ) => Effect.Effect<Option.Option<TopResult>, YouTubeMusicError>
+  /** YouTube Music's moods and genres, in their groups. */
+  readonly getMoodsAndGenres: () => Effect.Effect<
+    ReadonlyArray<MoodGroup>,
+    YouTubeMusicError
+  >
+  readonly getMood: (
+    params: string,
+  ) => Effect.Effect<MoodDetails, MusicNotFoundError | YouTubeMusicError>
   readonly getSong: (
     videoId: string,
   ) => Effect.Effect<SongDetails, MusicNotFoundError | YouTubeMusicError>
@@ -182,6 +204,84 @@ const make = Effect.gen(function* () {
   ) {
     const items = yield* searchShelf(query, 'playlist')
     return filterSome(items, playlistFromListItem)
+  })
+
+  const searchTopResult = Effect.fn('YouTubeMusic.searchTopResult')(function* (
+    query: string,
+  ) {
+    const search = yield* callYouTube(() => music.search(query))
+    return Option.flatMap(
+      Option.fromNullishOr(
+        search.contents?.firstOfType(YTNodes.MusicCardShelf),
+      ),
+      topResultFromCard,
+    )
+  })
+
+  const getMoodsAndGenres = Effect.fn('YouTubeMusic.getMoodsAndGenres')(
+    function* () {
+      const response = yield* callYouTube(() =>
+        innertube.actions.execute('/browse', {
+          browseId: MOODS_AND_GENRES_BROWSE_ID,
+          client: 'YTMUSIC',
+        }),
+      )
+      return yield* Option.match(toMoodGroups(response.data), {
+        onNone: () =>
+          Effect.fail(
+            new YouTubeMusicError({
+              message: 'The moods and genres page changed shape',
+            }),
+          ),
+        onSome: Effect.succeed,
+      })
+    },
+  )
+
+  const getMood = Effect.fn('YouTubeMusic.getMood')(function* (params: string) {
+    const response = yield* lookUp(params, () =>
+      innertube.actions.execute('/browse', {
+        browseId: MOOD_BROWSE_ID,
+        params,
+        client: 'YTMUSIC',
+        parse: true,
+      }),
+    )
+    const carousels: ReadonlyArray<MoodShelf> = Array.map(
+      response.contents_memo?.getType(YTNodes.MusicCarouselShelf) ?? [],
+      carousel => ({
+        title: carousel.header?.title.toString().trim() ?? '',
+        items: carousel.contents,
+      }),
+    )
+    const grids: ReadonlyArray<MoodShelf> = Array.map(
+      response.contents_memo?.getType(YTNodes.Grid) ?? [],
+      grid => ({
+        title: pipe(
+          Option.fromNullishOr(grid.header),
+          Option.filter(header => header.is(YTNodes.GridHeader)),
+          Option.map(header =>
+            header.as(YTNodes.GridHeader).title.toString().trim(),
+          ),
+          Option.getOrElse(() => ''),
+        ),
+        items: grid.items,
+      }),
+    )
+    const maybeTitle = pipe(
+      Option.fromNullishOr(response.header_memo?.getType(YTNodes.MusicHeader)),
+      Option.flatMap(Array.head),
+      Option.flatMap(header => Option.fromNullishOr(header.title)),
+      Option.map(title => title.toString().trim()),
+    )
+    const details = toMoodDetails({
+      title: Option.getOrElse(maybeTitle, () => ''),
+      shelves: [...carousels, ...grids],
+    })
+    return Array.isReadonlyArrayEmpty(details.playlistShelves) &&
+      Array.isReadonlyArrayEmpty(details.songs)
+      ? yield* Effect.fail(new MusicNotFoundError({ id: params }))
+      : details
   })
 
   const upNextSongs = (videoId: string) =>
@@ -289,6 +389,9 @@ const make = Effect.gen(function* () {
     searchArtists,
     searchAlbums,
     searchPlaylists,
+    searchTopResult,
+    getMoodsAndGenres,
+    getMood,
     getSong,
     getUpNext,
     getDurationSeconds,

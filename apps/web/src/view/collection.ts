@@ -8,6 +8,7 @@ import { Message } from '../message'
 import { SyncTitleBarReveal } from '../mount'
 import { type Swipe } from '../playback/swipe'
 import {
+  type AlbumContext,
   ArtworkShape,
   type NowPlaying,
   artworkImage,
@@ -81,6 +82,7 @@ export const collectionView = (
     footer: string
     playing: NowPlaying
     swipe: Swipe
+    maybeAlbumContext?: Option.Option<AlbumContext>
   }>,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -145,6 +147,7 @@ export const collectionView = (
               swipe: config.swipe,
               isNumbered: config.isNumbered,
               isAlbumHidden: true,
+              maybeAlbumContext: config.maybeAlbumContext ?? Option.none(),
             },
             h,
           ),

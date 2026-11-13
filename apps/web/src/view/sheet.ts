@@ -645,6 +645,41 @@ const confirmDeletePlaylist = (
     ],
   )
 
+const confirmClearLibrary = (h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.Class('flex flex-col gap-4 pb-2')],
+    [
+      sheetHeading(
+        'Clear History?',
+        Option.some(
+          'The songs played and pages opened on this device are forgotten. Your playlists and liked songs stay.',
+        ),
+        h,
+      ),
+      h.div(
+        [h.Class('flex gap-3 px-5')],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ClickedCloseSheet()),
+              h.Class(cn(sheetButtonClass, 'bg-secondary text-primary')),
+            ],
+            ['Cancel'],
+          ),
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ConfirmedClearLibrary()),
+              h.Class(cn(sheetButtonClass, 'bg-destructive text-white')),
+            ],
+            ['Clear'],
+          ),
+        ],
+      ),
+    ],
+  )
+
 const sheetContent = (
   model: Model,
   content: SheetContent,
@@ -681,6 +716,7 @@ const sheetContent = (
       ),
     ConfirmDeletePlaylist: ({ playlistId, title }) =>
       confirmDeletePlaylist(playlistId, title, h),
+    ConfirmClearLibrary: () => confirmClearLibrary(h),
   })
 
 const sheetLabel = (content: SheetContent): string =>
@@ -692,6 +728,7 @@ const sheetLabel = (content: SheetContent): string =>
     PlaylistActions: ({ title }) => title,
     RenamePlaylist: () => 'Rename playlist',
     ConfirmDeletePlaylist: () => 'Delete playlist',
+    ConfirmClearLibrary: () => 'Clear history',
   })
 
 const sheetFrame = (

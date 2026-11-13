@@ -310,8 +310,12 @@
   }
 }
 
+/* Hidden until the page scrolls. A page too short to scroll has no active
+   scroll timeline, and an animation on an inactive timeline does nothing, so
+   the hidden state must be the element's own, not the animation's. */
 @supports (animation-timeline: scroll()) {
   .reveal-on-scroll {
+    opacity: 0;
     animation: reveal linear both;
     animation-timeline: --page;
     animation-range: var(--reveal-start, 40px) var(--reveal-end, 96px);
@@ -706,6 +710,50 @@
   padding-top: 1.5rem;
 }
 
+/* MARQUEE
+
+   A line too long for the player scrolls slowly to the left, its copy
+   following a gap behind, then rests at the start; the `Marquee` Mount
+   sets --marquee-distance and --marquee-duration and marks it
+   data-overflowing. The ends cut off plainly: no fades. */
+
+.marquee {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.marquee-track {
+  display: inline-flex;
+  gap: 48px;
+}
+
+.marquee-copy {
+  display: none;
+}
+
+.marquee[data-overflowing] .marquee-copy {
+  display: inline;
+}
+
+.marquee[data-overflowing] .marquee-track {
+  animation: marquee var(--marquee-duration, 12s) linear infinite;
+}
+
+/* Still while the player is closed. */
+.sheet[data-state='closed'] .marquee-track {
+  animation-play-state: paused;
+}
+
+@keyframes marquee {
+  0%,
+  30% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(calc(-1 * var(--marquee-distance, 0px)), 0, 0);
+  }
+}
+
 /* SKELETON SHIMMER */
 
 @keyframes shimmer {
@@ -729,6 +777,18 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .marquee {
+    text-overflow: ellipsis;
+  }
+  .marquee-track {
+    display: inline;
+  }
+  .marquee[data-overflowing] .marquee-copy {
+    display: none;
+  }
+  .marquee[data-overflowing] .marquee-track {
+    animation: none;
+  }
   .equalizer-bar,
   .shimmer,
   .lyric-break[data-state='active'] .lyric-dots {
