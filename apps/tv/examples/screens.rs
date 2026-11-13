@@ -98,6 +98,9 @@ fn main() {
             Step::Shot("06a-seek"),
             wait(2000),
             Step::Key(down),
+            // Past Like, Shuffle, and Repeat to Queue.
+            Step::Key(right),
+            Step::Key(right),
             Step::Key(right),
             Step::Key(right),
             Step::Key(right),

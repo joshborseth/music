@@ -194,7 +194,7 @@ describe('shelves', () => {
     expect(shelves[1]?.cards[0]).toMatchObject({ kind: 'Song', id: 'l0' })
   })
 
-  test('home leads with what played lately and leaves playlists to Library', () => {
+  test('home leads with what played lately, each album under its own artist, and leaves playlists to Library', () => {
     const recent = [
       song('r0', { maybeAlbum: Option.some({ id: 'A', name: 'Album A' }) }),
       song('r1', { maybeAlbum: Option.none() }),
@@ -212,7 +212,7 @@ describe('shelves', () => {
         kind: 'Album',
         id: 'A',
         title: 'Album A',
-        subtitle: 'Rick Astley, Guest',
+        subtitle: 'Rick Astley',
         artworkUrl: 'https://lh3.googleusercontent.com/r0=w544-h544',
         track: null,
       },

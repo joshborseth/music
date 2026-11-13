@@ -265,5 +265,7 @@ pub fn sample_view(tracks: Vec<QueueTrack>, current: usize, here: bool) -> View 
         loading: false,
         notice: String::new(),
         utc_offset_minutes: None,
+        repeat: crate::protocol::RepeatMode::Off,
+        shuffle: false,
     }
 }

@@ -256,7 +256,8 @@ export const recentAlbumCards = (
         kind: 'Album',
         id: album.id,
         title: album.name,
-        subtitle: artistNames(song.artists),
+        // The album's artist: a song's featured guests are not the album's.
+        subtitle: artistNames(song.artists.slice(0, 1)),
         artworkUrl: artworkUrl(song.artwork, CARD_ARTWORK_WIDTH),
         track: null,
       })),
