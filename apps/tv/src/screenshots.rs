@@ -9,6 +9,13 @@
 //! The screens load the catalog and artwork from that server like the TV
 //! does, but never open a session: the queue is made up here, so trying it
 //! can't disturb what is playing in the house.
+//!
+//! The software renderer draws a gradient with more than two stops as one
+//! band per pair of stops, and neighbouring bands both paint the pixel
+//! column where they meet. So a faint vertical line shows at every middle
+//! stop of a see-through gradient: at 46% of the width behind the lyrics,
+//! and at 55% over the browse pages. It is not in the app: the TV draws
+//! with Skia, which blends the stops smoothly.
 
 use std::collections::VecDeque;
 use std::rc::Rc;
