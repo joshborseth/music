@@ -4,6 +4,7 @@ import { defineTaggedUnion } from 'foldkit/schema'
 import { Song } from '@music/shared'
 
 import { DownloadKind } from './downloads/domain'
+import { SortableKind } from './library'
 
 /** What an action sheet offers. */
 export const SheetContent = defineTaggedUnion({
@@ -20,6 +21,12 @@ export const SheetContent = defineTaggedUnion({
   ConfirmDeletePlaylist: { playlistId: Schema.String, title: Schema.String },
   /** Forget the albums, artists, and playlists opened on this device. */
   ConfirmClearRecentlyViewed: {},
+  /** Pick the order the Library lists one kind of thing in. */
+  LibrarySort: { kind: SortableKind },
+  /** Search for songs to add to one of my playlists. */
+  AddSongs: { playlistId: Schema.String },
+  /** Pick the mosaic or one song's cover for one of my playlists. */
+  ChoosePlaylistCover: { playlistId: Schema.String },
   /** Take a download off the phone. */
   ConfirmRemoveDownload: {
     kind: DownloadKind,

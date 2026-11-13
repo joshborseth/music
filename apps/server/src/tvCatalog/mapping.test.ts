@@ -79,6 +79,10 @@ const myPlaylist = (
   totalSeconds: 3900,
   covers: [],
   updatedAt: 1,
+  createdAt: 1,
+  maybePlayedAt: Option.none(),
+  maybeDescription: Option.none(),
+  maybeCoverVideoId: Option.none(),
   ...overrides,
 })
 
@@ -96,6 +100,8 @@ const library: MyLibrary = {
   likedVideoIds: ['a'],
   albums: [],
   artists: [],
+  albumPlayedAt: {},
+  artistPlayedAt: {},
 }
 
 describe('toQueueTrack', () => {
@@ -419,6 +425,8 @@ describe('shelves', () => {
         likedVideoIds: [],
         albums: [],
         artists: [],
+        albumPlayedAt: {},
+        artistPlayedAt: {},
       }).map(({ id }) => id),
     ).toEqual(
       Array.from({ length: HOME_PLAYLIST_SHELVES }, (_, index) => `p${index}`),
@@ -505,6 +513,15 @@ describe('collections', () => {
       description: null,
       artworkUrl: null,
     })
+    expect(
+      myPlaylistCollection({
+        playlist: {
+          ...library.playlists[1]!,
+          maybeDescription: Option.some('For the long drive.'),
+        },
+        songs: [song('a')],
+      }),
+    ).toMatchObject({ description: 'For the long drive.' })
   })
 
   test('largest artwork is the last size', () => {

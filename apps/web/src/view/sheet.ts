@@ -8,6 +8,7 @@ import {
   Heart,
   ListEnd,
   ListMinus,
+  ListMusic,
   ListPlus,
   ListStart,
   MicVocal,
@@ -48,7 +49,9 @@ import { myLibraryQuery, myPlaylistQuery } from '../query'
 import { AppRoute } from '../route'
 import { ActionSheet, SheetContent } from '../sheet'
 import { likedVideoIds } from '../update'
+import { librarySortSheet } from './library'
 import { deviceIcon, thisDeviceName } from './player'
+import { addSongsSheet, chooseCoverSheet } from './playlistEditor'
 import {
   ArtworkShape,
   albumHref,
@@ -721,6 +724,12 @@ const playlistActions = (
         [h.Class('flex flex-col border-t py-2')],
         [
           actionButton(
+            Message.ClickedEditPlaylist({ playlistId }),
+            ListMusic,
+            'Edit Playlist',
+            h,
+          ),
+          actionButton(
             Message.ClickedRenamePlaylist({ playlistId, title }),
             Pencil,
             'Rename',
@@ -892,6 +901,10 @@ const sheetContent = (
     ConfirmClearRecentlyViewed: () => confirmClearRecentlyViewed(h),
     ConfirmRemoveDownload: ({ kind, id, title }) =>
       confirmRemoveDownload(kind, id, title, h),
+    LibrarySort: ({ kind }) => librarySortSheet(model.libraryPrefs, kind, h),
+    AddSongs: ({ playlistId }) => addSongsSheet(model, playlistId, h),
+    ChoosePlaylistCover: ({ playlistId }) =>
+      chooseCoverSheet(model, playlistId, h),
   })
 
 const sheetLabel = (content: SheetContent): string =>
@@ -906,6 +919,9 @@ const sheetLabel = (content: SheetContent): string =>
     ConfirmDeletePlaylist: () => 'Delete Playlist',
     ConfirmClearRecentlyViewed: () => 'Clear Recently Viewed',
     ConfirmRemoveDownload: () => 'Remove Download',
+    LibrarySort: ({ kind }) => `Sort ${kind} By`,
+    AddSongs: () => 'Add Songs',
+    ChoosePlaylistCover: () => 'Choose a Cover',
   })
 
 const sheetFrame = (

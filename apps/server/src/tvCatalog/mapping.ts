@@ -443,7 +443,7 @@ export const myPlaylistCollection = (
   id: details.playlist.id,
   title: details.playlist.title,
   subtitle: joinDetails(['Playlist', playlistLength(details.playlist)]),
-  description: null,
+  description: Option.getOrNull(details.playlist.maybeDescription),
   artworkUrl: largestArtworkUrl(firstCover(details.playlist)),
   tracks: Array.map(details.songs, toQueueTrack),
   shelves: [],

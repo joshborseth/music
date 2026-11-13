@@ -20,12 +20,14 @@ import {
   type PlaylistEdit,
   type PlaylistEditResult,
   type Song,
+  mosaicCovers,
 } from '@music/shared'
 
 import {
   BlurSearchInput,
   EditPlaylists,
   FetchRadio,
+  FocusAddSongsInput,
   FocusPlaylistTitleInput,
   FocusSearchInput,
   LoadExternal,
@@ -36,6 +38,7 @@ import {
   NavigateBackTo,
   NavigateInternal,
   ReplaceSearchUrl,
+  SaveLibraryPrefs,
   SaveRecentSearches,
   SaveRecentlyViewed,
   ScrollSearchResultsToTop,
@@ -43,6 +46,7 @@ import {
   ShuffleSongs,
   TakeOverScrollRestoration,
   UnlockScroll,
+  WaitBeforeAddSongsSearch,
   WaitBeforeRetryLyrics,
   WaitBeforeSearch,
 } from './command'
@@ -52,8 +56,10 @@ import { Downloads } from './downloads/domain'
 import * as DownloadsUpdate from './downloads/update'
 import { withPlayedFirst } from './home'
 import {
+  DEFAULT_LIBRARY_PREFS,
   LIBRARY_ARTWORK_WIDTH,
   type LibraryItem,
+  type LibraryPrefs,
   MAX_RECENTLY_VIEWED,
   albumLibraryItem,
   artistLibraryItem,
@@ -80,6 +86,7 @@ import {
 } from './playback/domain'
 import type { PlaybackServices } from './playback/resource'
 import * as Playback from './playback/update'
+import { PlaylistEditor, moveSong } from './playlistEditor'
 import {
   type RequestError,
   albumQuery,
@@ -796,8 +803,66 @@ const withSongFirst =
 const showEditEarly = (model: Model, edit: PlaylistEdit): Model =>
   Match.valueTags(edit, {
     Create: () => model,
-    Rename: () => model,
-    AddSongs: () => model,
+    Rename: ({ playlistId, title }) =>
+      String.isNonEmpty(title.trim())
+        ? mapMyPlaylist(model, playlistId, details => ({
+            ...details,
+            playlist: { ...details.playlist, title: title.trim() },
+          }))
+        : model,
+    AddSongs: ({ playlistId, songs: added }) =>
+      mapMyPlaylist(model, playlistId, details => ({
+        ...details,
+        songs: Array.appendAll(
+          details.songs,
+          Array.filter(
+            added,
+            song =>
+              !Array.some(
+                details.songs,
+                ({ videoId }) => videoId === song.videoId,
+              ),
+          ),
+        ),
+      })),
+    MoveSong: ({ playlistId, videoId, maybeBeforeVideoId }) =>
+      mapMyPlaylist(model, playlistId, details => ({
+        ...details,
+        songs: moveSong(details.songs, videoId, maybeBeforeVideoId),
+      })),
+    SetDescription: ({ playlistId, description }) =>
+      mapMyPlaylist(model, playlistId, details => ({
+        ...details,
+        playlist: {
+          ...details.playlist,
+          maybeDescription: Option.liftPredicate(
+            description.trim(),
+            String.isNonEmpty,
+          ),
+        },
+      })),
+    SetCover: ({ playlistId, maybeVideoId }) =>
+      mapMyPlaylist(model, playlistId, details => ({
+        ...details,
+        playlist: {
+          ...details.playlist,
+          maybeCoverVideoId: maybeVideoId,
+          covers: Option.match(maybeVideoId, {
+            onNone: () => mosaicCovers(details.songs),
+            onSome: videoId =>
+              Option.match(
+                Array.findFirst(
+                  details.songs,
+                  song => song.videoId === videoId,
+                ),
+                {
+                  onNone: () => details.playlist.covers,
+                  onSome: song => [song.artwork],
+                },
+              ),
+          }),
+        },
+      })),
     Delete: ({ playlistId }) =>
       mapMyLibrary(model, library => ({
         ...library,
@@ -858,10 +923,18 @@ const editedPlaylistId = (edit: PlaylistEdit): Option.Option<string> =>
     Delete: () => Option.none(),
     AddSongs: ({ playlistId }) => Option.some(playlistId),
     RemoveSong: ({ playlistId }) => Option.some(playlistId),
+    MoveSong: ({ playlistId }) => Option.some(playlistId),
+    SetDescription: ({ playlistId }) => Option.some(playlistId),
+    SetCover: ({ playlistId }) => Option.some(playlistId),
     SetLiked: () => Option.some(LIKED_PLAYLIST_ID),
     SetAlbumSaved: () => Option.none(),
     SetArtistFollowed: () => Option.none(),
   })
+
+/** Add Songs shows each song it adds with a check, so it needs no notice. */
+const isAddingSongs = (model: Model): boolean =>
+  model.actionSheet._tag === 'Shown' &&
+  model.actionSheet.content._tag === 'AddSongs'
 
 const showNotice =
   (notice: string): UpdateStep =>
@@ -894,11 +967,16 @@ const followEdit = (
           ? navigateTo(myPlaylistHref(playlistId), 'Push')
           : showNotice(addedNotice(title)),
       ),
-    AddSongs: () =>
-      withChangedPlaylist(title => showNotice(addedNotice(title))),
+    AddSongs: (): UpdateStep => model =>
+      isAddingSongs(model)
+        ? { model }
+        : withChangedPlaylist(title => showNotice(addedNotice(title)))(model),
     Rename: () => stay,
     Delete: () => stay,
     RemoveSong: () => stay,
+    MoveSong: () => stay,
+    SetDescription: () => stay,
+    SetCover: () => stay,
     SetLiked: () => stay,
     SetAlbumSaved: ({ isSaved }) =>
       showNotice(
@@ -963,6 +1041,117 @@ const leaveDeletedPlaylist =
       },
       () => ({ model }),
     )
+
+// LIBRARY TOOLS
+
+const changeLibraryPrefs =
+  (change: (prefs: LibraryPrefs) => LibraryPrefs): UpdateStep =>
+  model => {
+    const libraryPrefs = change(model.libraryPrefs)
+    return {
+      model: modifyFields(model, { libraryPrefs: () => libraryPrefs }),
+      commands: [SaveLibraryPrefs({ prefs: libraryPrefs })],
+    }
+  }
+
+// EDITING MY PLAYLISTS
+
+const loadedMyPlaylist = (
+  model: Model,
+  playlistId: string,
+): Option.Option<MyPlaylistDetails> =>
+  AsyncData.getData(myPlaylistQuery.read(model.myPlaylists, { playlistId }))
+
+const startEditing =
+  (playlistId: string): UpdateStep =>
+  model => ({
+    model: Option.match(loadedMyPlaylist(model, playlistId), {
+      onNone: () => model,
+      onSome: ({ playlist }) =>
+        modifyFields(model, {
+          playlistEditor: () =>
+            PlaylistEditor.Editing({
+              playlistId,
+              titleInput: playlist.title,
+              descriptionInput: Option.getOrElse(
+                playlist.maybeDescription,
+                () => '',
+              ),
+            }),
+        }),
+    }),
+  })
+
+const mapEditor = (
+  model: Model,
+  change: (editor: typeof PlaylistEditor.Editing.Type) => PlaylistEditor,
+): Model =>
+  modifyFields(model, {
+    playlistEditor: editor =>
+      editor._tag === 'Editing' ? change(editor) : editor,
+  })
+
+/** Sends several edits at once, each shown before the server confirms it. */
+const editPlaylistsAll =
+  (edits: ReadonlyArray<PlaylistEdit>): UpdateStep =>
+  model => ({
+    model: Array.reduce(edits, model, showEditEarly),
+    commands: Array.map(edits, edit => EditPlaylists({ edit })),
+  })
+
+/**
+ * Done saves a new title, unless it was emptied, and a changed description.
+ * Everything else was saved as it happened.
+ */
+const finishEditing: UpdateStep = model =>
+  PlaylistEditor.match(model.playlistEditor, {
+    Closed: (): UpdateReturn => ({ model }),
+    Editing: ({ playlistId, titleInput, descriptionInput }): UpdateReturn => {
+      const edits = Option.match(loadedMyPlaylist(model, playlistId), {
+        onNone: (): ReadonlyArray<PlaylistEdit> => [],
+        onSome: ({ playlist }): ReadonlyArray<PlaylistEdit> => {
+          const title = titleInput.trim()
+          const description = descriptionInput.trim()
+          const rename: ReadonlyArray<PlaylistEdit> =
+            String.isNonEmpty(title) && title !== playlist.title
+              ? [{ _tag: 'Rename', playlistId, title }]
+              : []
+          const describe: ReadonlyArray<PlaylistEdit> =
+            description !==
+            Option.getOrElse(playlist.maybeDescription, () => '')
+              ? [{ _tag: 'SetDescription', playlistId, description }]
+              : []
+          return [...rename, ...describe]
+        },
+      })
+      return editPlaylistsAll(edits)(
+        modifyFields(model, { playlistEditor: () => PlaylistEditor.Closed() }),
+      )
+    },
+  })
+
+/** Leaving the page of the playlist being edited stops editing it. */
+const closeEditorOffPage: UpdateStep = model =>
+  model.playlistEditor._tag === 'Editing' &&
+  !(
+    model.route._tag === 'MyPlaylist' &&
+    model.route.playlistId === model.playlistEditor.playlistId
+  )
+    ? {
+        model: modifyFields(model, {
+          playlistEditor: () => PlaylistEditor.Closed(),
+        }),
+      }
+    : { model }
+
+const isInPlaylist = (
+  model: Model,
+  playlistId: string,
+  videoId: string,
+): boolean =>
+  Option.exists(loadedMyPlaylist(model, playlistId), ({ songs }) =>
+    Array.some(songs, song => song.videoId === videoId),
+  )
 
 // ROUTE LOADING
 
@@ -1148,6 +1337,10 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     recentSearches: [],
     recentlyViewed: [],
     libraryFilter: 'All',
+    libraryPrefs: DEFAULT_LIBRARY_PREFS,
+    librarySearchInput: '',
+    playlistEditor: PlaylistEditor.Closed(),
+    addSongsSearch: { input: '', query: '' },
     songSearch: songSearchQuery.init(),
     artistSearch: artistSearchQuery.init(),
     albumSearch: albumSearchQuery.init(),
@@ -1237,6 +1430,7 @@ const changeUrl =
       loadRoute(route),
       rememberViewed,
       keepEarlierSearch(model),
+      closeEditorOffPage,
     ])(
       syncSearchInput(
         modifyFields(model, {
@@ -1351,14 +1545,16 @@ const updateMessage = (model: Model, message: Message) =>
       model: modifyFields(model, { recentSearches: () => recentSearches }),
     }),
 
-    CompletedLoadLibrary: ({ recentlyViewed }) => ({
+    CompletedLoadLibrary: ({ recentlyViewed, maybePrefs }) => ({
       model: modifyFields(model, {
         recentlyViewed: newer =>
           Array.reduceRight(newer, recentlyViewed, (items, item) =>
             rememberFirst(items, item, isSameLibraryItem, MAX_RECENTLY_VIEWED),
           ),
+        libraryPrefs: prefs => Option.getOrElse(maybePrefs, () => prefs),
       }),
     }),
+    CompletedSaveLibraryPrefs: () => ({ model }),
 
     ClickedClearRecentlyViewed: () =>
       showSheet({ _tag: 'ConfirmClearRecentlyViewed' })(model),
@@ -1375,6 +1571,30 @@ const updateMessage = (model: Model, message: Message) =>
     SelectedLibraryFilter: ({ filter }) => ({
       model: modifyFields(model, { libraryFilter: () => filter }),
     }),
+    UpdatedLibrarySearchInput: ({ value }) => ({
+      model: modifyFields(model, { librarySearchInput: () => value }),
+    }),
+    ClickedClearLibrarySearch: () => ({
+      model: modifyFields(model, { librarySearchInput: () => '' }),
+    }),
+    ClickedLibrarySort: ({ kind }) =>
+      showSheet({ _tag: 'LibrarySort', kind })(model),
+    SelectedLibrarySort: ({ kind, sort }) =>
+      Update.combine([
+        dismissSheet,
+        changeLibraryPrefs(prefs => ({
+          ...prefs,
+          sorts: { ...prefs.sorts, [kind]: sort },
+        })),
+      ])(model),
+    ClickedToggleLibraryLayout: ({ kind }) =>
+      changeLibraryPrefs(prefs => ({
+        ...prefs,
+        layouts: {
+          ...prefs.layouts,
+          [kind]: prefs.layouts[kind] === 'List' ? 'Grid' : 'List',
+        },
+      }))(model),
 
     GotSongSearchMessage: ({ message }) => songSearch.fold(model, message),
     GotArtistSearchMessage: ({ message }) => artistSearch.fold(model, message),
@@ -1501,6 +1721,71 @@ const updateMessage = (model: Model, message: Message) =>
         editPlaylists({ _tag: 'Delete', playlistId }),
       ])(model),
     CompletedFocusPlaylistTitleInput: () => ({ model }),
+    ClickedEditPlaylist: ({ playlistId }) =>
+      Update.combine([dismissSheet, startEditing(playlistId)])(model),
+    UpdatedPlaylistEditorTitle: ({ value }) => ({
+      model: mapEditor(model, editor =>
+        PlaylistEditor.Editing({ ...editor, titleInput: value }),
+      ),
+    }),
+    UpdatedPlaylistEditorDescription: ({ value }) => ({
+      model: mapEditor(model, editor =>
+        PlaylistEditor.Editing({ ...editor, descriptionInput: value }),
+      ),
+    }),
+    ClickedDoneEditingPlaylist: () => finishEditing(model),
+    CompletedFollowPlaylistDrags: () => ({ model }),
+    DraggedPlaylistSong: ({ playlistId, videoId, maybeBeforeVideoId }) =>
+      editPlaylists({
+        _tag: 'MoveSong',
+        playlistId,
+        videoId,
+        maybeBeforeVideoId,
+      })(model),
+    ClickedAddSongs: ({ playlistId }) =>
+      Update.combine([
+        showSheet({ _tag: 'AddSongs', playlistId }),
+        stepModel => ({
+          model: modifyFields(stepModel, {
+            addSongsSearch: () => ({ input: '', query: '' }),
+          }),
+          commands: [FocusAddSongsInput()],
+        }),
+        stepModel => home.loadIfMissing(stepModel),
+      ])(model),
+    CompletedFocusAddSongsInput: () => ({ model }),
+    UpdatedAddSongsInput: ({ value }) => ({
+      model: modifyFields(model, {
+        addSongsSearch: search => modifyFields(search, { input: () => value }),
+      }),
+      commands: [WaitBeforeAddSongsSearch({ query: value })],
+    }),
+    CompletedWaitBeforeAddSongsSearch: ({ query }) => {
+      const trimmedQuery = query.trim()
+      if (query !== model.addSongsSearch.input) {
+        return { model }
+      }
+      const searched = modifyFields(model, {
+        addSongsSearch: search =>
+          modifyFields(search, { query: () => trimmedQuery }),
+      })
+      return String.isNonEmpty(trimmedQuery)
+        ? songSearch.loadIfMissing(searched, { query: trimmedQuery })
+        : { model: searched }
+    },
+    ClickedToggleSongInPlaylist: ({ playlistId, song }) =>
+      editPlaylists(
+        isInPlaylist(model, playlistId, song.videoId)
+          ? { _tag: 'RemoveSong', playlistId, videoId: song.videoId }
+          : { _tag: 'AddSongs', playlistId, songs: [song] },
+      )(model),
+    ClickedChoosePlaylistCover: ({ playlistId }) =>
+      showSheet({ _tag: 'ChoosePlaylistCover', playlistId })(model),
+    SelectedPlaylistCover: ({ playlistId, maybeVideoId }) =>
+      Update.combine([
+        dismissSheet,
+        editPlaylists({ _tag: 'SetCover', playlistId, maybeVideoId }),
+      ])(model),
     CompletedEditPlaylists: ({ edit, result }) =>
       completeEditPlaylists(edit, result)(model),
 

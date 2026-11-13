@@ -1,9 +1,10 @@
-import { Array, Option, Schema, pipe } from 'effect'
+import { Array, Option, Order, Schema, String, pipe } from 'effect'
 
 import {
   type AlbumSummary,
   type ArtistSummary,
   type MyLibrary,
+  type MyPlaylistSummary,
   type PlaylistSummary,
   type Session,
   type Song,
@@ -26,6 +27,204 @@ export const LIBRARY_FILTER_CHIPS: ReadonlyArray<LibraryFilter> = [
   'Artists',
   'Downloaded',
 ]
+
+// SORTING AND LAYOUT
+
+/** The kinds of thing the Library sorts, each in its own order. */
+export const SortableKind = Schema.Literals(['Playlists', 'Albums', 'Artists'])
+export type SortableKind = typeof SortableKind.Type
+
+/** The kinds of thing the Library shows as a list or as a grid of covers. */
+export const LayoutKind = Schema.Literals(['Playlists', 'Albums'])
+export type LayoutKind = typeof LayoutKind.Type
+
+/** How the Library orders one kind of thing. */
+export const LibrarySort = Schema.Literals([
+  'RecentlyAdded',
+  'RecentlyUpdated',
+  'RecentlyPlayed',
+  'Title',
+  'Artist',
+])
+export type LibrarySort = typeof LibrarySort.Type
+
+export const LIBRARY_SORT_LABELS: { readonly [S in LibrarySort]: string } = {
+  RecentlyAdded: 'Recently Added',
+  RecentlyUpdated: 'Recently Updated',
+  RecentlyPlayed: 'Recently Played',
+  Title: 'A–Z',
+  Artist: 'Artist',
+}
+
+/** The orders each kind offers, its default first. */
+export const LIBRARY_SORTS: {
+  readonly [K in SortableKind]: ReadonlyArray<LibrarySort>
+} = {
+  Playlists: ['RecentlyUpdated', 'RecentlyAdded', 'RecentlyPlayed', 'Title'],
+  Albums: ['RecentlyAdded', 'RecentlyPlayed', 'Title', 'Artist'],
+  Artists: ['RecentlyAdded', 'RecentlyPlayed', 'Title'],
+}
+
+export const LibraryLayout = Schema.Literals(['List', 'Grid'])
+export type LibraryLayout = typeof LibraryLayout.Type
+
+/** How this device shows the Library: each kind's order and layout. */
+export const LibraryPrefs = Schema.Struct({
+  sorts: Schema.Struct({
+    Playlists: LibrarySort,
+    Albums: LibrarySort,
+    Artists: LibrarySort,
+  }),
+  layouts: Schema.Struct({ Playlists: LibraryLayout, Albums: LibraryLayout }),
+})
+export type LibraryPrefs = typeof LibraryPrefs.Type
+
+export const DEFAULT_LIBRARY_PREFS: LibraryPrefs = {
+  sorts: {
+    Playlists: 'RecentlyUpdated',
+    Albums: 'RecentlyAdded',
+    Artists: 'RecentlyAdded',
+  },
+  layouts: { Playlists: 'List', Albums: 'Grid' },
+}
+
+export const LibraryPrefsJson = Schema.fromJsonString(LibraryPrefs)
+
+export const LIBRARY_PREFS_KEY = 'music:library-view'
+
+const collator = new Intl.Collator(undefined, {
+  sensitivity: 'base',
+  numeric: true,
+})
+
+const byText: Order.Order<string> = (left, right) => {
+  const comparison = collator.compare(left, right)
+  return comparison < 0 ? -1 : comparison > 0 ? 1 : 0
+}
+
+/** The latest played first; never played after everything that has. */
+const byPlayedAt: Order.Order<Option.Option<number>> = Order.mapInput(
+  Order.flip(Order.Number),
+  maybePlayedAt => Option.getOrElse(maybePlayedAt, () => -Infinity),
+)
+
+const artistNamesOf = (album: AlbumSummary): string =>
+  pipe(
+    album.artists,
+    Array.map(({ name }) => name),
+    Array.join(', '),
+  )
+
+/**
+ * My playlists in `sort`'s order, Liked Songs always first. The server
+ * already lists them the most recently changed first.
+ */
+export const sortPlaylists = (
+  playlists: ReadonlyArray<MyPlaylistSummary>,
+  sort: LibrarySort,
+): ReadonlyArray<MyPlaylistSummary> => {
+  const liked = Array.filter(playlists, ({ isLiked }) => isLiked)
+  const mine = Array.filter(playlists, ({ isLiked }) => !isLiked)
+  const sorted: ReadonlyArray<MyPlaylistSummary> =
+    sort === 'RecentlyAdded'
+      ? Array.sort(
+          mine,
+          Order.mapInput(
+            Order.flip(Order.Number),
+            (playlist: MyPlaylistSummary) => playlist.createdAt,
+          ),
+        )
+      : sort === 'RecentlyPlayed'
+        ? Array.sort(
+            mine,
+            Order.mapInput(
+              byPlayedAt,
+              (playlist: MyPlaylistSummary) => playlist.maybePlayedAt,
+            ),
+          )
+        : sort === 'Title' || sort === 'Artist'
+          ? Array.sort(
+              mine,
+              Order.mapInput(
+                byText,
+                (playlist: MyPlaylistSummary) => playlist.title,
+              ),
+            )
+          : mine
+  return [...liked, ...sorted]
+}
+
+/** Saved albums in `sort`'s order. The server lists the latest saved first. */
+export const sortAlbums = (
+  library: MyLibrary,
+  sort: LibrarySort,
+): ReadonlyArray<AlbumSummary> =>
+  sort === 'RecentlyPlayed'
+    ? Array.sort(
+        library.albums,
+        Order.mapInput(byPlayedAt, (album: AlbumSummary) =>
+          Option.fromNullishOr(library.albumPlayedAt[album.id]),
+        ),
+      )
+    : sort === 'Title'
+      ? Array.sort(
+          library.albums,
+          Order.mapInput(byText, (album: AlbumSummary) => album.title),
+        )
+      : sort === 'Artist'
+        ? Array.sort(
+            library.albums,
+            Order.combine(
+              Order.mapInput(byText, artistNamesOf),
+              Order.mapInput(byText, (album: AlbumSummary) => album.title),
+            ),
+          )
+        : library.albums
+
+/** Followed artists in `sort`'s order. The server lists the latest first. */
+export const sortArtists = (
+  library: MyLibrary,
+  sort: LibrarySort,
+): ReadonlyArray<ArtistSummary> =>
+  sort === 'RecentlyPlayed'
+    ? Array.sort(
+        library.artists,
+        Order.mapInput(byPlayedAt, (artist: ArtistSummary) =>
+          Option.fromNullishOr(library.artistPlayedAt[artist.id]),
+        ),
+      )
+    : sort === 'Title' || sort === 'Artist'
+      ? Array.sort(
+          library.artists,
+          Order.mapInput(byText, (artist: ArtistSummary) => artist.name),
+        )
+      : library.artists
+
+// SEARCH
+
+/** Lower case with the accents taken off, so "beyonce" finds "Beyoncé". */
+const searchable = (text: string): string =>
+  text
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLocaleLowerCase()
+
+/**
+ * Whether every word typed appears somewhere in `texts`. An empty search
+ * matches everything.
+ */
+export const matchesLibrarySearch = (
+  search: string,
+  texts: ReadonlyArray<string>,
+): boolean => {
+  const haystack = searchable(Array.join(texts, ' '))
+  return pipe(
+    searchable(search),
+    String.split(/\s+/),
+    Array.filter(String.isNonEmpty),
+    Array.every(word => haystack.includes(word)),
+  )
+}
 
 /** Something the person opened, so the Library can take them back to it. */
 export const LibraryItem = Schema.Struct({

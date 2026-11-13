@@ -18,8 +18,8 @@ import {
 import {
   AlbumSummary,
   ArtistSummary,
-  type Artwork,
   LIKED_PLAYLIST_ID,
+  MAX_PLAYLIST_DESCRIPTION_LENGTH,
   MAX_PLAYLIST_TITLE_LENGTH,
   MusicNotFoundError,
   type MyLibrary,
@@ -29,6 +29,7 @@ import {
   type PlaylistEditResult,
   PlaylistStoreError,
   Song,
+  mosaicCovers,
 } from '@music/shared'
 
 import { cleanVideoTitle } from '../youtubeMusic/mapping.ts'
@@ -36,8 +37,7 @@ import { cleanVideoTitle } from '../youtubeMusic/mapping.ts'
 const LIKED_TITLE = 'Liked Songs'
 const UNTITLED = 'Untitled playlist'
 
-/** How many covers the mosaic shows, and how far down to look for them. */
-const MOSAIC_COVERS = 4
+/** How far down a playlist to look for the mosaic's covers. */
 const COVER_SEARCH_DEPTH = 24
 
 /**
@@ -92,6 +92,10 @@ const MIGRATIONS: ReadonlyArray<string> = [
   `
   UPDATE playlists SET title = 'Liked Songs' WHERE id = 'liked';
   `,
+  `
+  ALTER TABLE playlists ADD COLUMN description TEXT;
+  ALTER TABLE playlists ADD COLUMN cover_video_id TEXT;
+  `,
 ]
 
 /** Songs the play history keeps; older plays drop off. */
@@ -128,7 +132,11 @@ const decodeArtist = Schema.decodeUnknownOption(ArtistJson)
 const SummaryRow = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
+  description: Schema.NullOr(Schema.String),
+  cover_video_id: Schema.NullOr(Schema.String),
+  created_at: Schema.Number,
   updated_at: Schema.Number,
+  played_at: Schema.NullOr(Schema.Number),
   song_count: Schema.Number,
   total_seconds: Schema.Number,
 })
@@ -139,6 +147,10 @@ const SongRow = Schema.Struct({ song: Schema.String })
 const PlayedRow = Schema.Struct({
   song: Schema.String,
   play_count: Schema.Number,
+})
+const PlayedAtRow = Schema.Struct({
+  song: Schema.String,
+  played_at: Schema.Number,
 })
 const AlbumRow = Schema.Struct({ album: Schema.String })
 const ArtistRow = Schema.Struct({ artist: Schema.String })
@@ -162,26 +174,29 @@ export const normalizeTitle = (title: string): string =>
     Option.getOrElse(() => UNTITLED),
   )
 
-/** Up to four covers from different albums, in playlist order. */
-export const mosaicCovers = (
-  songs: ReadonlyArray<Song>,
-): ReadonlyArray<Artwork> =>
+/** A description as it is kept: trimmed and not too long, or none. */
+export const normalizeDescription = (
+  description: string,
+): Option.Option<string> =>
   pipe(
-    songs,
-    Array.filter(song => Array.isReadonlyArrayNonEmpty(song.artwork)),
-    Array.dedupeWith(
-      (left, right) =>
-        Option.getOrElse(
-          Option.map(left.maybeAlbum, ({ id }) => id),
-          () => left.videoId,
-        ) ===
-        Option.getOrElse(
-          Option.map(right.maybeAlbum, ({ id }) => id),
-          () => right.videoId,
-        ),
+    String.trim(description),
+    Option.liftPredicate(String.isNonEmpty),
+    Option.map(trimmed =>
+      trimmed.slice(0, MAX_PLAYLIST_DESCRIPTION_LENGTH).trim(),
     ),
-    Array.take(MOSAIC_COVERS),
-    Array.map(song => song.artwork),
+  )
+
+/**
+ * When something last played, by its id, from the play history newest
+ * first: each id keeps its first, latest, time.
+ */
+const latestPlays = (
+  plays: ReadonlyArray<Readonly<{ ids: ReadonlyArray<string>; at: number }>>,
+): { readonly [id: string]: number } =>
+  Object.fromEntries(
+    Array.flatMap(Array.reverse(plays), ({ ids, at }) =>
+      Array.map(ids, (id): readonly [string, number] => [id, at]),
+    ),
   )
 
 // SERVICE
@@ -275,18 +290,52 @@ export const makePlaylistStore = (
       Array.getSomes,
     )
 
-  const toSummary = (row: SummaryRow): MyPlaylistSummary => ({
-    id: row.id,
-    title: row.title,
-    isLiked: row.id === LIKED_PLAYLIST_ID,
-    songCount: row.song_count,
-    totalSeconds: Math.round(row.total_seconds),
-    covers: mosaicCovers(songsOf(row.id, COVER_SEARCH_DEPTH)),
-    updatedAt: row.updated_at,
-  })
+  const songIn = (playlistId: string, videoId: string): Option.Option<Song> =>
+    pipe(
+      db
+        .query(
+          'SELECT song FROM playlist_songs WHERE playlist_id = ? AND video_id = ?',
+        )
+        .all(playlistId, videoId),
+      decodeRows(SongRow),
+      Array.head,
+      Option.flatMap(row => decodeSong(row.song)),
+    )
+
+  /** The song picked as the cover, while the playlist still holds it. */
+  const coverSong = (row: SummaryRow): Option.Option<Song> =>
+    pipe(
+      Option.fromNullishOr(row.cover_video_id),
+      Option.flatMap(videoId => songIn(row.id, videoId)),
+      Option.filter(song => Array.isReadonlyArrayNonEmpty(song.artwork)),
+    )
+
+  const toSummary = (row: SummaryRow): MyPlaylistSummary => {
+    const maybeCover = coverSong(row)
+    return {
+      id: row.id,
+      title: row.title,
+      isLiked: row.id === LIKED_PLAYLIST_ID,
+      songCount: row.song_count,
+      totalSeconds: Math.round(row.total_seconds),
+      covers: Option.match(maybeCover, {
+        onNone: () => mosaicCovers(songsOf(row.id, COVER_SEARCH_DEPTH)),
+        onSome: song => [song.artwork],
+      }),
+      updatedAt: row.updated_at,
+      createdAt: row.created_at,
+      maybePlayedAt: Option.fromNullishOr(row.played_at),
+      maybeDescription: Option.fromNullishOr(row.description),
+      maybeCoverVideoId: Option.map(maybeCover, ({ videoId }) => videoId),
+    }
+  }
 
   const SUMMARY_SELECT = `
-    SELECT p.id, p.title, p.updated_at,
+    SELECT p.id, p.title, p.description, p.cover_video_id,
+      p.created_at, p.updated_at,
+      (SELECT MAX(h.played_at) FROM playlist_songs played
+        JOIN play_history h ON h.video_id = played.video_id
+        WHERE played.playlist_id = p.id) AS played_at,
       COUNT(s.video_id) AS song_count,
       COALESCE(SUM(s.duration_seconds), 0) AS total_seconds
     FROM playlists p
@@ -327,30 +376,65 @@ export const makePlaylistStore = (
       Array.getSomes,
     )
 
-  const readLibrary = (): MyLibrary => ({
-    playlists: pipe(
+  /** Where each song played lately came from: its album and its artists. */
+  const readPlays = () =>
+    pipe(
       db
         .query(
-          `${SUMMARY_SELECT} GROUP BY p.id
+          'SELECT song, played_at FROM play_history ORDER BY played_at DESC',
+        )
+        .all(),
+      decodeRows(PlayedAtRow),
+      Array.map(row =>
+        Option.map(decodeSong(row.song), song => ({ song, at: row.played_at })),
+      ),
+      Array.getSomes,
+    )
+
+  const readLibrary = (): MyLibrary => {
+    const plays = readPlays()
+    return {
+      playlists: pipe(
+        db
+          .query(
+            `${SUMMARY_SELECT} GROUP BY p.id
            ORDER BY p.id = ? DESC, p.updated_at DESC, p.created_at DESC`,
-        )
-        .all(LIKED_PLAYLIST_ID),
-      decodeRows(SummaryRow),
-      Array.map(toSummary),
-    ),
-    likedVideoIds: pipe(
-      db
-        .query(
-          `SELECT video_id FROM playlist_songs WHERE playlist_id = ?
+          )
+          .all(LIKED_PLAYLIST_ID),
+        decodeRows(SummaryRow),
+        Array.map(toSummary),
+      ),
+      likedVideoIds: pipe(
+        db
+          .query(
+            `SELECT video_id FROM playlist_songs WHERE playlist_id = ?
            ORDER BY position`,
-        )
-        .all(LIKED_PLAYLIST_ID),
-      decodeRows(VideoIdRow),
-      Array.map(row => row.video_id),
-    ),
-    albums: readAlbums(),
-    artists: readArtists(),
-  })
+          )
+          .all(LIKED_PLAYLIST_ID),
+        decodeRows(VideoIdRow),
+        Array.map(row => row.video_id),
+      ),
+      albums: readAlbums(),
+      artists: readArtists(),
+      albumPlayedAt: latestPlays(
+        Array.map(plays, ({ song, at }) => ({
+          ids: Option.match(song.maybeAlbum, {
+            onNone: () => [],
+            onSome: ({ id }) => [id],
+          }),
+          at,
+        })),
+      ),
+      artistPlayedAt: latestPlays(
+        Array.map(plays, ({ song, at }) => ({
+          ids: Array.getSomes(
+            Array.map(song.artists, ({ maybeId }) => maybeId),
+          ),
+          at,
+        })),
+      ),
+    }
+  }
 
   const readDetails = (playlistId: string): Option.Option<MyPlaylistDetails> =>
     Option.map(readSummary(playlistId), playlist => ({
@@ -432,7 +516,65 @@ export const makePlaylistStore = (
     db.query(
       'DELETE FROM playlist_songs WHERE playlist_id = ? AND video_id = ?',
     ).run(playlistId, videoId)
+    db.query(
+      'UPDATE playlists SET cover_video_id = NULL WHERE id = ? AND cover_video_id = ?',
+    ).run(playlistId, videoId)
   }
+
+  const videoIdsOf = (playlistId: string): ReadonlyArray<string> =>
+    pipe(
+      db
+        .query(
+          `SELECT video_id FROM playlist_songs WHERE playlist_id = ?
+           ORDER BY position`,
+        )
+        .all(playlistId),
+      decodeRows(VideoIdRow),
+      Array.map(row => row.video_id),
+    )
+
+  /**
+   * Puts the song before another, or last when that one is not in the
+   * playlist, and numbers every song again in its new order.
+   */
+  const moveSong = (
+    playlistId: string,
+    videoId: string,
+    maybeBeforeVideoId: Option.Option<string>,
+  ): void => {
+    const videoIds = videoIdsOf(playlistId)
+    if (!Array.contains(videoIds, videoId)) {
+      return
+    }
+    const others = Array.filter(videoIds, id => id !== videoId)
+    const at = pipe(
+      maybeBeforeVideoId,
+      Option.flatMap(beforeId =>
+        Array.findFirstIndex(others, id => id === beforeId),
+      ),
+      Option.getOrElse(() => others.length),
+    )
+    const reordered = [
+      ...Array.take(others, at),
+      videoId,
+      ...Array.drop(others, at),
+    ]
+    const setPosition = db.query(
+      'UPDATE playlist_songs SET position = ? WHERE playlist_id = ? AND video_id = ?',
+    )
+    Array.forEach(reordered, (id, position) =>
+      setPosition.run(position, playlistId, id),
+    )
+  }
+
+  /** Changes one of my own playlists; Liked songs keeps its own. */
+  const whenMine = (playlistId: string, change: () => void) =>
+    whenExists(playlistId, () => {
+      if (playlistId !== LIKED_PLAYLIST_ID) {
+        change()
+        touch(playlistId)
+      }
+    })
 
   /** Saving again moves the album to the top, with its latest details. */
   const setAlbumSaved = (album: AlbumSummary, isSaved: boolean): void => {
@@ -512,6 +654,29 @@ export const makePlaylistStore = (
         whenExists(playlistId, () => {
           removeSong(playlistId, videoId)
           touch(playlistId)
+        }),
+      MoveSong: ({ playlistId, videoId, maybeBeforeVideoId }) =>
+        whenMine(playlistId, () =>
+          moveSong(playlistId, videoId, maybeBeforeVideoId),
+        ),
+      SetDescription: ({ playlistId, description }) =>
+        whenMine(playlistId, () => {
+          db.query('UPDATE playlists SET description = ? WHERE id = ?').run(
+            Option.getOrNull(normalizeDescription(description)),
+            playlistId,
+          )
+        }),
+      SetCover: ({ playlistId, maybeVideoId }) =>
+        whenMine(playlistId, () => {
+          const isHeld = Option.match(maybeVideoId, {
+            onNone: () => true,
+            onSome: videoId => Option.isSome(songIn(playlistId, videoId)),
+          })
+          if (isHeld) {
+            db.query(
+              'UPDATE playlists SET cover_video_id = ? WHERE id = ?',
+            ).run(Option.getOrNull(maybeVideoId), playlistId)
+          }
         }),
       SetLiked:
         ({ song, isLiked }) =>
