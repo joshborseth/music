@@ -12,6 +12,8 @@ import {
 
 import {
   HOME_LIKED_SONGS,
+  HOME_RECENT_ALBUMS,
+  HOME_RECENT_SONGS,
   SEARCH_SHELF_SIZE,
   albumCard,
   artistCollection,
@@ -178,11 +180,11 @@ describe('cards', () => {
 })
 
 describe('shelves', () => {
-  test('home is your playlists, then your latest liked songs', () => {
+  test('home is your playlists, then your latest liked songs, until something plays', () => {
     const liked = Array.from({ length: HOME_LIKED_SONGS + 5 }, (_, index) =>
       song(`l${index}`),
     )
-    const { shelves } = homeShelves(library, liked)
+    const { shelves } = homeShelves(library, liked, [])
     expect(shelves.map(({ title }) => title)).toEqual([
       'Your playlists',
       'Liked songs',
@@ -192,8 +194,52 @@ describe('shelves', () => {
     expect(shelves[1]?.cards[0]).toMatchObject({ kind: 'Song', id: 'l0' })
   })
 
+  test('home leads with what played lately and leaves playlists to Library', () => {
+    const recent = [
+      song('r0', { maybeAlbum: Option.some({ id: 'A', name: 'Album A' }) }),
+      song('r1', { maybeAlbum: Option.none() }),
+      song('r2', { maybeAlbum: Option.some({ id: 'B', name: 'Album B' }) }),
+      song('r3', { maybeAlbum: Option.some({ id: 'A', name: 'Album A' }) }),
+    ]
+    const { shelves } = homeShelves(library, [song('l0')], recent)
+    expect(shelves.map(({ title }) => title)).toEqual([
+      'Jump back in',
+      'Recently played',
+      'Liked songs',
+    ])
+    expect(shelves[0]?.cards).toEqual([
+      {
+        kind: 'Album',
+        id: 'A',
+        title: 'Album A',
+        subtitle: 'Rick Astley, Guest',
+        artworkUrl: 'https://lh3.googleusercontent.com/r0=w544-h544',
+        track: null,
+      },
+      expect.objectContaining({ kind: 'Album', id: 'B' }),
+    ])
+    expect(shelves[1]?.cards.map(({ id }) => id)).toEqual([
+      'r0',
+      'r1',
+      'r2',
+      'r3',
+    ])
+    expect(shelves[1]?.cards[0]?.track).toEqual(toQueueTrack(recent[0]!))
+  })
+
+  test('home caps what played lately', () => {
+    const recent = Array.from({ length: 40 }, (_, index) =>
+      song(`r${index}`, {
+        maybeAlbum: Option.some({ id: `A${index}`, name: `Album ${index}` }),
+      }),
+    )
+    const { shelves } = homeShelves(library, [], recent)
+    expect(shelves[0]?.cards).toHaveLength(HOME_RECENT_ALBUMS)
+    expect(shelves[1]?.cards).toHaveLength(HOME_RECENT_SONGS)
+  })
+
   test('home leaves out Liked songs while it is empty', () => {
-    const { shelves } = homeShelves(library, [])
+    const { shelves } = homeShelves(library, [], [])
     expect(shelves.map(({ title }) => title)).toEqual(['Your playlists'])
   })
 
@@ -303,7 +349,7 @@ describe('fixtures shared with the TV app', () => {
 
   test('the encoded mapping round-trips through the fixture Schema', () => {
     const encoded = Schema.encodeSync(Tv.TvShelves)(
-      homeShelves(library, [song('a')]),
+      homeShelves(library, [song('a')], [song('b')]),
     )
     expect(Schema.decodeExit(Tv.TvShelves)(encoded)._tag).toBe('Success')
   })

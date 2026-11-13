@@ -9,7 +9,12 @@ import {
   type Song,
 } from '@music/shared'
 
-import { makePlaylistStore, mosaicCovers, normalizeTitle } from './store.ts'
+import {
+  PLAY_HISTORY_SIZE,
+  makePlaylistStore,
+  mosaicCovers,
+  normalizeTitle,
+} from './store.ts'
 
 const song = (
   videoId: string,
@@ -211,6 +216,48 @@ describe('playlist store', () => {
     const reopened = makePlaylistStore(db, options)
     const details = Result.getOrThrow(run(reopened.playlist('kept')))
     expect(details.songs).toHaveLength(1)
+  })
+})
+
+describe('play history', () => {
+  const recent = (store: ReturnType<typeof makeStore>, limit = 10) =>
+    Result.getOrThrow(run(store.recentlyPlayed(limit))).map(
+      ({ videoId }) => videoId,
+    )
+
+  test('starts empty', () => {
+    expect(recent(makeStore())).toEqual([])
+  })
+
+  test('keeps each song once, the latest play first', () => {
+    const store = makeStore()
+    for (const videoId of ['a', 'b', 'c', 'a']) {
+      Result.getOrThrow(run(store.recordPlay(song(videoId))))
+    }
+
+    expect(recent(store)).toEqual(['a', 'c', 'b'])
+    expect(recent(store, 2)).toEqual(['a', 'c'])
+  })
+
+  test('keeps the song as it last played', () => {
+    const store = makeStore()
+    run(store.recordPlay(song('a')))
+    run(store.recordPlay(song('a', { albumId: 'one' })))
+
+    const [latest] = Result.getOrThrow(run(store.recentlyPlayed(1)))
+    expect(latest).toEqual(song('a', { albumId: 'one' }))
+  })
+
+  test('forgets the oldest plays past its size', () => {
+    const store = makeStore()
+    for (let index = 0; index <= PLAY_HISTORY_SIZE; index += 1) {
+      run(store.recordPlay(song(`s${index}`)))
+    }
+
+    const kept = recent(store, PLAY_HISTORY_SIZE * 2)
+    expect(kept).toHaveLength(PLAY_HISTORY_SIZE)
+    expect(kept).not.toContain('s0')
+    expect(kept[0]).toBe(`s${PLAY_HISTORY_SIZE}`)
   })
 })
 

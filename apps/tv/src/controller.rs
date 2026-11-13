@@ -17,7 +17,13 @@ use crate::volume::Volume;
 /// What the remote asks of the session.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
+    /// The play button: pause, resume, or take playback from another device.
     PlayPause,
+    /// Pause wherever the session plays (the remote's pause key).
+    Pause,
+    /// Play on wherever the session was paused (the remote's play key). With
+    /// no player at all, this TV plays.
+    Resume,
     SeekBy(f64),
     Next,
     Previous,
@@ -299,6 +305,9 @@ impl Controller {
             UiAction::PlayPause if !self.is_active() => self.play_here(),
             UiAction::PlayPause if state.playing => self.send(ClientMessage::Pause { at: None }),
             UiAction::PlayPause => self.send(ClientMessage::Resume {}),
+            UiAction::Pause if state.playing => self.send(ClientMessage::Pause { at: None }),
+            UiAction::Resume if state.active_device_id.is_none() => self.play_here(),
+            UiAction::Resume if !state.playing => self.send(ClientMessage::Resume {}),
             UiAction::SeekBy(delta) => {
                 let duration = state
                     .current()

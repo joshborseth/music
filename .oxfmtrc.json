@@ -30,6 +30,7 @@
     "apps/web/src/lib",
     "apps/web/src/styles.css",
     "apps/web/public",
-    "apps/web/repos"
+    "apps/web/repos",
+    "vendor"
   ]
 }

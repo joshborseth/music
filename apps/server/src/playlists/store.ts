@@ -62,7 +62,20 @@ const MIGRATIONS: ReadonlyArray<string> = [
   CREATE INDEX playlist_songs_by_position
     ON playlist_songs (playlist_id, position);
   `,
+  `
+  CREATE TABLE play_history (
+    video_id TEXT PRIMARY KEY,
+    song TEXT NOT NULL,
+    played_at INTEGER NOT NULL,
+    play_count INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE INDEX play_history_by_time ON play_history (played_at);
+  `,
 ]
+
+/** Songs the play history keeps; older plays drop off. */
+export const PLAY_HISTORY_SIZE = 200
 
 // ROWS
 
@@ -136,9 +149,18 @@ export interface PlaylistStoreShape {
     PlaylistEditResult,
     MusicNotFoundError | PlaylistStoreError
   >
+  /** Notes that `song` played, on any device. */
+  readonly recordPlay: (song: Song) => Effect.Effect<void, PlaylistStoreError>
+  /** The songs played most recently, newest first, each once. */
+  readonly recentlyPlayed: (
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<Song>, PlaylistStoreError>
 }
 
-/** The playlists made in the app, kept in one SQLite file on the server. */
+/**
+ * The playlists made in the app, Liked songs, and what played lately, kept
+ * in one SQLite file on the server.
+ */
 export class PlaylistStore extends Context.Service<
   PlaylistStore,
   PlaylistStoreShape
@@ -393,6 +415,39 @@ export const makePlaylistStore = (
       maybePlaylist: readDetails(changedId),
     }))
 
+  /** Moves the song to the top of the history and drops the oldest plays. */
+  const writePlay = (song: Song): void => {
+    db.transaction(() => {
+      db.query(
+        `INSERT INTO play_history (video_id, song, played_at, play_count)
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT (video_id) DO UPDATE SET
+           song = excluded.song,
+           played_at = excluded.played_at,
+           play_count = play_count + 1`,
+      ).run(song.videoId, encodeSong(song), options.now())
+      db.query(
+        `DELETE FROM play_history WHERE video_id NOT IN (
+           SELECT video_id FROM play_history
+           ORDER BY played_at DESC LIMIT ?
+         )`,
+      ).run(PLAY_HISTORY_SIZE)
+    })()
+  }
+
+  const readRecentlyPlayed = (limit: number): ReadonlyArray<Song> =>
+    pipe(
+      db
+        .query(
+          `SELECT song FROM play_history
+           ORDER BY played_at DESC LIMIT ?`,
+        )
+        .all(limit),
+      decodeRows(SongRow),
+      Array.map(row => decodeSong(row.song)),
+      Array.getSomes,
+    )
+
   const attempt = <A>(run: () => A) =>
     Effect.try({
       try: run,
@@ -415,6 +470,14 @@ export const makePlaylistStore = (
     edit: Effect.fn('PlaylistStore.edit')(function* (edit: PlaylistEdit) {
       const result = yield* attempt(() => applyEdit(edit))
       return yield* Effect.fromResult(result)
+    }),
+    recordPlay: Effect.fn('PlaylistStore.recordPlay')(function* (song: Song) {
+      yield* attempt(() => writePlay(song))
+    }),
+    recentlyPlayed: Effect.fn('PlaylistStore.recentlyPlayed')(function* (
+      limit: number,
+    ) {
+      return yield* attempt(() => readRecentlyPlayed(limit))
     }),
   }
 }

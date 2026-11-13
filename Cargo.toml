@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["apps/tv"]
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
@@ -19,3 +20,12 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Slint's Android backend, with one change: the remote's media keys (play,
+# pause, next, previous, fast-forward, rewind) reach the app as key text.
+# Upstream 1.18.1 maps them to nothing. The change is the `media_key` module
+# and the `Keycode::Media*` lines in `androidwindowadapter.rs`; when Slint is
+# upgraded, re-apply it to the new release's copy (or drop this patch once
+# Slint forwards them).
+[patch.crates-io]
+i-slint-backend-android-activity = { path = "vendor/i-slint-backend-android-activity" }

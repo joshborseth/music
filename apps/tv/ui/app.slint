@@ -13,6 +13,16 @@ import "fonts/InterDisplay-ExtraBold.ttf";
 
 export global Metrics {
     in-out property <length> u: 20px;
+    // The TV's safe area: content keeps this far from the left and right
+    // edges (5% of the width), so a TV that crops the picture loses nothing.
+    in-out property <length> safe-x: 96px;
+
+    // How round a cover's corners are, for a cover `size` wide. The artwork
+    // itself comes with these corners cut (`CORNER` in src/images.rs), so
+    // every renderer draws them alike; boxes around a cover use the same.
+    public pure function corner(size: length) -> length {
+        return size * 0.06;
+    }
 }
 
 global Theme {
@@ -41,6 +51,8 @@ export struct CardData {
     has-image: bool,
     /// Artists are round.
     round: bool,
+    /// The Liked songs playlist: the heart tile instead of a cover.
+    liked: bool,
     selected: bool,
     /// Draws a play badge: the card plays a song instead of opening a page.
     playable: bool,
@@ -144,21 +156,34 @@ component Icon inherits Path {
         : "M12 3 V14.6 C11.4 14.2 10.7 14 10 14 C7.8 14 6 15.8 6 18 C6 20.2 7.8 22 10 22 C12.2 22 14 20.2 14 18 V7 H18 V3 Z";
 }
 
-/// A square of artwork, or a placeholder note when there is none.
+/// A square of artwork, or a placeholder note when there is none. Liked
+/// songs has no cover of its own: it gets the phone's heart tile.
 component Artwork inherits Rectangle {
     in property <image> source;
     in property <bool> has-source;
     in property <bool> round;
-    border-radius: round ? self.width / 2 : self.width * 0.06;
+    in property <bool> liked;
+    border-radius: round ? self.width / 2 : Metrics.corner(self.width);
     clip: true;
-    background: @linear-gradient(135deg, #232833 0%, #13161c 100%);
-    if !has-source: Icon {
+    // The phone's tile: rose-400 to fuchsia-600 (`playlistCover` in
+    // apps/web/src/view/shared.ts).
+    // A cover brings its own cut corners, so nothing shows behind it.
+    background: liked
+        ? @linear-gradient(135deg, #fb7185 0%, #c026d3 100%)
+        : has-source ? transparent : @linear-gradient(135deg, #232833 0%, #13161c 100%);
+    if liked: Icon {
+        name: "heart";
+        width: parent.width * 0.4;
+        height: self.width;
+        color: white;
+    }
+    if !has-source && !liked: Icon {
         name: round ? "artist" : "note";
         width: parent.width * 0.4;
         height: self.width;
         color: #ffffff38;
     }
-    if has-source: Image {
+    if has-source && !liked: Image {
         source: root.source;
         width: 100%;
         height: 100%;
@@ -170,13 +195,16 @@ component Artwork inherits Rectangle {
 component RoundButton inherits Rectangle {
     in property <ButtonData> data;
     in property <length> size: Metrics.u * 3.6;
+    // No glow when selected: over the GPU visuals the screen redraws every
+    // frame, and a blurred shadow costs the TV frames.
+    in property <bool> flat;
     property <bool> wide: data.label != "" && !data.primary;
     property <length> icon-size: data.primary ? size * 0.6 : size * 0.46;
     width: wide ? label-text.preferred-width + size * 1.55 + self.icon-size * 0.5 : (data.primary ? size * 1.4 : size);
     height: data.primary ? size * 1.4 : size;
     border-radius: self.height / 2;
     background: data.selected ? white : (data.primary ? #ffffff2e : Theme.surface);
-    drop-shadow-blur: data.selected ? Metrics.u * 1.4 : 0;
+    drop-shadow-blur: data.selected && !flat ? Metrics.u * 1.4 : 0;
     drop-shadow-color: #22d46f70;
     animate background { duration: Theme.quick; }
     Icon {
@@ -198,31 +226,35 @@ component RoundButton inherits Rectangle {
     }
 }
 
-/// One tile on a shelf. The selected one lifts and gets a ring.
+/// One tile on a shelf. The selected one lifts and gets a ring that
+/// follows the cover's shape: a circle for an artist, else the cover's
+/// own corners one ring-width out.
 component Card inherits Rectangle {
     in property <CardData> data;
     in property <length> size;
+    property <length> ring: root.data.selected ? Metrics.u * 0.22 : 0;
     width: size;
     height: size + Metrics.u * 4.2;
     art := Rectangle {
         y: root.data.selected ? -Metrics.u * 0.5 : 0;
         width: root.size;
         height: root.size;
-        border-radius: root.data.round ? self.width / 2 : root.size * 0.06 + Metrics.u * 0.2;
-        border-width: root.data.selected ? Metrics.u * 0.22 : 0;
+        border-radius: root.data.round ? self.width / 2 : Metrics.corner(root.size - root.ring * 2) + root.ring;
+        border-width: root.ring;
         border-color: white;
         drop-shadow-blur: root.data.selected ? Metrics.u * 2 : Metrics.u * 0.6;
         drop-shadow-color: root.data.selected ? #22d46f80 : #00000060;
         drop-shadow-offset-y: Metrics.u * 0.4;
         animate y, drop-shadow-blur { duration: Theme.quick; easing: ease-out; }
         Artwork {
-            x: root.data.selected ? Metrics.u * 0.22 : 0;
+            x: root.ring;
             y: self.x;
             width: parent.width - self.x * 2;
             height: self.width;
             source: root.data.image;
             has-source: root.data.has-image;
             round: root.data.round;
+            liked: root.data.liked;
         }
         if root.data.playable && root.data.selected: Rectangle {
             x: parent.width - self.width - Metrics.u * 0.7;
@@ -263,40 +295,51 @@ component Card inherits Rectangle {
     }
 }
 
-/// Titled rows of cards, scrolled by the selection.
+/// Titled rows of cards, scrolled by the selection. `columns` whole cards
+/// fit across between `pad` on either side: the selected card's glow
+/// spills into the pad, and the cards past either end stay hidden beyond
+/// it, so a row ends at a whole card. Down the page, likewise, only the
+/// shelves that fit whole show. `columns` matches `*_CARDS_VISIBLE` in
+/// nav.rs.
 component Shelves inherits Rectangle {
     in property <[ShelfData]> shelves;
     in property <[int]> offsets;
     in property <int> top;
-    in property <length> card: Metrics.u * 10.5;
+    in property <int> columns: 7;
+    in property <length> pad: Metrics.u * 1.2;
     property <length> gap: Metrics.u * 1.4;
+    property <length> card: (root.width - root.pad * 2 - root.gap * (root.columns - 1)) / root.columns;
     property <length> shelf-height: card + Metrics.u * 8.2;
-    clip: true;
     Rectangle {
-        y: -root.top * root.shelf-height;
-        animate y { duration: Theme.smooth; easing: ease-in-out; }
-        for shelf[s] in root.shelves: Rectangle {
-            x: 0;
-            y: s * root.shelf-height;
-            width: root.width;
-            height: root.shelf-height;
-            Text {
-                x: Metrics.u * 4;
-                y: Metrics.u * 0.6;
-                text: shelf.title;
-                color: white;
-                font-size: Metrics.u * 1.35;
-                font-weight: 700;
-            }
-            Rectangle {
-                x: Metrics.u * 4 - root.offsets[s] * (root.card + root.gap);
-                y: Metrics.u * 3.6;
-                animate x { duration: Theme.smooth; easing: ease-in-out; }
-                for card[c] in shelf.cards: Card {
-                    x: c * (root.card + root.gap);
-                    y: 0;
-                    data: card;
-                    size: root.card;
+        y: 0;
+        height: max(1, floor(root.height / root.shelf-height)) * root.shelf-height;
+        clip: true;
+        Rectangle {
+            y: -root.top * root.shelf-height;
+            animate y { duration: Theme.smooth; easing: ease-in-out; }
+            for shelf[s] in root.shelves: Rectangle {
+                x: 0;
+                y: s * root.shelf-height;
+                width: root.width;
+                height: root.shelf-height;
+                Text {
+                    x: root.pad;
+                    y: Metrics.u * 0.6;
+                    text: shelf.title;
+                    color: white;
+                    font-size: Metrics.u * 1.35;
+                    font-weight: 700;
+                }
+                Rectangle {
+                    x: root.pad - root.offsets[s] * (root.card + root.gap);
+                    y: Metrics.u * 3.6;
+                    animate x { duration: Theme.smooth; easing: ease-in-out; }
+                    for card[c] in shelf.cards: Card {
+                        x: c * (root.card + root.gap);
+                        y: 0;
+                        data: card;
+                        size: root.card;
+                    }
                 }
             }
         }
@@ -343,6 +386,7 @@ component Row inherits Rectangle {
         VerticalLayout {
             alignment: center;
             spacing: Metrics.u * 0.15;
+            horizontal-stretch: 1;
             Text {
                 text: root.data.title;
                 color: root.data.selected ? #0b0d12 : (root.data.current ? Theme.green : white);
@@ -357,11 +401,14 @@ component Row inherits Rectangle {
                 overflow: elide;
             }
         }
-        if root.data.current: VerticalLayout {
-            alignment: center;
+        // The playing bars sit beside the length, on the row's middle.
+        if root.data.current: Rectangle {
+            width: Metrics.u * 1.3;
+            horizontal-stretch: 0;
             Icon {
+                y: (parent.height - self.height) / 2;
                 name: "now";
-                width: Metrics.u * 1.3;
+                width: parent.width;
                 height: self.width;
                 color: root.data.selected ? #0b0d12 : Theme.green;
             }
@@ -377,20 +424,25 @@ component Row inherits Rectangle {
     }
 }
 
-/// A list of rows that keeps `top` as its first visible row.
+/// A list of rows that keeps `top` as its first visible row, and shows
+/// only the rows that fit whole: it ends at the last one that does.
 component List inherits Rectangle {
     in property <[RowData]> rows;
     in property <int> top;
     property <length> row-height: Metrics.u * 4.4;
-    clip: true;
     Rectangle {
-        y: -root.top * root.row-height;
-        animate y { duration: Theme.smooth; easing: ease-in-out; }
-        for row[i] in root.rows: Row {
-            x: 0;
-            y: i * root.row-height;
-            width: root.width;
-            data: row;
+        y: 0;
+        height: floor(root.height / root.row-height) * root.row-height;
+        clip: true;
+        Rectangle {
+            y: -root.top * root.row-height;
+            animate y { duration: Theme.smooth; easing: ease-in-out; }
+            for row[i] in root.rows: Row {
+                x: 0;
+                y: i * root.row-height;
+                width: root.width;
+                data: row;
+            }
         }
     }
 }
@@ -523,6 +575,11 @@ export component App inherits Window {
     in property <bool> loading;
     in property <string> where;
     in property <[ButtonData]> controls;
+    // The seek bar has the selection (Left and Right seek), a seek is being
+    // picked, and how far it goes ("+0:30").
+    in property <bool> seek-focused;
+    in property <bool> scrubbing;
+    in property <string> seek-delta;
     in property <[UpNextData]> up-next;
     // The controls and tab bar; hidden while nobody uses the remote.
     in property <bool> controls-shown: true;
@@ -533,6 +590,8 @@ export component App inherits Window {
     // lyrics in `lyric-rows`, 2 plain `lyrics` that scroll with the song.
     in property <int> lyrics-mode;
     in property <string> lyrics;
+    // The plain lyrics, line by line, so the column can end at a whole line.
+    in property <[string]> lyric-lines;
     in property <[LyricRowData]> lyric-rows;
     // A small shift, each -1 to 1, that moves now and then so nothing burns in.
     in property <float> drift-x;
@@ -569,6 +628,7 @@ export component App inherits Window {
     in property <image> col-artwork;
     in property <bool> col-has-artwork;
     in property <bool> col-round;
+    in property <bool> col-liked;
     in property <[ButtonData]> col-buttons;
     in property <[RowData]> col-rows;
     in property <int> col-top;
@@ -590,9 +650,13 @@ export component App inherits Window {
 
     init => {
         Metrics.u = self.height / 54;
+        Metrics.safe-x = self.width * 0.05;
     }
     changed height => {
         Metrics.u = self.height / 54;
+    }
+    changed width => {
+        Metrics.safe-x = self.width * 0.05;
     }
 
     keys := FocusScope {
@@ -650,13 +714,22 @@ export component App inherits Window {
             background: @radial-gradient(circle, #00000080 0%, #00000000 60%);
         }
 
-        // The song.
+        // The song. With the controls up it keeps to the band between the
+        // tab bar and the buttons, shrinking its cover to fit, and with the
+        // queue open it moves into the space left of it.
         song := VerticalLayout {
-            property <length> art: stage.side ? Metrics.u * 24 : Metrics.u * 26;
+            // Everything but the cover and the title: the gaps, the line
+            // above the title, the artists, the seek bar, and the times.
+            property <length> rest: Metrics.u * 9.6;
+            property <length> band-top: root.controls-shown ? Metrics.u * 6.8 : 0;
+            property <length> band-bottom: root.controls-shown ? root.height - Metrics.u * 8.8 : root.height;
+            property <length> full-art: stage.side ? Metrics.u * 24 : Metrics.u * 26;
+            property <length> art: max(Metrics.u * 12, min(self.full-art, self.band-bottom - self.band-top - title-text.height - self.rest));
+            property <length> free-width: root.panel != 0 ? root.width * 0.6 : root.width;
             width: stage.side ? Metrics.u * 26 : Metrics.u * 40;
             height: self.preferred-height;
-            x: (stage.side ? Metrics.u * 5.5 : (root.width - self.width) / 2) + stage.shift-x;
-            y: (root.height - self.preferred-height) / 2 - (root.controls-shown ? Metrics.u * 3.6 : 0) + stage.shift-y;
+            x: (stage.side ? Metrics.u * 5.5 : (self.free-width - self.width) / 2) + stage.shift-x;
+            y: self.band-top + (self.band-bottom - self.band-top - self.preferred-height) / 2 + stage.shift-y;
             animate x, y, width { duration: 800ms; easing: cubic-bezier(0.2, 0.9, 0.25, 1); }
             spacing: Metrics.u * 0.45;
             HorizontalLayout {
@@ -665,10 +738,13 @@ export component App inherits Window {
                     width: song.art;
                     height: song.art;
                     animate width, height { duration: 800ms; easing: cubic-bezier(0.2, 0.9, 0.25, 1); }
-                    border-radius: Metrics.u * 1.2;
-                    drop-shadow-blur: Metrics.u * 4;
-                    drop-shadow-color: #000000b0;
-                    drop-shadow-offset-y: Metrics.u * 1;
+                    border-radius: Metrics.corner(self.width);
+                    // Over the GPU visuals the screen redraws every frame,
+                    // and a blur this size costs the TV frames: no shadow
+                    // there.
+                    drop-shadow-blur: root.has-visuals ? 0 : Metrics.u * 4;
+                    drop-shadow-color: root.has-visuals ? transparent : #000000b0;
+                    drop-shadow-offset-y: root.has-visuals ? 0 : Metrics.u * 1;
                     Artwork {
                         width: 100%;
                         height: 100%;
@@ -695,7 +771,10 @@ export component App inherits Window {
                     letter-spacing: Metrics.u * 0.08;
                 }
             }
-            Text {
+            title-text := Text {
+                // Its own width, not the layout's: the cover's size reads
+                // this text's height.
+                width: song.width;
                 text: root.track-title;
                 color: white;
                 font-family: "Inter Display";
@@ -713,26 +792,52 @@ export component App inherits Window {
                 overflow: elide;
                 horizontal-alignment: stage.side ? left : center;
             }
-            Rectangle { height: Metrics.u * 0.9; }
-            Rectangle {
-                height: Metrics.u * 0.3;
-                border-radius: self.height / 2;
-                background: #ffffff30;
+            Rectangle { height: Metrics.u * 0.5; }
+            // The seek bar. Selected, it thickens and grows a knob, and
+            // Left and Right move the knob to where a seek will go.
+            seek-bar := Rectangle {
+                property <float> done: clamp(root.progress, 0, 1);
+                property <length> thickness: root.seek-focused ? Metrics.u * 0.5 : Metrics.u * 0.3;
+                height: Metrics.u * 1.4;
                 Rectangle {
-                    x: 0;
-                    width: parent.width * clamp(root.progress, 0, 1);
-                    border-radius: parent.border-radius;
+                    y: (parent.height - self.height) / 2;
+                    height: seek-bar.thickness;
+                    border-radius: self.height / 2;
+                    background: root.seek-focused ? #ffffff48 : #ffffff30;
+                    animate height { duration: Theme.quick; }
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * seek-bar.done;
+                        border-radius: parent.border-radius;
+                        background: root.scrubbing ? Theme.green-deep : white;
+                        animate width { duration: root.scrubbing ? 90ms : 250ms; }
+                    }
+                }
+                if root.seek-focused: Rectangle {
+                    x: parent.width * seek-bar.done - self.width / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: Metrics.u * 1.4;
+                    height: self.width;
+                    border-radius: self.width / 2;
                     background: white;
-                    animate width { duration: 250ms; }
+                    animate x { duration: root.scrubbing ? 90ms : 250ms; }
                 }
             }
             HorizontalLayout {
                 Text {
                     text: root.position-text;
-                    color: Theme.text-3;
+                    color: root.seek-focused ? white : Theme.text-3;
                     font-size: Metrics.u * 0.85;
+                    font-weight: root.scrubbing ? 700 : 400;
                 }
-                if root.loading: Text {
+                if root.scrubbing: Text {
+                    text: root.seek-delta;
+                    color: Theme.green;
+                    font-size: Metrics.u * 0.85;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                if root.loading && !root.scrubbing: Text {
                     text: "Loading…";
                     color: Theme.text-3;
                     font-size: Metrics.u * 0.85;
@@ -749,7 +854,7 @@ export component App inherits Window {
 
         // The clock, while the tab bar (which has its own) is away.
         Text {
-            x: root.width - self.width - Metrics.u * 4 + stage.shift-x;
+            x: root.width - self.width - Metrics.safe-x + stage.shift-x;
             y: Metrics.u * 2 + stage.shift-y;
             text: root.clock;
             color: #ffffffb0;
@@ -759,7 +864,9 @@ export component App inherits Window {
             animate opacity { duration: 300ms; }
         }
 
-        // The lyrics: every line, the one being sung bright and big.
+        // The lyrics: every line, the one being sung bright and big. Only
+        // lines that fit whole show, so the column ends at a whole line
+        // (the app draws no fades).
         lyrics-box := Rectangle {
             x: Metrics.u * 37 + stage.shift-x;
             y: Metrics.u * 4;
@@ -777,13 +884,14 @@ export component App inherits Window {
                 // The middle of the current row, in the column's coordinates.
                 property <length> active-y;
                 property <float> breath: root.playing ? 1 + 0.16 * (1 - Math.cos(Math.mod(animation-tick() / 2.4s, 1) * 360deg)) / 2 : 1;
-                VerticalLayout {
+                lyric-column := VerticalLayout {
                     width: parent.width;
                     y: parent.height * 0.4 - parent.active-y;
                     animate y { duration: 760ms; easing: cubic-bezier(0.2, 0.9, 0.25, 1.06); }
                     padding-bottom: parent.height;
                     for row in root.lyric-rows: Rectangle {
                         property <bool> current: row.kind == 1 || row.kind == 4;
+                        visible: lyric-column.y + self.y >= 0 && lyric-column.y + self.y + self.height <= lyric-viewport.height;
                         height: row.kind == 3 ? 0px
                             : row.kind == 4 ? Metrics.u * 4.4
                             : line-text.preferred-height + Metrics.u * 1.3;
@@ -844,16 +952,22 @@ export component App inherits Window {
                 }
             }
             // Plain: the whole text, scrolling along with the song.
-            if root.lyrics-mode == 2: Text {
-                width: parent.width;
-                y: Metrics.u * 2 - clamp(root.progress, 0, 1) * max(0, self.preferred-height - parent.height + Metrics.u * 8);
-                animate y { duration: 1200ms; easing: linear; }
-                text: root.lyrics;
-                color: Theme.lyric-plain;
-                font-family: "Inter Display";
-                font-size: Metrics.u * 2;
-                font-weight: 800;
-                wrap: word-wrap;
+            if root.lyrics-mode == 2: plain-lyrics := Rectangle {
+                plain-column := VerticalLayout {
+                    width: parent.width;
+                    height: self.preferred-height;
+                    y: Metrics.u * 2 - clamp(root.progress, 0, 1) * max(0, self.preferred-height - parent.height + Metrics.u * 8);
+                    animate y { duration: 1200ms; easing: linear; }
+                    for line in root.lyric-lines: Text {
+                        visible: plain-column.y + self.y >= 0 && plain-column.y + self.y + self.height <= plain-lyrics.height;
+                        text: line;
+                        color: Theme.lyric-plain;
+                        font-family: "Inter Display";
+                        font-size: Metrics.u * 2;
+                        font-weight: 800;
+                        wrap: word-wrap;
+                    }
+                }
             }
         }
 
@@ -877,7 +991,7 @@ export component App inherits Window {
                 spacing: Metrics.u * 1.1;
                 for button in root.controls: VerticalLayout {
                     alignment: center;
-                    RoundButton { data: button; }
+                    RoundButton { data: button; flat: root.has-visuals; }
                 }
                 Rectangle { width: Metrics.u * 2; }
                 for item in root.up-next: HorizontalLayout {
@@ -923,7 +1037,7 @@ export component App inherits Window {
         // the room can pick up their phone and change the queue. It drifts
         // with the song so it never burns in.
         QrCard {
-            x: root.width - self.width - Metrics.u * 4 + stage.shift-x;
+            x: root.width - self.width - Metrics.safe-x + stage.shift-x;
             y: root.height - self.height - Metrics.u * 2.2 + stage.shift-y;
             code: root.qr;
             size: Metrics.u * 5;
@@ -994,7 +1108,7 @@ export component App inherits Window {
 
     if root.page == 2: Rectangle {
         VerticalLayout {
-            x: Metrics.u * 4;
+            x: Metrics.safe-x;
             y: Metrics.u * 6.6;
             height: self.preferred-height;
             spacing: Metrics.u * 0.2;
@@ -1012,11 +1126,14 @@ export component App inherits Window {
             }
         }
         Shelves {
-            y: Metrics.u * 11;
+            x: Metrics.safe-x - self.pad;
+            y: Metrics.u * 11.4;
+            width: root.width - self.x * 2;
             height: root.height - self.y;
             shelves: root.shelves;
             offsets: root.shelf-offsets;
             top: root.shelf-top;
+            columns: 7;
         }
     }
 
@@ -1026,7 +1143,7 @@ export component App inherits Window {
         property <length> key-size: Metrics.u * 3.3;
         property <length> key-gap: Metrics.u * 0.45;
         VerticalLayout {
-            x: Metrics.u * 4;
+            x: Metrics.safe-x;
             y: Metrics.u * 7;
             width: search-page.key-size * 6 + search-page.key-gap * 5;
             height: self.preferred-height;
@@ -1092,13 +1209,14 @@ export component App inherits Window {
                 }
             }
         }
-        Rectangle {
+        // The results column ends at the safe area.
+        results := Rectangle {
             x: Metrics.u * 30;
             y: Metrics.u * 5.4;
-            width: root.width - self.x;
+            width: root.width - self.x - Metrics.safe-x;
             height: root.height - self.y;
             if root.query == "" && root.shelves.length == 0: VerticalLayout {
-                x: Metrics.u * 4;
+                x: 0;
                 y: Metrics.u * 3;
                 height: self.preferred-height;
                 spacing: Metrics.u * 0.5;
@@ -1116,10 +1234,12 @@ export component App inherits Window {
                 }
             }
             Shelves {
+                x: -self.pad;
+                width: results.width + self.pad * 2;
                 shelves: root.shelves;
                 offsets: root.shelf-offsets;
                 top: root.shelf-top;
-                card: Metrics.u * 9;
+                columns: 6;
             }
         }
     }
@@ -1137,7 +1257,7 @@ export component App inherits Window {
             Rectangle {
                 width: parent.width;
                 height: parent.width;
-                border-radius: root.col-round ? self.width / 2 : Metrics.u;
+                border-radius: root.col-round ? self.width / 2 : Metrics.corner(self.width);
                 drop-shadow-blur: Metrics.u * 3;
                 drop-shadow-color: #000000a0;
                 Artwork {
@@ -1146,6 +1266,7 @@ export component App inherits Window {
                     source: root.col-artwork;
                     has-source: root.col-has-artwork;
                     round: root.col-round;
+                    liked: root.col-liked;
                 }
             }
             Rectangle { height: Metrics.u * 0.6; }
@@ -1188,11 +1309,11 @@ export component App inherits Window {
             }
         }
         if root.page-loading: Spinner {
-            x: Metrics.u * 30 + (root.width - Metrics.u * 34 - self.width) / 2;
+            x: Metrics.u * 28 + (root.width - Metrics.u * 28 - Metrics.safe-x - self.width) / 2;
             y: root.height * 0.45;
         }
         if !root.page-loading && root.page-message != "": Text {
-            x: Metrics.u * 30;
+            x: Metrics.u * 29;
             y: Metrics.u * 9;
             text: root.page-message;
             color: Theme.text-3;
@@ -1201,7 +1322,7 @@ export component App inherits Window {
         List {
             x: Metrics.u * 28;
             y: Metrics.u * 7;
-            width: root.width - self.x - Metrics.u * 4;
+            width: root.width - self.x - Metrics.safe-x;
             height: root.height - self.y - Metrics.u * 3.6;
             rows: root.col-rows;
             top: root.col-top;
@@ -1215,7 +1336,7 @@ export component App inherits Window {
         y: root.height * 0.45;
     }
     if (root.page == 2 || root.page == 3) && !root.page-loading && root.page-message != "": Text {
-        x: root.page == 3 ? Metrics.u * 34 : Metrics.u * 4;
+        x: root.page == 3 ? Metrics.u * 30 : Metrics.safe-x;
         y: Metrics.u * 12;
         text: root.page-message;
         color: Theme.text-3;
@@ -1238,8 +1359,8 @@ export component App inherits Window {
         animate y, opacity { duration: 320ms; easing: ease-out; }
         height: Metrics.u * 5.4;
         HorizontalLayout {
-            padding-left: Metrics.u * 4;
-            padding-right: Metrics.u * 4;
+            padding-left: Metrics.safe-x;
+            padding-right: Metrics.safe-x;
             padding-top: Metrics.u * 1.4;
             spacing: Metrics.u * 2.4;
             HorizontalLayout {
@@ -1335,7 +1456,7 @@ export component App inherits Window {
     }
 
     if !root.menu-open && root.hints.length > 0 && root.page != 0: HorizontalLayout {
-        x: Metrics.u * 4;
+        x: Metrics.safe-x;
         y: root.height - Metrics.u * 2.6;
         height: Metrics.u * 1.6;
         alignment: start;
@@ -1353,12 +1474,14 @@ export component App inherits Window {
         x: self.open ? root.width - self.width : root.width;
         width: root.width * 0.4;
         height: root.height;
-        background: #0e1116f2;
+        // Solid, so the lyrics and the scan code don't show through.
+        background: #0e1116;
         border-width: 1px;
         border-color: #ffffff14;
         animate x { duration: Theme.smooth; easing: ease-out; }
         if root.panel == 1: VerticalLayout {
             padding: Metrics.u * 3;
+            padding-right: Metrics.safe-x;
             padding-top: Metrics.u * 3.4;
             spacing: Metrics.u * 1.2;
             VerticalLayout {
@@ -1464,7 +1587,8 @@ export component App inherits Window {
         background: #1d1829f5;
         border-width: 1px;
         border-color: #ffffff26;
-        drop-shadow-blur: Metrics.u * 2;
+        // No blur over the GPU visuals (see RoundButton's `flat`).
+        drop-shadow-blur: root.page == 0 && root.has-visuals ? 0 : Metrics.u * 2;
         drop-shadow-color: #00000090;
         notice-text := Text {
             text: root.notice;
