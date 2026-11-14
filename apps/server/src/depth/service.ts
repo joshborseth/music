@@ -10,7 +10,6 @@ import {
   Layer,
   Option,
   Path,
-  Queue,
   Schema,
   Scope,
   Semaphore,
@@ -21,6 +20,11 @@ import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
 
 import { allowedArtworkUrl } from '../artwork.ts'
+import {
+  makeBackgroundQueue,
+  makeFailureMemory,
+  tryCache,
+} from '../background.ts'
 import { type DepthCache, makeDepthCache } from './cache.ts'
 import { MODEL, ensureModel } from './model.ts'
 import { DEPTH_SIDE, INPUT_SIDE } from './process.ts'
@@ -43,6 +47,10 @@ import { DEPTH_SIDE, INPUT_SIDE } from './process.ts'
 const AT_ONCE = 1
 /** A cover that failed is not tried again for this long. */
 const FAILURE_RETRY_MS = 10 * 60 * 1000
+/** Covers whose failure is remembered, at most. */
+const FAILURES_KEPT = 500
+/** Covers waiting to be worked out in the background, at most. */
+const QUEUED_AT_MOST = 64
 /** Without the model, it is looked for (or downloaded) again after this long. */
 const MODEL_RETRY_MS = 30 * 60 * 1000
 const FETCH_TIMEOUT = Duration.seconds(10)
@@ -107,17 +115,28 @@ export const makeCoverDepth = Effect.fnUntraced(function* (
 ) {
   const scope = yield* Scope.Scope
   const pending = new Map<string, Deferred.Deferred<Uint8Array, DepthError>>()
-  const failures = new Map<string, { at: number; error: DepthError }>()
-  const queued = new Set<string>()
-  const background = yield* Queue.unbounded<string>()
+  const failures = makeFailureMemory<DepthError>({
+    retryMs: () => FAILURE_RETRY_MS,
+    now,
+    capacity: FAILURES_KEPT,
+  })
 
-  const recentFailure = (key: string): Option.Option<DepthError> => {
-    const failure = failures.get(key)
-    if (failure === undefined) return Option.none()
-    if (now() - failure.at < FAILURE_RETRY_MS) return Option.some(failure.error)
-    failures.delete(key)
-    return Option.none()
-  }
+  // The cache is SQLite, which throws: a map it can't keep is still
+  // answered with, and one it can't read is worked out again.
+  const keep = (key: string, png: Uint8Array) =>
+    tryCache(
+      'Keeping a cover depth failed',
+      key,
+      () => cache.put(key, png, now()),
+      () => undefined,
+    )
+  const cached = (key: string) =>
+    tryCache(
+      'Reading a cover depth failed',
+      key,
+      () => cache.get(key, now()),
+      () => Option.none<Uint8Array>(),
+    )
 
   const start = (key: string) =>
     Effect.gen(function* () {
@@ -131,9 +150,13 @@ export const makeCoverDepth = Effect.fnUntraced(function* (
         )
       // In the service's scope: a TV that hangs up still lets it finish.
       yield* makeDepth(key).pipe(
-        Effect.tap(png => Effect.sync(() => cache.put(key, png, now()))),
+        Effect.tap(png => keep(key, png)),
+        // A bug is a failure too: remembered, and answered as one.
+        Effect.catchDefect(defect =>
+          Effect.fail(failure(key, 'Failed')(`a defect: ${String(defect)}`)),
+        ),
         Effect.tapError(error =>
-          Effect.sync(() => failures.set(key, { at: now(), error })),
+          Effect.sync(() => failures.remember(key, error)),
         ),
         Effect.exit,
         Effect.flatMap(settle),
@@ -154,10 +177,9 @@ export const makeCoverDepth = Effect.fnUntraced(function* (
     })
 
   const depthOf = (key: string): Effect.Effect<Uint8Array, DepthError> =>
-    Effect.suspend(() => {
-      const known = cache.get(key, now())
+    Effect.flatMap(cached(key), known => {
       if (Option.isSome(known)) return Effect.succeed(known.value)
-      return Option.match(recentFailure(key), {
+      return Option.match(failures.recent(key), {
         onSome: Effect.fail,
         onNone: () => Effect.flatMap(start(key), Deferred.await),
       })
@@ -177,11 +199,11 @@ export const makeCoverDepth = Effect.fnUntraced(function* (
     })
 
   // The background worker: one cover at a time, failures only logged.
-  yield* Queue.take(background).pipe(
-    Effect.tap(key => Effect.sync(() => queued.delete(key))),
-    Effect.flatMap(key =>
+  const background = yield* makeBackgroundQueue({
+    name: 'Cover depth',
+    capacity: QUEUED_AT_MOST,
+    work: key =>
       depthOf(key).pipe(
-        Effect.asVoid,
         Effect.catchTag('DepthError', error =>
           error.reason === 'NoModel'
             ? Effect.void
@@ -192,26 +214,22 @@ export const makeCoverDepth = Effect.fnUntraced(function* (
               ),
         ),
       ),
-    ),
-    Effect.forever,
-    Effect.forkIn(scope),
-  )
+  })
 
   const warm = (url: string) =>
-    Effect.suspend(() => {
+    Effect.gen(function* () {
       const maybeKey = depthKey(url)
-      if (Option.isNone(maybeKey)) return Effect.void
+      if (Option.isNone(maybeKey)) return
       const key = maybeKey.value
       if (
-        queued.has(key) ||
+        background.has(key) ||
         pending.has(key) ||
-        Option.isSome(recentFailure(key)) ||
-        Option.isSome(cache.get(key, now()))
+        Option.isSome(failures.recent(key)) ||
+        Option.isSome(yield* cached(key))
       ) {
-        return Effect.void
+        return
       }
-      queued.add(key)
-      return Effect.asVoid(Queue.offer(background, key))
+      yield* background.offer(key)
     })
 
   return CoverDepth.of({ depthPng, warm })

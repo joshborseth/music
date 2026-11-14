@@ -1,7 +1,11 @@
-import { describe, expect, test } from 'bun:test'
-import { Option } from 'effect'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { Deferred, Effect, FileSystem, Option, Path } from 'effect'
+import { mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-import type { ArtistLink } from '@music/shared'
+import { BunServices } from '@effect/platform-bun'
+import type { ArtistLink, Tv } from '@music/shared'
 
 import { contentBox, coverInto, pack } from './atlas.ts'
 import { frameReader } from './extract.ts'
@@ -22,7 +26,20 @@ import {
   rejection,
   videoQuery,
 } from './match.ts'
-import { montagesToEvict } from './service.ts'
+import {
+  type Built,
+  MONTAGE_VERSION,
+  type MontageStore,
+  type SavedMontage,
+  VIDEO_RETRY_MS,
+  cacheEntryOf,
+  evictMontages,
+  makeSongMontage,
+  montagesToEvict,
+  savedOf,
+  savedText,
+  videoRetry,
+} from './service.ts'
 
 // MATCHING
 
@@ -351,5 +368,244 @@ describe('the cache', () => {
     expect(
       montagesToEvict(cached, 500).map(montage => montage.videoId),
     ).toEqual(['b', 'c'])
+  })
+})
+
+describe('the cache on disk', () => {
+  const dir = mkdtemp(join(tmpdir(), 'montage-cache-'))
+  afterAll(async () => rm(await dir, { recursive: true, force: true }))
+
+  test("deletes a save's leftover parts, and evicts by montage", async () => {
+    const directory = await dir
+    const now = Date.now()
+    const old = new Date(now - 60 * 60 * 1000)
+    const write = async (name: string, bytes: number, at: Date) => {
+      await writeFile(join(directory, name), new Uint8Array(bytes))
+      await utimes(join(directory, name), at, at)
+    }
+    await write('stray.jpg.part', 100, old)
+    await write('stray.json.part', 10, old)
+    await write('saving.jpg.part', 100, new Date(now))
+    await write('old.jpg', 600, old)
+    await write('old.json', 10, old)
+    await write('new.jpg', 600, new Date(now))
+    await write('new.json', 10, new Date(now))
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* Path.Path
+        yield* evictMontages(fs, path, directory, 1000, now)
+      }).pipe(Effect.provide(BunServices.layer)),
+    )
+    expect((await readdir(directory)).sort()).toEqual([
+      'new.jpg',
+      'new.json',
+      'saving.jpg.part',
+    ])
+  })
+
+  test('names a montage by its files, and a part as a leftover', () => {
+    expect(cacheEntryOf('abc.jpg')).toEqual({ kind: 'Montage', videoId: 'abc' })
+    expect(cacheEntryOf('abc.json')).toEqual({
+      kind: 'Montage',
+      videoId: 'abc',
+    })
+    expect(cacheEntryOf('abc.jpg.part')).toEqual({ kind: 'Partial' })
+    expect(cacheEntryOf('notes.txt')).toBeNull()
+  })
+})
+
+// THE SERVICE
+
+const montageOf = (
+  videoId: string,
+  source: Tv.TvMontageSource,
+): Tv.TvMontage => ({
+  videoId,
+  source,
+  musicVideoId: source === 'Video' ? 'mv' : null,
+  columns: 1,
+  rows: 1,
+  cellWidth: 320,
+  cellHeight: 180,
+  frames: [],
+  atlasPath: `/tv/montage.jpg?videoId=${videoId}`,
+})
+
+const builtOf = (
+  videoId: string,
+  source: Tv.TvMontageSource,
+  videoFailed = false,
+): Built => ({
+  made: { montage: montageOf(videoId, source), jpeg: new Uint8Array([1]) },
+  videoFailed,
+})
+
+/** A store in memory, whose writes `write` may break. */
+const memoryStore = (
+  write: (saved: SavedMontage) => Effect.Effect<void> = () => Effect.void,
+) => {
+  const saved = new Map<string, SavedMontage>()
+  const store: MontageStore = {
+    read: videoId =>
+      Effect.sync(() => Option.fromNullishOr(saved.get(videoId))),
+    write: montage =>
+      write(montage).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            saved.set(montage.montage.videoId, montage)
+          }),
+        ),
+      ),
+    touch: () => Effect.void,
+  }
+  return { saved, store }
+}
+
+describe('the montage service', () => {
+  test('when the video could not be had, the artist stands in and the video is looked for again later', async () => {
+    let now = 1_000_000
+    const builds: Array<string> = []
+    const { saved, store } = memoryStore()
+    const results = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const rebuilt = yield* Deferred.make<void>()
+          const service = yield* makeSongMontage(
+            store,
+            videoId =>
+              Effect.gen(function* () {
+                builds.push(videoId)
+                // The first time, YouTube's search fails; later it works.
+                if (builds.length === 1) return builtOf(videoId, 'Artist', true)
+                yield* Deferred.succeed(rebuilt, undefined)
+                return builtOf(videoId, 'Video')
+              }),
+            () => now,
+          )
+          const first = yield* service.montage('song')
+          const retryAt = saved.get('song')?.retryVideoAt
+          // Before its time, the artist's pictures are kept as they are.
+          now += VIDEO_RETRY_MS - 1
+          yield* service.warm('song')
+          const early = yield* service.montage('song')
+          const buildsEarly = builds.length
+          // After it, they are served while the video is looked for.
+          now += 1
+          const meanwhile = yield* service.montage('song')
+          yield* Deferred.await(rebuilt)
+          yield* Effect.sleep('10 millis')
+          const later = yield* service.montage('song')
+          return { first, retryAt, early, buildsEarly, meanwhile, later }
+        }),
+      ),
+    )
+    expect(results.first.source).toBe('Artist')
+    expect(results.retryAt).toBe(1_000_000 + VIDEO_RETRY_MS)
+    expect(results.early.source).toBe('Artist')
+    expect(results.buildsEarly).toBe(1)
+    expect(results.meanwhile.source).toBe('Artist')
+    expect(results.later.source).toBe('Video')
+    expect(builds).toEqual(['song', 'song'])
+    expect(saved.get('song')?.retryVideoAt).toBeNull()
+  })
+
+  test('a song with no video keeps its artist montage for good', async () => {
+    const builds: Array<string> = []
+    const { saved, store } = memoryStore()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* makeSongMontage(
+            store,
+            videoId =>
+              Effect.sync(() => {
+                builds.push(videoId)
+                return builtOf(videoId, 'Artist')
+              }),
+            () => 0,
+          )
+          yield* service.montage('song')
+          yield* service.warm('song')
+          yield* service.montage('song')
+          yield* Effect.sleep('10 millis')
+        }),
+      ),
+    )
+    expect(builds).toEqual(['song'])
+    expect(saved.get('song')?.retryVideoAt).toBeNull()
+  })
+
+  test('a store that breaks on one song does not stop background work', async () => {
+    const built: Array<string> = []
+    const { store } = memoryStore(montage =>
+      montage.montage.videoId === 'broken'
+        ? Effect.die(new Error('disk full'))
+        : Effect.void,
+    )
+    const [broken, fine] = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const done = yield* Deferred.make<void>()
+          const service = yield* makeSongMontage(
+            store,
+            videoId =>
+              Effect.sync(() => {
+                built.push(videoId)
+                return builtOf(videoId, 'Video')
+              }).pipe(
+                Effect.tap(() =>
+                  videoId === 'fine'
+                    ? Deferred.succeed(done, undefined)
+                    : Effect.void,
+                ),
+              ),
+            () => 0,
+          )
+          yield* service.warm('broken')
+          yield* service.warm('fine')
+          yield* Deferred.await(done)
+          yield* Effect.sleep('10 millis')
+          return [
+            yield* Effect.flip(service.montage('broken')),
+            yield* service.montage('fine'),
+          ] as const
+        }),
+      ),
+    )
+    expect(built).toEqual(['broken', 'fine'])
+    // The bug is remembered as a failure, not made again at once.
+    expect(broken.reason).toBe('Failed')
+    expect(fine.source).toBe('Video')
+  })
+
+  test('looks for a video again later after each failure in a row, up to a week', () => {
+    expect(videoRetry(false, 3, 0)).toEqual({
+      retryVideoAt: null,
+      videoFailures: 0,
+    })
+    expect(videoRetry(true, 0, 0).retryVideoAt).toBe(VIDEO_RETRY_MS)
+    expect(videoRetry(true, 1, 0).retryVideoAt).toBe(4 * VIDEO_RETRY_MS)
+    expect(videoRetry(true, 20, 0).retryVideoAt).toBe(7 * 24 * 60 * 60 * 1000)
+  })
+
+  test('an artist montage saved before retries were kept is made again once', () => {
+    const legacy = (source: Tv.TvMontageSource) =>
+      JSON.stringify({
+        version: MONTAGE_VERSION,
+        montage: montageOf('s', source),
+      })
+    expect(
+      Option.map(savedOf(legacy('Artist')), saved => saved.retryVideoAt),
+    ).toEqual(Option.some(0))
+    expect(
+      Option.map(savedOf(legacy('Video')), saved => saved.retryVideoAt),
+    ).toEqual(Option.some(null))
+    const kept: SavedMontage = {
+      montage: montageOf('s', 'Artist'),
+      retryVideoAt: null,
+      videoFailures: 0,
+    }
+    expect(savedOf(savedText(kept))).toEqual(Option.some(kept))
   })
 })

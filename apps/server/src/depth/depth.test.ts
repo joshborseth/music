@@ -17,7 +17,7 @@ import sharp from 'sharp'
 
 import { BunServices } from '@effect/platform-bun'
 
-import { makeDepthCache } from './cache.ts'
+import { type DepthCache, makeDepthCache } from './cache.ts'
 import { ensureModel, fileSha256 } from './model.ts'
 import {
   DEPTH_SIDE,
@@ -280,6 +280,77 @@ describe('the depth service', () => {
     )
     expect(asked).toEqual([COVER_KEY])
   })
+
+  test('a cache that throws, or a bug in one cover, does not stop background work', async () => {
+    const other = 'https://lh3.googleusercontent.com/def=w120-h120-l90-rj'
+    const buggy = 'https://lh3.googleusercontent.com/bug=w120-h120-l90-rj'
+    const real = makeDepthCache(new Database(':memory:', { strict: true }))
+    // SQLite throws when it can't write: the first cover's map isn't kept.
+    const cache: DepthCache = {
+      ...real,
+      put: (url, png, now) => {
+        if (url === COVER_KEY) throw new Error('SQLITE_FULL')
+        real.put(url, png, now)
+      },
+    }
+    const asked: Array<string> = []
+    const answer = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const done = yield* Deferred.make<void>()
+          const depth = yield* makeCoverDepth(
+            cache,
+            key =>
+              key.includes('/bug=')
+                ? Effect.die(new Error('a bug'))
+                : Effect.sync(() => asked.push(key)).pipe(
+                    Effect.andThen(
+                      key.includes('/def=')
+                        ? Deferred.succeed(done, undefined)
+                        : Effect.void,
+                    ),
+                    Effect.as(new Uint8Array([7])),
+                  ),
+            () => Date.now(),
+          )
+          yield* depth.warm(COVER)
+          yield* depth.warm(buggy)
+          yield* depth.warm(other)
+          yield* Deferred.await(done)
+          // A map the cache couldn't keep is still answered with.
+          return yield* depth.depthPng(COVER)
+        }),
+      ),
+    )
+    expect(asked).toEqual([
+      COVER_KEY,
+      'https://lh3.googleusercontent.com/def=w544-h544-l90-rj',
+      COVER_KEY,
+    ])
+    expect(Array.from(answer)).toEqual([7])
+  })
+
+  test('a bug in working a cover out is answered, and remembered, as a failure', async () => {
+    let tries = 0
+    const [first, second] = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const depth = yield* service(() =>
+            Effect.sync(() => {
+              tries += 1
+            }).pipe(Effect.andThen(Effect.die(new Error('a bug')))),
+          )
+          return [
+            yield* Effect.flip(depth.depthPng(COVER)),
+            yield* Effect.flip(depth.depthPng(COVER)),
+          ]
+        }),
+      ),
+    )
+    expect(tries).toBe(1)
+    expect(first?.reason).toBe('Failed')
+    expect(second?.reason).toBe('Failed')
+  })
 })
 
 describe('the depth model file', () => {
@@ -323,6 +394,70 @@ describe('the depth model file', () => {
     )
     expect(Exit.isFailure(exit)).toBe(true)
     expect(await Bun.file(missing).exists()).toBe(false)
+  })
+
+  test('one with the wrong hash is downloaded again when downloading is on', async () => {
+    const weights = 'the real weights'
+    const sha256 = new Bun.CryptoHasher('sha256').update(weights).digest('hex')
+    let downloads = 0
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        downloads += 1
+        return new Response(weights)
+      },
+    })
+    try {
+      const file = join(await dir, 'cut-off.onnx')
+      await writeFile(file, 'the real wei')
+      const model = { url: `http://127.0.0.1:${server.port}/m`, sha256 }
+      const refused = await Effect.runPromise(
+        Effect.exit(ensureModel(file, false, model)),
+      )
+      expect(Exit.isFailure(refused)).toBe(true)
+      expect(downloads).toBe(0)
+      const fixed = await Effect.runPromise(ensureModel(file, true, model))
+      expect(fixed).toBe(file)
+      expect(await Bun.file(file).text()).toBe(weights)
+      expect(downloads).toBe(1)
+      // Right now: not downloaded again.
+      await Effect.runPromise(ensureModel(file, true, model))
+      expect(downloads).toBe(1)
+    } finally {
+      await server.stop(true)
+    }
+  })
+
+  test('a download that stalls times out, and leaves no part behind', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream({
+            start: controller => {
+              // Some bytes, then nothing more.
+              controller.enqueue(new TextEncoder().encode('partial'))
+            },
+          }),
+        ),
+    })
+    try {
+      const missing = join(await dir, 'stalled.onnx')
+      const exit = await Effect.runPromise(
+        Effect.exit(
+          ensureModel(missing, true, {
+            url: `http://127.0.0.1:${server.port}/m`,
+            sha256: '00',
+            downloadTimeout: '200 millis',
+          }),
+        ),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(await Bun.file(missing).exists()).toBe(false)
+      expect(await Bun.file(`${missing}.part`).exists()).toBe(false)
+    } finally {
+      await server.stop(true)
+    }
   })
 
   test('the server starts without it, and only Diorama goes without', async () => {

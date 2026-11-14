@@ -11,7 +11,6 @@ import {
   Layer,
   Option,
   Path,
-  Queue,
   Schedule,
   Schema,
   Scope,
@@ -22,6 +21,11 @@ import { ChildProcessSpawner } from 'effect/process'
 import { Tv } from '@music/shared'
 
 import { AudioStore } from '../audioStore.ts'
+import {
+  makeBackgroundQueue,
+  makeFailureMemory,
+  tryCache,
+} from '../background.ts'
 import { ANALYZER_VERSION } from './analyze.ts'
 import { type DecodeError, decodeAudio, measureLoudness } from './decode.ts'
 import { type Loudness } from './loudness.ts'
@@ -47,6 +51,10 @@ const ANALYSIS_TIMEOUT = Duration.seconds(90)
 const ANALYSES_AT_ONCE = 2
 /** A song that failed is not tried again for this long. */
 const FAILURE_RETRY_MS = 10 * 60 * 1000
+/** Songs whose failure is remembered, at most. */
+const FAILURES_KEPT = 500
+/** Songs waiting to be analyzed in the background, at most. */
+const QUEUED_AT_MOST = 64
 
 export class AnalysisError extends Schema.TaggedError<AnalysisError>()(
   'AnalysisError',
@@ -226,15 +234,13 @@ const makeOnePerSong = <A>(
   keep: (videoId: string, result: A) => void,
 ) => {
   const pending = new Map<string, Deferred.Deferred<A, AnalysisError>>()
-  const failures = new Map<string, { at: number; error: AnalysisError }>()
-
-  const recentFailure = (videoId: string): Option.Option<AnalysisError> => {
-    const failure = failures.get(videoId)
-    if (failure === undefined) return Option.none()
-    if (now() - failure.at < FAILURE_RETRY_MS) return Option.some(failure.error)
-    failures.delete(videoId)
-    return Option.none()
-  }
+  const failures = makeFailureMemory<AnalysisError>({
+    retryMs: () => FAILURE_RETRY_MS,
+    now,
+    capacity: FAILURES_KEPT,
+  })
+  const failed = (videoId: string) => (message: string) =>
+    new AnalysisError({ videoId, reason: 'Failed', message })
 
   const start = (videoId: string) =>
     Effect.gen(function* () {
@@ -248,22 +254,27 @@ const makeOnePerSong = <A>(
           Effect.andThen(Deferred.done(deferred, result)),
         )
       yield* work(videoId).pipe(
-        Effect.tap(result => Effect.sync(() => keep(videoId, result))),
+        // The cache is SQLite, which throws: a result it can't keep is
+        // still answered with.
+        Effect.tap(result =>
+          tryCache(
+            'Keeping an analysis failed',
+            videoId,
+            () => keep(videoId, result),
+            () => undefined,
+          ),
+        ),
+        // A bug is a failure too: remembered, and answered as one.
+        Effect.catchDefect(defect =>
+          Effect.fail(failed(videoId)(`a defect: ${String(defect)}`)),
+        ),
         Effect.tapError(error =>
-          Effect.sync(() => failures.set(videoId, { at: now(), error })),
+          Effect.sync(() => failures.remember(videoId, error)),
         ),
         Effect.exit,
         Effect.flatMap(settle),
         Effect.onInterrupt(() =>
-          settle(
-            Exit.fail(
-              new AnalysisError({
-                videoId,
-                reason: 'Failed',
-                message: 'The analysis was interrupted',
-              }),
-            ),
-          ),
+          settle(Exit.fail(failed(videoId)('The analysis was interrupted'))),
         ),
         Effect.forkIn(scope),
       )
@@ -273,14 +284,14 @@ const makeOnePerSong = <A>(
   return {
     run: (videoId: string): Effect.Effect<A, AnalysisError> =>
       Effect.suspend(() =>
-        Option.match(recentFailure(videoId), {
+        Option.match(failures.recent(videoId), {
           onSome: Effect.fail,
           onNone: () => Effect.flatMap(start(videoId), Deferred.await),
         }),
       ),
     /** The run under way for the song, if any. */
     running: (videoId: string) => Option.fromNullishOr(pending.get(videoId)),
-    hasFailed: (videoId: string) => Option.isSome(recentFailure(videoId)),
+    hasFailed: (videoId: string) => Option.isSome(failures.recent(videoId)),
   }
 }
 
@@ -296,8 +307,6 @@ export const makeSongAnalysis = Effect.fnUntraced(function* (
   now: () => number,
 ) {
   const scope = yield* Scope.Scope
-  const queued = new Set<string>()
-  const background = yield* Queue.unbounded<string>()
 
   const analyses = makeOnePerSong(
     scope,
@@ -377,12 +386,11 @@ export const makeSongAnalysis = Effect.fnUntraced(function* (
     })
 
   // The background worker: one song at a time, failures only logged.
-  yield* Queue.take(background).pipe(
-    Effect.tap(videoId => Effect.sync(() => queued.delete(videoId))),
-    Effect.flatMap(prepare),
-    Effect.forever,
-    Effect.forkIn(scope),
-  )
+  const background = yield* makeBackgroundQueue({
+    name: 'Analysis',
+    capacity: QUEUED_AT_MOST,
+    work: prepare,
+  })
 
   const warm = (videoId: string) =>
     Effect.suspend(() => {
@@ -392,15 +400,14 @@ export const makeSongAnalysis = Effect.fnUntraced(function* (
         Option.isNone(cache.getLoudness(videoId)) &&
         !measurements.hasFailed(videoId)
       if (
-        queued.has(videoId) ||
+        background.has(videoId) ||
         Option.isSome(analyses.running(videoId)) ||
         Option.isSome(measurements.running(videoId)) ||
         !(needsAnalysis || needsLoudness)
       ) {
         return Effect.void
       }
-      queued.add(videoId)
-      return Effect.asVoid(Queue.offer(background, videoId))
+      return background.offer(videoId)
     })
 
   return SongAnalysis.of({ analysis, loudness, knownLoudness, warm })

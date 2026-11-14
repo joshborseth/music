@@ -11,7 +11,6 @@ import {
   Option,
   Order,
   Path,
-  Queue,
   Schema,
   Scope,
   Semaphore,
@@ -21,6 +20,8 @@ import sharp from 'sharp'
 
 import { Tv } from '@music/shared'
 
+import { VIDEO_ID } from '../audio.ts'
+import { makeBackgroundQueue, makeFailureMemory } from '../background.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import { ARTIST_CELL, artistPictures } from './artist.ts'
 import {
@@ -42,8 +43,13 @@ import { type SongToMatch, rankMusicVideos, videoQuery } from './match.ts'
  * Made once a song, one song at a time, and kept on disk under a size cap,
  * the least recently used dropped first. The prefetcher asks for the songs
  * coming up in the queue (`warm`), so a montage is ready before its song
- * plays; the TV asking for one not made yet waits for it.
+ * plays; the TV asking for one not made yet waits for it. When the video
+ * could not be had (YouTube's search or a download failed), the artist's
+ * pictures stand in and are kept with a time to look for the video again
+ * (`videoRetry`), so one bad moment doesn't cost a song its video for good.
  */
+
+const DAY_MS = 24 * 60 * 60 * 1000
 
 /** Changes when montages are made differently, so old ones are made again. */
 export const MONTAGE_VERSION = 1
@@ -55,9 +61,21 @@ const BUILD_TIMEOUT = Duration.minutes(2)
 const FAILURE_RETRY_MS = 30 * 60 * 1000
 /** A song with no pictures at all is not looked at again for this long. */
 const NOTHING_RETRY_MS = 12 * 60 * 60 * 1000
+/**
+ * The artist's pictures standing in for a music video that could not be
+ * had (the search or the download failed) are made again after this long,
+ * four times longer after each failure in a row, up to a week.
+ */
+export const VIDEO_RETRY_MS = 30 * 60 * 1000
+const VIDEO_RETRY_MAX_MS = 7 * DAY_MS
+/** Songs whose failure is remembered, at most. */
+const FAILURES_KEPT = 500
+/** Songs waiting to be made in the background, at most. */
+const QUEUED_AT_MOST = 32
+/** A `.part` file this old is left from a save that broke, and goes. */
+const STRAY_PART_MS = 10 * 60 * 1000
 /** Montages made in a day, at most: each one is a YouTube download. */
 const DAILY_BUILDS = 300
-const DAY_MS = 24 * 60 * 60 * 1000
 const DEFAULT_MAX_BYTES = 200 * 1024 * 1024
 /** Evicting stops once the cache is this share of its cap. */
 const EVICT_TO_FRACTION = 0.9
@@ -82,10 +100,82 @@ export class MontageError extends Schema.TaggedError<MontageError>()(
 const StoredMontage = Schema.Struct({
   version: Schema.Number,
   montage: Tv.TvMontage,
+  /**
+   * Missing in montages saved before it was kept; read as below by
+   * `savedOf`.
+   */
+  retryVideoAt: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  videoFailures: Schema.optionalKey(Schema.Number),
 })
 const StoredJson = Schema.fromJsonString(Schema.toCodecJson(StoredMontage))
 const decodeStored = Schema.decodeUnknownOption(StoredJson)
 const encodeStored = Schema.encodeSync(StoredJson)
+
+/** A montage kept on disk, and whether its music video is looked for again. */
+export interface SavedMontage {
+  readonly montage: Tv.TvMontage
+  /**
+   * When to make it again, looking for the music video once more: set when
+   * the artist's pictures stood in because the video could not be had (its
+   * search or download failed), not because there is none. Null: never.
+   */
+  readonly retryVideoAt: number | null
+  /** The looks for the video that failed in a row, for the backoff. */
+  readonly videoFailures: number
+}
+
+/**
+ * The saved montage in a montage file's text, if it is one of this
+ * version. One of the artist's pictures saved before the retry was kept
+ * may have stood in for a video that failed, so it is made again once.
+ */
+export const savedOf = (text: string): Option.Option<SavedMontage> =>
+  Option.flatMap(decodeStored(text), saved =>
+    saved.version === MONTAGE_VERSION
+      ? Option.some({
+          montage: saved.montage,
+          retryVideoAt:
+            saved.retryVideoAt !== undefined
+              ? saved.retryVideoAt
+              : saved.montage.source === 'Artist'
+                ? 0
+                : null,
+          videoFailures: saved.videoFailures ?? 0,
+        })
+      : Option.none(),
+  )
+
+/** A saved montage as its file's text. */
+export const savedText = (saved: SavedMontage): string =>
+  encodeStored({
+    version: MONTAGE_VERSION,
+    montage: saved.montage,
+    retryVideoAt: saved.retryVideoAt,
+    videoFailures: saved.videoFailures,
+  })
+
+/** Whether the saved montage is due to be made again. */
+export const isDue = (saved: SavedMontage, now: number): boolean =>
+  saved.retryVideoAt !== null && now >= saved.retryVideoAt
+
+/**
+ * How a montage just made is saved: when its video could not be had, with
+ * a time to look again, later after each failure in a row.
+ */
+export const videoRetry = (
+  videoFailed: boolean,
+  failuresBefore: number,
+  now: number,
+): Pick<SavedMontage, 'retryVideoAt' | 'videoFailures'> => {
+  if (!videoFailed) return { retryVideoAt: null, videoFailures: 0 }
+  const videoFailures = failuresBefore + 1
+  return {
+    retryVideoAt:
+      now +
+      Math.min(VIDEO_RETRY_MAX_MS, VIDEO_RETRY_MS * 4 ** (videoFailures - 1)),
+    videoFailures,
+  }
+}
 
 /** Where the TV fetches a song's atlas. */
 export const atlasPathFor = (videoId: string): string =>
@@ -118,6 +208,75 @@ export const montagesToEvict = (
   return evicted
 }
 
+/** What a file in the montage cache is: a montage's, a save's leftover, or neither. */
+export const cacheEntryOf = (
+  name: string,
+):
+  | { readonly kind: 'Montage'; readonly videoId: string }
+  | { readonly kind: 'Partial' }
+  | null => {
+  if (name.endsWith('.part')) return { kind: 'Partial' }
+  const videoId = /^(.+)\.(?:json|jpg)$/u.exec(name)?.[1]
+  return videoId === undefined ? null : { kind: 'Montage', videoId }
+}
+
+/**
+ * Trims the montage cache in `directory` back under `maxBytes`, least
+ * recently used first, and deletes the `.part` files a save that broke
+ * left behind.
+ */
+export const evictMontages = (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  directory: string,
+  maxBytes: number,
+  now: number,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const names = yield* fs.readDirectory(directory)
+    const files = yield* Effect.forEach(names, name =>
+      fs.stat(path.join(directory, name)).pipe(
+        Effect.map(info => ({
+          name,
+          size: Number(info.size),
+          usedAt: Option.match(info.mtime, {
+            onNone: () => 0,
+            onSome: date => date.getTime(),
+          }),
+        })),
+        Effect.option,
+      ),
+    )
+    const byVideo = new Map<string, CachedMontage>()
+    const strays: Array<string> = []
+    for (const file of Array.getSomes(files)) {
+      const entry = cacheEntryOf(file.name)
+      if (entry === null) continue
+      if (entry.kind === 'Partial') {
+        if (now - file.usedAt >= STRAY_PART_MS) strays.push(file.name)
+        continue
+      }
+      const before = byVideo.get(entry.videoId)
+      byVideo.set(entry.videoId, {
+        videoId: entry.videoId,
+        size: (before?.size ?? 0) + file.size,
+        usedAt: Math.max(before?.usedAt ?? 0, file.usedAt),
+      })
+    }
+    const doomed = [
+      ...strays,
+      ...montagesToEvict([...byVideo.values()], maxBytes).flatMap(montage => [
+        `${montage.videoId}.json`,
+        `${montage.videoId}.jpg`,
+      ]),
+    ]
+    yield* Effect.forEach(
+      doomed,
+      name => Effect.ignore(fs.remove(path.join(directory, name))),
+      { discard: true },
+    )
+  }).pipe(Effect.ignore)
+
 export class SongMontage extends Context.Service<
   SongMontage,
   {
@@ -139,6 +298,187 @@ export interface Made {
   readonly montage: Tv.TvMontage
   readonly jpeg: Uint8Array
 }
+
+/** A montage made, and whether the music video could not be had this time. */
+export interface Built {
+  readonly made: Made
+  /**
+   * The search for the music video failed, or a likelier video than the
+   * one used could not be read: worth looking again later.
+   */
+  readonly videoFailed: boolean
+}
+
+/** Makes a song's montage. */
+export type BuildMontage = (
+  videoId: string,
+) => Effect.Effect<Built, MontageError>
+
+/** Where montages are kept. */
+export interface MontageStore {
+  readonly read: (videoId: string) => Effect.Effect<Option.Option<SavedMontage>>
+  readonly write: (
+    saved: SavedMontage,
+    jpeg: Uint8Array,
+  ) => Effect.Effect<void, MontageError>
+  /** Marks the song's montage used, for eviction. */
+  readonly touch: (videoId: string) => Effect.Effect<void>
+}
+
+/**
+ * The service on a store and a way to make montages. One song at a time,
+ * however many ask for it; a failure is remembered for a while. A montage
+ * whose video could not be had is served while it waits to be made again,
+ * then made again in the background.
+ */
+export const makeSongMontage = Effect.fnUntraced(function* (
+  store: MontageStore,
+  build: BuildMontage,
+  now: () => number,
+) {
+  const scope = yield* Scope.Scope
+  const failure =
+    (videoId: string, reason: MontageError['reason']) => (message: string) =>
+      new MontageError({ videoId, reason, message })
+
+  // Downloads and decoding a video take a CPU core: one song at a time.
+  const working = yield* Semaphore.make(1)
+  const pending = new Map<
+    string,
+    Deferred.Deferred<Tv.TvMontage, MontageError>
+  >()
+  const failures = makeFailureMemory<MontageError>({
+    retryMs: error =>
+      error.reason === 'Nothing' ? NOTHING_RETRY_MS : FAILURE_RETRY_MS,
+    now,
+    capacity: FAILURES_KEPT,
+  })
+
+  /** Makes the montage and saves it, unless one saved meanwhile is current. */
+  const makeAndSave = (videoId: string) =>
+    Effect.gen(function* () {
+      // Another ask may have made it while this one waited its turn.
+      const before = yield* store.read(videoId)
+      if (Option.isSome(before) && !isDue(before.value, now())) {
+        return before.value.montage
+      }
+      const started = now()
+      const built = yield* build(videoId)
+      const retry = videoRetry(
+        built.videoFailed,
+        Option.match(before, {
+          onNone: () => 0,
+          onSome: saved => saved.videoFailures,
+        }),
+        now(),
+      )
+      yield* store.write(
+        { montage: built.made.montage, ...retry },
+        built.made.jpeg,
+      )
+      yield* Effect.logInfo(
+        'Montage made',
+        videoId,
+        built.made.montage.source,
+        `${built.made.montage.frames.length} pictures`,
+        `${Math.round(built.made.jpeg.length / 1024)} KB`,
+        `${((now() - started) / 1000).toFixed(1)} s`,
+        ...(retry.retryVideoAt === null
+          ? []
+          : [
+              `the video is looked for again in ${Math.round((retry.retryVideoAt - now()) / 60_000)} min`,
+            ]),
+      )
+      return built.made.montage
+    })
+
+  const start = (videoId: string) =>
+    Effect.gen(function* () {
+      const existing = pending.get(videoId)
+      if (existing !== undefined) return existing
+      const deferred = yield* Deferred.make<Tv.TvMontage, MontageError>()
+      pending.set(videoId, deferred)
+      const settle = (result: Exit.Exit<Tv.TvMontage, MontageError>) =>
+        Effect.sync(() => pending.delete(videoId)).pipe(
+          Effect.andThen(Deferred.done(deferred, result)),
+        )
+      yield* makeAndSave(videoId).pipe(
+        working.withPermits(1),
+        // A bug is a failure too: remembered, and answered as one.
+        Effect.catchDefect(defect =>
+          Effect.fail(
+            failure(videoId, 'Failed')(`a defect: ${String(defect)}`),
+          ),
+        ),
+        Effect.tapError(error =>
+          Effect.sync(() => failures.remember(videoId, error)).pipe(
+            Effect.andThen(
+              Effect.logWarning(
+                'Montage: none for this song',
+                videoId,
+                error.reason,
+                error.message,
+              ),
+            ),
+          ),
+        ),
+        Effect.exit,
+        Effect.flatMap(settle),
+        Effect.onInterrupt(() =>
+          settle(Exit.fail(failure(videoId, 'Failed')('interrupted'))),
+        ),
+        Effect.forkIn(scope),
+      )
+      return deferred
+    })
+
+  /** Makes the montage unless a current one is saved or it failed lately. */
+  const refresh = (videoId: string) =>
+    Effect.gen(function* () {
+      const saved = yield* store.read(videoId)
+      if (Option.isSome(saved) && !isDue(saved.value, now())) return
+      if (Option.isSome(failures.recent(videoId))) return
+      // A failure is logged where it happens; only a bug reaches the worker.
+      yield* Effect.ignore(Deferred.await(yield* start(videoId)))
+    })
+
+  const background = yield* makeBackgroundQueue({
+    name: 'Montage',
+    capacity: QUEUED_AT_MOST,
+    work: refresh,
+  })
+
+  const warm = (videoId: string) =>
+    Effect.gen(function* () {
+      if (
+        background.has(videoId) ||
+        pending.has(videoId) ||
+        Option.isSome(failures.recent(videoId))
+      )
+        return
+      const saved = yield* store.read(videoId)
+      if (Option.isSome(saved) && !isDue(saved.value, now())) return
+      yield* background.offer(videoId)
+    })
+
+  const montage = (
+    videoId: string,
+  ): Effect.Effect<Tv.TvMontage, MontageError> =>
+    Effect.gen(function* () {
+      const saved = yield* store.read(videoId)
+      if (Option.isSome(saved)) {
+        yield* store.touch(videoId)
+        // Served as it is; made again, looking for its video, meanwhile.
+        if (isDue(saved.value, now())) yield* warm(videoId)
+        return saved.value.montage
+      }
+      const failed = failures.recent(videoId)
+      if (Option.isSome(failed)) return yield* failed.value
+      return yield* Deferred.await(yield* start(videoId))
+    })
+
+  return { montage, warm }
+})
 
 /**
  * The atlas as a JPEG, at a lower quality when a busy video's frames would
@@ -249,75 +589,44 @@ export const SongMontageLive = Layer.effect(SongMontage)(
         ),
       )
 
-    const stored = (
+    const read = (
       videoId: string,
-    ): Effect.Effect<Option.Option<Tv.TvMontage>> =>
+    ): Effect.Effect<Option.Option<SavedMontage>> =>
       fs.readFileString(jsonPath(videoId)).pipe(
-        Effect.map(text =>
-          Option.flatMap(decodeStored(text), saved =>
-            saved.version === MONTAGE_VERSION
-              ? Option.some(saved.montage)
-              : Option.none(),
-          ),
-        ),
-        Effect.orElseSucceed(() => Option.none<Tv.TvMontage>()),
+        Effect.map(savedOf),
+        Effect.orElseSucceed(() => Option.none<SavedMontage>()),
       )
 
-    const evict = Effect.gen(function* () {
-      const names = yield* fs.readDirectory(directory)
-      const sizes = yield* Effect.forEach(names, name =>
-        fs.stat(path.join(directory, name)).pipe(
-          Effect.map(info => ({
-            videoId: name.replace(/\.(json|jpg|part)$/u, ''),
-            size: Number(info.size),
-            usedAt: Option.match(info.mtime, {
-              onNone: () => 0,
-              onSome: date => date.getTime(),
-            }),
-          })),
-          Effect.option,
-        ),
-      )
-      const byVideo = new Map<string, CachedMontage>()
-      for (const entry of Array.getSomes(sizes)) {
-        const before = byVideo.get(entry.videoId)
-        byVideo.set(entry.videoId, {
-          videoId: entry.videoId,
-          size: (before?.size ?? 0) + entry.size,
-          usedAt: Math.max(before?.usedAt ?? 0, entry.usedAt),
-        })
-      }
-      yield* Effect.forEach(
-        montagesToEvict([...byVideo.values()], maxBytes),
-        montage =>
-          Effect.ignore(
-            Effect.andThen(
-              fs.remove(jsonPath(montage.videoId)),
-              fs.remove(jpegPath(montage.videoId)),
-            ),
-          ),
-        { discard: true },
-      )
-    }).pipe(Effect.ignore)
-
-    const save = (made: Made) =>
-      Effect.gen(function* () {
-        const { videoId } = made.montage
-        const partial = `${jpegPath(videoId)}.part`
-        yield* fs.writeFile(partial, made.jpeg)
-        yield* fs.rename(partial, jpegPath(videoId))
-        // The metadata last: a montage is there once its JSON is.
-        yield* fs.writeFileString(
-          `${jsonPath(videoId)}.part`,
-          encodeStored({ version: MONTAGE_VERSION, montage: made.montage }),
-        )
-        yield* fs.rename(`${jsonPath(videoId)}.part`, jsonPath(videoId))
-        yield* evict
+    const write = (saved: SavedMontage, jpeg: Uint8Array) => {
+      const { videoId } = saved.montage
+      const jpegPart = `${jpegPath(videoId)}.part`
+      const jsonPart = `${jsonPath(videoId)}.part`
+      return Effect.gen(function* () {
+        yield* fs.writeFile(jpegPart, jpeg)
+        yield* fs.writeFileString(jsonPart, savedText(saved))
+        // A montage is there while its JSON is: the old one goes first, so
+        // its JSON never describes the new atlas, and the new JSON comes last.
+        yield* fs.remove(jsonPath(videoId), { force: true })
+        yield* fs.rename(jpegPart, jpegPath(videoId))
+        yield* fs.rename(jsonPart, jsonPath(videoId))
+        yield* evictMontages(fs, path, directory, maxBytes, Date.now())
       }).pipe(
-        Effect.mapError(error =>
-          failure(made.montage.videoId, 'Failed')(error.message),
+        Effect.tapError(() =>
+          Effect.forEach(
+            [jpegPart, jsonPart],
+            part => Effect.ignore(fs.remove(part)),
+            { discard: true },
+          ),
         ),
+        Effect.mapError(error => failure(videoId, 'Failed')(error.message)),
       )
+    }
+
+    // Leftovers of a run that ended while saving.
+    yield* Effect.forkIn(
+      evictMontages(fs, path, directory, maxBytes, Date.now()),
+      scope,
+    )
 
     // MAKING
 
@@ -330,21 +639,32 @@ export const SongMontageLive = Layer.effect(SongMontage)(
         spawner,
       )
 
-    /** The montage from the song's music video, if it has one that moves. */
+    /**
+     * The montage from the song's music video, if it has one that moves;
+     * and whether the video could not be had this time (the search failed,
+     * or a likelier video than the one used could not be read), which is
+     * worth looking at again, unlike a song with no video.
+     */
     const fromVideo = (song: SongToMatch) =>
       Effect.gen(function* () {
-        const videos = yield* youTubeMusic.searchVideos(videoQuery(song)).pipe(
-          Effect.tapError(error =>
-            Effect.logWarning(
-              'Montage: the video search failed',
-              song.videoId,
-              error.message,
+        const searched = yield* youTubeMusic
+          .searchVideos(videoQuery(song))
+          .pipe(
+            Effect.tapError(error =>
+              Effect.logWarning(
+                'Montage: the video search failed',
+                song.videoId,
+                error.message,
+              ),
             ),
-          ),
-          Effect.orElseSucceed(() => []),
-        )
+            Effect.option,
+          )
+        if (Option.isNone(searched)) {
+          return { made: Option.none<Made>(), failed: true }
+        }
+        let failed = false
         for (const video of Array.take(
-          rankMusicVideos(song, videos),
+          rankMusicVideos(song, searched.value),
           VIDEOS_TRIED,
         )) {
           const extracted = yield* withSpawner(
@@ -359,7 +679,10 @@ export const SongMontageLive = Layer.effect(SongMontage)(
             ),
             Effect.option,
           )
-          if (Option.isNone(extracted)) continue
+          if (Option.isNone(extracted)) {
+            failed = true
+            continue
+          }
           const selection = selectFrames(extracted.value.candidates, MAX_FRAMES)
           if (selection.isStatic) {
             yield* Effect.logInfo(
@@ -390,18 +713,17 @@ export const SongMontageLive = Layer.effect(SongMontage)(
             video.title,
             `${frames.length} of ${extracted.value.candidates.length} shots`,
           )
-          return Option.some(
-            yield* assemble(
-              song,
-              'Video',
-              video.videoId,
-              frames,
-              CELL_WIDTH,
-              CELL_HEIGHT,
-            ),
+          const made = yield* assemble(
+            song,
+            'Video',
+            video.videoId,
+            frames,
+            CELL_WIDTH,
+            CELL_HEIGHT,
           )
+          return { made: Option.some(made), failed }
         }
-        return Option.none<Made>()
+        return { made: Option.none<Made>(), failed }
       })
 
     /** The montage from the artist's photos and covers, if there are any. */
@@ -477,7 +799,7 @@ export const SongMontageLive = Layer.effect(SongMontage)(
       return true
     })
 
-    const make = (videoId: string): Effect.Effect<Tv.TvMontage, MontageError> =>
+    const build: BuildMontage = videoId =>
       Effect.gen(function* () {
         if (!(yield* spendBuild)) {
           return yield* failure(
@@ -485,28 +807,26 @@ export const SongMontageLive = Layer.effect(SongMontage)(
             'Unavailable',
           )(`${DAILY_BUILDS} montages made in the last day`)
         }
-        const started = Date.now()
         const song = yield* songOf(videoId)
-        const maybeVideo = yield* fromVideo(song)
-        const made = Option.isSome(maybeVideo)
-          ? maybeVideo
-          : yield* fromArtist(song)
-        if (Option.isNone(made)) {
-          return yield* failure(
-            videoId,
-            'Nothing',
-          )('no music video and no pictures of the artist')
+        const video = yield* fromVideo(song)
+        if (Option.isSome(video.made)) {
+          return { made: video.made.value, videoFailed: video.failed }
         }
-        yield* save(made.value)
-        yield* Effect.logInfo(
-          'Montage made',
-          videoId,
-          made.value.montage.source,
-          `${made.value.montage.frames.length} pictures`,
-          `${Math.round(made.value.jpeg.length / 1024)} KB`,
-          `${((Date.now() - started) / 1000).toFixed(1)} s`,
-        )
-        return made.value.montage
+        const artist = yield* fromArtist(song)
+        if (Option.isNone(artist)) {
+          return yield* video.failed
+            ? failure(
+                videoId,
+                'Unavailable',
+              )(
+                'the music video could not be had, and the artist has no pictures',
+              )
+            : failure(
+                videoId,
+                'Nothing',
+              )('no music video and no pictures of the artist')
+        }
+        return { made: artist.value, videoFailed: video.failed }
       }).pipe(
         Effect.timeoutOrElse({
           duration: BUILD_TIMEOUT,
@@ -518,119 +838,27 @@ export const SongMontageLive = Layer.effect(SongMontage)(
         Effect.withSpan('SongMontage.make', { attributes: { videoId } }),
       )
 
-    // ONE AT A TIME
-
-    // Downloads and decoding a video take a CPU core: one song at a time.
-    const working = yield* Semaphore.make(1)
-    const pending = new Map<
-      string,
-      Deferred.Deferred<Tv.TvMontage, MontageError>
-    >()
-    const failures = new Map<
-      string,
-      { readonly at: number; readonly error: MontageError }
-    >()
-
-    const recentFailure = (videoId: string): Option.Option<MontageError> => {
-      const failed = failures.get(videoId)
-      if (failed === undefined) return Option.none()
-      const wait =
-        failed.error.reason === 'Nothing' ? NOTHING_RETRY_MS : FAILURE_RETRY_MS
-      if (Date.now() - failed.at < wait) return Option.some(failed.error)
-      failures.delete(videoId)
-      return Option.none()
-    }
-
-    const start = (videoId: string) =>
-      Effect.gen(function* () {
-        const existing = pending.get(videoId)
-        if (existing !== undefined) return existing
-        const deferred = yield* Deferred.make<Tv.TvMontage, MontageError>()
-        pending.set(videoId, deferred)
-        const settle = (result: Exit.Exit<Tv.TvMontage, MontageError>) =>
-          Effect.sync(() => pending.delete(videoId)).pipe(
-            Effect.andThen(Deferred.done(deferred, result)),
-          )
-        yield* Effect.suspend(() =>
-          // Another ask may have made it while this one waited its turn.
-          Effect.flatMap(
-            stored(videoId),
-            Option.match({
-              onSome: Effect.succeed,
-              onNone: () => make(videoId),
-            }),
-          ),
-        ).pipe(
-          working.withPermits(1),
-          Effect.tapError(error =>
-            Effect.sync(() =>
-              failures.set(videoId, { at: Date.now(), error }),
-            ).pipe(
-              Effect.andThen(
-                Effect.logWarning(
-                  'Montage: none for this song',
-                  videoId,
-                  error.reason,
-                  error.message,
-                ),
-              ),
-            ),
-          ),
-          Effect.exit,
-          Effect.flatMap(settle),
-          Effect.onInterrupt(() =>
-            settle(Exit.fail(failure(videoId, 'Failed')('interrupted'))),
-          ),
-          Effect.forkIn(scope),
-        )
-        return deferred
-      })
-
-    const montage = (
-      videoId: string,
-    ): Effect.Effect<Tv.TvMontage, MontageError> =>
-      Effect.gen(function* () {
-        const saved = yield* stored(videoId)
-        if (Option.isSome(saved)) {
-          yield* touch(videoId)
-          return saved.value
-        }
-        const failed = recentFailure(videoId)
-        if (Option.isSome(failed)) return yield* failed.value
-        return yield* Deferred.await(yield* start(videoId))
-      })
-
-    // BACKGROUND
-
-    const queued = new Set<string>()
-    const background = yield* Queue.unbounded<string>()
-    yield* Queue.take(background).pipe(
-      Effect.tap(videoId => Effect.sync(() => queued.delete(videoId))),
-      Effect.flatMap(videoId => Effect.ignore(montage(videoId))),
-      Effect.forever,
-      Effect.forkIn(scope),
+    const service = yield* makeSongMontage({ read, write, touch }, build, () =>
+      Date.now(),
     )
 
+    // Video IDs name files here, and the queue's come from any client: only
+    // real ones are looked at, so none reaches outside the cache.
+    const montage = (videoId: string) =>
+      VIDEO_ID.test(videoId)
+        ? service.montage(videoId)
+        : Effect.fail(failure(videoId, 'Nothing')('not a video ID'))
     const warm = (videoId: string) =>
-      Effect.gen(function* () {
-        if (
-          queued.has(videoId) ||
-          pending.has(videoId) ||
-          Option.isSome(recentFailure(videoId))
-        )
-          return
-        if (Option.isSome(yield* stored(videoId))) return
-        queued.add(videoId)
-        yield* Queue.offer(background, videoId)
-      })
-
+      VIDEO_ID.test(videoId) ? service.warm(videoId) : Effect.void
     const atlasFile = (videoId: string) =>
-      fs.exists(jpegPath(videoId)).pipe(
-        Effect.map(exists =>
-          exists ? Option.some(jpegPath(videoId)) : Option.none<string>(),
-        ),
-        Effect.orElseSucceed(() => Option.none<string>()),
-      )
+      VIDEO_ID.test(videoId)
+        ? fs.exists(jpegPath(videoId)).pipe(
+            Effect.map(exists =>
+              exists ? Option.some(jpegPath(videoId)) : Option.none<string>(),
+            ),
+            Effect.orElseSucceed(() => Option.none<string>()),
+          )
+        : Effect.succeed(Option.none<string>())
 
     return SongMontage.of({ montage, atlasFile, warm })
   }),
