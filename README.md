@@ -218,3 +218,18 @@ A deploy never restarts the server while music plays.
 - Audio depends on yt-dlp and the token service keeping up with YouTube. When songs stop playing, update yt-dlp first: `uv tool upgrade yt-dlp`.
 - yt-dlp solves YouTube's challenges with Bun. It warns that Bun 1.4 is newer than it has been tested with; installing Deno and setting `YTDLP_JS_RUNTIME=deno` is the supported route if that ever breaks.
 - The server picks out some artist-page sections by their English titles ("Albums", "Singles & EPs", "Fans might also like"), so the session is pinned to English.
+- Joshify is a personal project. It is not affiliated with or endorsed by YouTube or Google.
+
+## License
+
+Joshify's own code is under the [MIT License](LICENSE). The copied-in code keeps its own license:
+
+- `apps/web/repos/foldkit` (Foldkit and Effect) and the foldcn components: MIT.
+- `vendor/i-slint-backend-android-activity` (the patched Slint Android backend): GPL-3.0-only, the Slint Royalty-free License 2.0, or the Slint Software License 3.0, as its `LICENSES/` folder says.
+- `apps/tv/ui/fonts` (Inter): SIL Open Font License, in `OFL.txt` there.
+
+The TV app is built with [Slint](https://slint.dev) under its Royalty-free License, which asks for this credit:
+
+<a href="https://slint.dev"><img src="https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png" alt="Made with Slint" height="60"></a>
+
+If you share a TV app you built yourself, follow the Slint license you pick for it.
