@@ -503,6 +503,9 @@ export const SessionHubLive = Layer.effect(SessionHub)(
               videoId,
               kind: 'Download' as const,
               priority: index,
+              artworkUrl:
+                model.queue.find(entry => entry.track.videoId === videoId)
+                  ?.track.artworkUrl ?? undefined,
             })),
             ...ahead.resolve.map((videoId, index) => ({
               videoId,

@@ -14,6 +14,7 @@
     "@effect/platform-bun": "catalog:",
     "@music/shared": "workspace:*",
     "effect": "catalog:",
+    "onnxruntime-node": "1.31.1",
     "sharp": "0.35.5",
     "youtubei.js": "18.3.0"
   },
