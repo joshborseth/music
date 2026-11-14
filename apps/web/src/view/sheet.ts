@@ -275,9 +275,26 @@ const songActions = (
       }),
     ],
     h,
+    model.route,
     playerSettings(model, song, h),
   )
 }
+
+/** Whether the page on screen is this album's, where Go to Album would stay put. */
+const isOnAlbum = (route: AppRoute, albumId: string): boolean =>
+  AppRoute.matchOrElse(
+    route,
+    { Album: album => album.albumId === albumId },
+    () => false,
+  )
+
+/** Whether the page on screen is this song's own. */
+const isOnSong = (route: AppRoute, videoId: string): boolean =>
+  AppRoute.matchOrElse(
+    route,
+    { Song: page => page.videoId === videoId },
+    () => false,
+  )
 
 /** The top of a sheet about one thing: its artwork, title, and who made it. */
 const itemHeading = (
@@ -311,10 +328,15 @@ const itemHeading = (
     ],
   )
 
+/**
+ * ⋯ on a song. Go to Album and Lyrics and Details leave out the page they
+ * would open when it is the one on screen.
+ */
 const songActionsFor = (
   song: Song,
   playlistActions: ReadonlyArray<Html>,
   h: HtmlBuilder<Message>,
+  route: AppRoute,
   settings: Html = h.empty,
 ): Html =>
   h.div(
@@ -343,17 +365,28 @@ const songActionsFor = (
             h,
           ),
           ...playlistActions,
-          Option.match(song.maybeAlbum, {
-            onNone: () => h.empty,
-            onSome: album =>
-              actionLink(albumHref(album.id), Disc3, 'Go to Album', h),
-          }),
+          Option.match(
+            Option.filter(song.maybeAlbum, ({ id }) => !isOnAlbum(route, id)),
+            {
+              onNone: () => h.empty,
+              onSome: album =>
+                actionLink(albumHref(album.id), Disc3, 'Go to Album', h),
+            },
+          ),
           Option.match(firstArtistId(song.artists), {
             onNone: () => h.empty,
             onSome: artistId =>
               actionLink(artistHref(artistId), MicVocal, 'Go to Artist', h),
           }),
-          actionLink(songHref(song.videoId), FileText, 'Lyrics and Details', h),
+          isOnSong(route, song.videoId)
+            ? h.empty
+            : actionLink(
+                songHref(song.videoId),
+                FileText,
+                'Lyrics and Details',
+                h,
+              ),
+          shareAction(song.title, songHref(song.videoId), h),
         ],
       ),
       settings,

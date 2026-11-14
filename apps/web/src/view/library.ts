@@ -1,4 +1,4 @@
-import { Array, Match, Option, String } from 'effect'
+import { Array, Match, Option, String, pipe } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
@@ -21,8 +21,10 @@ import { cn } from '@/lib/utils'
 import {
   type AlbumSummary,
   type ArtistSummary,
+  type LibrarySong,
   type MyLibrary,
   type MyPlaylistSummary,
+  type Song,
 } from '@music/shared'
 
 import {
@@ -46,12 +48,14 @@ import {
   type SortableKind,
   albumLibraryItem,
   matchesLibrarySearch,
+  songMatchesLibrarySearch,
   sortAlbums,
   sortArtists,
   sortPlaylists,
+  sortSongs,
 } from '../library'
 import { Message } from '../message'
-import { myLibraryQuery } from '../query'
+import { librarySongsQuery, myLibraryQuery } from '../query'
 import { largeTitleHeader } from './chrome'
 import { type PageModel } from './page'
 import {
@@ -70,12 +74,15 @@ import {
   loadingRows,
   myPlaylistHref,
   myPlaylistRow,
+  playActions,
   playlistCover,
   playlistHref,
   playlistLength,
   requestErrorAlert,
   section,
   shelf,
+  songList,
+  songSection,
 } from './shared'
 
 const RECENTLY_VIEWED_IN_LIBRARY = 10
@@ -335,6 +342,7 @@ const sortableKind = (filter: LibraryFilter): Option.Option<SortableKind> =>
     Match.when('Playlists', () => Option.some('Playlists')),
     Match.when('Albums', () => Option.some('Albums')),
     Match.when('Artists', () => Option.some('Artists')),
+    Match.when('Songs', () => Option.some('Songs')),
     Match.orElse(() => Option.none()),
   )
 
@@ -493,6 +501,28 @@ const shownArtists = (
   Array.filter(sortArtists(library, model.libraryPrefs.sorts.Artists), artist =>
     matchesLibrarySearch(model.librarySearchInput, [artist.name]),
   )
+
+/** The songs in my playlists and Liked Songs, in order, narrowed by the search. */
+const shownSongs = (
+  model: PageModel,
+  songs: ReadonlyArray<LibrarySong>,
+): ReadonlyArray<Song> =>
+  pipe(
+    sortSongs(songs, model.libraryPrefs.sorts.Songs),
+    Array.map(({ song }) => song),
+    Array.filter(song =>
+      songMatchesLibrarySearch(model.librarySearchInput, song),
+    ),
+  )
+
+/** The songs matching the search, once they have loaded. */
+const matchingSongs = (model: PageModel): ReadonlyArray<Song> =>
+  isSearching(model)
+    ? Option.match(
+        AsyncData.getData(librarySongsQuery.read(model.librarySongs)),
+        { onNone: () => [], onSome: songs => shownSongs(model, songs) },
+      )
+    : []
 
 const shownRecentlyViewed = (model: PageModel): ReadonlyArray<LibraryItem> =>
   Array.filter(model.recentlyViewed, item =>
@@ -702,6 +732,80 @@ const isDownloaded = (
   kind: DownloadedCollection['kind'],
   id: string,
 ): boolean => Option.isSome(findDownload(model.downloads, kind, id))
+
+// SONGS
+
+/** How many matching songs a search under All lists before See All. */
+const SONGS_IN_SEARCH = 8
+
+/**
+ * The songs in my playlists and Liked Songs that match the search, under
+ * All: the first few, with See All opening the Songs chip.
+ */
+const matchingSongsSection = (
+  model: PageModel,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const songs = matchingSongs(model)
+  return songSection(
+    {
+      title: 'Songs',
+      songs: Array.take(songs, SONGS_IN_SEARCH),
+      playing: model.playing,
+      swipe: model.swipe,
+      maybeAction: Option.liftPredicate(
+        {
+          label: 'See All',
+          accessibleLabel: 'See all Songs',
+          onClick: Message.SelectedLibraryFilter({ filter: 'Songs' }),
+        },
+        () => songs.length > SONGS_IN_SEARCH,
+      ),
+    },
+    h,
+  )
+}
+
+/**
+ * The Songs chip: every song in my playlists and Liked Songs, each once,
+ * with Play and Shuffle, or that none matches the search.
+ */
+const songsView = (
+  model: PageModel,
+  songs: ReadonlyArray<LibrarySong>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Array.match(shownSongs(model, songs), {
+    onEmpty: () =>
+      isSearching(model)
+        ? noMatches(model.librarySearchInput, h)
+        : emptyState(
+            {
+              title: 'No songs yet',
+              description:
+                'Like a song, or add it to a playlist, and it shows here.',
+              kind: 'Song',
+            },
+            h,
+          ),
+    onNonEmpty: shown =>
+      h.div(
+        [h.Class('flex flex-col gap-4')],
+        [
+          playActions(shown, h),
+          songList(
+            {
+              songs: shown,
+              playing: model.playing,
+              swipe: model.swipe,
+              isNumbered: false,
+              isAlbumHidden: false,
+            },
+            h,
+          ),
+        ],
+      ),
+  })
 
 // PLAYLISTS
 
@@ -1005,6 +1109,7 @@ const isAllEmptyForSearch = (model: PageModel, library: MyLibrary): boolean =>
   Array.isReadonlyArrayEmpty(shownAlbums(model, library)) &&
   Array.isReadonlyArrayEmpty(shownArtists(model, library)) &&
   Array.isReadonlyArrayEmpty(shownRecentlyViewed(model)) &&
+  Array.isReadonlyArrayEmpty(matchingSongs(model)) &&
   (model.downloads._tag !== 'Ready' ||
     Array.isReadonlyArrayEmpty(shownDownloads(model, model.downloads)))
 
@@ -1033,6 +1138,7 @@ const allContent = (
               : playlistsSection(model, false, h),
             albumsShelf(shownAlbums(model, library), h),
             artistsShelf(shownArtists(model, library), h),
+            matchingSongsSection(model, h),
             matchingDownloadsSection(model, h),
             recentlyViewedSection(shownRecentlyViewed(model), h),
           ],
@@ -1051,6 +1157,13 @@ const libraryContent = (
     ]),
     Match.when('Artists', () => [
       whenLoaded(model, library => artistsList(model, library, h), h),
+    ]),
+    Match.when('Songs', () => [
+      AsyncData.matchData(librarySongsQuery.read(model.librarySongs), {
+        onEmpty: () => loadingRows(h),
+        onFailure: error => requestErrorAlert(error, h),
+        onData: songs => songsView(model, songs, h),
+      }),
     ]),
     Match.when('Downloaded', () => [downloadsView(model, h)]),
     Match.exhaustive,

@@ -20,6 +20,7 @@ import { describe, test } from 'vitest'
 
 import {
   type AlbumSummary,
+  type LibrarySong,
   type MyLibrary,
   type MyPlaylistDetails,
   type MyPlaylistSummary,
@@ -131,6 +132,86 @@ describe('library search', () => {
   })
 })
 
+const songIn = (videoId: string, title: string, artist: string): Song => ({
+  videoId,
+  title,
+  artists: [{ maybeId: Option.none(), name: artist }],
+  maybeAlbum: Option.some({ id: `album-${videoId}`, name: `${title} (Album)` }),
+  maybeDurationSeconds: Option.some(200),
+  artwork: [],
+})
+
+const librarySongs: ReadonlyArray<LibrarySong> = [
+  { song: songIn('taxes', 'Taxes', 'Geese'), addedAt: 3 },
+  { song: songIn('chain', 'The Chain', 'Fleetwood Mac'), addedAt: 2 },
+  { song: songIn('cowboy', 'Cowboy Nudes', 'Geese'), addedAt: 1 },
+]
+
+const withSongs = (model: Model): Model =>
+  modifyFields(model, {
+    librarySongs: query =>
+      modifyFields(query, { data: () => AsyncData.succeed(librarySongs) }),
+  })
+
+const songButtons = all.role('button', {
+  name: /^(Taxes|The Chain|Cowboy Nudes) ·/,
+})
+
+describe('library songs', () => {
+  test('a search also finds songs in my playlists, by title or artist', () => {
+    scene(
+      { update, view },
+      given(withSongs(libraryModel())),
+      pageScrolled,
+      type(label('Search your Library'), 'geese'),
+      expect(text('No matches')).toBeAbsent(),
+      expect(role('heading', { name: 'Songs' })).toExist(),
+      expect(first(songButtons)).toHaveText(/Taxes/),
+      expect(nth(songButtons, 1)).toHaveText(/Cowboy Nudes/),
+      expect(role('button', { name: /The Chain/ })).toBeAbsent(),
+      type(label('Search your Library'), 'chain'),
+      expect(role('button', { name: /The Chain/ })).toExist(),
+    )
+  })
+
+  test('the Songs chip lists every song, latest added first or A–Z', () => {
+    scene(
+      { update, view },
+      given(withSongs(libraryModel({ libraryFilter: 'Songs' }))),
+      pageScrolled,
+      expect(role('button', { name: 'Play' })).toExist(),
+      expect(role('button', { name: 'Shuffle' })).toExist(),
+      expect(first(songButtons)).toHaveText(/Taxes/),
+      expect(nth(songButtons, 2)).toHaveText(/Cowboy Nudes/),
+      click(role('button', { name: 'Sort Songs: Recently Added' })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      click(role('button', { name: 'A–Z' })),
+      Command.resolveAll(
+        [UnlockScroll, Message.CompletedUnlockScroll()],
+        [SaveLibraryPrefs, Message.CompletedSaveLibraryPrefs()],
+      ),
+      expect(first(songButtons)).toHaveText(/Cowboy Nudes/),
+      expect(nth(songButtons, 1)).toHaveText(/Taxes/),
+      expect(nth(songButtons, 2)).toHaveText(/The Chain/),
+    )
+  })
+
+  test('the Songs chip says how to fill it', () => {
+    scene(
+      { update, view },
+      given(
+        modifyFields(libraryModel({ libraryFilter: 'Songs' }), {
+          librarySongs: query =>
+            modifyFields(query, { data: () => AsyncData.succeed([]) }),
+        }),
+      ),
+      pageScrolled,
+      expect(text('No songs yet')).toExist(),
+    )
+  })
+})
+
 describe('library sorting and layout', () => {
   test('sorts playlists from a sheet, Liked Songs still first', () => {
     const sorted = {
@@ -138,6 +219,7 @@ describe('library sorting and layout', () => {
         Playlists: 'RecentlyAdded' as const,
         Albums: 'RecentlyAdded' as const,
         Artists: 'RecentlyAdded' as const,
+        Songs: 'RecentlyAdded' as const,
       },
       layouts: { Playlists: 'List' as const, Albums: 'Grid' as const },
     }

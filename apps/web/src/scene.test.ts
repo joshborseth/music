@@ -53,6 +53,7 @@ import { Message } from './message'
 import { type Model } from './model'
 import {
   DragToDismiss,
+  FollowQueueDrags,
   FollowSeekBarDrags,
   Marquee,
   RestoreScroll,
@@ -74,6 +75,7 @@ import {
   artistSearchQuery,
   playlistQuery,
   searchSuggestionsQuery,
+  songQuery,
   songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
@@ -698,6 +700,26 @@ describe('search page', () => {
     )
   })
 
+  test("the more sheet shares the song's page", () => {
+    scene(
+      { update, view },
+      given(searchResultModel('the chain', Result.succeed([theChain]))),
+      pageScrolled,
+      click(role('button', { name: 'More for The Chain' })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      click(role('button', { name: 'Share' })),
+      Command.expectExact(
+        UnlockScroll(),
+        ShareLink({ title: 'The Chain', href: `/song/${theChain.videoId}` }),
+      ),
+      Command.resolveAll(
+        [UnlockScroll, Message.CompletedUnlockScroll()],
+        [ShareLink, Message.CompletedShareLink({ isCopied: false })],
+      ),
+    )
+  })
+
   test("the more sheet starts a song's radio", () => {
     scene(
       { update, view },
@@ -888,6 +910,21 @@ describe('album page', () => {
     )
   })
 
+  test("a song's ⋯ on its own album's page leaves out Go to Album", () => {
+    scene(
+      { update, view },
+      given(albumPageModel([theChain])),
+      pageScrolled,
+      Mount.resolve(SyncTitleBarReveal, Message.CompletedSyncTitleBarReveal()),
+      click(role('button', { name: 'More for The Chain' })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      expect(role('dialog', { name: 'The Chain' })).toExist(),
+      expect(role('link', { name: 'Go to Artist' })).toExist(),
+      expect(role('link', { name: 'Go to Album' })).toBeAbsent(),
+    )
+  })
+
   test('⋯ shares the album page', () => {
     scene(
       { update, view },
@@ -1062,6 +1099,64 @@ describe('artist page', () => {
         }),
       ),
       Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+
+  test('Play queues every song in the See All playlist once it has loaded', () => {
+    const getLucky: Song = {
+      ...instantCrush,
+      videoId: 'get-lucky',
+      title: 'Get Lucky',
+    }
+    const allSongs = [instantCrush, getLucky]
+    const daftPunk: Session.PlayingFrom = {
+      kind: 'Artist',
+      title: 'Daft Punk',
+      id: 'abc',
+    }
+    const withAllSongs = update(
+      artistModel(AppRoute.Artist({ artistId: 'abc' }), '/artist/abc'),
+      Message.GotPlaylistMessage({
+        message: playlistQuery.Message.CompletedFetch({
+          args: { playlistId: 'VLOLAK5uy_top' },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed({
+            playlist: {
+              id: 'VLOLAK5uy_top',
+              title: 'Daft Punk: Songs',
+              maybeSubtitle: Option.none(),
+              artwork: [],
+            },
+            maybeOwner: Option.none(),
+            maybeDescription: Option.none(),
+            maybeLengthSummary: Option.none(),
+            tracks: allSongs,
+          }),
+        }),
+      }),
+    ).model
+    scene(
+      { update, view },
+      given(withAllSongs),
+      pageScrolled,
+      titleBarFollowsScroll,
+      click(role('button', { name: 'Play' })),
+      Command.expectExact(
+        UnlockPhoneAudio(),
+        SendToSession({
+          message: {
+            _tag: 'PlayQueue',
+            tracks: allSongs.map(toQueueTrack),
+            startIndex: 0,
+            playingFrom: daftPunk,
+            shuffle: false,
+          },
+        }),
+      ),
+      Command.resolveAll(
+        [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
+        [SendToSession, Message.CompletedSendToSession()],
+      ),
     )
   })
 
@@ -1612,6 +1707,7 @@ describe('saving to the Library', () => {
           edit,
           result: Result.succeed({
             library: libraryWith({ albums: [rumours] }),
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.none(),
           }),
         }),
@@ -1677,6 +1773,7 @@ describe('saving to the Library', () => {
           edit,
           result: Result.succeed({
             library: libraryWith({ artists: [fleetwoodMac] }),
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.none(),
           }),
         }),
@@ -1951,6 +2048,45 @@ describe('sleep timer', () => {
     )
   })
 
+  test('the queue says when it plays from a radio', () => {
+    const radio: Session.PlayingFrom = {
+      kind: 'Radio',
+      title: 'Getting Killed',
+      id: 'RDAMVMgettingkilled',
+    }
+    const model = modifyFields(playingOnTv(null), {
+      playerPanel: () => 'Queue' as const,
+      maybeSession: maybeSession =>
+        Option.map(maybeSession, session => ({
+          ...session,
+          state: {
+            ...session.state,
+            playingFrom: radio,
+            queue: [
+              ...session.state.queue,
+              {
+                entryId: 'e1',
+                track: toQueueTrack({
+                  ...theChain,
+                  videoId: 'mrZRURcb1cM',
+                  title: 'Dreams',
+                }),
+                autoplay: false,
+              },
+            ],
+          },
+        })),
+    })
+    scene(
+      { update, view },
+      given(model),
+      pageScrolled,
+      playerMounts,
+      Mount.resolve(FollowQueueDrags, Message.CompletedFollowQueueDrags()),
+      expect(text('From Getting Killed Radio')).toExist(),
+    )
+  })
+
   test('the moon sets a timer on the server, which stops the TV too', () => {
     scene(
       { update, view },
@@ -2035,6 +2171,52 @@ describe('sleep timer', () => {
         SendToSession({ message: { _tag: 'SetSoundCheck', enabled: false } }),
       ),
       Command.resolve(SendToSession, Message.CompletedSendToSession()),
+    )
+  })
+})
+
+describe('song page', () => {
+  const songPage = (): Model => {
+    const videoId = theChain.videoId
+    const songOpen = update(
+      emptySearchModel,
+      Message.ChangedUrl({
+        url: urlOrThrow(`http://localhost/song/${videoId}`),
+      }),
+    ).model
+    const loaded = update(
+      songOpen,
+      Message.GotSongMessage({
+        message: songQuery.Message.CompletedFetch({
+          args: { videoId },
+          generation: FIRST_REQUEST_GENERATION,
+          result: Result.succeed({
+            song: theChain,
+            maybeViewCount: Option.some(913_700),
+            maybeLyrics: Option.none(),
+          }),
+        }),
+      }),
+    ).model
+    return withLibrary(loaded, libraryWith())
+  }
+
+  test('has a heart and ⋯, and shows no view count', () => {
+    scene(
+      { update, view },
+      given(songPage()),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(text('4:30')).toExist(),
+      expect(text(/views/)).toBeAbsent(),
+      expect(role('button', { name: 'Add to Liked Songs' })).toExist(),
+      click(role('button', { name: 'Song Options' })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      expect(role('dialog', { name: 'The Chain' })).toExist(),
+      expect(role('link', { name: 'Go to Album' })).toExist(),
+      expect(role('link', { name: 'Lyrics and Details' })).toBeAbsent(),
+      expect(role('button', { name: 'Share' })).toExist(),
     )
   })
 })

@@ -156,6 +156,7 @@ describe('liking a song', () => {
           edit: { _tag: 'SetLiked', song: theChain, isLiked: true },
           result: Result.succeed({
             library: savedLibrary,
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.some({
               playlist: { ...liked, songCount: 1 },
               songs: [theChain],
@@ -190,6 +191,7 @@ describe('liking a song', () => {
           edit: { _tag: 'SetLiked', song: theChain, isLiked: false },
           result: Result.succeed({
             library: libraryOf([liked]),
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.none(),
           }),
         }),
@@ -228,6 +230,7 @@ describe('making a playlist', () => {
           edit: { _tag: 'Create', title: 'Night drive', songs: [] },
           result: Result.succeed({
             library: libraryOf([liked, created, roadTrip]),
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.some({ playlist: created, songs: [] }),
           }),
         }),
@@ -280,6 +283,7 @@ describe('making a playlist', () => {
           edit,
           result: Result.succeed({
             library: libraryOf([liked, { ...roadTrip, songCount: 2 }]),
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.some({
               playlist: { ...roadTrip, songCount: 2 },
               songs: [dreams, theChain],
@@ -296,6 +300,60 @@ describe('making a playlist', () => {
         WaitBeforeHideNotice,
         Message.CompletedWaitBeforeHideNotice({
           message: 'Added to “Road trip”',
+        }),
+      ),
+    )
+  })
+
+  test('adding a song the playlist already holds says so', () => {
+    const shown = modifyFields(libraryModel, {
+      actionSheet: () =>
+        ActionSheet.Shown({
+          content: {
+            _tag: 'AddToPlaylist',
+            songs: [theChain],
+            suggestedTitle: '',
+          },
+        }),
+    })
+    const edit = {
+      _tag: 'AddSongs',
+      playlistId: roadTrip.id,
+      songs: [theChain],
+    } as const
+    story(
+      update,
+      given(shown),
+      message(
+        Message.ClickedPlaylistOption({
+          playlistId: roadTrip.id,
+          songs: [theChain],
+        }),
+      ),
+      Command.resolve(UnlockScroll, Message.CompletedUnlockScroll()),
+      Command.resolve(
+        EditPlaylists,
+        Message.CompletedEditPlaylists({
+          edit,
+          result: Result.succeed({
+            library: libraryOf([liked, roadTrip]),
+            alreadyHeldVideoIds: [theChain.videoId],
+            maybePlaylist: Option.some({
+              playlist: roadTrip,
+              songs: [theChain],
+            }),
+          }),
+        }),
+      ),
+      model(current => {
+        expect(current.maybeNotice).toStrictEqual(
+          Option.some('Already in “Road trip”'),
+        )
+      }),
+      Command.resolve(
+        WaitBeforeHideNotice,
+        Message.CompletedWaitBeforeHideNotice({
+          message: 'Already in “Road trip”',
         }),
       ),
     )
@@ -395,6 +453,7 @@ describe('making a playlist', () => {
           edit: { _tag: 'Delete', playlistId: roadTrip.id },
           result: Result.succeed({
             library: libraryOf([liked]),
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.none(),
           }),
         }),
@@ -454,6 +513,7 @@ describe('saving an album', () => {
           edit,
           result: Result.succeed({
             library: { ...libraryOf([liked, roadTrip]), albums: [rumours] },
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.none(),
           }),
         }),
@@ -500,6 +560,7 @@ describe('saving an album', () => {
           edit,
           result: Result.succeed({
             library: libraryOf([liked]),
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.none(),
           }),
         }),
@@ -547,6 +608,7 @@ describe('following an artist', () => {
               ...libraryOf([liked]),
               artists: [fleetwoodMac, otherArtist],
             },
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.none(),
           }),
         }),
@@ -567,6 +629,7 @@ describe('following an artist', () => {
           edit: unfollow,
           result: Result.succeed({
             library: { ...libraryOf([liked]), artists: [otherArtist] },
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.none(),
           }),
         }),
@@ -595,6 +658,7 @@ describe('editing my playlist', () => {
       .model
   const savedNothing = {
     library: libraryOf([liked, roadTrip]),
+    alreadyHeldVideoIds: [],
     maybePlaylist: Option.none(),
   }
 
@@ -792,6 +856,7 @@ describe('editing my playlist', () => {
           edit: add,
           result: Result.succeed({
             library: libraryOf([liked, { ...roadTrip, songCount: 4 }]),
+            alreadyHeldVideoIds: [],
             maybePlaylist: Option.some({
               playlist: { ...roadTrip, songCount: 4 },
               songs: [dreams, theChain, landslide, rhiannon],

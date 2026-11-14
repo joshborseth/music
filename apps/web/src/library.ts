@@ -1,8 +1,9 @@
-import { Array, Option, Order, Schema, String, pipe } from 'effect'
+import { Array, Effect, Option, Order, Schema, String, pipe } from 'effect'
 
 import {
   type AlbumSummary,
   type ArtistSummary,
+  type LibrarySong,
   type MyLibrary,
   type MyPlaylistSummary,
   type PlaylistSummary,
@@ -16,6 +17,7 @@ export const LibraryFilter = Schema.Literals([
   'Playlists',
   'Albums',
   'Artists',
+  'Songs',
   'Downloaded',
 ])
 export type LibraryFilter = typeof LibraryFilter.Type
@@ -25,13 +27,19 @@ export const LIBRARY_FILTER_CHIPS: ReadonlyArray<LibraryFilter> = [
   'Playlists',
   'Albums',
   'Artists',
+  'Songs',
   'Downloaded',
 ]
 
 // SORTING AND LAYOUT
 
 /** The kinds of thing the Library sorts, each in its own order. */
-export const SortableKind = Schema.Literals(['Playlists', 'Albums', 'Artists'])
+export const SortableKind = Schema.Literals([
+  'Playlists',
+  'Albums',
+  'Artists',
+  'Songs',
+])
 export type SortableKind = typeof SortableKind.Type
 
 /** The kinds of thing the Library shows as a list or as a grid of covers. */
@@ -63,6 +71,7 @@ export const LIBRARY_SORTS: {
   Playlists: ['RecentlyUpdated', 'RecentlyAdded', 'RecentlyPlayed', 'Title'],
   Albums: ['RecentlyAdded', 'RecentlyPlayed', 'Title', 'Artist'],
   Artists: ['RecentlyAdded', 'RecentlyPlayed', 'Title'],
+  Songs: ['RecentlyAdded', 'Title'],
 }
 
 export const LibraryLayout = Schema.Literals(['List', 'Grid'])
@@ -74,6 +83,10 @@ export const LibraryPrefs = Schema.Struct({
     Playlists: LibrarySort,
     Albums: LibrarySort,
     Artists: LibrarySort,
+    /** Added after the others, so prefs saved before it start Recently Added. */
+    Songs: LibrarySort.pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed('RecentlyAdded')),
+    ),
   }),
   layouts: Schema.Struct({ Playlists: LibraryLayout, Albums: LibraryLayout }),
 })
@@ -84,6 +97,7 @@ export const DEFAULT_LIBRARY_PREFS: LibraryPrefs = {
     Playlists: 'RecentlyUpdated',
     Albums: 'RecentlyAdded',
     Artists: 'RecentlyAdded',
+    Songs: 'RecentlyAdded',
   },
   layouts: { Playlists: 'List', Albums: 'Grid' },
 }
@@ -108,9 +122,9 @@ const byPlayedAt: Order.Order<Option.Option<number>> = Order.mapInput(
   maybePlayedAt => Option.getOrElse(maybePlayedAt, () => -Infinity),
 )
 
-const artistNamesOf = (album: AlbumSummary): string =>
+const artistNamesOf = (credited: AlbumSummary | Song): string =>
   pipe(
-    album.artists,
+    credited.artists,
     Array.map(({ name }) => name),
     Array.join(', '),
   )
@@ -200,6 +214,26 @@ export const sortArtists = (
         )
       : library.artists
 
+/**
+ * The songs in my playlists and Liked Songs in `sort`'s order: A–Z by
+ * title, then artist, or as the server lists them, the latest added first.
+ */
+export const sortSongs = (
+  songs: ReadonlyArray<LibrarySong>,
+  sort: LibrarySort,
+): ReadonlyArray<LibrarySong> =>
+  sort === 'Title'
+    ? Array.sort(
+        songs,
+        Order.combine(
+          Order.mapInput(byText, ({ song }: LibrarySong) => song.title),
+          Order.mapInput(byText, ({ song }: LibrarySong) =>
+            artistNamesOf(song),
+          ),
+        ),
+      )
+    : songs
+
 // SEARCH
 
 /** Lower case with the accents taken off, so "beyonce" finds "Beyoncé". */
@@ -225,6 +259,17 @@ export const matchesLibrarySearch = (
     Array.every(word => haystack.includes(word)),
   )
 }
+
+/** Whether a song's title, artists, or album has every word typed. */
+export const songMatchesLibrarySearch = (search: string, song: Song): boolean =>
+  matchesLibrarySearch(search, [
+    song.title,
+    artistNamesOf(song),
+    Option.match(song.maybeAlbum, {
+      onNone: () => '',
+      onSome: ({ name }) => name,
+    }),
+  ])
 
 /** Something the person opened, so the Library can take them back to it. */
 export const LibraryItem = Schema.Struct({

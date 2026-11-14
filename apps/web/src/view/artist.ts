@@ -1,4 +1,4 @@
-import { Array, Option, Record } from 'effect'
+import { Array, Option, Record, pipe } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import { Check, User } from 'lucide'
@@ -15,7 +15,7 @@ import {
 import { isArtistFollowed } from '../library'
 import { Message } from '../message'
 import { SyncTitleBarReveal } from '../mount'
-import { artistQuery, myLibraryQuery } from '../query'
+import { artistQuery, myLibraryQuery, playlistQuery } from '../query'
 import { artistAlbumsRouter, artistSinglesRouter } from '../route'
 import { type PageModel } from './page'
 import {
@@ -175,6 +175,30 @@ const topSongDetails =
       ),
     ])
 
+/**
+ * What Play and Shuffle queue: every song in the artist's See All playlist,
+ * most played first, once it has loaded, after the top songs the page
+ * lists. Until then, only those.
+ */
+const artistSongs = (
+  model: PageModel,
+  details: ArtistDetails,
+): ReadonlyArray<Song> =>
+  pipe(
+    details.maybeAllSongsPlaylistId,
+    Option.flatMap(playlistId =>
+      AsyncData.getData(playlistQuery.read(model.playlists, { playlistId })),
+    ),
+    Option.match({
+      onNone: () => details.topSongs,
+      onSome: ({ tracks }) =>
+        Array.dedupeWith(
+          Array.appendAll(details.topSongs, tracks),
+          (left, right) => left.videoId === right.videoId,
+        ),
+    }),
+  )
+
 /** A shelf of the artist's albums or singles, linking to all of them. */
 const releaseShelf = (
   details: ArtistDetails,
@@ -227,7 +251,7 @@ export const artistView = (
                   h,
                 ),
                 playActions(
-                  details.topSongs,
+                  artistSongs(model, details),
                   h,
                   details.maybeRadio,
                   Option.some(playingFromArtist(details)),

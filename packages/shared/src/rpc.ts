@@ -7,6 +7,7 @@ import {
   ArtistDetails,
   ArtistSummary,
   HomeFeed,
+  LibrarySong,
   MoodDetails,
   MoodGroup,
   MusicNotFoundError,
@@ -113,6 +114,15 @@ export const getMyLibraryRpc = Rpc.make('getMyLibrary', {
   error: PlaylistStoreError,
 })
 
+/**
+ * Every song in my playlists and Liked Songs, each once, the latest added
+ * first, for the Library's Songs.
+ */
+export const getLibrarySongsRpc = Rpc.make('getLibrarySongs', {
+  success: Schema.Array(LibrarySong),
+  error: PlaylistStoreError,
+})
+
 export const getMyPlaylistRpc = Rpc.make('getMyPlaylist', {
   payload: Schema.Struct({ playlistId: Schema.String }),
   success: MyPlaylistDetails,
@@ -184,6 +194,7 @@ export const MusicRpcs = RpcGroup.make(
   getAlbumRpc,
   getPlaylistRpc,
   getMyLibraryRpc,
+  getLibrarySongsRpc,
   getMyPlaylistRpc,
   editPlaylistsRpc,
   getHomeRpc,

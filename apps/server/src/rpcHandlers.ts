@@ -69,6 +69,7 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
           .getPlaylist(playlistId)
           .pipe(Effect.tap(details => prepare(details.tracks, 2, 3))),
       getMyLibrary: () => playlistStore.library(),
+      getLibrarySongs: () => playlistStore.librarySongs(),
       getMyPlaylist: ({ playlistId }) =>
         playlistStore
           .playlist(playlistId)

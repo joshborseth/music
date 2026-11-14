@@ -328,6 +328,17 @@ export const MyLibrary = Schema.Struct({
 })
 export type MyLibrary = typeof MyLibrary.Type
 
+/**
+ * A song in one of my playlists or Liked Songs, listed once however many of
+ * them hold it, for the Library's Songs.
+ */
+export const LibrarySong = Schema.Struct({
+  song: Song,
+  /** When it was first added to any of them, in milliseconds since the epoch. */
+  addedAt: Schema.Number,
+})
+export type LibrarySong = typeof LibrarySong.Type
+
 /** One of my playlists with its songs in order. Each song appears once. */
 export const MyPlaylistDetails = Schema.Struct({
   playlist: MyPlaylistSummary,
@@ -398,6 +409,11 @@ export const PlaylistEditResult = Schema.Struct({
    * saving an album or following an artist.
    */
   maybePlaylist: Schema.Option(MyPlaylistDetails),
+  /**
+   * The songs an `AddSongs` edit left out because the playlist already held
+   * them. A playlist holds each song once.
+   */
+  alreadyHeldVideoIds: Schema.Array(Schema.String),
 })
 export type PlaylistEditResult = typeof PlaylistEditResult.Type
 

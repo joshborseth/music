@@ -16,8 +16,6 @@ import {
   artistLinks,
   artworkImage,
   formatDuration,
-  formatViews,
-  joinDetails,
   loadingPage,
   remote,
   section,
@@ -103,21 +101,14 @@ const songHeader = (details: SongDetails, h: HtmlBuilder<Message>): Html => {
             ['From ', albumLink(album, h)],
           ),
       }),
-      h.p(
-        [h.Class('text-muted-foreground text-[13px] font-medium')],
-        [
-          joinDetails([
-            Option.match(song.maybeDurationSeconds, {
-              onNone: () => '',
-              onSome: formatDuration,
-            }),
-            Option.match(details.maybeViewCount, {
-              onNone: () => '',
-              onSome: formatViews,
-            }),
-          ]),
-        ],
-      ),
+      Option.match(song.maybeDurationSeconds, {
+        onNone: () => h.empty,
+        onSome: seconds =>
+          h.p(
+            [h.Class('text-muted-foreground text-[13px] font-medium')],
+            [formatDuration(seconds)],
+          ),
+      }),
     ],
   )
 }
