@@ -301,10 +301,10 @@ const makeCutter = () => {
       ? Math.min(1, Math.max(0, (intensity - 0.55) * 2.5)) *
         (0.5 + 0.5 * music.energy)
       : 0
-    const target = 0.26 + 0.08 * intensity
+    const target = 0.33 + 0.05 * intensity
     const gain = (cut: Cut) =>
       Math.min(
-        2.2,
+        2.6,
         Math.max(
           0.7,
           target / Math.max(ranks[cut.picture]?.brightness ?? target, 0.03),
@@ -326,7 +326,7 @@ const makeCutter = () => {
       a: camera(shown, music.time),
       b: camera(before, music.time),
       cut: [music.time - shown.at, shown.strength, shown.look, shown.strips],
-      mix: [echo, 0.04 + 0.16 * intensity, spectrum, 0.5 - 0.36 * intensity],
+      mix: [echo, 0.04 + 0.16 * intensity, spectrum, 0.6 - 0.42 * intensity],
     }
   }
 }

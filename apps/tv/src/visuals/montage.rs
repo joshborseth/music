@@ -433,13 +433,13 @@ impl Cutter {
         };
         // Each picture's light is evened out toward the same level, a little
         // brighter the louder the music.
-        let target = 0.26 + 0.08 * intensity;
+        let target = 0.33 + 0.05 * intensity;
         let gain = |cut: &Cut| {
             let light = atlas
                 .pictures
                 .get(cut.picture)
                 .map_or(target, |picture| picture.brightness);
-            (target / light.max(0.03)).clamp(0.7, 2.2)
+            (target / light.max(0.03)).clamp(0.7, 2.6)
         };
         MontageShot {
             grid: [
@@ -460,7 +460,7 @@ impl Cutter {
                 echo,
                 0.04 + 0.16 * intensity,
                 spectrum,
-                0.5 - 0.36 * intensity,
+                0.6 - 0.42 * intensity,
             ],
             tone: [
                 gain(&current),
