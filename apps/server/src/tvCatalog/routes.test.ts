@@ -120,6 +120,15 @@ const analysisOf = (videoId: string): Tv.TvAnalysis => ({
   energyStepSeconds: 0.1,
   energy: [0.5, 1],
   drive: 0.5,
+  kicks: [],
+  snares: [],
+  hats: [],
+  chords: [],
+  keys: [],
+  stops: [],
+  risers: [],
+  fills: [],
+  score: { rate: 20, columns: 32, png: '' },
 })
 
 const songAnalysis = SongAnalysis.of({

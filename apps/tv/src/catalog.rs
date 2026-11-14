@@ -153,8 +153,119 @@ pub struct Section {
     pub energy: f32,
 }
 
+/// A stretch of a song, in seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Span {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+/// A chord from `start_seconds` until the next: its root's pitch class
+/// (0 = C), none when no chord is clear, and whether it is minor.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Chord {
+    pub start_seconds: f64,
+    pub root: Option<u8>,
+    pub minor: bool,
+}
+
+/// The song's key from `start_seconds` until the next.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Key {
+    pub start_seconds: f64,
+    pub tonic: u8,
+    pub minor: bool,
+}
+
+/// The whole song as a grayscale picture, a row every `1 / rate` seconds
+/// (see `TvScore` in `packages/shared/src/tv.ts` for the columns).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScoreImage {
+    pub rate: f64,
+    pub columns: u32,
+    /// A PNG, base64.
+    pub png: String,
+}
+
+/// The score, decoded: `rows × columns` bytes, a row at a time.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Score {
+    pub rate: f64,
+    pub columns: usize,
+    pub rows: usize,
+    pub pixels: Vec<u8>,
+}
+
+impl Score {
+    /// Decode the server's picture; none if it is not a grayscale PNG of
+    /// its stated width.
+    pub fn decode(image: &ScoreImage) -> Option<Self> {
+        let bytes = base64_decode(&image.png)?;
+        let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .ok()?
+            .into_luma8();
+        let columns = image.columns as usize;
+        if decoded.width() as usize != columns || image.rate <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            rate: image.rate,
+            columns,
+            rows: decoded.height() as usize,
+            pixels: decoded.into_raw(),
+        })
+    }
+
+    /// Column `column` at `seconds` into the song, 0 to 1, read between
+    /// rows; 0 outside the song.
+    pub fn at(&self, column: usize, seconds: f64) -> f32 {
+        let position = seconds * self.rate;
+        if self.rows == 0 || column >= self.columns || position < 0.0 {
+            return 0.0;
+        }
+        let row = position.floor() as usize;
+        let read = |row: usize| {
+            self.pixels
+                .get(row * self.columns + column)
+                .map_or(0.0, |value| f32::from(*value) / 255.0)
+        };
+        let fraction = (position - position.floor()) as f32;
+        read(row) * (1.0 - fraction) + read(row + 1) * fraction
+    }
+}
+
+/// Plain base64 (with or without padding); none on any other character.
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let mut bits = 0u32;
+    let mut count = 0;
+    for byte in text.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break,
+            _ => return None,
+        };
+        bits = (bits << 6) | u32::from(value);
+        count += 6;
+        if count >= 8 {
+            count -= 8;
+            out.push((bits >> count) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// A song's beats, bars, sections, and drops, worked out by the server from
-/// the audio before it plays. Times are seconds into the song.
+/// the audio before it plays. Times are seconds into the song. A server
+/// from before the parts (drums, harmony, moments, score) sends none.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Analysis {
@@ -172,6 +283,27 @@ pub struct Analysis {
     /// hits and its grit. A server from before it existed sends none.
     #[serde(default = "middling_drive")]
     pub drive: f32,
+    #[serde(default)]
+    pub kicks: Vec<f64>,
+    #[serde(default)]
+    pub snares: Vec<f64>,
+    #[serde(default)]
+    pub hats: Vec<f64>,
+    #[serde(default)]
+    pub chords: Vec<Chord>,
+    #[serde(default)]
+    pub keys: Vec<Key>,
+    #[serde(default)]
+    pub stops: Vec<Span>,
+    #[serde(default)]
+    pub risers: Vec<Span>,
+    #[serde(default)]
+    pub fills: Vec<Span>,
+    #[serde(default, rename = "score")]
+    pub score_image: Option<ScoreImage>,
+    /// `score_image` decoded, once it arrives (`Catalog::analysis`).
+    #[serde(skip)]
+    pub score: Option<Score>,
 }
 
 fn middling_drive() -> f32 {
@@ -365,7 +497,16 @@ impl Client {
             "/tv/analysis?videoId={}",
             crate::view::percent_encode(video_id)
         );
-        self.get(&path).await
+        let mut analysis: Analysis = self.get(&path).await?;
+        // Decoded here, off the UI thread.
+        analysis.score = analysis.score_image.take().and_then(|image| {
+            let score = Score::decode(&image);
+            if score.is_none() {
+                log::warn!("analysis: the score of {video_id} could not be read");
+            }
+            score
+        });
+        Ok(analysis)
     }
 
     pub async fn liked(&self, video_id: &str) -> Result<bool, String> {
@@ -554,6 +695,30 @@ mod tests {
         assert_eq!(analysis.downbeats.len() * 4, analysis.beats.len());
         assert_eq!(analysis.sections[1].kind, SectionKind::Drop);
         assert_eq!(analysis.drops, vec![4.5]);
+        assert_eq!(analysis.kicks.len(), 8);
+        assert_eq!(analysis.chords[0].root, None);
+        assert_eq!(analysis.chords[1].root, Some(9));
+        assert_eq!(analysis.keys[1].tonic, 11);
+        assert_eq!(analysis.stops[0].end_seconds, 4.5);
+        let score = Score::decode(analysis.score_image.as_ref().unwrap()).unwrap();
+        assert_eq!((score.columns, score.rows), (32, 34));
+        assert_eq!(score.at(25, 0.0), 1.0);
+        assert_eq!(score.at(25, 0.25), 0.0);
+        assert!((score.at(25, 0.125) - 0.5).abs() < 0.01);
+        assert!((score.at(30, 3.0) - 128.0 / 255.0).abs() < 0.01);
+        assert_eq!(score.at(25, 100.0), 0.0);
+    }
+
+    #[test]
+    fn an_analysis_from_before_the_parts_still_reads() {
+        let mut json: serde_json::Value = fixture("analysis.json");
+        for field in [
+            "kicks", "snares", "hats", "chords", "keys", "stops", "risers", "fills", "score",
+        ] {
+            json.as_object_mut().unwrap().remove(field);
+        }
+        let analysis: Analysis = serde_json::from_value(json).unwrap();
+        assert!(analysis.kicks.is_empty() && analysis.score_image.is_none());
     }
 
     #[test]

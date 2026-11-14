@@ -43,6 +43,13 @@ void main() {
   float beat = fract(uBeats);
   float front = abs(r - (radius + beat * 0.8));
   light += exp(-front * 90.0) * (1.0 - beat) * (0.2 + 0.5 * uEnergy) * (0.4 + 0.6 * uIntensity);
+  // Each snare sends a sharper ring of its own, quick and fading: it is
+  // as far out as the time since the hit (`uSnare` falls as e^-12t).
+  if (uSnare > 0.05) {
+    float since = -log(uSnare) / 12.0;
+    float snareFront = abs(r - (radius + since * 1.6));
+    light += exp(-snareFront * 140.0) * uSnare * 0.8;
+  }
 
   // The echo holds what was brightest; it never piles up.
   float amount = min(max(echo, light), 1.0);

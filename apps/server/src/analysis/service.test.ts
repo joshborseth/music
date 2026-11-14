@@ -34,6 +34,15 @@ const analysisOf = (videoId: string, tempo = 120): Tv.TvAnalysis => ({
   energyStepSeconds: 0.1,
   energy: [1],
   drive: 0.5,
+  kicks: [],
+  snares: [],
+  hats: [],
+  chords: [],
+  keys: [],
+  stops: [],
+  risers: [],
+  fills: [],
+  score: { rate: 20, columns: 32, png: '' },
 })
 
 const loudnessOf = (integratedLufs: number): Loudness => ({
