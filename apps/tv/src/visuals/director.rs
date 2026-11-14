@@ -502,11 +502,15 @@ impl Director {
             // track's drop. The old picture shatters on the drop's beat.
             let wild = aim.max(0.85 * music.ceiling);
             let shatter = TransitionKind::Shatter;
+            // The climax landing on this drop wins over everything else,
+            // even a stop ending on the same frame (`for_moment`).
+            let climax_lands = music.parts.cue.climax > 0.0 && !self.in_climax;
             match music.section {
                 // The music came back after a stop, within a section that
                 // already has its scene: move on, as if it were new.
                 Some(section)
                     if music.parts.stop_ended
+                        && !climax_lands
                         && !self.in_climax
                         && section_now == self.section
                         && section.left > beat * 4.0 * 4.0 =>
@@ -906,6 +910,30 @@ mod tests {
         let shot = director.direct(&back, Some("song"));
         assert_eq!(shot.kind, TransitionKind::Shatter);
         assert_ne!(shot.next.expect("a change").0.scene, before);
+    }
+
+    #[test]
+    fn the_climax_wins_over_a_stop_ending_on_its_drop() {
+        use super::super::cues::Cues;
+        let wild = |scene: usize| SCENES[scene].energy >= 0.92 - CLIMAX_BAND;
+        for seed in 1..20 {
+            let mut director = Director::new(seed);
+            // The climax lands within a section that already has its scene,
+            // on the very frame the music comes back after a stop.
+            let verse = music(section(0, SectionKind::Chorus, 0, 0.8));
+            settle(&mut director, &verse);
+            let mut back = verse.clone();
+            back.drop_landed = true;
+            back.parts.stop_ended = true;
+            back.parts.cue = Cues {
+                climax: 1.0,
+                ..Cues::default()
+            };
+            let shot = director.direct(&back, Some("song"));
+            let scene = shot.next.map_or(shot.current.scene, |(next, _)| next.scene);
+            assert!(wild(scene), "{seed}: {}", SCENES[scene].name);
+            assert!(director.in_climax, "{seed}");
+        }
     }
 
     #[test]

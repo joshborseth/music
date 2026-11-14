@@ -10,23 +10,22 @@
 // so the reef is never one pattern, and a slow patch of stronger kill
 // drifts across it, eating coral that grows back behind it. The music
 // seeds new growth: a blob where each kick lands, a line where the lead
-// melody runs; a drop bleaches the reef and it regrows from the middle.
+// melody runs; a drop bursts rings of it out across the whole reef, which
+// the reaction breaks into its own pattern over the next second or two.
 // The word sung now (words.rs) seeds its letters as it comes, so the reef
 // grows the word, and the pattern slowly takes it back.
 
 out uvec4 stateOut;
 
-// Feed and kill, how fast the reaction runs against the spreading (2 is
-// 2.5 times Gray-Scott's own: the same patterns, 1.6 times finer), and how
-// much of v to bleach away this step.
+// Feed and kill, and how fast the reaction runs against the spreading
+// (2.5 times Gray-Scott's own: the same patterns, 1.6 times finer).
 uniform vec4 uCoralFeed;
 // A blob to seed: x, y and radius in texels, and how much.
 uniform vec4 uCoralBlob;
 // A line to seed, from (x, y) to (z, w), in texels.
 uniform vec4 uCoralLine;
-// How much the line seeds and its radius in texels, the radius of a seed
-// disc to seed in the middle (0: none), and 1 when everything starts
-// over.
+// How much the line seeds and its radius in texels, 1 for a drop's burst,
+// and 1 when everything starts over.
 uniform vec4 uCoralInk;
 
 vec2 chemicals(ivec2 texel, ivec2 side) {
@@ -83,18 +82,22 @@ void main() {
   u += laplacian.x + (feed * (1.0 - u) - uvv) * rate;
   v += 0.5 * laplacian.y + (uvv - (feed + kill) * v) * rate;
 
-  // A drop bleaches the reef...
-  v *= 1.0 - uCoralFeed.w;
-  u = mix(u, 1.0, uCoralFeed.w);
-
-  // ...and the music seeds it.
+  // The music seeds it.
   float seed = uCoralBlob.w * seedAt(distance(here, uCoralBlob.xy), uCoralBlob.z);
   vec2 along = uCoralLine.zw - uCoralLine.xy;
   float t = clamp(dot(here - uCoralLine.xy, along) / max(dot(along, along), 1e-4), 0.0, 1.0);
   seed = max(seed, uCoralInk.x * seedAt(distance(here, uCoralLine.xy + along * t), uCoralInk.y));
   if (uCoralInk.z > 0.0) {
-    // A disc in the middle, so the reef grows back outward from it.
-    seed = max(seed, seedAt(distance(here, vec2(side) * 0.5), uCoralInk.z));
+    // A drop: rings of new growth over the whole reef at once, out from
+    // the middle, warped by the fractal noise so they break into worms
+    // and loops, the old reef thinned between them. Dense from the first
+    // frame; the reaction reorganizes it into its own pattern.
+    highp vec2 q = (uv - 0.5) * vec2(float(side.x) / float(side.y), 1.0);
+    float warp = fbm(uv * 2.5 + uSeed * 5.0);
+    float ring = abs(fract(length(q) * 9.0 - warp * 1.8 + uSeed * 3.0) - 0.5);
+    v *= 0.35;
+    u = mix(u, 1.0, 0.5);
+    seed = max(seed, 1.0 - smoothstep(0.1, 0.18, ring));
   }
   // The word sung now, for its first third of a second: one read, and
   // only inside its box.

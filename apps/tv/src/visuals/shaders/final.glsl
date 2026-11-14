@@ -407,11 +407,12 @@ void main() {
     color = mix(color, color * 0.04 + mix(uColorA, vec3(1.0), 0.2) * shape * shape * 0.45, uCueInhale);
   }
 
-  // When a drop lands, a flash in the cover's color, everywhere alike but
-  // behind the lyrics, where it would wash out their dim lines. It is over
-  // in a beat; the rest of the drop lives in the lift, the glow, and the
-  // scenes.
-  color += uFlash * (1.0 - 0.75 * calm);
+  // When a drop lands, a flash in the cover's color, everywhere but
+  // behind the lyrics, where it would wash out their dim lines, and less
+  // on what is bright already, which it would only burn white. It is over
+  // in half a beat; the rest of the drop lives in the lift, the glow, and
+  // the scenes.
+  color += uFlash * (1.0 - 0.75 * calm) * (1.0 - 0.6 * smoothstep(0.4, 1.4, luma(color)));
 
   // A soft curve so bright light rolls off instead of clipping, worked on
   // the brightest channel and applied to all three: a channel clipping on
