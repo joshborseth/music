@@ -1051,6 +1051,9 @@ const makeEngine = (
     ['swarm.glsl', makeSwarm(simTools)],
     ['coral.glsl', makeCoral(simTools)],
   ])
+  // The scenes on screen last frame: one coming on starts its simulation
+  // over, as on the TV, where it gets a fresh slot (`Slot::fresh`).
+  let onScreen = new Set<Scene>()
 
   /** Draw into `target`, all of it, as the TV's `begin_pass`. */
   const beginPass = (target: Target) => {
@@ -1210,6 +1213,10 @@ const makeEngine = (
     if (sceneA === undefined) return
     const look = screenLook(music, colors[0] ?? [1, 1, 1])
     const moving = sceneB ?? sceneA
+    if (runs('scene')) {
+      if (!onScreen.has(moving)) sims.get(moving.def.file)?.reset()
+      onScreen = new Set(sceneB === undefined ? [sceneA] : [sceneA, sceneB])
+    }
     if (runs('scene') && !look.hold) drawScene(moving, music)
     const kind =
       sceneB === undefined ? 0 : (change?.kind ?? transitionCode('Wipe'))

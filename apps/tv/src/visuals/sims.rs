@@ -54,6 +54,11 @@ impl Sims {
         }
     }
 
+    /// Step `scene`'s simulation, if it has one. `fresh` is its first
+    /// frame since it came on, which starts it over, as a new `seed` does.
+    /// Only the scene drawing calls this: one frozen while another takes
+    /// over keeps its state, untouched.
+    ///
     /// # Safety
     /// Needs the GL context current, inside the renderer's saved state.
     pub unsafe fn before(
@@ -62,18 +67,19 @@ impl Sims {
         scene: usize,
         music: &Music,
         seed: f32,
+        fresh: bool,
         prepare: &Prepare<'_>,
     ) {
         unsafe {
             match scene {
                 SWARM => {
                     if let Some(swarm) = &mut self.swarm {
-                        swarm.before(gl, music, seed, prepare);
+                        swarm.before(gl, music, seed, fresh, prepare);
                     }
                 }
                 CORAL => {
                     if let Some(coral) = &mut self.coral {
-                        coral.before(gl, music, seed, prepare);
+                        coral.before(gl, music, seed, fresh, prepare);
                     }
                 }
                 _ => {}

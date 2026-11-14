@@ -111,6 +111,10 @@ struct Slot {
     targets: [Target; 2],
     /// False until the scene has drawn into it since it was cleared.
     drawn: bool,
+    /// True from when the scene comes on (gets this slot) until its first
+    /// frame: a scene that simulates starts its simulation over then, and
+    /// not when its size changes or while it is frozen, leaving.
+    fresh: bool,
 }
 
 /// How much of each shade the app's words need shows, 0 to 1: see
@@ -285,6 +289,7 @@ impl Renderer {
                     seed: 0.0,
                     targets: [target(gl, width, height)?, target(gl, width, height)?],
                     drawn: false,
+                    fresh: false,
                 })
             };
             let slots = [slot()?, slot()?];
@@ -728,6 +733,7 @@ impl Renderer {
             // its first frame reads the one before.
             slot.scene = Some(showing.scene);
             slot.drawn = false;
+            slot.fresh |= held.is_none();
             for target in &mut slot.targets {
                 if !sized {
                     resize(gl, target, wide, tall);
@@ -764,14 +770,16 @@ impl Renderer {
         unsafe {
             let scene = showing.scene;
             let [read, write] = &self.slots[slot].targets;
-            // A scene that simulates runs its simulation first.
+            let fresh = self.slots[slot].fresh;
+            // A scene that simulates runs its simulation first, from the
+            // start on its first frame.
             let mut sims = std::mem::take(&mut self.sims);
             let size = (write.width, write.height);
             let prepare = |program: &Program| {
                 self.set_music(gl, program, music, size, Some(showing), listener);
                 self.bind_inputs(gl, program, None);
             };
-            sims.before(gl, scene, music, showing.seed, &prepare);
+            sims.before(gl, scene, music, showing.seed, fresh, &prepare);
             begin_pass(gl, write);
             if let Some(Some(program)) = self.scenes.get(scene) {
                 gl.use_program(Some(program.program));
@@ -807,6 +815,7 @@ impl Renderer {
             let slot = &mut self.slots[slot];
             slot.targets.swap(0, 1);
             slot.drawn = true;
+            slot.fresh = false;
         }
     }
 

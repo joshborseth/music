@@ -303,10 +303,17 @@ impl Coral {
     ///
     /// # Safety
     /// Needs the GL context current, inside the renderer's saved state.
-    pub unsafe fn before(&mut self, gl: &Gl, music: &Music, seed: f32, prepare: &Prepare<'_>) {
+    pub unsafe fn before(
+        &mut self,
+        gl: &Gl,
+        music: &Music,
+        seed: f32,
+        fresh: bool,
+        prepare: &Prepare<'_>,
+    ) {
         unsafe {
             let grid = (self.states[0].width, self.states[0].height);
-            if self.seed != Some(seed) {
+            if fresh || self.seed != Some(seed) {
                 self.seed = Some(seed);
                 self.rhythm = Rhythm::new(seed, grid);
             }

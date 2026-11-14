@@ -253,9 +253,16 @@ impl Swarm {
     ///
     /// # Safety
     /// Needs the GL context current, inside the renderer's saved state.
-    pub unsafe fn before(&mut self, gl: &Gl, music: &Music, seed: f32, prepare: &Prepare<'_>) {
+    pub unsafe fn before(
+        &mut self,
+        gl: &Gl,
+        music: &Music,
+        seed: f32,
+        fresh: bool,
+        prepare: &Prepare<'_>,
+    ) {
         unsafe {
-            if self.seed != Some(seed) {
+            if fresh || self.seed != Some(seed) {
                 self.seed = Some(seed);
                 self.choreography = Choreography::new(seed);
                 self.particles.reset();
