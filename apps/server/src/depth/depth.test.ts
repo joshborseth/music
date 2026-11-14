@@ -1,11 +1,21 @@
 import { Database } from 'bun:sqlite'
 import { afterAll, describe, expect, test } from 'bun:test'
-import { Deferred, Effect, Exit, Fiber, Layer, Option } from 'effect'
+import {
+  ConfigProvider,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+} from 'effect'
 import { HttpRouter } from 'effect/http'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
+
+import { BunServices } from '@effect/platform-bun'
 
 import { makeDepthCache } from './cache.ts'
 import { ensureModel, fileSha256 } from './model.ts'
@@ -20,6 +30,7 @@ import {
 import { DepthRoutes } from './routes.ts'
 import {
   CoverDepth,
+  CoverDepthLive,
   DepthError,
   depthKey,
   depthPngOf,
@@ -298,6 +309,46 @@ describe('the depth model file', () => {
       Effect.exit(ensureModel(missing, false)),
     )
     expect(Exit.isFailure(exit)).toBe(true)
+  })
+
+  test('a download that fails is an error, and leaves nothing behind', async () => {
+    const missing = join(await dir, 'unreachable.onnx')
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        ensureModel(missing, true, {
+          url: 'http://127.0.0.1:9/model.onnx',
+          sha256: '00',
+        }),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(await Bun.file(missing).exists()).toBe(false)
+  })
+
+  test('the server starts without it, and only Diorama goes without', async () => {
+    const home = await dir
+    const config = ConfigProvider.fromUnknown({
+      HOME: home,
+      DEPTH_DB_PATH: join(home, 'data', 'depth.sqlite'),
+      DEPTH_MODEL_PATH: join(home, 'models', 'none.onnx'),
+      DEPTH_MODEL_DOWNLOAD: 'false',
+    })
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const depth = yield* CoverDepth
+        yield* depth.warm(COVER)
+        return yield* Effect.flip(depth.depthPng(COVER))
+      }).pipe(
+        Effect.provide(
+          CoverDepthLive.pipe(
+            Layer.provide(BunServices.layer),
+            Layer.provide(ConfigProvider.layer(config)),
+          ),
+        ),
+        Effect.scoped,
+      ),
+    )
+    expect(error.reason).toBe('NoModel')
   })
 })
 
