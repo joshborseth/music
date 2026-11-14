@@ -1,5 +1,10 @@
-import { Config, Layer } from 'effect'
-import { HttpRouter } from 'effect/http'
+import { Config, Effect, Layer, Option } from 'effect'
+import {
+  HttpMiddleware,
+  HttpPlatform,
+  HttpRouter,
+  HttpServer,
+} from 'effect/http'
 import { RpcSerialization, RpcServer } from 'effect/rpc'
 
 import { BunHttpServer, BunRuntime, BunServices } from '@effect/platform-bun'
@@ -9,6 +14,7 @@ import { SongAnalysisLive } from './analysis/service.ts'
 import { ArtworkRoutes } from './artwork.ts'
 import { AudioRoutes, AudioSourceLive } from './audio.ts'
 import { AudioStoreLive } from './audioStore.ts'
+import { CertificateRoute, LanTlsConfig, lanHttpsServer } from './lanHttps.ts'
 import { TimedLyricsLive } from './lyrics/service.ts'
 import { ArtworkPaletteLive } from './palette/service.ts'
 import { PlaylistStoreLive } from './playlists/store.ts'
@@ -79,23 +85,58 @@ const PlaybackRoutes = Layer.mergeAll(
   Layer.provideMerge(AudioLive),
 )
 
-const ServerLive = HttpRouter.serve(
-  Layer.mergeAll(
-    CatalogRoutes,
-    PlaybackRoutes,
-    ArtworkRoutes,
-    TvAppRoutes.pipe(Layer.provide(BunServices.layer)),
-    WebAppRoutes.pipe(Layer.provide(BunServices.layer)),
-  ),
-).pipe(
-  Layer.provide(
-    BunHttpServer.layerConfig({
-      port: Config.Port('PORT').pipe(Config.withDefault(DEFAULT_PORT)),
-      hostname: Config.String('HOST').pipe(
-        Config.withDefault(DEFAULT_HOSTNAME),
-      ),
-    }),
-  ),
+const AppRoutes = Layer.mergeAll(
+  CatalogRoutes,
+  PlaybackRoutes,
+  ArtworkRoutes,
+  TvAppRoutes.pipe(Layer.provide(BunServices.layer)),
+  WebAppRoutes.pipe(Layer.provide(BunServices.layer)),
+  CertificateRoute,
 )
+
+const Hostname = Config.String('HOST').pipe(
+  Config.withDefault(DEFAULT_HOSTNAME),
+)
+
+/**
+ * One router, served on plain HTTP (`PORT`, for the TV and guests) and, when
+ * there is a certificate, on HTTPS (`TLS_PORT`, for the phone: `lanHttps.ts`).
+ * Both listeners share every service, so a phone on HTTPS and the TV on HTTP
+ * are in the same session.
+ */
+const ServerLive = Layer.unwrap(
+  Effect.gen(function* () {
+    const handler = yield* HttpRouter.toHttpEffect(AppRoutes)
+    const serveOn = <E, R>(
+      server: Layer.Layer<
+        HttpServer.HttpServer | HttpPlatform.HttpPlatform,
+        E,
+        R
+      >,
+    ) =>
+      HttpServer.serve(handler, HttpMiddleware.logger).pipe(
+        Layer.provide(server),
+      )
+    const hostname = yield* Hostname
+    const http = serveOn(
+      BunHttpServer.layerConfig({
+        port: Config.Port('PORT').pipe(Config.withDefault(DEFAULT_PORT)),
+        hostname: Config.succeed(hostname),
+      }).pipe(HttpServer.withLogAddress),
+    )
+    const maybeTls = yield* LanTlsConfig
+    return Option.match(maybeTls, {
+      onNone: () => http,
+      onSome: tls =>
+        Layer.mergeAll(
+          http,
+          serveOn(lanHttpsServer(hostname, tls)),
+          Layer.effectDiscard(
+            Effect.logInfo(`Listening on https://${hostname}:${tls.port}`),
+          ),
+        ),
+    })
+  }),
+).pipe(Layer.provide(BunHttpServer.layerHttpServices))
 
 BunRuntime.runMain(Layer.launch(ServerLive))

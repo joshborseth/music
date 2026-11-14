@@ -12,6 +12,10 @@
 # It also installs the release's music.service, so a change to the unit
 # ships with the code that needs it. If the new server does not serve its
 # own web app, it goes back to the release before.
+#
+# With no release staged, it renews the phone's HTTPS certificate when it gets
+# old (scripts/lan-cert.sh), and restarts the server to load it the same way,
+# once nothing has played.
 set -euo pipefail
 
 now=false
@@ -34,7 +38,42 @@ unit_dir="$HOME/.config/systemd/user"
 exec 9>"$music_home/release.lock"
 flock 9
 
-[ -L "$pending" ] || exit 0
+wait_for_quiet() {
+  [ "$now" = true ] && return 0
+  status=0
+  report="$(curl --fail --silent --max-time 5 "$server/session/quiet")" || status=$?
+  case "$status" in
+    0)
+      quiet_seconds="$(jq -r '.quietSeconds' <<<"$report")"
+      [ "$quiet_seconds" -ge $((quiet_minutes * 60)) ]
+      ;;
+    # Nothing listens, or nothing answers: the server is down or stuck.
+    7 | 28)
+      echo "The server did not answer; going ahead now."
+      return 0
+      ;;
+    *)
+      echo "The server could not say whether music plays (curl exit $status); waiting." >&2
+      return 1
+      ;;
+  esac
+}
+
+if [ ! -L "$pending" ]; then
+  lan_cert="$current/scripts/lan-cert.sh"
+  [ -x "$lan_cert" ] || exit 0
+  export MUSIC_TLS_DIR="$music_home/tls"
+  "$lan_cert" --check || "$lan_cert"
+  # The server reads its certificate as it starts.
+  started="$(systemctl --user show music.service -P ExecMainStartTimestamp)"
+  [ -n "$started" ] || exit 0
+  if [ "$(stat -c %Y "$MUSIC_TLS_DIR/server.crt")" -gt "$(date -d "$started" +%s)" ] &&
+    wait_for_quiet; then
+    echo "Restarting to load the renewed HTTPS certificate."
+    systemctl --user restart music.service
+  fi
+  exit 0
+fi
 target="$(readlink -f "$pending")"
 if [ ! -d "$target" ]; then
   echo "The staged release $target is gone." >&2
@@ -46,24 +85,7 @@ if [ -L "$current" ] && [ "$(readlink -f "$current")" = "$target" ]; then
   exit 0
 fi
 
-if [ "$now" = false ]; then
-  status=0
-  report="$(curl --fail --silent --max-time 5 "$server/session/quiet")" || status=$?
-  case "$status" in
-    0)
-      quiet_seconds="$(jq -r '.quietSeconds' <<<"$report")"
-      if [ "$quiet_seconds" -lt $((quiet_minutes * 60)) ]; then
-        exit 0
-      fi
-      ;;
-    # Nothing listens, or nothing answers: the server is down or stuck.
-    7 | 28) echo "The server did not answer; switching now." ;;
-    *)
-      echo "The server could not say whether music plays (curl exit $status); waiting." >&2
-      exit 0
-      ;;
-  esac
-fi
+wait_for_quiet || exit 0
 
 switch_to() {
   ln -sfn "$1" "$current.new"
