@@ -26,7 +26,7 @@ import {
   screenLook,
   transitionCode,
 } from './moments.ts'
-import { makeMontage, montagePage } from './montage.ts'
+import { type MontageMeta, makeMontage, montagePage } from './montage.ts'
 import { type Sim, makeSwarm } from './particles'
 
 declare const SHADERS: Readonly<Record<string, string>>
@@ -1909,6 +1909,7 @@ const SCENE_COLORS = [
   '#f5f0e6',
   '#ff9e8a',
   '#c9a26b',
+  '#e8434f',
 ]
 
 /**
@@ -1988,16 +1989,26 @@ const song = () => {
   let data: SongData | null = null
   let cover: HTMLImageElement | null = null
   let depth: HTMLImageElement | null = null
+  /** The song's montage (`/tv/montage` and its JPEG), for Montage. */
+  let montage: { meta: MontageMeta; image: HTMLImageElement } | null = null
 
-  /** The song's frames, its cover, and the cover's depth (`/tv/depth`). */
+  /** The song's frames, cover, cover depth (`/tv/depth`), and montage. */
   const load = async (
     loaded: SongData,
     coverUrl?: string,
     depthUrl?: string,
+    montageOf?: { readonly meta: MontageMeta; readonly atlasUrl: string },
   ) => {
     data = loaded
     cover = null
     depth = null
+    montage = null
+    if (montageOf !== undefined) {
+      const image = new Image()
+      image.src = montageOf.atlasUrl
+      await image.decode()
+      montage = { meta: montageOf.meta, image }
+    }
     if (coverUrl !== undefined) {
       const image = new Image()
       image.src = coverUrl
@@ -2033,6 +2044,7 @@ const song = () => {
     )
     engine.setCover(cover ?? madeUpCover())
     if (depth !== null) engine.setDepth(depthOf(depth))
+    if (montage !== null) engine.montage.setAtlas(montage.meta, montage.image)
     engine.setSide(overlay)
     const tiles: Array<{
       image: HTMLCanvasElement
