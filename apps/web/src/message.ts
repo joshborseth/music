@@ -17,6 +17,7 @@ import {
   DownloadFailure,
   DownloadKind,
   DownloadedCollection,
+  OfflineCopy,
   StorageEstimate,
 } from './downloads/domain'
 import {
@@ -121,7 +122,7 @@ export const Message = defineMessageUnion({
   ClickedSleepTimer: {},
 
   /** Download on an album or playlist page. */
-  ClickedDownload: { collection: DownloadedCollection },
+  ClickedDownload: { collection: DownloadedCollection, copy: OfflineCopy },
   /** Remove a download, after confirming it. */
   ClickedRemoveDownload: {
     kind: DownloadKind,
@@ -132,10 +133,15 @@ export const Message = defineMessageUnion({
   SucceededLoadDownloads: {
     collections: Schema.Array(DownloadedCollection),
     savedBytes: Schema.Record(Schema.String, Schema.Number),
+    copies: Schema.Record(Schema.String, OfflineCopy),
     maybeStorage: Schema.Option(StorageEstimate),
   },
   FailedLoadDownloads: {},
   CompletedSaveDownloads: {},
+  CompletedSaveOfflineCopy: {},
+  SucceededFetchOfflineCopy: { copy: OfflineCopy },
+  FailedFetchOfflineCopy: {},
+  CompletedRemoveOfflineCopy: {},
   SucceededDownloadSong: {
     videoId: Schema.String,
     bytes: Schema.Number,
@@ -251,6 +257,7 @@ export const Message = defineMessageUnion({
   CompletedSendToSession: {},
   /** A local change's message went out as this connection's `maybeSeq`th. */
   SentLocalChange: { maybeSeq: Schema.Option(Schema.Number) },
+  CompletedSendHandOver: {},
   /** A queue move's message went out as this connection's `maybeSeq`th. */
   SentQueueMove: {
     entryId: Schema.String,

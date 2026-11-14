@@ -17,6 +17,7 @@ import {
   LoadPhoneAudio,
   PrefetchSongs,
   SeekPhoneAudio,
+  SendHandOver,
   SendLocalChange,
   SendQueueClear,
   SendQueueMove,
@@ -2008,6 +2009,275 @@ describe('sleep timer', () => {
       ),
       Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
       sentAs(2),
+    )
+  })
+})
+
+describe('playing with no server', () => {
+  const songs: ReadonlyArray<Song> = [
+    songFromQueueTrack(entry.track),
+    songFromQueueTrack({
+      ...entry.track,
+      videoId: 'yPYZpwSpKmA',
+      title: 'Together Forever',
+    }),
+  ]
+  const playingFrom: Session.PlayingFrom = {
+    kind: 'Album',
+    title: 'Whenever You Need Somebody',
+    id: 'MPREb_rick',
+  }
+  const offlineModel: Model = {
+    ...connectedModel,
+    connection: Connection.Disconnected(),
+    now: 5_000,
+  }
+
+  /** Play the two songs offline, and let the first one start. */
+  const playOffline = [
+    message(
+      Message.ClickedPlaySongs({
+        songs,
+        startIndex: 0,
+        maybePlayingFrom: Option.some(playingFrom),
+      }),
+    ),
+    Command.expectExact(
+      UnlockPhoneAudio,
+      LoadPhoneAudio({
+        entryId: 'local-1-0',
+        videoId: 'dQw4w9WgXcQ',
+        maybeDurationSeconds: Option.some(213),
+        startSeconds: 0,
+        isPlaying: true,
+      }),
+      UpdateMediaSession,
+      PrefetchSongs({ videoIds: ['dQw4w9WgXcQ', 'yPYZpwSpKmA'] }),
+    ),
+    Command.resolveAll(
+      [UnlockPhoneAudio, Message.CompletedUnlockPhoneAudio()],
+      [
+        LoadPhoneAudio,
+        Message.CompletedLoadPhoneAudio({
+          entryId: 'local-1-0',
+          isBlocked: false,
+        }),
+      ],
+      [UpdateMediaSession, Message.CompletedUpdateMediaSession()],
+      [PrefetchSongs, Message.CompletedPrefetchSongs()],
+    ),
+  ] as const
+
+  test('Play starts the songs on this phone, which moves on by itself', () => {
+    story(
+      update,
+      given(offlineModel),
+      ...playOffline,
+      model(model => {
+        expect(model.isOfflineSession).toBe(true)
+        const state = Option.getOrThrow(model.maybeSession).state
+        expect(state.activeDeviceId).toBe(PHONE_ID)
+        expect(state.playingFrom).toEqual(playingFrom)
+        expect(state.queue.map(({ entryId }) => entryId)).toEqual([
+          'local-1-0',
+          'local-1-1',
+        ])
+      }),
+      message(Message.EndedPhoneAudio({ entryId: 'local-1-0' })),
+      Command.expectHas(
+        LoadPhoneAudio({
+          entryId: 'local-1-1',
+          videoId: 'yPYZpwSpKmA',
+          maybeDurationSeconds: Option.some(213),
+          startSeconds: 0,
+          isPlaying: true,
+        }),
+        SendLocalChange({
+          message: { _tag: 'Advanced', fromEntryId: 'local-1-0' },
+        }),
+      ),
+      Command.resolveAll(
+        [
+          LoadPhoneAudio,
+          Message.CompletedLoadPhoneAudio({
+            entryId: 'local-1-1',
+            isBlocked: false,
+          }),
+        ],
+        [UpdateMediaSession, Message.CompletedUpdateMediaSession()],
+        [PrefetchSongs, Message.CompletedPrefetchSongs()],
+        [SendLocalChange, Message.SentLocalChange({ maybeSeq: Option.none() })],
+      ),
+    )
+  })
+
+  test('a song that is not on the phone is skipped', () => {
+    story(
+      update,
+      given(offlineModel),
+      ...playOffline,
+      message(
+        Message.FailedPhoneAudio({ entryId: 'local-1-0', error: 'offline' }),
+      ),
+      Command.expectHas(
+        LoadPhoneAudio({
+          entryId: 'local-1-1',
+          videoId: 'yPYZpwSpKmA',
+          maybeDurationSeconds: Option.some(213),
+          startSeconds: 0,
+          isPlaying: true,
+        }),
+      ),
+      Command.resolveAll(
+        [
+          LoadPhoneAudio,
+          Message.CompletedLoadPhoneAudio({
+            entryId: 'local-1-1',
+            isBlocked: false,
+          }),
+        ],
+        [UpdateMediaSession, Message.CompletedUpdateMediaSession()],
+        [PrefetchSongs, Message.CompletedPrefetchSongs()],
+        [SendLocalChange, Message.SentLocalChange({ maybeSeq: Option.none() })],
+      ),
+    )
+  })
+
+  test('back online, the phone hands its queue over and keeps playing', () => {
+    story(
+      update,
+      given(offlineModel),
+      ...playOffline,
+      message(
+        Message.UpdatedPhoneAudioTime({
+          entryId: 'local-1-0',
+          seconds: 42,
+          at: 6_000,
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      message(Message.AcquiredSessionSocket()),
+      Command.expectExact(
+        SendHandOver({
+          messages: [
+            {
+              _tag: 'Hello',
+              deviceId: PHONE_ID,
+              name: 'iPhone',
+              kind: 'Web',
+              player: null,
+            },
+            { _tag: 'Transfer', deviceId: PHONE_ID },
+            {
+              _tag: 'PlayQueue',
+              tracks: songs.map(toQueueTrack),
+              startIndex: 0,
+              playingFrom,
+              shuffle: false,
+            },
+            { _tag: 'Seek', positionSeconds: 42 },
+          ],
+        }),
+      ),
+      // NOTE: the phone knows the hand-over is messages 1 to 4 of the new
+      // connection, so it never waits on this answer, which may come after
+      // the states.
+      Command.resolve(SendHandOver, Message.CompletedSendHandOver()),
+      // The answer to the Hello: the server's old session, on the TV.
+      message(
+        Message.ReceivedSessionState({
+          state: sessionState('tv', 3),
+          serverNow: SERVER_NOW,
+          ack: 1,
+          receivedAt: 7_000,
+        }),
+      ),
+      model(model => {
+        expect(model.isOfflineSession).toBe(true)
+        expect(
+          Option.map(model.maybeSession, ({ state }) => state.currentEntryId),
+        ).toEqual(Option.some('local-1-0'))
+        expect(
+          Option.map(loadedEntry(model.phoneAudio), e => e.entryId),
+        ).toEqual(Option.some('local-1-0'))
+      }),
+      Command.expectExact(
+        PrefetchSongs({ videoIds: ['dQw4w9WgXcQ', 'yPYZpwSpKmA'] }),
+      ),
+      Command.resolve(PrefetchSongs, Message.CompletedPrefetchSongs()),
+      // The server took the queue: the phone follows it from here.
+      message(
+        Message.ReceivedSessionState({
+          state: {
+            ...sessionState(PHONE_ID, 6),
+            queue: [
+              { ...entry, entryId: 'e7' },
+              {
+                ...entry,
+                entryId: 'e8',
+                track: toQueueTrack(songs[1] ?? songs[0]!),
+              },
+            ],
+            currentEntryId: 'e7',
+            positionSeconds: 42,
+          },
+          serverNow: SERVER_NOW,
+          ack: 4,
+          receivedAt: 7_100,
+        }),
+      ),
+      model(model => {
+        expect(model.isOfflineSession).toBe(false)
+      }),
+      Command.expectHas(
+        LoadPhoneAudio({
+          entryId: 'e7',
+          videoId: 'dQw4w9WgXcQ',
+          maybeDurationSeconds: Option.some(213),
+          startSeconds: 42,
+          isPlaying: true,
+        }),
+      ),
+      Command.resolveAll(
+        [
+          LoadPhoneAudio,
+          Message.CompletedLoadPhoneAudio({ entryId: 'e7', isBlocked: false }),
+        ],
+        [UpdateMediaSession, Message.CompletedUpdateMediaSession()],
+        [PrefetchSongs, Message.CompletedPrefetchSongs()],
+      ),
+    )
+  })
+
+  test('back online with the music paused, the server session stands', () => {
+    story(
+      update,
+      given(offlineModel),
+      ...playOffline,
+      message(Message.ClickedTogglePlayback()),
+      Command.resolveAll(
+        [
+          SetPhoneAudioPlaying,
+          Message.CompletedSetPhoneAudioPlaying({ isBlocked: false }),
+        ],
+        [SendLocalChange, Message.SentLocalChange({ maybeSeq: Option.none() })],
+      ),
+      message(Message.AcquiredSessionSocket()),
+      model(model => {
+        expect(model.isOfflineSession).toBe(false)
+      }),
+      Command.expectExact(
+        SendToSession({
+          message: {
+            _tag: 'Hello',
+            deviceId: PHONE_ID,
+            name: 'iPhone',
+            kind: 'Web',
+            player: null,
+          },
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
     )
   })
 })

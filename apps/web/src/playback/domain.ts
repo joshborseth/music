@@ -147,6 +147,101 @@ export const RESTART_THRESHOLD_SECONDS = 3
 
 // HELPERS
 
+/**
+ * The songs in a random order, the same for the same `seed`: update stays
+ * pure, and a seed from the clock is random enough for a shuffle.
+ */
+export const seededShuffle = <A>(
+  items: ReadonlyArray<A>,
+  seed: number,
+): ReadonlyArray<A> => {
+  // NOTE: mulberry32, a small, well-mixed 32-bit generator.
+  let state = Math.trunc(seed) >>> 0
+  const next = (): number => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let mixed = state
+    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1)
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61)
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296
+  }
+  const shuffled = [...items]
+  for (let index = shuffled.length - 1; index > 0; index--) {
+    const other = Math.floor(next() * (index + 1))
+    const here = shuffled[index]
+    const there = shuffled[other]
+    if (here !== undefined && there !== undefined) {
+      shuffled[index] = there
+      shuffled[other] = here
+    }
+  }
+  return shuffled
+}
+
+/**
+ * A session this phone makes for itself when the server can't be reached:
+ * `tracks` from `startIndex`, played here. With shuffle, the chosen song
+ * comes first and the rest in a random order, as on the server. Entry ids
+ * start with `local-`, which the server never uses.
+ */
+export const offlineSessionState = (
+  previous: Option.Option<Session.SessionState>,
+  deviceId: string,
+  tracks: ReadonlyArray<Session.QueueTrack>,
+  startIndex: number,
+  shuffle: boolean,
+  playingFrom: Session.PlayingFrom | null,
+  serverNow: number,
+): Session.SessionState => {
+  const seekSeq = Option.match(previous, {
+    onNone: () => 1,
+    onSome: state => state.seekSeq + 1,
+  })
+  const start = Math.min(Math.max(0, Math.trunc(startIndex)), tracks.length - 1)
+  const ordered = shuffle
+    ? [
+        ...tracks.slice(start, start + 1),
+        ...seededShuffle(
+          [...tracks.slice(0, start), ...tracks.slice(start + 1)],
+          serverNow + seekSeq,
+        ),
+      ]
+    : tracks
+  const queue = Array.map(ordered, (track, index): Session.QueueEntry => ({
+    entryId: `local-${seekSeq}-${index}`,
+    track,
+    autoplay: false,
+  }))
+  const currentIndex = shuffle ? 0 : start
+  return {
+    devices: Option.match(previous, {
+      onNone: () => [],
+      onSome: state => state.devices,
+    }),
+    activeDeviceId: deviceId,
+    queue,
+    currentEntryId: queue[currentIndex]?.entryId ?? null,
+    playing: queue.length > 0,
+    positionSeconds: 0,
+    positionAt: serverNow,
+    seekSeq,
+    autoplay: Option.exists(previous, state => state.autoplay),
+    repeat: Option.match(previous, {
+      onNone: (): Session.RepeatMode => 'Off',
+      onSome: state => state.repeat,
+    }),
+    shuffle,
+    soundCheck: Option.match(previous, {
+      onNone: () => true,
+      onSome: state => state.soundCheck,
+    }),
+    sleepTimer: Option.match(previous, {
+      onNone: () => null,
+      onSome: state => state.sleepTimer,
+    }),
+    playingFrom,
+  }
+}
+
 export const currentEntry = (
   state: Session.SessionState,
 ): Option.Option<Session.QueueEntry> =>
@@ -421,5 +516,6 @@ export const initialPlaybackModel = {
   maybeScrubSeconds: Option.none<number>(),
   localChanges: { unsent: 0, untilAck: 0, ownJumps: 0 },
   queueEdits: [],
+  isOfflineSession: false,
   swipe: Swipe.Idle(),
 }

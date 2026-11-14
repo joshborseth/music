@@ -1,12 +1,25 @@
 import { Array, Option, Record, Schema, pipe } from 'effect'
+import { AsyncData } from 'foldkit'
 import { defineTaggedUnion } from 'foldkit/schema'
 import type { IconNode } from 'lucide'
+
+import {
+  AlbumDetails,
+  type Artwork,
+  MyPlaylistDetails,
+  PlaylistDetails,
+} from '@music/shared'
 
 /*
  * Albums and playlists downloaded on this phone. Their songs are kept in the
  * phone's song cache (`playback/songCache.ts`) and never trimmed while a
  * download holds them, so they play with no network. The list lives in
  * localStorage, the songs in Cache Storage.
+ *
+ * Each download also keeps a copy of its page (`OfflineCopy`: the album's or
+ * playlist's title, artists, and cover, and each song's), and its covers, in
+ * Cache Storage (`offlineCopies.ts`). With no server, its page, its songs,
+ * and the Library show from that copy.
  */
 
 // MODEL
@@ -28,6 +41,21 @@ export type DownloadedCollection = typeof DownloadedCollection.Type
 
 export const DownloadsJson = Schema.fromJsonString(
   Schema.Array(DownloadedCollection),
+)
+
+/**
+ * A download's page as it was when it was downloaded: everything its page
+ * shows and plays, for when the server can't be reached.
+ */
+export const OfflineCopy = defineTaggedUnion({
+  Album: { details: AlbumDetails },
+  Playlist: { details: PlaylistDetails },
+  MyPlaylist: { details: MyPlaylistDetails },
+})
+export type OfflineCopy = typeof OfflineCopy.Type
+
+export const OfflineCopyJson = Schema.fromJsonString(
+  Schema.toCodecJson(OfflineCopy),
 )
 
 /** How much the browser lets this app store, and how much it uses. */
@@ -53,6 +81,8 @@ export const Downloads = defineTaggedUnion({
     collections: Schema.Array(DownloadedCollection),
     /** Downloaded songs on this phone, with their size in bytes. */
     savedBytes: Schema.Record(Schema.String, Schema.Number),
+    /** Each download's page, by `copyKey`, once it is saved. */
+    copies: Schema.Record(Schema.String, OfflineCopy),
     /** Songs that failed since the app opened; tried again next time. */
     failedVideoIds: Schema.Array(Schema.String),
     /** The song on its way now. One at a time keeps the network for playback. */
@@ -84,6 +114,148 @@ export const isSameCollection = (
   left: Readonly<{ kind: DownloadKind; id: string }>,
   right: Readonly<{ kind: DownloadKind; id: string }>,
 ): boolean => left.kind === right.kind && left.id === right.id
+
+/** Where a download's copy is kept, in the Model and in Cache Storage. */
+export const copyKey = (kind: DownloadKind, id: string): string =>
+  `${kind}:${id}`
+
+/** The album or playlist a copy is of. */
+type CollectionId = Readonly<{ kind: DownloadKind; id: string }>
+
+export const copyOf = (copy: OfflineCopy): CollectionId =>
+  OfflineCopy.match(copy, {
+    Album: ({ details }): CollectionId => ({
+      kind: 'Album',
+      id: details.album.id,
+    }),
+    Playlist: ({ details }): CollectionId => ({
+      kind: 'Playlist',
+      id: details.playlist.id,
+    }),
+    MyPlaylist: ({ details }): CollectionId => ({
+      kind: 'MyPlaylist',
+      id: details.playlist.id,
+    }),
+  })
+
+const findCopy = (
+  downloads: Downloads,
+  kind: DownloadKind,
+  id: string,
+): Option.Option<OfflineCopy> =>
+  downloads._tag === 'Ready' && Option.isSome(findDownload(downloads, kind, id))
+    ? Record.get(downloads.copies, copyKey(kind, id))
+    : Option.none()
+
+/** The saved copy of a downloaded album's page. */
+export const offlineAlbum = (
+  downloads: Downloads,
+  albumId: string,
+): Option.Option<AlbumDetails> =>
+  Option.flatMap(findCopy(downloads, 'Album', albumId), copy =>
+    copy._tag === 'Album' ? Option.some(copy.details) : Option.none(),
+  )
+
+/** The saved copy of a downloaded YouTube Music playlist's page. */
+export const offlinePlaylist = (
+  downloads: Downloads,
+  playlistId: string,
+): Option.Option<PlaylistDetails> =>
+  Option.flatMap(findCopy(downloads, 'Playlist', playlistId), copy =>
+    copy._tag === 'Playlist' ? Option.some(copy.details) : Option.none(),
+  )
+
+/** The saved copy of one of my downloaded playlists. */
+export const offlineMyPlaylist = (
+  downloads: Downloads,
+  playlistId: string,
+): Option.Option<MyPlaylistDetails> =>
+  Option.flatMap(findCopy(downloads, 'MyPlaylist', playlistId), copy =>
+    copy._tag === 'MyPlaylist' ? Option.some(copy.details) : Option.none(),
+  )
+
+/**
+ * A page's data, or a download's saved copy of it until the server
+ * answers: the copy shows at once, and stays when the server can't be
+ * reached. What the server sends replaces it.
+ */
+export const orOfflineCopy = <A, E>(
+  data: AsyncData.AsyncData<A, E>,
+  maybeCopy: Option.Option<A>,
+): AsyncData.AsyncData<A, E> =>
+  AsyncData.hasData(data)
+    ? data
+    : Option.match(maybeCopy, {
+        onNone: () => data,
+        onSome: copy => AsyncData.succeed<A, E>(copy),
+      })
+
+// ARTWORK
+
+/**
+ * The cache the covers of downloads are kept in. The service worker looks
+ * there when an image can't be fetched (`vite.config.ts`), so keep the name
+ * and `artworkKey` in step with it.
+ */
+export const DOWNLOAD_ARTWORK_CACHE = 'music-download-artwork-v1'
+
+const GOOGLE_IMAGE_HOSTS = /^https:\/\/(lh3|yt3)\.googleusercontent\.com\//
+const RESIZABLE_GOOGLE_IMAGE = /=w\d+-h\d+/
+
+/**
+ * One image whatever size it is asked for: a Google image without its
+ * `=w…-h…` options, any other without its query. The service worker finds a
+ * download's cover by it, whatever size the page asks for.
+ */
+export const artworkKey = (url: string): string =>
+  GOOGLE_IMAGE_HOSTS.test(url)
+    ? (url.split('=')[0] ?? url)
+    : (url.split('?')[0] ?? url)
+
+/** A cover's URL at `pixels`, or as it comes when it can't be resized. */
+const sizedArtwork = (
+  artwork: Artwork,
+  pixels: number,
+): Option.Option<string> =>
+  Option.map(Array.last(artwork), ({ url }) =>
+    url.replace(RESIZABLE_GOOGLE_IMAGE, `=w${pixels}-h${pixels}`),
+  )
+
+/** Covers big enough for a page's hero and the full player. */
+const COVER_PIXELS = 1080
+/** Songs' covers, big enough for a row and, a little soft, the player. */
+const SONG_PIXELS = 544
+
+/**
+ * The covers a download keeps, each image once: the album's or playlist's
+ * own at full size, then its songs'.
+ */
+export const offlineArtworkUrls = (
+  copy: OfflineCopy,
+): ReadonlyArray<string> => {
+  const { covers, songs } = OfflineCopy.match(copy, {
+    Album: ({ details }) => ({
+      covers: [details.album.artwork],
+      songs: details.tracks,
+    }),
+    Playlist: ({ details }) => ({
+      covers: [details.playlist.artwork],
+      songs: details.tracks,
+    }),
+    MyPlaylist: ({ details }) => ({
+      covers: details.playlist.covers,
+      songs: details.songs,
+    }),
+  })
+  return pipe(
+    [
+      ...Array.map(covers, cover => sizedArtwork(cover, COVER_PIXELS)),
+      ...Array.map(songs, ({ artwork }) => sizedArtwork(artwork, SONG_PIXELS)),
+    ],
+    Array.getSomes,
+    Array.dedupeWith((left, right) => artworkKey(left) === artworkKey(right)),
+  )
+}
 
 /** Every song any download holds. */
 export const pinnedVideoIds = (

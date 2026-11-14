@@ -7,7 +7,6 @@ import { type AlbumSummary, type MyLibrary } from '@music/shared'
 
 import {
   DownloadStatus,
-  type DownloadedCollection,
   downloadStatus,
   progressRing,
 } from '../downloads/domain'
@@ -15,15 +14,7 @@ import { isAlbumSaved } from '../library'
 import { Message } from '../message'
 import { Model } from '../model'
 import { isEditing } from '../playlistEditor'
-import {
-  albumQuery,
-  artistQuery,
-  moodQuery,
-  myLibraryQuery,
-  myPlaylistQuery,
-  playlistQuery,
-  songQuery,
-} from '../query'
+import { artistQuery, moodQuery, myLibraryQuery, songQuery } from '../query'
 import { AppRoute } from '../route'
 import { type CollectionKind } from '../sheet'
 import { routeQuery } from '../update'
@@ -31,20 +22,22 @@ import { albumView } from './album'
 import { ARTIST_RELEASE_TITLES, artistReleasesView, artistView } from './artist'
 import { detailNavBar, navBarButton, page, tabBar } from './chrome'
 import {
-  DOWNLOAD_ARTWORK_WIDTH,
+  type DownloadRequest,
   albumDownload,
+  myPlaylistDownload,
   playlistDownload,
 } from './collectionDownload'
 import { homeView } from './home'
 import { libraryView } from './library'
 import { moodView } from './mood'
 import { myPlaylistView } from './myPlaylist'
+import { albumData, myPlaylistData, playlistData } from './offlineData'
 import { type PageModel, memoizedPage } from './page'
 import { hasMiniPlayer, playerView } from './player'
 import { playlistView } from './playlist'
 import { doneEditingButton } from './playlistEditor'
 import { searchView } from './search'
-import { artworkUrl, emptyState } from './shared'
+import { notFoundState } from './shared'
 import { actionSheetView } from './sheet'
 import { songView } from './song'
 
@@ -141,16 +134,17 @@ const saveAlbumButton = (
  */
 const downloadButton = (
   model: PageModel,
-  maybeCollection: Option.Option<DownloadedCollection>,
+  maybeRequest: Option.Option<DownloadRequest>,
   h: HtmlBuilder<Message>,
 ): Html =>
   Option.match(
-    Option.filter(maybeCollection, ({ videoIds }) =>
-      Array.isReadonlyArrayNonEmpty(videoIds),
+    Option.filter(maybeRequest, ({ collection }) =>
+      Array.isReadonlyArrayNonEmpty(collection.videoIds),
     ),
     {
       onNone: () => h.empty,
-      onSome: collection => {
+      onSome: request => {
+        const { collection } = request
         const remove = Message.ClickedRemoveDownload({
           kind: collection.kind,
           id: collection.id,
@@ -163,7 +157,7 @@ const downloadButton = (
             NotDownloaded: () =>
               navBarButton(
                 {
-                  onClick: Message.ClickedDownload({ collection }),
+                  onClick: Message.ClickedDownload(request),
                   iconNode: CircleArrowDown,
                   label: 'Download',
                 },
@@ -182,7 +176,7 @@ const downloadButton = (
             Incomplete: ({ saved, total }) =>
               navBarButton(
                 {
-                  onClick: Message.ClickedDownload({ collection }),
+                  onClick: Message.ClickedDownload(request),
                   iconNode: progressRing(saved / total),
                   label: `${saved} of ${total} songs downloaded. Download the rest`,
                 },
@@ -251,9 +245,7 @@ const routeParts = (
         h,
       ),
     Album: ({ albumId }) => {
-      const maybeAlbum = AsyncData.getData(
-        albumQuery.read(model.albums, { albumId }),
-      )
+      const maybeAlbum = AsyncData.getData(albumData(model, albumId))
       return detailPage(
         Option.map(maybeAlbum, ({ album }) => album.title),
         albumView(model, albumId, h),
@@ -278,9 +270,7 @@ const routeParts = (
       )
     },
     Playlist: ({ playlistId }) => {
-      const maybePlaylist = AsyncData.getData(
-        playlistQuery.read(model.playlists, { playlistId }),
-      )
+      const maybePlaylist = AsyncData.getData(playlistData(model, playlistId))
       return detailPage(
         Option.map(maybePlaylist, ({ playlist }) => playlist.title),
         playlistView(model, playlistId, h),
@@ -304,9 +294,7 @@ const routeParts = (
       )
     },
     MyPlaylist: ({ playlistId }) => {
-      const maybeDetails = AsyncData.getData(
-        myPlaylistQuery.read(model.myPlaylists, { playlistId }),
-      )
+      const maybeDetails = AsyncData.getData(myPlaylistData(model, playlistId))
       const maybePlaylist = Option.map(maybeDetails, ({ playlist }) => playlist)
       return detailPage(
         Option.map(maybePlaylist, ({ title }) => title),
@@ -318,22 +306,7 @@ const routeParts = (
               [
                 downloadButton(
                   model,
-                  Option.map(
-                    maybeDetails,
-                    ({ playlist, songs }): DownloadedCollection => ({
-                      kind: 'MyPlaylist',
-                      id: playlist.id,
-                      title: playlist.title,
-                      subtitle: playlist.isLiked
-                        ? 'Your likes'
-                        : 'Your playlist',
-                      maybeArtworkUrl: Option.flatMap(
-                        Array.head(playlist.covers),
-                        cover => artworkUrl(cover, DOWNLOAD_ARTWORK_WIDTH),
-                      ),
-                      videoIds: Array.map(songs, ({ videoId }) => videoId),
-                    }),
-                  ),
+                  Option.map(maybeDetails, myPlaylistDownload),
                   h,
                 ),
                 Option.match(
@@ -374,16 +347,7 @@ const routeParts = (
         Option.none(),
         h.div(
           [h.Class('pt-[calc(var(--safe-top)+3.75rem)]')],
-          [
-            emptyState(
-              {
-                title: 'Page not found',
-                description: 'This address does not match any page in the app.',
-                kind: 'Song',
-              },
-              h,
-            ),
-          ],
+          [notFoundState('page', h)],
         ),
         h,
       ),

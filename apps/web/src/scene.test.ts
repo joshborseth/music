@@ -16,6 +16,7 @@ import { fromString } from 'foldkit/url'
 import { describe, test } from 'vitest'
 
 import {
+  type AlbumDetails,
   type AlbumSummary,
   type ArtistSummary,
   type HomeFeed,
@@ -37,8 +38,17 @@ import {
   ShareLink,
   UnlockScroll,
 } from './command'
-import { DownloadSong, SaveDownloads } from './downloads/command'
-import { type DownloadedCollection, Downloads } from './downloads/domain'
+import {
+  DownloadSong,
+  SaveDownloads,
+  SaveOfflineCopy,
+} from './downloads/command'
+import {
+  type DownloadedCollection,
+  Downloads,
+  OfflineCopy,
+  copyKey,
+} from './downloads/domain'
 import { Message } from './message'
 import { type Model } from './model'
 import {
@@ -1677,7 +1687,26 @@ describe('saving to the Library', () => {
 
 describe('downloads', () => {
   const albumId = 'MPREb_1SbgcDGdrT4'
-  const rumoursPage = (downloads: Downloads): Model =>
+  const rumoursDetails: AlbumDetails = {
+    album: {
+      id: albumId,
+      title: 'Rumours',
+      artists: theChain.artists,
+      maybeKind: Option.some('Album'),
+      maybeYear: Option.some('1977'),
+      artwork: [],
+    },
+    maybeDescription: Option.none(),
+    maybeLengthSummary: Option.none(),
+    tracks: [theChain],
+    explicitVideoIds: [],
+    maybeRadio: Option.none(),
+  }
+
+  const albumPage = (
+    result: Result.Result<AlbumDetails, RequestError>,
+    downloads: Downloads,
+  ): Model =>
     modifyFields(
       update(
         update(
@@ -1690,34 +1719,25 @@ describe('downloads', () => {
           message: albumQuery.Message.CompletedFetch({
             args: { albumId },
             generation: FIRST_REQUEST_GENERATION,
-            result: Result.succeed({
-              album: {
-                id: albumId,
-                title: 'Rumours',
-                artists: theChain.artists,
-                maybeKind: Option.some('Album'),
-                maybeYear: Option.some('1977'),
-                artwork: [],
-              },
-              maybeDescription: Option.none(),
-              maybeLengthSummary: Option.none(),
-              tracks: [theChain],
-              explicitVideoIds: [],
-              maybeRadio: Option.none(),
-            }),
+            result,
           }),
         }),
       ).model,
       { downloads: () => downloads },
     )
 
+  const rumoursPage = (downloads: Downloads): Model =>
+    albumPage(Result.succeed(rumoursDetails), downloads)
+
   const ready = (
     collections: ReadonlyArray<DownloadedCollection>,
     savedBytes: Readonly<Record<string, number>>,
+    copies: Readonly<Record<string, OfflineCopy>> = {},
   ): Downloads =>
     Downloads.Ready({
       collections,
       savedBytes,
+      copies,
       failedVideoIds: [],
       maybeDownloading: Option.none(),
       maybeStorage: Option.none(),
@@ -1742,12 +1762,14 @@ describe('downloads', () => {
       click(role('button', { name: 'Download' })),
       Command.expectExact(
         SaveDownloads({ collections: [rumoursDownload] }),
+        SaveOfflineCopy,
         DownloadSong({ videoId: theChain.videoId }),
       ),
       expect(role('button', { name: 'Downloading, 0 of 1 songs' })).toExist(),
       expect(text('Downloading 0 of 1')).toExist(),
       Command.resolveAll(
         [SaveDownloads, Message.CompletedSaveDownloads()],
+        [SaveOfflineCopy, Message.CompletedSaveOfflineCopy()],
         [
           DownloadSong,
           Message.SucceededDownloadSong({
@@ -1761,6 +1783,55 @@ describe('downloads', () => {
       expect(
         role('button', { name: 'Downloaded. Remove from Downloads' }),
       ).toExist(),
+    )
+  })
+
+  test('with no server, a downloaded album shows and plays from its copy', () => {
+    scene(
+      { update, view },
+      given(
+        albumPage(
+          Result.fail('ServerUnreachable'),
+          ready(
+            [rumoursDownload],
+            { [theChain.videoId]: 5 * 1024 * 1024 },
+            {
+              [copyKey('Album', albumId)]: OfflineCopy.Album({
+                details: rumoursDetails,
+              }),
+            },
+          ),
+        ),
+      ),
+      pageScrolled,
+      titleBarFollowsScroll,
+      expect(role('alert')).not.toExist(),
+      expect(role('heading', { name: 'Rumours' })).toExist(),
+      expect(text('The Chain')).toExist(),
+      expect(text('Downloaded · 5 MB')).toExist(),
+      expect(role('button', { name: 'Play' })).toExist(),
+    )
+  })
+
+  test('with no server, an album that is not downloaded says so', () => {
+    scene(
+      { update, view },
+      given(albumPage(Result.fail('ServerUnreachable'), ready([], {}))),
+      pageScrolled,
+      expect(role('alert')).toContainText('Could not reach the music server'),
+      expect(role('button', { name: 'Retry' })).toExist(),
+    )
+  })
+
+  test('a missing album says it is not available, with Back and Search', () => {
+    scene(
+      { update, view },
+      given(albumPage(Result.fail('NotFound'), ready([], {}))),
+      pageScrolled,
+      expect(role('status')).toContainText("This album isn't available"),
+      expect(text('Something went wrong')).not.toExist(),
+      expect(role('button', { name: 'Back' })).toExist(),
+      expect(role('button', { name: 'Search' })).toExist(),
     )
   })
 

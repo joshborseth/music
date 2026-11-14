@@ -212,6 +212,7 @@ export const artistView = (
   remote(
     artistQuery.read(model.artists, { artistId }),
     {
+      missing: 'artist',
       onLoading: () => loadingPage(h),
       onData: details =>
         h.div(
@@ -287,6 +288,7 @@ export const artistReleasesView = (
   remote(
     artistQuery.read(model.artists, { artistId }),
     {
+      missing: 'artist',
       onLoading: () => loadingPage(h),
       onData: details =>
         h.div(
