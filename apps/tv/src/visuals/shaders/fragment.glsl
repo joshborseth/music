@@ -5,7 +5,8 @@
 precision mediump float;
 
 in highp vec2 vUv;
-out vec4 fragColor;
+// At location 0, so a pass may add a second output (the datamosh does).
+layout(location = 0) out vec4 fragColor;
 
 // Centered coordinates: y runs -0.5 to 0.5, x keeps the aspect.
 highp vec2 centered() {

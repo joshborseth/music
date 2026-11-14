@@ -18,7 +18,7 @@
 // frame to show it (over `uMix`, transition.rs): it shatters
 // into shards flying at the camera, melts away in drips, rushes past the
 // camera through a hole that opens in it, is dragged along the new scene's
-// shapes in blocks (a datamosh), or is swept away by an edge in the
+// shapes until it smears (a datamosh), or is swept away by an edge in the
 // cover's color. Through a build the colors drain toward the cover's deep
 // shade (`uCueDrain`), the half beat before its landing all but goes dark
 // (`uCueInhale`), and fills, a build's last bar, and the climax tear the
@@ -248,30 +248,58 @@ vec3 zoomThrough(highp vec2 uv, float t) {
 
 #elif TRANSITION == 4
 // DATAMOSH: as a broken video stream does, the frozen frame's pixels are
-// dragged along the new scene's shapes, in blocks (each 16 pixels moved
-// by the new scene's slope there), while blocks of the new scene break
-// through, more and more, its sharpest edges first.
-vec3 datamosh(vec3 fresh, highp vec2 uv, float t, float here) {
-  highp vec2 size = 16.0 / uRes;
-  highp vec2 block = floor(uv / size);
-  highp vec2 middle = (block + 0.5) * size;
-  // The new scene's slope there, from its glow's brightness (`uBloom`'s
-  // alpha: blurred already, and an eighth of the size, so its reads are
-  // cheap), against the glow here, two blocks across.
-  vec2 slope = vec2(
-    texture(uBloom, middle + vec2(2.0 * size.x, 0.0)).a - here,
-    texture(uBloom, middle + vec2(0.0, 2.0 * size.y)).a - here
-  );
+// dragged along the new scene's shapes, further each frame, and smear,
+// keeping a stale tint in blocks, as a stream missing its keyframe; then
+// the new scene breaks through, its brightest shapes first, and last in
+// blocks.
+//
+// The drag is kept: this pass also writes the frozen frame, dragged one
+// step on, into the other of its pair (`moshOut`, gpu.rs), which the next
+// frame reads, so what was dragged stays dragged and smears build up, as
+// in a stream whose every frame moves the last one's pixels on. It
+// follows the incoming scene's slope (the glow's alpha, how bright the
+// incoming scene is around each place: `bright.glsl`), turned a quarter
+// so pixels run along its shapes' outlines rather than piling onto them,
+// with a little down the slope; flat parts sway in slow waves. Whole
+// pixels at a time, as a stream's motion does: the copied pixels stay
+// sharp, however far they go. The frozen frame shows as dragged here,
+// where it is, so the camera's punch and shake leave it be: it is read
+// once, for both.
+layout(location = 1) out vec4 moshOut;
+// Sixtieths of a second since the last frame.
+uniform float uTransStep;
+
+// The frozen frame at `uv` (its own place, not the camera's), dragged one
+// step on, `here` the incoming scene's brightness there.
+vec4 moshStep(highp vec2 uv, float here) {
+  // The incoming scene's slope, across two pixels of the glow.
+  highp vec2 d = 2.0 / vec2(textureSize(uBloom, 0));
+  vec2 slope = vec2(texture(uBloom, uv + vec2(d.x, 0.0)).a - here, texture(uBloom, uv + vec2(0.0, d.y)).a - here);
+  float steep = length(slope);
+  vec2 way = slope / max(steep, 1e-4);
+  // The way it turns flips with the change's seed.
+  float turn = uTransSeed < 0.5 ? 1.0 : -1.0;
+  vec2 flow = (vec2(-way.y, way.x) * turn + 0.5 * way) * smoothstep(0.004, 0.08, steep);
+  // Flat parts sway too, in slow waves across the picture (triangle
+  // waves: a sine costs more).
+  highp vec2 wave = uv * vec2(5.0, 4.0) + uTransSeed * 13.0 + uMix * 1.5;
+  flow += (abs(fract(wave.yx * 0.16) - 0.5) - 0.25) * 1.4;
+  // Pixels a step: faster as the change goes on, then whole pixels.
+  float pixels = (2.0 + 5.0 * uMix) * uTransStep;
+  ivec2 size = textureSize(uSceneB, 0);
+  ivec2 at = ivec2(uv * vec2(size)) - ivec2(floor(flow * pixels + 0.5));
+  return texelFetch(uSceneB, clamp(at, ivec2(0), size - 1), 0);
+}
+
+vec3 datamosh(vec3 fresh, vec3 old, highp vec2 uv, float t, float incoming) {
+  highp vec2 block = floor(uv * uRes / 16.0);
   float jitter = hash12(block + uTransSeed * 17.0);
-  // The slope steers the drag; a little of each block's own sway keeps
-  // flat parts moving too.
-  vec2 steer = slope * 9.0 + (vec2(jitter, fract(jitter * 7.0)) - 0.5) * 0.4;
-  highp vec2 drag = steer / max(1.0, length(steer)) * 0.16 * (t + 1.5 * t * t);
-  vec3 old = frozen(uv - drag);
-  // Smeared blocks keep a stale tint, as a stream missing its keyframe.
-  old = mix(old, old.gbr, 0.15 * t * step(0.7, fract(jitter * 13.0)));
-  float through = step(fract(jitter * 31.0 + 0.37), t * 1.3 - 0.25);
-  through = max(through, smoothstep(0.06, 0.2, length(slope)) * smoothstep(0.1, 0.6, t));
+  old = mix(old, old.gbr, 0.2 * t * step(0.7, fract(jitter * 13.0)));
+  // The new scene's bright shapes come through as it goes on, the
+  // brightest first...
+  float through = smoothstep(0.75, 0.95, incoming + 0.9 * t - 0.25);
+  // ...and the rest a block at a time, at the end.
+  through = max(through, step(fract(jitter * 31.0 + 0.37), t * 3.0 - 2.0));
   return mix(old, fresh, through);
 }
 
@@ -340,7 +368,8 @@ void main() {
 #elif TRANSITION == 3
   color = zoomThrough(uv, clamp(uMix, 0.0, 1.0));
 #elif TRANSITION == 4
-  color = datamosh(color, uv, clamp(uMix, 0.0, 1.0), bloom.a);
+  moshOut = moshStep(vUv, bloom.a);
+  color = datamosh(color, moshOut.rgb, uv, clamp(uMix, 0.0, 1.0), bloom.a);
 #elif TRANSITION == 5
   color = wipe(color, uv, clamp(uMix, 0.0, 1.0));
 #endif

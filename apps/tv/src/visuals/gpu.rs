@@ -22,7 +22,9 @@
 //!    through, datamoshes, or wipes it) to show the next, and adds the
 //!    glow, the camera tricks, the build-ups and landings, the glitch
 //!    layer, the tone, the vignette, and the shade the app's words need,
-//!    into a picture the scenes' size.
+//!    into a picture the scenes' size. A shatter first works out its
+//!    shards once (`shards.glsl`); a datamosh also writes the frozen frame
+//!    back, dragged a step on, as a second output, so its smears build up.
 //! 4. `present.glsl` stretches the picture to the screen, with a fine
 //!    grain. It is the only pass at the screen's size, and reads one pixel
 //!    for each it draws: a full-size pass costs as much as a whole scene on
@@ -178,6 +180,10 @@ pub struct Renderer {
     shards: Option<Program>,
     shard_field: Target,
     shards_drawn: Option<(u32, i32, i32)>,
+    /// The framebuffer a datamosh's `final` draws into: the picture, and
+    /// the frozen frame dragged a step on (`final.glsl`, `moshOut`).
+    /// Which buffers it draws is its own state, not Skia's.
+    mosh: glow::Framebuffer,
     present: Program,
     slots: [Slot; 2],
     /// The finished picture, the scenes' size, before `present` stretches it.
@@ -408,6 +414,7 @@ impl Renderer {
             let bloom = [target(gl, 4, 4)?, target(gl, 4, 4)?];
             let picture = target(gl, width, height)?;
             let shard_field = target(gl, 4, 4)?;
+            let mosh = gl.create_framebuffer().ok()?;
             Some(Self {
                 vao,
                 scenes,
@@ -422,6 +429,7 @@ impl Renderer {
                 shards,
                 shard_field,
                 shards_drawn: None,
+                mosh,
                 picture,
                 picture_drawn: false,
                 bloom,
@@ -949,13 +957,48 @@ impl Renderer {
                 }
             }
 
+            // A datamosh's `final` also drags the frozen frame (slot `a`)
+            // a step on, into the other of its pair, the picture's size.
+            let moshing = b.is_some() && change.code() == 4 && self.changes[4].is_some();
+            if moshing {
+                let (wide, tall) = (self.picture.width, self.picture.height);
+                let spare = &mut self.slots[a].targets[1];
+                if (spare.width, spare.height) != (wide, tall) {
+                    resize(gl, spare, wide, tall);
+                }
+            }
+            let out_a = &self.slots[a].targets[0];
+            let out_b = &self.slots[b.unwrap_or(a)].targets[0];
+
             // ...and the picture, the scenes' size.
             let picture = &self.picture;
             // The change's own program, while one runs.
             let program = b
                 .and_then(|_| self.changes[change.code()].as_ref())
                 .unwrap_or(&self.final_pass);
-            begin_pass(gl, picture);
+            if moshing {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.mosh));
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(picture.texture),
+                    0,
+                );
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT1,
+                    glow::TEXTURE_2D,
+                    Some(self.slots[a].targets[1].texture),
+                    0,
+                );
+                let both = [glow::COLOR_ATTACHMENT0, glow::COLOR_ATTACHMENT1];
+                gl.draw_buffers(&both);
+                gl.viewport(0, 0, picture.width, picture.height);
+                gl.invalidate_framebuffer(glow::FRAMEBUFFER, &both);
+            } else {
+                begin_pass(gl, picture);
+            }
             gl.use_program(Some(program.program));
             self.set_music(
                 gl,
@@ -1005,6 +1048,7 @@ impl Renderer {
                 gl.uniform_4_f32(Some(at), 1.0, 1.0, 1.0, 0.0);
             }
             set_f32(gl, program, "uMix", mix);
+            set_f32(gl, program, "uTransStep", (music.dt * 60.0).clamp(0.0, 3.0));
             // The change of scene (`transition.rs`) and the moments
             // (`Screen`): the build, the inhale, the glitch.
             set_f32(gl, program, "uTransSeed", change.seed);
@@ -1031,6 +1075,9 @@ impl Renderer {
             set_vec2(gl, program, "uPool", wide / reach, tall / reach);
             fullscreen(gl);
             self.picture_drawn = true;
+            if moshing {
+                self.slots[a].targets.swap(0, 1);
+            }
         }
     }
 
@@ -1073,7 +1120,11 @@ impl Renderer {
             });
             let slot = &mut self.slots[index];
             slot.seed = showing.seed;
-            let sized = slot.targets[0].width == wide && slot.targets[0].height == tall;
+            // Both of the pair: a datamosh leaves them different sizes.
+            let sized = slot
+                .targets
+                .iter()
+                .all(|target| target.width == wide && target.height == tall);
             if held.is_some() && sized {
                 return index;
             }
@@ -1513,6 +1564,7 @@ impl Renderer {
                 gl.delete_texture(texture);
             }
             self.words.delete(gl);
+            gl.delete_framebuffer(self.mosh);
             gl.delete_vertex_array(self.vao);
         }
     }
