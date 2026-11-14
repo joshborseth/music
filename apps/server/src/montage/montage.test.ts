@@ -67,6 +67,11 @@ describe('finding the music video', () => {
     ]),
     video('tuned', 'Daft Punk - Harder, Better, Faster, Stronger (432Hz)', 224),
     video(
+      'dance',
+      'Daft Punk - Harder, Better, Faster, Stronger / Seren Workshop',
+      300,
+    ),
+    video(
       'korean',
       'Daft Punk - Harder, Better, Faster, Stronger [가사/해석]',
       224,
@@ -109,6 +114,7 @@ describe('finding the music video', () => {
     expect(why('live')).toBe('a live video')
     expect(why('cover')).toBe('another artist')
     expect(why('tuned')).toBe('a retuned copy')
+    expect(why('dance')).toBe('a workshop video')
     expect(why('korean')).toBe('a translation')
     expect(why('visualizer')).toBe('a visualizer video')
     expect(why('short')).toBe('too short')
