@@ -14,6 +14,7 @@
  */
 
 import { makeCoral } from './coral'
+import { depthOf, dioramaPage, makeDiorama, reliefSources } from './diorama.ts'
 import {
   type Cues,
   type SceneChange,
@@ -35,6 +36,8 @@ interface SceneDef {
   readonly file: string
   /** The land drawn as a mesh on top (terrain.vert). */
   readonly land: boolean
+  /** The cover raised by its depth, drawn first (diorama.vert). */
+  readonly relief?: boolean
 }
 
 const SCENES: ReadonlyArray<SceneDef> = [
@@ -47,6 +50,7 @@ const SCENES: ReadonlyArray<SceneDef> = [
   { name: 'Stars', file: 'stars.glsl', land: false },
   { name: 'Swarm', file: 'swarm.glsl', land: false },
   { name: 'Coral', file: 'coral.glsl', land: false },
+  { name: 'Diorama', file: 'diorama.glsl', land: false, relief: true },
 ]
 
 const BANDS = 48
@@ -148,6 +152,8 @@ interface Music {
   /** The song's ceiling and its choreography this frame (moments.ts). */
   ceiling?: number
   cue?: Cues
+  /** A drop landed this frame (a real song says so; see `makeShatter`). */
+  dropLanded?: boolean
 }
 
 const fract = (x: number): number => x - Math.floor(x)
@@ -678,6 +684,7 @@ interface Scene {
   readonly def: SceneDef
   readonly main: Program | null
   readonly land: Program | null
+  readonly relief: Program | null
   targets: [Target, Target]
   seed: number
   started: number
@@ -834,12 +841,21 @@ const makeEngine = (
   height: number,
 ) => {
   const vao = gl.createVertexArray()
+  const diorama = makeDiorama(gl)
   const scenes: Array<Scene> = SCENES.map((def, index) => ({
     def,
     main: program(gl, def.file, VERTEX, fragmentSource(def.file)),
     land: def.land
       ? program(gl, 'terrain.vert', LAND_VERTEX, LAND_FRAGMENT)
       : null,
+    relief:
+      def.relief === true
+        ? program(
+            gl,
+            'diorama.vert',
+            ...reliefSources(shaderText, fragmentSource),
+          )
+        : null,
     targets: [makeTarget(gl, width, height), makeTarget(gl, width, height)],
     seed: (index * 0.137) % 1,
     started: 0,
@@ -955,6 +971,7 @@ const makeEngine = (
       ['uNoise', noiseTexture],
       ['uFbm', fbmTexture],
       ['uScore', scoreTexture],
+      ['uDepth', diorama.texture],
     ]
     units.forEach(([name, texture], unit) => {
       const at = p.uniforms.get(name)
@@ -1035,6 +1052,7 @@ const makeEngine = (
     if (flightAt !== undefined) gl.uniform4f(flightAt, ...moved.flight)
     const shakeAt = at('uShake')
     if (shakeAt !== undefined) gl.uniform2f(shakeAt, ...moved.shake)
+    diorama.setUniforms(p, music, scene?.seed ?? 0, res, hit(music))
   }
 
   const fullscreen = () => gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -1064,6 +1082,26 @@ const makeEngine = (
 
   const drawScene = (scene: Scene, music: Music) => {
     const [read, write] = scene.targets
+    const { main, relief } = scene
+    if (main !== null && relief !== null) {
+      const size: [number, number] = [write.width, write.height]
+      diorama.draw(
+        write,
+        music,
+        () => {
+          gl.useProgram(relief.program)
+          setMusic(relief, music, size, scene)
+          bindTextures(relief, null)
+        },
+        () => {
+          gl.useProgram(main.program)
+          setMusic(main, music, size, scene)
+          bindTextures(main, read)
+        },
+      )
+      scene.targets = [write, read]
+      return
+    }
     const sim = sims.get(scene.def.file)
     const prepare = (p: Program) => {
       setMusic(p, music, [write.width, write.height], scene)
@@ -1113,6 +1151,7 @@ const makeEngine = (
   }
 
   const update = (music: Music, dt: number) => {
+    diorama.hear(music)
     scoreRate = music.ahead?.rate ?? 0
     scoreShift = music.ahead?.shift ?? 0
     if (music.ahead !== undefined) {
@@ -1335,6 +1374,7 @@ const makeEngine = (
   return {
     frame,
     setCover,
+    setDepth: diorama.setDepth,
     setHistory,
     setSide,
     clearScenes,
@@ -1431,7 +1471,8 @@ const sheet = () => {
 /**
  * Times every scene at the size the TV starts each scene at (1088 × 612)
  * on a 1280 × 720 screen, or at the sizes the URL names:
- * `?screen=1920x1080&scene=896x504` is a 1080p TV holding a scene at 70%.
+ * `?screen=1920x1080&scene=896x504` is a 1080p TV holding a scene at 70%,
+ * and `?bar=12` times the made-up song's verse instead of its drop.
  * In a software renderer the numbers only rank the scenes against each
  * other (and a change against the code before it): a TV's GPU is far
  * slower, and runs mediump at twice the rate, which this can't show.
@@ -1468,8 +1509,7 @@ const bench = () => {
   const finish = () =>
     gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel)
   const FRAMES = 10
-  // `?bar=` times another moment of the made-up song (the drop's first
-  // bar by default).
+  // The made-up song's drop, or the bar `?bar=` names (12: the verse).
   const at = (60 / 124) * 4 * Number(params.get('bar') ?? 20.25)
   const columns = ['frame', 'scene', 'glow', 'picture', 'screen'] as const
   const passes: Record<(typeof columns)[number], Pass | undefined> = {
@@ -1612,6 +1652,17 @@ const live = () => {
   const file = element('input', { type: 'file', accept: 'image/*' })
   const fileLabel = element('label')
   fileLabel.append('Cover', file)
+  // The cover's depth from the server (`/tv/depth?url=…`), for Diorama.
+  const depthFile = element('input', { type: 'file', accept: 'image/png' })
+  const depthLabel = element('label')
+  depthLabel.append('Depth', depthFile)
+  depthFile.addEventListener('change', () => {
+    const chosen = depthFile.files?.[0]
+    if (chosen === undefined) return
+    const image = new Image()
+    image.onload = () => engine.setDepth(depthOf(image))
+    image.src = URL.createObjectURL(chosen)
+  })
   file.addEventListener('change', () => {
     const chosen = file.files?.[0]
     if (chosen === undefined) return
@@ -1622,7 +1673,7 @@ const live = () => {
     }
     image.src = URL.createObjectURL(chosen)
   })
-  controls.append(tempoLabel, scaleLabel, fileLabel)
+  controls.append(tempoLabel, scaleLabel, fileLabel, depthLabel)
 
   // Times come from requestAnimationFrame; the first frame starts the clock.
   let started = -1
@@ -1643,7 +1694,7 @@ const live = () => {
       lastSection = music.section
       const pool: Record<string, ReadonlyArray<number>> = {
         Intro: [0, 5, 1],
-        Verse: [1, 2],
+        Verse: [1, 2, 9],
         Build: [2, 3],
         Drop: [4, 6, 3],
         Breakdown: [5, 0, 1],
@@ -1731,6 +1782,7 @@ interface SongFrame {
     readonly parts?: Partial<Parts>
     readonly ceiling?: number
     readonly cue?: Cues
+    readonly dropLanded?: boolean
   }
   /** The score around now, as hex, when the song has one. */
   readonly ahead?: string
@@ -1830,6 +1882,7 @@ const songMusic = (frame: SongFrame): Music => {
     historyAge: frame.historyAge,
     ...(m.ceiling === undefined ? {} : { ceiling: m.ceiling }),
     ...(m.cue === undefined ? {} : { cue: m.cue }),
+    dropLanded: m.dropLanded ?? false,
   }
 }
 
@@ -1843,6 +1896,7 @@ const SCENE_COLORS = [
   '#ff6bd5',
   '#f5f0e6',
   '#ff9e8a',
+  '#c9a26b',
 ]
 
 /**
@@ -1921,15 +1975,28 @@ const song = () => {
   }
   let data: SongData | null = null
   let cover: HTMLImageElement | null = null
+  let depth: HTMLImageElement | null = null
 
-  const load = async (loaded: SongData, coverUrl?: string) => {
+  /** The song's frames, its cover, and the cover's depth (`/tv/depth`). */
+  const load = async (
+    loaded: SongData,
+    coverUrl?: string,
+    depthUrl?: string,
+  ) => {
     data = loaded
     cover = null
+    depth = null
     if (coverUrl !== undefined) {
       const image = new Image()
       image.src = coverUrl
       await image.decode()
       cover = image
+    }
+    if (depthUrl !== undefined) {
+      const image = new Image()
+      image.src = depthUrl
+      await image.decode()
+      depth = image
     }
     status.textContent = `${loaded.videoId}: ${loaded.windows.length} windows`
   }
@@ -1953,6 +2020,7 @@ const song = () => {
       Math.round(height * 0.85),
     )
     engine.setCover(cover ?? madeUpCover())
+    if (depth !== null) engine.setDepth(depthOf(depth))
     engine.setSide(overlay)
     const tiles: Array<{
       image: HTMLCanvasElement
@@ -2173,5 +2241,12 @@ else if (MODE === 'moments')
     cover: madeUpCover,
   })
 else if (MODE === 'bench') bench()
+else if (MODE === 'diorama')
+  dioramaPage({
+    makeEngine,
+    madeUpSong,
+    madeUpCover,
+    scene: SCENES.findIndex(scene => scene.name === 'Diorama'),
+  })
 else if (MODE === 'song') song()
 else live()

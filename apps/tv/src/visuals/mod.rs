@@ -15,6 +15,7 @@
 
 mod coral;
 mod cues;
+mod diorama;
 mod director;
 mod gpu;
 mod look;
@@ -36,6 +37,7 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
+pub use diorama::Depth;
 pub use look::Cover;
 
 use crate::App;
@@ -60,6 +62,8 @@ const FIRST_PACE_REPORT: Duration = Duration::from_secs(20);
 pub struct Stage {
     pub entry_id: String,
     pub cover: Option<Arc<Cover>>,
+    /// The cover's depth, for Diorama, once it has arrived.
+    pub depth: Option<Arc<Depth>>,
     pub analysis: Option<Arc<Analysis>>,
     pub playing: bool,
     /// The lyrics show on the right, beside the song.
@@ -359,6 +363,7 @@ impl State {
             self.listener.new_song();
         }
         renderer.set_cover(gl, stage.cover.as_ref());
+        renderer.set_depth(gl, stage.depth.as_ref());
         // The clock already counts what is heard.
         let seconds = self
             .clock

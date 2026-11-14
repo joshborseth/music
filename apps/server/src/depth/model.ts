@@ -1,6 +1,5 @@
-import { rename } from 'node:fs/promises'
-
 import { Effect, Schema } from 'effect'
+import { rename } from 'node:fs/promises'
 
 /*
  * The depth model's weights: Depth Anything V2 Small (Apache-2.0; the
@@ -24,10 +23,9 @@ export const MODEL = {
   bytes: 49_642_442,
 } as const
 
-export class ModelError extends Schema.TaggedError<ModelError>()(
-  'ModelError',
-  { message: Schema.String },
-) {}
+export class ModelError extends Schema.TaggedError<ModelError>()('ModelError', {
+  message: Schema.String,
+}) {}
 
 /** The SHA-256 of the file at `path`, as hex, read in chunks. */
 export const fileSha256 = (path: string): Effect.Effect<string, ModelError> =>
@@ -40,8 +38,7 @@ export const fileSha256 = (path: string): Effect.Effect<string, ModelError> =>
     catch: error => new ModelError({ message: `Reading ${path}: ${error}` }),
   })
 
-const exists = (path: string) =>
-  Effect.promise(() => Bun.file(path).exists())
+const exists = (path: string) => Effect.promise(() => Bun.file(path).exists())
 
 /**
  * Downloads `url` to `path`, through a `.part` file that only becomes
@@ -72,7 +69,8 @@ export const download = (
     }
     yield* Effect.tryPromise({
       try: () => rename(part, path),
-      catch: error => new ModelError({ message: `Keeping the model: ${error}` }),
+      catch: error =>
+        new ModelError({ message: `Keeping the model: ${error}` }),
     })
   })
 

@@ -13,7 +13,8 @@
 //!    scene costs no more than one scene (`transition.rs`). Terrain draws
 //!    its land on top, as a mesh over the sky. Swarm and Coral first run a
 //!    simulation on the GPU, in integer textures (`sims.rs`), and Swarm
-//!    adds its particles on top as points.
+//!    adds its particles on top as points. Diorama draws its relief first,
+//!    with a depth buffer, and its backdrop behind it.
 //! 2. The bright parts are cut out at an eighth of the scenes' size
 //!    (`bright.glsl`) and blurred there in one pass (`blur.glsl`): the glow,
 //!    drawn over a thirty-second as many pixels as a scene.
@@ -40,7 +41,8 @@ use std::sync::Arc;
 
 use glow::HasContext;
 
-use super::director::{SCENES, Shot, Showing};
+use super::diorama::{self, Camera, Depth, Shatter};
+use super::director::{SCENES, Shot, Showing, scene_index};
 use super::look::{COVER_SIDE, Cover, DEFAULT_COLORS, turned};
 use super::motion::{Motion, Screen, hash, hit, unit};
 use super::music::{
@@ -66,6 +68,7 @@ const SCENE_SHADERS: [(&str, &str); SCENES.len()] = [
     ("stars.glsl", include_str!("shaders/stars.glsl")),
     ("swarm.glsl", include_str!("shaders/swarm.glsl")),
     ("coral.glsl", include_str!("shaders/coral.glsl")),
+    ("diorama.glsl", include_str!("shaders/diorama.glsl")),
 ];
 /// The scene whose land is drawn as a mesh on top of its sky.
 const TERRAIN: usize = 2;
@@ -75,6 +78,8 @@ const TERRAIN: usize = 2;
 /// far edge. One triangle strip a pair of rows, joined by empty triangles.
 const LAND_COLUMNS: i32 = 2 * (1 + BANDS as i32 + 5) + 1;
 const LAND_VERTICES: i32 = HISTORY_ROWS as i32 * (2 * LAND_COLUMNS + 2) - 2;
+/// The scene whose relief is drawn as a mesh, before its backdrop.
+const DIORAMA: usize = scene_index("Diorama");
 
 /// The scenes' height at full size; the screen's own if it is smaller.
 const BASE_HEIGHT: u32 = 720;
@@ -85,7 +90,7 @@ const BLOOM_DIVISOR: i32 = 8;
 const STEADY_AFTER: u32 = 3;
 /// Texture units the scenes may use, all saved and put back: the eight
 /// every scene reads, and those of the scenes' own inputs and state
-/// (`particles::STATE_UNIT`, `STATE2_UNIT`).
+/// (`uDepth` on 8, `particles::STATE_UNIT` and `STATE2_UNIT`).
 const UNITS: usize = 13;
 
 pub(super) type Gl = glow::Context;
@@ -163,6 +168,14 @@ pub struct Renderer {
     cover: glow::Texture,
     /// The cover uploaded, held so its identity can't be reused.
     cover_shown: Option<Arc<Cover>>,
+    /// Diorama: its relief (`diorama.vert`), the cover's depth and the
+    /// depth uploaded, its depth buffer and that buffer's size, and the
+    /// shatter on a drop.
+    relief: Option<Program>,
+    depth: glow::Texture,
+    depth_shown: Option<Arc<Depth>>,
+    depth_buffer: Option<(glow::Renderbuffer, i32, i32)>,
+    shatter: Shatter,
     colors: [[f32; 3]; 4],
     has_cover: bool,
     /// Each scene's size, in the order of `SCENES`.
@@ -226,6 +239,15 @@ impl Renderer {
                     include_str!("shaders/terrain.frag")
                 ),
             );
+            let diorama = SCENE_SHADERS[DIORAMA].1;
+            let relief = compile(
+                "diorama.vert",
+                &format!(
+                    "#version 300 es\n#define DIORAMA_MESH\n{COMMON}\n{HELPERS}\n#line 1\n{diorama}\n#line 1\n{}",
+                    include_str!("shaders/diorama.vert")
+                ),
+                &fragment(include_str!("shaders/diorama.frag")),
+            );
             let bright = compile(
                 "bright.glsl",
                 &vertex,
@@ -282,6 +304,14 @@ impl Renderer {
             upload(gl, fbm, side, side, glow::RGBA, &fbm_pixels());
             let cover = data_texture(gl, COVER_SIDE as i32, COVER_SIDE as i32, glow::RGBA8, false)?;
             let score = data_texture(gl, SCORE_COLUMNS as i32, AHEAD_ROWS as i32, glow::R8, false)?;
+            let depth = data_texture(gl, COVER_SIDE as i32, COVER_SIDE as i32, glow::R8, false)?;
+            // Diorama's points read it smoothed, a few levels down.
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR_MIPMAP_LINEAR as i32,
+            );
+            gl.generate_mipmap(glow::TEXTURE_2D);
             let (width, height) = (16, 16);
             let slot = || -> Option<Slot> {
                 Some(Slot {
@@ -316,6 +346,11 @@ impl Renderer {
                 score,
                 cover,
                 cover_shown: None,
+                relief,
+                depth,
+                depth_shown: None,
+                depth_buffer: None,
+                shatter: Shatter::default(),
                 colors: DEFAULT_COLORS,
                 has_cover: false,
                 sizing: Default::default(),
@@ -327,11 +362,16 @@ impl Renderer {
         }
     }
 
-    /// Whether `scene` compiled, and has what it needs.
+    /// Whether `scene` compiled, and has what it needs: a simulation's
+    /// textures, and for Diorama the cover and its depth.
     pub fn can_draw(&self, scene: usize) -> bool {
-        self.scenes.get(scene).is_some_and(Option::is_some)
-            && (scene != TERRAIN || self.land.is_some())
-            && self.sims.ready(scene)
+        ready(
+            scene,
+            self.scenes.get(scene).is_some_and(Option::is_some),
+            self.land.is_some(),
+            self.relief.is_some(),
+            self.has_cover && self.depth_shown.is_some(),
+        ) && self.sims.ready(scene)
     }
 
     /// Each scene shown so far and its size, for the server's log:
@@ -378,6 +418,35 @@ impl Renderer {
                     glow::RGBA,
                     &cover.rgba,
                 );
+            }
+            saved.restore(gl);
+        }
+    }
+
+    /// Raise the cover by `depth` (or none: Diorama can't show) from now on.
+    /// The engine gives the depth of the cover it shows, or none.
+    pub fn set_depth(&mut self, gl: &Gl, depth: Option<&Arc<Depth>>) {
+        let same = match (depth, &self.depth_shown) {
+            (Some(new), Some(old)) => Arc::ptr_eq(new, old),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.depth_shown = depth.cloned();
+        if let Some(depth) = depth {
+            let saved = Saved::save(gl);
+            unsafe {
+                upload(
+                    gl,
+                    self.depth,
+                    COVER_SIDE as i32,
+                    COVER_SIDE as i32,
+                    glow::RED,
+                    &depth.pixels,
+                );
+                gl.generate_mipmap(glow::TEXTURE_2D);
             }
             saved.restore(gl);
         }
@@ -431,6 +500,7 @@ impl Renderer {
             return;
         }
         self.frame = self.frame.wrapping_add(1);
+        self.shatter.hear(music);
         let saved = Saved::save(gl);
         unsafe {
             gl.bind_vertex_array(Some(self.vao));
@@ -769,6 +839,16 @@ impl Renderer {
     ) {
         unsafe {
             let scene = showing.scene;
+            if scene == DIORAMA {
+                let target = &self.slots[slot].targets[1];
+                self.ensure_depth_buffer(gl, target.width, target.height);
+                self.draw_diorama(gl, slot, showing, music, listener);
+                let slot = &mut self.slots[slot];
+                slot.targets.swap(0, 1);
+                slot.drawn = true;
+                slot.fresh = false;
+                return;
+            }
             let [read, write] = &self.slots[slot].targets;
             let fresh = self.slots[slot].fresh;
             // A scene that simulates runs its simulation first, from the
@@ -819,6 +899,96 @@ impl Renderer {
         }
     }
 
+    /// Diorama's depth buffer, `width` × `height`.
+    unsafe fn ensure_depth_buffer(&mut self, gl: &Gl, width: i32, height: i32) {
+        unsafe {
+            if let Some((_, wide, tall)) = self.depth_buffer
+                && (wide, tall) == (width, height)
+            {
+                return;
+            }
+            let buffer = match self.depth_buffer.take() {
+                Some((buffer, _, _)) => buffer,
+                None => match gl.create_renderbuffer() {
+                    Ok(buffer) => buffer,
+                    Err(_) => return,
+                },
+            };
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(buffer));
+            gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT16, width, height);
+            self.depth_buffer = Some((buffer, width, height));
+        }
+    }
+
+    /// Diorama, into the slot's second target: the relief, with the depth
+    /// buffer lent to the target for the frame. Whole, it covers the whole
+    /// picture; shattering, the backdrop goes behind it, only where it
+    /// left the picture empty (drawn at the far plane, so the depth test
+    /// throws away every pixel the relief covered before it is shaded).
+    unsafe fn draw_diorama(
+        &self,
+        gl: &Gl,
+        slot: usize,
+        showing: Showing,
+        music: &Music,
+        listener: &Listener,
+    ) {
+        unsafe {
+            let [read, write] = &self.slots[slot].targets;
+            let (Some(Some(backdrop)), Some(relief), Some((buffer, _, _))) =
+                (self.scenes.get(DIORAMA), &self.relief, self.depth_buffer)
+            else {
+                begin_pass(gl, write);
+                gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+                return;
+            };
+            bind_target(gl, write);
+            gl.framebuffer_renderbuffer(
+                glow::FRAMEBUFFER,
+                glow::DEPTH_ATTACHMENT,
+                glow::RENDERBUFFER,
+                Some(buffer),
+            );
+            gl.depth_mask(true);
+            gl.clear_depth_f32(1.0);
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            gl.enable(glow::DEPTH_TEST);
+            gl.depth_func(glow::LESS);
+            let size = (write.width, write.height);
+
+            gl.use_program(Some(relief.program));
+            self.set_music(gl, relief, music, size, Some(showing), listener);
+            self.bind_inputs(gl, relief, None);
+            let shatter = self.shatter.now(music);
+            let (mode, points) = diorama::relief_draw(shatter);
+            gl.draw_arrays(mode, 0, points);
+
+            if shatter[1] > 0.0 {
+                gl.depth_func(glow::LEQUAL);
+                gl.depth_mask(false);
+                gl.depth_range_f32(1.0, 1.0);
+                gl.use_program(Some(backdrop.program));
+                self.set_music(gl, backdrop, music, size, Some(showing), listener);
+                self.bind_inputs(gl, backdrop, Some(read.texture));
+                fullscreen(gl);
+                gl.depth_range_f32(0.0, 1.0);
+            }
+
+            // The depth is not needed after the frame: don't write it out.
+            gl.invalidate_framebuffer(glow::FRAMEBUFFER, &[glow::DEPTH_ATTACHMENT]);
+            gl.framebuffer_renderbuffer(
+                glow::FRAMEBUFFER,
+                glow::DEPTH_ATTACHMENT,
+                glow::RENDERBUFFER,
+                None,
+            );
+            gl.disable(glow::DEPTH_TEST);
+            gl.depth_mask(true);
+        }
+    }
+
     unsafe fn bind_inputs(&self, gl: &Gl, program: &Program, prev: Option<glow::Texture>) {
         unsafe {
             bind_texture(gl, program, "uCover", 0, self.cover);
@@ -831,6 +1001,7 @@ impl Renderer {
             bind_texture(gl, program, "uNoise", 5, self.noise);
             bind_texture(gl, program, "uFbm", 6, self.fbm);
             bind_texture(gl, program, "uScore", 7, self.score);
+            bind_texture(gl, program, "uDepth", 8, self.depth);
         }
     }
 
@@ -919,6 +1090,22 @@ impl Renderer {
             }
             let [x, y] = motion.shake;
             set_vec2(gl, program, "uShake", x, y);
+
+            if let Some(at) = program.uniforms.get("uDioramaView") {
+                let focus = self
+                    .depth_shown
+                    .as_ref()
+                    .map_or([0.5, 0.5, 0.5], |depth| depth.focus);
+                let aspect = width as f32 / height.max(1) as f32;
+                let camera = Camera::new(music, seed, focus, aspect, hit(music));
+                gl.uniform_matrix_4_f32_slice(Some(at), false, &camera.view);
+                let [x, y, z, yaw] = camera.eye;
+                if let Some(at) = program.uniforms.get("uDioramaEye") {
+                    gl.uniform_4_f32(Some(at), x, y, z, yaw);
+                }
+            }
+            let [through, strength] = self.shatter.now(music);
+            set_vec2(gl, program, "uDioramaShatter", through, strength);
         }
     }
 
@@ -954,12 +1141,16 @@ impl Renderer {
     pub fn delete(self, gl: &Gl) {
         self.sims.delete(gl);
         unsafe {
-            let programs = self.scenes.into_iter().flatten().chain(self.land).chain([
-                self.bright,
-                self.blur,
-                self.final_pass,
-                self.present,
-            ]);
+            if let Some((buffer, _, _)) = self.depth_buffer {
+                gl.delete_renderbuffer(buffer);
+            }
+            let programs = self
+                .scenes
+                .into_iter()
+                .flatten()
+                .chain(self.land)
+                .chain(self.relief)
+                .chain([self.bright, self.blur, self.final_pass, self.present]);
             let programs = programs.chain(self.changes.into_iter().flatten());
             for program in programs {
                 gl.delete_program(program.program);
@@ -982,12 +1173,19 @@ impl Renderer {
                 self.fbm,
                 self.score,
                 self.cover,
+                self.depth,
             ] {
                 gl.delete_texture(texture);
             }
             gl.delete_vertex_array(self.vao);
         }
     }
+}
+
+/// Whether `scene` can show: its shader `compiled`; Terrain's `land` mesh
+/// too; Diorama's `relief` mesh too, and the cover with its `depth`.
+fn ready(scene: usize, compiled: bool, land: bool, relief: bool, depth: bool) -> bool {
+    compiled && (scene != TERRAIN || land) && (scene != DIORAMA || (relief && depth))
 }
 
 /// The GL state Skia may rely on, saved before we draw and put back after.
@@ -1002,6 +1200,11 @@ struct Saved {
     active_texture: u32,
     textures: [Option<glow::Texture>; UNITS],
     samplers: [Option<glow::Sampler>; UNITS],
+    renderbuffer: Option<glow::Renderbuffer>,
+    depth_func: u32,
+    depth_mask: bool,
+    depth_clear: f32,
+    depth_range: [f32; 2],
     blend: bool,
     blend_func: [u32; 4],
     blend_equation: [u32; 2],
@@ -1033,6 +1236,10 @@ impl Saved {
             gl.active_texture(active_texture);
             let mut clear_color = [0.0; 4];
             gl.get_parameter_f32_slice(glow::COLOR_CLEAR_VALUE, &mut clear_color);
+            let mut depth_clear = [1.0];
+            gl.get_parameter_f32_slice(glow::DEPTH_CLEAR_VALUE, &mut depth_clear);
+            let mut depth_range = [0.0, 1.0];
+            gl.get_parameter_f32_slice(glow::DEPTH_RANGE, &mut depth_range);
             let enum_of = |name| gl.get_parameter_i32(name) as u32;
             Self {
                 framebuffer: gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING),
@@ -1045,6 +1252,11 @@ impl Saved {
                 active_texture,
                 textures,
                 samplers,
+                renderbuffer: gl.get_parameter_renderbuffer(glow::RENDERBUFFER_BINDING),
+                depth_func: enum_of(glow::DEPTH_FUNC),
+                depth_mask: gl.get_parameter_bool(glow::DEPTH_WRITEMASK),
+                depth_clear: depth_clear[0],
+                depth_range,
                 blend: gl.is_enabled(glow::BLEND),
                 blend_func: [
                     enum_of(glow::BLEND_SRC_RGB),
@@ -1086,6 +1298,12 @@ impl Saved {
                 gl.bind_sampler(unit as u32, self.samplers[unit]);
             }
             gl.active_texture(self.active_texture);
+            gl.bind_renderbuffer(glow::RENDERBUFFER, self.renderbuffer);
+            gl.depth_func(self.depth_func);
+            gl.depth_mask(self.depth_mask);
+            gl.clear_depth_f32(self.depth_clear);
+            let [near, far] = self.depth_range;
+            gl.depth_range_f32(near, far);
             let toggle = |capability, on: bool| {
                 if on {
                     gl.enable(capability);
@@ -1470,6 +1688,17 @@ mod tests {
                 spec.name
             );
         }
+    }
+
+    #[test]
+    fn diorama_waits_for_the_cover_depth() {
+        assert_eq!(SCENES[DIORAMA].name, "Diorama");
+        assert!(!ready(DIORAMA, true, true, true, false));
+        assert!(!ready(DIORAMA, true, true, false, true));
+        assert!(ready(DIORAMA, true, true, true, true));
+        // Every other scene goes on without it.
+        assert!(ready(0, true, false, false, false));
+        assert!(!ready(TERRAIN, true, false, true, true));
     }
 
     #[test]

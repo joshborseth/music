@@ -127,8 +127,7 @@ export const soften = (map: Float32Array, side: number): Float32Array => {
   for (let y = 0; y < side; y++) {
     for (let x = 0; x < side; x++) {
       out[y * side + x] =
-        (at(x, y - 1, across) + 2 * at(x, y, across) + at(x, y + 1, across)) /
-        4
+        (at(x, y - 1, across) + 2 * at(x, y, across) + at(x, y + 1, across)) / 4
     }
   }
   return out

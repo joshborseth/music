@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lyrics::SongLyrics;
 use crate::protocol::QueueTrack;
+use crate::visuals::Depth;
 
 /// The id of the Liked songs playlist (`LIKED_PLAYLIST_ID` in
 /// `packages/shared/src/domain.ts`). Its card and page show the heart tile.
@@ -483,6 +484,15 @@ pub struct Version {
     pub build: Option<String>,
 }
 
+/// Why a cover has no depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepthMissing {
+    /// It is being worked out, or the server couldn't be reached: ask again.
+    NotYet,
+    /// The server has no depth model, or can't read this cover.
+    Never,
+}
+
 /// Talks to the server's `/tv/...` routes.
 #[derive(Clone)]
 pub struct Client {
@@ -565,6 +575,34 @@ impl Client {
             score
         });
         Ok(analysis)
+    }
+
+    /// The depth of the cover at `artwork_url`, for the Diorama scene: the
+    /// server's grayscale PNG (`GET /tv/depth`), decoded off the UI thread.
+    pub async fn depth(&self, artwork_url: &str) -> Result<Depth, DepthMissing> {
+        let response = self
+            .http
+            .get(format!(
+                "{}/tv/depth?url={}",
+                self.server,
+                crate::view::percent_encode(artwork_url)
+            ))
+            .send()
+            .await
+            .map_err(|_| DepthMissing::NotYet)?;
+        match response.status().as_u16() {
+            200 => {}
+            // Worked out now; or no model on the server, or not a cover it
+            // can read, which asking again won't change.
+            503 | 500 | 502 => return Err(DepthMissing::NotYet),
+            _ => return Err(DepthMissing::Never),
+        }
+        let png = response.bytes().await.map_err(|_| DepthMissing::NotYet)?;
+        tokio::task::spawn_blocking(move || Depth::decode(&png))
+            .await
+            .ok()
+            .flatten()
+            .ok_or(DepthMissing::Never)
     }
 
     pub async fn liked(&self, video_id: &str) -> Result<bool, String> {

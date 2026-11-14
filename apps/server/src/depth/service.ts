@@ -1,6 +1,4 @@
 import { Database } from 'bun:sqlite'
-import { fileURLToPath } from 'node:url'
-
 import {
   Config,
   Context,
@@ -19,6 +17,7 @@ import {
   Stream,
 } from 'effect'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
+import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
 
 import { allowedArtworkUrl } from '../artwork.ts'
@@ -52,24 +51,21 @@ const RUN_TIMEOUT = Duration.seconds(60)
 const FETCH_SIZE = 544
 const RESIZABLE_GOOGLE_IMAGE = /=w\d+-h\d+/
 
-export class DepthError extends Schema.TaggedError<DepthError>()(
-  'DepthError',
-  {
-    url: Schema.String,
-    /**
-     * `NotArtwork`: not an artwork URL this server relays; `NoModel`: the
-     * depth model is not here; `ArtworkUnavailable`: the cover could not be
-     * fetched or read; `Failed`: the model broke.
-     */
-    reason: Schema.Literals([
-      'NotArtwork',
-      'NoModel',
-      'ArtworkUnavailable',
-      'Failed',
-    ]),
-    message: Schema.String,
-  },
-) {}
+export class DepthError extends Schema.TaggedError<DepthError>()('DepthError', {
+  url: Schema.String,
+  /**
+   * `NotArtwork`: not an artwork URL this server relays; `NoModel`: the
+   * depth model is not here; `ArtworkUnavailable`: the cover could not be
+   * fetched or read; `Failed`: the model broke.
+   */
+  reason: Schema.Literals([
+    'NotArtwork',
+    'NoModel',
+    'ArtworkUnavailable',
+    'Failed',
+  ]),
+  message: Schema.String,
+}) {}
 
 export class CoverDepth extends Context.Service<
   CoverDepth,
@@ -386,7 +382,10 @@ export const CoverDepthLive = Layer.effect(CoverDepth)(
         const ready = yield* checkedModel(key)
         const rgb = yield* coverPixels(key)
         const depth = yield* runModel(key, ready, rgb).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            spawner,
+          ),
         )
         const png = yield* depthPngOf(key, depth)
         yield* Effect.logInfo(

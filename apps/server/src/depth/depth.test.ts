@@ -1,11 +1,10 @@
 import { Database } from 'bun:sqlite'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import { afterAll, describe, expect, test } from 'bun:test'
 import { Deferred, Effect, Exit, Fiber, Layer, Option } from 'effect'
 import { HttpRouter } from 'effect/http'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import sharp from 'sharp'
 
 import { makeDepthCache } from './cache.ts'
@@ -27,16 +26,13 @@ import {
   makeCoverDepth,
 } from './service.ts'
 
-const COVER =
-  'https://lh3.googleusercontent.com/abc=w120-h120-l90-rj'
+const COVER = 'https://lh3.googleusercontent.com/abc=w120-h120-l90-rj'
 const COVER_KEY = 'https://lh3.googleusercontent.com/abc=w544-h544-l90-rj'
 
 describe('preparing a cover for the model', () => {
   test('makes three normalized planes, red first', () => {
     const side = 2
-    const rgb = new Uint8Array([
-      255, 0, 0, 255, 0, 0, 0, 255, 0, 124, 116, 104,
-    ])
+    const rgb = new Uint8Array([255, 0, 0, 255, 0, 0, 0, 255, 0, 124, 116, 104])
     const tensor = toInputTensor(rgb, side)
     expect(tensor.length).toBe(12)
     // Red at full, in the red plane: (1 - 0.485) / 0.229.

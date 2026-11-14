@@ -71,6 +71,8 @@ await Bun.write(join(here, 'dist/song.html'), page('song'))
 // The moments: each change of scene, a build into its drop, the glitch,
 // and what a change costs (moments.ts).
 await Bun.write(join(here, 'dist/moments.html'), page('moments'))
+// Diorama through the made-up song, with a real cover and depth: diorama.ts.
+await Bun.write(join(here, 'dist/diorama.html'), page('diorama'))
 // One moment of the made-up song each, quicker to render.
 for (const moment of ['verse', 'build', 'drop']) {
   await Bun.write(

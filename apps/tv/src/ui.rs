@@ -38,7 +38,7 @@ use crate::nav::{
 use crate::protocol::{Placement, RepeatMode};
 use crate::update::{self, UpdateStatus};
 use crate::view::{PlayClock, View, clock, playing_from_line};
-use crate::visuals::{Cover, Screenshot, Stage, Visuals};
+use crate::visuals::{Cover, Depth, Screenshot, Stage, Visuals};
 use crate::voice::VoiceEvent;
 use crate::{
     App, ButtonData, CardData, HintData, KeyData, LyricRowData, MenuItemData, RowData, ShelfData,
@@ -67,6 +67,10 @@ const CAPTURE_POLL: Duration = Duration::from_secs(4);
 /// A failed analysis is asked for again after this long, times the tries.
 const ANALYSIS_RETRY: Duration = Duration::from_secs(8);
 const ANALYSIS_TRIES: u32 = 6;
+/// A cover's depth not ready yet is asked for again after this long, times
+/// the tries, this many times.
+const DEPTH_RETRY: Duration = Duration::from_secs(5);
+const DEPTH_TRIES: u32 = 6;
 const TICK: Duration = Duration::from_millis(100);
 const UP_NEXT: usize = 1;
 
@@ -239,6 +243,18 @@ pub struct Hooks {
     pub cancel_voice: Box<dyn Fn()>,
 }
 
+/// The depth of one cover, for the Diorama scene: asked for, arrived, or
+/// not to be had.
+struct CoverDepth {
+    url: String,
+    depth: Option<Arc<Depth>>,
+    tries: u32,
+    next_try: Instant,
+    pending: bool,
+    /// The server can't give it: no model, or a cover it can't read.
+    never: bool,
+}
+
 /// The analysis of one song: asked for, arrived, or failed for now.
 struct SongAnalysis {
     video_id: String,
@@ -276,6 +292,8 @@ pub struct Ui {
     visuals: Visuals,
     /// The server's analysis of the song playing now, for the visuals.
     analysis: Option<SongAnalysis>,
+    /// The depth of the cover playing now, for the visuals.
+    depth: Option<CoverDepth>,
     capture_timer: Timer,
     ok_down: Option<Instant>,
     ok_held: bool,
@@ -342,6 +360,7 @@ impl Ui {
             tick_timer: Timer::default(),
             visuals,
             analysis: None,
+            depth: None,
             capture_timer: Timer::default(),
             ok_down: None,
             ok_held: false,
@@ -857,9 +876,15 @@ impl Ui {
     fn stage(&mut self, side: bool) -> Option<Stage> {
         let entry = self.nav.session.current_entry()?.clone();
         let analysis = self.analysis_for(&entry.track.video_id);
+        let depth = entry
+            .track
+            .artwork_url
+            .as_deref()
+            .and_then(|url| self.depth_for(url));
         Some(Stage {
             entry_id: entry.entry_id,
             cover: self.current_cover(),
+            depth,
             analysis,
             playing: self.nav.session.playing,
             side,
@@ -900,6 +925,61 @@ impl Ui {
             );
         }
         analysis
+    }
+
+    /// The depth of the cover at `url`, asking the server for it when needed.
+    fn depth_for(&mut self, url: &str) -> Option<Arc<Depth>> {
+        let now = Instant::now();
+        if self.depth.as_ref().is_none_or(|cover| cover.url != url) {
+            self.depth = Some(CoverDepth {
+                url: url.to_owned(),
+                depth: None,
+                tries: 0,
+                next_try: now,
+                pending: false,
+                never: false,
+            });
+        }
+        let cover = self.depth.as_mut()?;
+        let ask = cover.depth.is_none()
+            && !cover.pending
+            && !cover.never
+            && cover.tries < DEPTH_TRIES
+            && now >= cover.next_try;
+        let depth = cover.depth.clone();
+        if ask {
+            cover.pending = true;
+            cover.tries += 1;
+            let catalog = self.catalog.clone();
+            let wanted = url.to_owned();
+            let url = url.to_owned();
+            self.spawn(
+                async move { catalog.depth(&wanted).await },
+                move |ui, result| ui.on_depth(&url, result),
+            );
+        }
+        depth
+    }
+
+    fn on_depth(&mut self, url: &str, result: Result<Depth, catalog::DepthMissing>) {
+        let Some(cover) = self.depth.as_mut().filter(|cover| cover.url == url) else {
+            return;
+        };
+        cover.pending = false;
+        match result {
+            Ok(depth) => {
+                log::info!("cover depth arrived");
+                cover.depth = Some(Arc::new(depth));
+            }
+            Err(catalog::DepthMissing::NotYet) => {
+                cover.next_try = Instant::now() + DEPTH_RETRY * cover.tries;
+            }
+            Err(catalog::DepthMissing::Never) => {
+                log::info!("no depth for this cover: no Diorama");
+                cover.never = true;
+            }
+        }
+        self.update_visuals();
     }
 
     fn on_analysis(&mut self, video_id: &str, result: Result<Analysis, String>) {
