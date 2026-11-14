@@ -13,6 +13,10 @@
 // 3. A grid of dots that ripples out from the middle on every beat, each
 //    column lit by its band.
 //
+// And over any of them, a hook word (words.rs; a chorus line's word, or
+// the song's phrase): most of the particles leave the shape to spell it,
+// where the word sits, as the cover's shape samples the cover.
+//
 // While one shape gives way to the next, each particle moves on at its own
 // moment, so the change sweeps through the swarm. Before a big hit the
 // shape draws in (the score says one is coming), and as a drop builds it
@@ -157,6 +161,31 @@ Spot gridShape(uint id, float aspect) {
   return spot;
 }
 
+// A place on the letters of word `w`, for particle `id`: the first of
+// four random places in the word's box that lands on a letter. False when
+// none does (a quarter of the particles, near a thin word), and those
+// keep the shape.
+bool wordSpot(int w, uint id, out Spot spot) {
+  vec4 box = uWordBox[w];
+  for (int i = 0; i < 4; i++) {
+    highp vec2 at = box.xy + (vec2(unitU(id * 19u + uint(i) * 2u + 1u), unitU(id * 19u + uint(i) * 2u + 2u)) * 2.0 - 1.0) * box.zw;
+    float field = wordField(w, at);
+    if (field > 0.52) {
+      spot.at = at;
+      // The letters' insides brighter than their edges, and each particle
+      // dimmer the smaller the word, so the many crowded onto a small one
+      // don't add up to a blur of white.
+      float inside = smoothstep(0.52, 0.75, field);
+      float crowd = min(1.0, 0.005 / max(box.z * box.w, 1e-4));
+      spot.color = mix(uColorA, vec3(1.0), 0.25 + 0.3 * inside);
+      spot.bright = (0.3 + 0.35 * inside) * crowd;
+      spot.size = 0.7 + 0.25 * inside;
+      return true;
+    }
+  }
+  return false;
+}
+
 Spot shape(float which, uint id, uint count, float aspect) {
   if (which < 0.5 && uHasCover > 0.5) return coverShape(id, count);
   if (which < 1.5) return galaxyShape(id); // and the cover's, without one
@@ -182,6 +211,29 @@ void main() {
   float twist = 1.4 * uTension * uTension * (0.3 + length(spot.at));
   spot.at = rot(twist) * spot.at * draw;
   float pull = 1.0 + 0.6 * uTension;
+
+  // A hook word: up to three quarters of the swarm spells it while it is
+  // sung, pulled hard so it forms within a word's time, and lets it go as
+  // the word fades. A hook word coming in under half a second gathers
+  // them first, so the next word of a chorus line forms from the last.
+  if (uWordAtlas.w > 0.0) {
+    vec4 now = uWordTime[WORD_NOW];
+    vec4 next = uWordTime[WORD_NEXT];
+    int w = -1;
+    float share = 0.0;
+    if (now.z > 0.5 && now.w > 0.0) {
+      w = WORD_NOW;
+      share = 0.75 * now.w;
+    } else if (next.z > 0.5 && next.w > 0.0 && next.x > -0.45) {
+      w = WORD_NEXT;
+      share = 0.75 * smoothstep(-0.45, -0.1, next.x);
+    }
+    Spot letter;
+    if (w >= 0 && unitU(id * 17u + 3u) < share && wordSpot(w, id, letter)) {
+      spot = letter;
+      pull = 6.0;
+    }
+  }
 
   // A share follows the lead melody, strung out along its path.
   if (unitU(id * 13u + 5u) < 0.14 * uSwarmStream.z) {

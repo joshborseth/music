@@ -459,6 +459,8 @@ export const makeWordsGl = (gl: WebGL2RenderingContext) => {
     },
     /** Whether a word shows this frame: the scenes draw with their words then. */
     showing: () => (frame?.atlas[3] ?? 0) > 0,
+    /** Whether the word sung now is a hook's (Swarm spells those). */
+    hook: () => (frame?.times[2] ?? 0) > 0.5,
     bind: (p: ProgramLike) => {
       const at = p.uniforms.get('uWords')
       if (at === undefined) return

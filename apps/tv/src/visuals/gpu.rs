@@ -49,7 +49,7 @@ use super::motion::{Motion, Screen, hash, hit, unit};
 use super::music::{
     AHEAD_BEHIND, AHEAD_ROWS, BANDS, HISTORY_ROWS, LEVELS, Listener, Music, SCORE_COLUMNS, WAVE,
 };
-use super::sims::Sims;
+use super::sims::{CORAL, SWARM, Sims};
 use super::sizing::{Change, Sizing};
 use super::transition::{SceneChange, TRANSITIONS};
 use super::words::{self, WordsTexture};
@@ -193,6 +193,9 @@ pub struct Renderer {
     /// depth uploaded, its depth buffer and that buffer's size, and the
     /// shatter on a drop.
     relief: Option<Program>,
+    /// The relief with the word sung floating in it (`#define WORDS`), as
+    /// `worded` is for the other scenes.
+    relief_worded: Option<Program>,
     depth: glow::Texture,
     depth_shown: Option<Arc<Depth>>,
     depth_buffer: Option<(glow::Renderbuffer, i32, i32)>,
@@ -289,13 +292,19 @@ impl Renderer {
                 ),
             );
             let diorama = SCENE_SHADERS[DIORAMA].1;
+            let relief_vertex = format!(
+                "#version 300 es\n#define DIORAMA_MESH\n{COMMON}\n{HELPERS}\n#line 1\n{diorama}\n#line 1\n{}",
+                include_str!("shaders/diorama.vert")
+            );
             let relief = compile(
                 "diorama.vert",
-                &format!(
-                    "#version 300 es\n#define DIORAMA_MESH\n{COMMON}\n{HELPERS}\n#line 1\n{diorama}\n#line 1\n{}",
-                    include_str!("shaders/diorama.vert")
-                ),
+                &relief_vertex,
                 &fragment(include_str!("shaders/diorama.frag")),
+            );
+            let relief_worded = compile(
+                "diorama.vert with words",
+                &relief_vertex,
+                &with("#define WORDS\n", include_str!("shaders/diorama.frag")),
             );
             let bright = compile(
                 "bright.glsl",
@@ -401,6 +410,7 @@ impl Renderer {
                 words_frame: words::Frame::default(),
                 cover_shown: None,
                 relief,
+                relief_worded,
                 depth,
                 depth_shown: None,
                 depth_buffer: None,
@@ -434,6 +444,21 @@ impl Renderer {
             self.has_cover && self.depth_shown.is_some(),
         ) && self.sims.ready(scene)
             && (scene != MONTAGE || self.montage_fits)
+    }
+
+    /// Whether `scene` draws the word sung now this frame, where
+    /// `final.glsl` lifts the shade around its letters: the scenes with a
+    /// worded build, Diorama's relief, Coral (which grows it), and Swarm
+    /// for a hook word (`swarm_targets.glsl`). Terrain doesn't.
+    fn draws_words(&self, scene: usize) -> bool {
+        let hook = self.words_frame.times[words::NOW][2] > 0.5;
+        self.words_frame.atlas[3] > 0.0
+            && match scene {
+                DIORAMA => self.relief_worded.is_some(),
+                SWARM => hook,
+                CORAL => true,
+                _ => self.worded.get(scene).is_some_and(Option::is_some),
+            }
     }
 
     /// Whether a slot holds a frame `scene` drew, which a change of scene
@@ -912,6 +937,14 @@ impl Renderer {
                 FINAL_WORDS_UNIT,
                 self.words.texture(),
             );
+            // Only around letters the scene showing draws: a scene that
+            // shows no word this frame leaves the shade as it is.
+            let shown = b.map_or(self.slots[a].scene, |b| self.slots[b].scene);
+            if !shown.is_some_and(|scene| self.draws_words(scene))
+                && let Some(at) = program.uniforms.get("uWordAtlas")
+            {
+                gl.uniform_4_f32(Some(at), 1.0, 1.0, 1.0, 0.0);
+            }
             set_f32(gl, program, "uMix", mix);
             // The change of scene (`transition.rs`) and the moments
             // (`Screen`): the build, the inhale, the glitch.
@@ -1157,6 +1190,12 @@ impl Renderer {
             gl.depth_func(glow::LESS);
             let size = (write.width, write.height);
 
+            // With the word sung floating in it while one shows.
+            let relief = self
+                .relief_worded
+                .as_ref()
+                .filter(|_| self.words_frame.atlas[3] > 0.0)
+                .unwrap_or(relief);
             gl.use_program(Some(relief.program));
             self.set_music(gl, relief, music, size, Some(showing), listener);
             self.bind_inputs(gl, relief, None);
@@ -1383,6 +1422,7 @@ impl Renderer {
                 .chain(self.worded.into_iter().flatten())
                 .chain(self.land)
                 .chain(self.relief)
+                .chain(self.relief_worded)
                 .chain([self.bright, self.blur, self.final_pass, self.present]);
             let programs = programs.chain(self.changes.into_iter().flatten());
             for program in programs {
