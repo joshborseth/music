@@ -374,6 +374,14 @@ impl Renderer {
         ) && self.sims.ready(scene)
     }
 
+    /// Whether a slot holds a frame `scene` drew, which a change of scene
+    /// can show frozen even when the scene can't draw any more.
+    pub fn holds_frame(&self, scene: usize) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.scene == Some(scene) && slot.drawn)
+    }
+
     /// Each scene shown so far and its size, for the server's log:
     /// "Silk 100%, Halo 60%, Terrain 35% at 30 fps".
     pub fn sizes(&self) -> String {
