@@ -12,6 +12,7 @@ import { syllables } from './syllables.ts'
 import {
   type SungTrack,
   findPhrase,
+  hookLines,
   placeLine,
   timeWords,
   wordText,
@@ -175,6 +176,31 @@ describe('hooks', () => {
     expect(first.every(word => word.hook)).toBe(true)
     // Each word ends where the next starts.
     expect(first[0]?.endSeconds).toBe(first[1]?.startSeconds ?? -1)
+  })
+
+  test('only the lines sung most often are hooks, about a third at most', () => {
+    // A chorus line sung four times, two sung twice, and a verse.
+    const words = [
+      'here comes the chorus',
+      'the verse goes on',
+      'and on and on',
+      'here comes the chorus',
+      'a line sung twice',
+      'another sung twice',
+      'here comes the chorus',
+      'a line sung twice',
+      'another sung twice',
+      'still more verse',
+      'here comes the chorus',
+      'the end of it',
+    ].map(text => text.split(' '))
+    const hooks = hookLines(words, findPhrase(words))
+    expect([...hooks]).toEqual(['here comes the chorus'])
+    // A song that sings every line twice: only the lines with its phrase.
+    const doubled = ['oh my love', 'oh my love', 'walk on by', 'walk on by']
+      .map(text => text.split(' '))
+      .concat([['oh', 'my', 'love', 'again']])
+    expect([...hookLines(doubled, findPhrase(doubled))]).toEqual(['oh my love'])
   })
 
   test('word-timed lines keep their own times', () => {

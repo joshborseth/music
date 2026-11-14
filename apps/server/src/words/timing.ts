@@ -13,10 +13,10 @@ import { syllables } from './syllables.ts'
  * voice under loud music), the words keep their places by syllable, nudged
  * onto the beat's eighth notes.
  *
- * Hooks: a line whose words come again elsewhere in the song is a hook (the
- * chorus), and the song's most repeated short phrase (one to four words,
- * not just "the" or "I") is marked word by word, for the visuals to draw
- * biggest.
+ * Hooks: the chorus's lines, the ones sung most often (`hookLines`), up
+ * to about a third of the song's lines; and the song's most repeated short
+ * phrase (one to four words, not just "the" or "I") is marked word by
+ * word, for the visuals to draw biggest.
  */
 
 /** How a lead sings each row of the score, as `track.ts` reads it. */
@@ -151,6 +151,53 @@ export const findPhrase = (
     }
   }
   return best
+}
+
+/** About this share of a song's lines, at most, are hooks. */
+const HOOK_SHARE = 1 / 3
+
+/**
+ * Which distinct lines (by `lineKey`) are hooks: the chorus. A line sung
+ * twice is not yet a hook (a verse may repeat one); the lines sung most
+ * often are, then the next most often, while all their singings together
+ * stay within `HOOK_SHARE` of the `total` lines. When even the most sung
+ * lines fill more than that (a song that sings everything twice), only
+ * those that hold the song's `phrase` stay hooks, if any do.
+ */
+export const hookLines = (
+  sung: ReadonlyArray<ReadonlyArray<string>>,
+  phrase: Phrase | null,
+): ReadonlySet<string> => {
+  const counts = new Map<string, number>()
+  for (const words of sung) {
+    const key = lineKey(words)
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  const tiers = new Map<number, Array<string>>()
+  for (const [key, count] of counts) {
+    if (count < 2) continue
+    tiers.set(count, [...(tiers.get(count) ?? []), key])
+  }
+  const budget = Math.max(2, Math.round(sung.length * HOOK_SHARE))
+  const hooks = new Set<string>()
+  let taken = 0
+  for (const count of [...tiers.keys()].sort((a, b) => b - a)) {
+    const keys = tiers.get(count) ?? []
+    const singings = count * keys.length
+    if (hooks.size > 0 && taken + singings > budget) break
+    if (hooks.size === 0 && singings > budget && phrase !== null) {
+      const holding = keys.filter(key =>
+        phraseMarks(key.split(' '), phrase).some(Boolean),
+      )
+      if (holding.length > 0) {
+        for (const key of holding) hooks.add(key)
+        break
+      }
+    }
+    for (const key of keys) hooks.add(key)
+    taken += singings
+  }
+  return hooks
 }
 
 /** Which of `words` are part of a sung `phrase`. */
@@ -370,12 +417,11 @@ export const timeWords = (
   const sung = lines
     .map((line, index) => ({ line, index, words: wordsOf(line.text) }))
     .filter(({ words }) => words.length > 0)
-  const repeats = new Map<string, number>()
-  for (const { words } of sung) {
-    const key = lineKey(words)
-    repeats.set(key, (repeats.get(key) ?? 0) + 1)
-  }
   const phrase = findPhrase(sung.map(({ words }) => words))
+  const hooks = hookLines(
+    sung.map(({ words }) => words),
+    phrase,
+  )
 
   const outLines: Array<TimedLine> = []
   const outWords: Array<TimedWord> = []
@@ -383,7 +429,7 @@ export const timeWords = (
     const next =
       lines[index + 1]?.startSeconds ??
       Math.max(line.startSeconds + 1, durationSeconds || line.startSeconds + 8)
-    const hook = (repeats.get(lineKey(words)) ?? 0) >= 2
+    const hook = hooks.has(lineKey(words))
     const marks = phraseMarks(words, phrase)
     const own = line.words
       .map(word => ({ start: word.startSeconds, words: wordsOf(word.text) }))
