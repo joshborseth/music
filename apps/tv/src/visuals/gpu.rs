@@ -11,7 +11,9 @@
 //!    While one scene takes over from another, only the one coming in
 //!    draws; the one leaving keeps its last frame, frozen, so a change of
 //!    scene costs no more than one scene (`transition.rs`). Terrain draws
-//!    its land on top, as a mesh over the sky.
+//!    its land on top, as a mesh over the sky. Swarm and Coral first run a
+//!    simulation on the GPU, in integer textures (`sims.rs`), and Swarm
+//!    adds its particles on top as points.
 //! 2. The bright parts are cut out at an eighth of the scenes' size
 //!    (`bright.glsl`) and blurred there in one pass (`blur.glsl`): the glow,
 //!    drawn over a thirty-second as many pixels as a scene.
@@ -44,13 +46,14 @@ use super::motion::{Motion, Screen, hash, hit, unit};
 use super::music::{
     AHEAD_BEHIND, AHEAD_ROWS, BANDS, HISTORY_ROWS, LEVELS, Listener, Music, SCORE_COLUMNS, WAVE,
 };
+use super::sims::Sims;
 use super::sizing::{Change, Sizing};
 use super::transition::{SceneChange, TRANSITIONS};
 
-const COMMON: &str = include_str!("shaders/common.glsl");
-const FRAGMENT: &str = include_str!("shaders/fragment.glsl");
-const HELPERS: &str = include_str!("shaders/helpers.glsl");
-const FULLSCREEN: &str = include_str!("shaders/fullscreen.vert");
+pub(super) const COMMON: &str = include_str!("shaders/common.glsl");
+pub(super) const FRAGMENT: &str = include_str!("shaders/fragment.glsl");
+pub(super) const HELPERS: &str = include_str!("shaders/helpers.glsl");
+pub(super) const FULLSCREEN: &str = include_str!("shaders/fullscreen.vert");
 
 /// Each scene's shader, in the order of `director::SCENES`.
 const SCENE_SHADERS: [(&str, &str); SCENES.len()] = [
@@ -61,6 +64,8 @@ const SCENE_SHADERS: [(&str, &str); SCENES.len()] = [
     ("tunnel.glsl", include_str!("shaders/tunnel.glsl")),
     ("aurora.glsl", include_str!("shaders/aurora.glsl")),
     ("stars.glsl", include_str!("shaders/stars.glsl")),
+    ("swarm.glsl", include_str!("shaders/swarm.glsl")),
+    ("coral.glsl", include_str!("shaders/coral.glsl")),
 ];
 /// The scene whose land is drawn as a mesh on top of its sky.
 const TERRAIN: usize = 2;
@@ -78,21 +83,25 @@ const BLOOM_DIVISOR: i32 = 8;
 /// Frames a scene must show alone before its frames are counted: the
 /// first ones after a change of scene still carry the change's cost.
 const STEADY_AFTER: u32 = 3;
+/// Texture units the scenes may use, all saved and put back: the eight
+/// every scene reads, and those of the scenes' own inputs and state
+/// (`particles::STATE_UNIT`, `STATE2_UNIT`).
+const UNITS: usize = 13;
 
-type Gl = glow::Context;
+pub(super) type Gl = glow::Context;
 
 /// A program and its uniforms by name.
-struct Program {
-    program: glow::Program,
+pub(super) struct Program {
+    pub(super) program: glow::Program,
     uniforms: HashMap<String, glow::UniformLocation>,
 }
 
 /// A texture to draw into.
-struct Target {
-    texture: glow::Texture,
-    framebuffer: glow::Framebuffer,
-    width: i32,
-    height: i32,
+pub(super) struct Target {
+    pub(super) texture: glow::Texture,
+    pub(super) framebuffer: glow::Framebuffer,
+    pub(super) width: i32,
+    pub(super) height: i32,
 }
 
 /// A scene's pair of textures: it reads one and draws into the other.
@@ -102,6 +111,10 @@ struct Slot {
     targets: [Target; 2],
     /// False until the scene has drawn into it since it was cleared.
     drawn: bool,
+    /// True from when the scene comes on (gets this slot) until its first
+    /// frame: a scene that simulates starts its simulation over then, and
+    /// not when its size changes or while it is frozen, leaving.
+    fresh: bool,
 }
 
 /// How much of each shade the app's words need shows, 0 to 1: see
@@ -159,6 +172,8 @@ pub struct Renderer {
     /// The scene the last frame drew alone, and how many frames in a row.
     alone: Option<usize>,
     steady: u32,
+    /// The scenes that simulate before they draw (`sims.rs`).
+    sims: Sims,
 }
 
 impl Renderer {
@@ -252,6 +267,9 @@ impl Renderer {
             else {
                 return None;
             };
+            let mut sim_errors = Vec::new();
+            let sims = Sims::new(gl, &mut compile, &fragment, &mut sim_errors);
+            errors.extend(sim_errors);
 
             let vao = gl.create_vertex_array().ok()?;
             let spectrum = data_texture(gl, BANDS as i32, 1, glow::R8, false)?;
@@ -271,6 +289,7 @@ impl Renderer {
                     seed: 0.0,
                     targets: [target(gl, width, height)?, target(gl, width, height)?],
                     drawn: false,
+                    fresh: false,
                 })
             };
             let slots = [slot()?, slot()?];
@@ -303,14 +322,16 @@ impl Renderer {
                 frame: 0,
                 alone: None,
                 steady: 0,
+                sims,
             })
         }
     }
 
-    /// Whether `scene` compiled.
+    /// Whether `scene` compiled, and has what it needs.
     pub fn can_draw(&self, scene: usize) -> bool {
         self.scenes.get(scene).is_some_and(Option::is_some)
             && (scene != TERRAIN || self.land.is_some())
+            && self.sims.ready(scene)
     }
 
     /// Each scene shown so far and its size, for the server's log:
@@ -423,7 +444,7 @@ impl Renderer {
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
             gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-            for unit in 0..8 {
+            for unit in 0..UNITS as u32 {
                 gl.bind_sampler(unit, None);
             }
 
@@ -712,6 +733,7 @@ impl Renderer {
             // its first frame reads the one before.
             slot.scene = Some(showing.scene);
             slot.drawn = false;
+            slot.fresh |= held.is_none();
             for target in &mut slot.targets {
                 if !sized {
                     resize(gl, target, wide, tall);
@@ -748,6 +770,16 @@ impl Renderer {
         unsafe {
             let scene = showing.scene;
             let [read, write] = &self.slots[slot].targets;
+            let fresh = self.slots[slot].fresh;
+            // A scene that simulates runs its simulation first, from the
+            // start on its first frame.
+            let mut sims = std::mem::take(&mut self.sims);
+            let size = (write.width, write.height);
+            let prepare = |program: &Program| {
+                self.set_music(gl, program, music, size, Some(showing), listener);
+                self.bind_inputs(gl, program, None);
+            };
+            sims.before(gl, scene, music, showing.seed, fresh, &prepare);
             begin_pass(gl, write);
             if let Some(Some(program)) = self.scenes.get(scene) {
                 gl.use_program(Some(program.program));
@@ -760,8 +792,10 @@ impl Renderer {
                     listener,
                 );
                 self.bind_inputs(gl, program, Some(read.texture));
+                sims.bind(gl, scene, program);
                 fullscreen(gl);
             }
+            sims.after(gl, scene, write, &prepare);
             if scene == TERRAIN
                 && let Some(land) = &self.land
             {
@@ -777,9 +811,11 @@ impl Renderer {
                 self.bind_inputs(gl, land, None);
                 gl.draw_arrays(glow::TRIANGLE_STRIP, 0, LAND_VERTICES);
             }
+            self.sims = sims;
             let slot = &mut self.slots[slot];
             slot.targets.swap(0, 1);
             slot.drawn = true;
+            slot.fresh = false;
         }
     }
 
@@ -916,6 +952,7 @@ impl Renderer {
 
     /// Free every GL object.
     pub fn delete(self, gl: &Gl) {
+        self.sims.delete(gl);
         unsafe {
             let programs = self.scenes.into_iter().flatten().chain(self.land).chain([
                 self.bright,
@@ -963,8 +1000,8 @@ struct Saved {
     unpack_buffer: Option<glow::Buffer>,
     pack_buffer: Option<glow::Buffer>,
     active_texture: u32,
-    textures: [Option<glow::Texture>; 8],
-    samplers: [Option<glow::Sampler>; 8],
+    textures: [Option<glow::Texture>; UNITS],
+    samplers: [Option<glow::Sampler>; UNITS],
     blend: bool,
     blend_func: [u32; 4],
     blend_equation: [u32; 2],
@@ -986,9 +1023,9 @@ impl Saved {
             let mut viewport = [0; 4];
             gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
             let active_texture = gl.get_parameter_i32(glow::ACTIVE_TEXTURE) as u32;
-            let mut textures = [None; 8];
-            let mut samplers = [None; 8];
-            for unit in 0..8 {
+            let mut textures = [None; UNITS];
+            let mut samplers = [None; UNITS];
+            for unit in 0..UNITS {
                 gl.active_texture(glow::TEXTURE0 + unit as u32);
                 textures[unit] = gl.get_parameter_texture(glow::TEXTURE_BINDING_2D);
                 samplers[unit] = gl.get_parameter_sampler(glow::SAMPLER_BINDING);
@@ -1043,7 +1080,7 @@ impl Saved {
             gl.bind_buffer(glow::ARRAY_BUFFER, self.array_buffer);
             gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, self.unpack_buffer);
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, self.pack_buffer);
-            for unit in 0..8 {
+            for unit in 0..UNITS {
                 gl.active_texture(glow::TEXTURE0 + unit as u32);
                 gl.bind_texture(glow::TEXTURE_2D, self.textures[unit]);
                 gl.bind_sampler(unit as u32, self.samplers[unit]);
@@ -1194,7 +1231,7 @@ unsafe fn upload(
     }
 }
 
-unsafe fn target(gl: &Gl, width: i32, height: i32) -> Option<Target> {
+pub(super) unsafe fn target(gl: &Gl, width: i32, height: i32) -> Option<Target> {
     unsafe {
         let texture = data_texture(gl, width, height, glow::RGBA8, false)?;
         let framebuffer = gl.create_framebuffer().ok()?;
@@ -1242,14 +1279,20 @@ unsafe fn bind_target(gl: &Gl, target: &Target) {
 }
 
 /// Draw into `target`, all of it: what it held is not needed.
-unsafe fn begin_pass(gl: &Gl, target: &Target) {
+pub(super) unsafe fn begin_pass(gl: &Gl, target: &Target) {
     unsafe {
         bind_target(gl, target);
         gl.invalidate_framebuffer(glow::FRAMEBUFFER, &[glow::COLOR_ATTACHMENT0]);
     }
 }
 
-unsafe fn bind_texture(gl: &Gl, program: &Program, name: &str, unit: u32, texture: glow::Texture) {
+pub(super) unsafe fn bind_texture(
+    gl: &Gl,
+    program: &Program,
+    name: &str,
+    unit: u32,
+    texture: glow::Texture,
+) {
     unsafe {
         if let Some(at) = program.uniforms.get(name) {
             gl.active_texture(glow::TEXTURE0 + unit);
@@ -1259,7 +1302,7 @@ unsafe fn bind_texture(gl: &Gl, program: &Program, name: &str, unit: u32, textur
     }
 }
 
-unsafe fn set_f32(gl: &Gl, program: &Program, name: &str, value: f32) {
+pub(super) unsafe fn set_f32(gl: &Gl, program: &Program, name: &str, value: f32) {
     unsafe {
         if let Some(at) = program.uniforms.get(name) {
             gl.uniform_1_f32(Some(at), value);
@@ -1283,7 +1326,15 @@ unsafe fn set_vec2(gl: &Gl, program: &Program, name: &str, x: f32, y: f32) {
     }
 }
 
-unsafe fn fullscreen(gl: &Gl) {
+pub(super) unsafe fn set_vec4(gl: &Gl, program: &Program, name: &str, [x, y, z, w]: [f32; 4]) {
+    unsafe {
+        if let Some(at) = program.uniforms.get(name) {
+            gl.uniform_4_f32(Some(at), x, y, z, w);
+        }
+    }
+}
+
+pub(super) unsafe fn fullscreen(gl: &Gl) {
     unsafe {
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
     }

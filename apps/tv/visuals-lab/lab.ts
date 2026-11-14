@@ -13,6 +13,7 @@
  * and `screenLook` (moments.ts) match `motion.rs`.
  */
 
+import { makeCoral } from './coral'
 import {
   type Cues,
   type SceneChange,
@@ -24,6 +25,7 @@ import {
   screenLook,
   transitionCode,
 } from './moments.ts'
+import { type Sim, makeSwarm } from './particles'
 
 declare const SHADERS: Readonly<Record<string, string>>
 declare const MODE: string
@@ -43,6 +45,8 @@ const SCENES: ReadonlyArray<SceneDef> = [
   { name: 'Tunnel', file: 'tunnel.glsl', land: false },
   { name: 'Aurora', file: 'aurora.glsl', land: false },
   { name: 'Stars', file: 'stars.glsl', land: false },
+  { name: 'Swarm', file: 'swarm.glsl', land: false },
+  { name: 'Coral', file: 'coral.glsl', land: false },
 ]
 
 const BANDS = 48
@@ -1035,6 +1039,22 @@ const makeEngine = (
 
   const fullscreen = () => gl.drawArrays(gl.TRIANGLES, 0, 3)
 
+  // The scenes that simulate before they draw (particles.ts, coral.ts).
+  const simTools = {
+    gl,
+    program: (label: string, vertex: string, fragment: string) =>
+      program(gl, label, vertex, fragment),
+    shaderText,
+    makeTarget: (w: number, h: number) => makeTarget(gl, w, h),
+  }
+  const sims = new Map<string, Sim>([
+    ['swarm.glsl', makeSwarm(simTools)],
+    ['coral.glsl', makeCoral(simTools)],
+  ])
+  // The scenes on screen last frame: one coming on starts its simulation
+  // over, as on the TV, where it gets a fresh slot (`Slot::fresh`).
+  let onScreen = new Set<Scene>()
+
   /** Draw into `target`, all of it, as the TV's `begin_pass`. */
   const beginPass = (target: Target) => {
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer)
@@ -1044,13 +1064,21 @@ const makeEngine = (
 
   const drawScene = (scene: Scene, music: Music) => {
     const [read, write] = scene.targets
+    const sim = sims.get(scene.def.file)
+    const prepare = (p: Program) => {
+      setMusic(p, music, [write.width, write.height], scene)
+      bindTextures(p, null)
+    }
+    sim?.before(music, scene.seed, prepare)
     beginPass(write)
     if (scene.main !== null) {
       gl.useProgram(scene.main.program)
       setMusic(scene.main, music, [write.width, write.height], scene)
       bindTextures(scene.main, read)
+      sim?.bind(scene.main)
       fullscreen()
     }
+    sim?.after(write, prepare)
     if (scene.land !== null) {
       gl.useProgram(scene.land.program)
       setMusic(scene.land, music, [write.width, write.height], scene)
@@ -1185,6 +1213,10 @@ const makeEngine = (
     if (sceneA === undefined) return
     const look = screenLook(music, colors[0] ?? [1, 1, 1])
     const moving = sceneB ?? sceneA
+    if (runs('scene')) {
+      if (!onScreen.has(moving)) sims.get(moving.def.file)?.reset()
+      onScreen = new Set(sceneB === undefined ? [sceneA] : [sceneA, sceneB])
+    }
     if (runs('scene') && !look.hold) drawScene(moving, music)
     const kind =
       sceneB === undefined ? 0 : (change?.kind ?? transitionCode('Wipe'))
@@ -1290,6 +1322,7 @@ const makeEngine = (
 
   /** Every scene back to black, as a scene the TV brings on starts. */
   const clearScenes = () => {
+    for (const sim of sims.values()) sim.reset()
     for (const scene of scenes) {
       for (const target of scene.targets) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer)
@@ -1340,21 +1373,42 @@ const sheet = () => {
   }
   const engine = makeEngine(gl, width, height)
   engine.setCover(madeUpCover())
-  const moments: Array<[string, number]> = [
+  // `?scenes=7,8` shows only those scenes; `?at=4,20.05` moments of your
+  // own, in bars of the made-up song; `?warm=6` plays that many seconds
+  // before each, at 30 frames a second.
+  const params = new URLSearchParams(location.search)
+  const scenesWanted = params.get('scenes')?.split(',').map(Number)
+  const bars = params.get('at')?.split(',').map(Number)
+  const warm = Number(params.get('warm') ?? 1)
+  const moments: Array<[string, number]> = bars?.map(bar => [
+    `bar ${bar}`,
+    (60 / 124) * 4 * bar,
+  ]) ?? [
     ['verse', (60 / 124) * 4 * 12],
     ['build', (60 / 124) * 4 * 19.6],
     ['drop', (60 / 124) * 4 * 20.25],
   ]
   SCENES.forEach((def, index) => {
+    if (scenesWanted !== undefined && !scenesWanted.includes(index)) return
     const only = MODE.split(':')[1]
+    // `?continuous=1` plays the moments as one stretch of the song.
+    const continuous = params.get('continuous') === '1'
+    let song = madeUpSong(124)
+    let played = (moments[0]?.[1] ?? 0) - warm
     for (const [label, at] of moments) {
       if (only !== undefined && label !== only) continue
-      const song = madeUpSong(124)
-      let music = song(at - 1)
-      for (let step = 0; step < 24; step++) {
-        music = song(at - 1 + step / 24)
-        engine.frame(music, 1 / 24, index, index, 0, [width, height])
+      if (!continuous) {
+        song = madeUpSong(124)
+        played = at - warm
       }
+      const rate = warm > 1 ? 30 : 24
+      const frames = Math.round((at - played) * rate)
+      let music = song(played)
+      for (let step = 0; step < frames; step++) {
+        music = song(played + step / rate)
+        engine.frame(music, 1 / rate, index, index, 0, [width, height])
+      }
+      played = at
       const tile = element('canvas')
       tile.width = width
       tile.height = height
@@ -1787,6 +1841,8 @@ const SCENE_COLORS = [
   '#ff8a3d',
   '#5fe0e6',
   '#ff6bd5',
+  '#f5f0e6',
+  '#ff9e8a',
 ]
 
 /**
