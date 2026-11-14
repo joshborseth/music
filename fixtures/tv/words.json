@@ -1,0 +1,79 @@
+{
+  "videoId": "abc123",
+  "phrase": "la la",
+  "lines": [
+    {
+      "startSeconds": 1,
+      "endSeconds": 2.4,
+      "hook": true
+    },
+    {
+      "startSeconds": 3,
+      "endSeconds": 4.5,
+      "hook": false
+    }
+  ],
+  "words": [
+    {
+      "startSeconds": 1,
+      "endSeconds": 1.5,
+      "text": "La",
+      "line": 0,
+      "glyph": 0,
+      "hook": true,
+      "phrase": true
+    },
+    {
+      "startSeconds": 1.5,
+      "endSeconds": 2.4,
+      "text": "la",
+      "line": 0,
+      "glyph": 0,
+      "hook": true,
+      "phrase": true
+    },
+    {
+      "startSeconds": 3,
+      "endSeconds": 3.6,
+      "text": "oh",
+      "line": 1,
+      "glyph": 1,
+      "hook": false,
+      "phrase": false
+    },
+    {
+      "startSeconds": 3.6,
+      "endSeconds": 4.5,
+      "text": "愛",
+      "line": 1,
+      "glyph": null,
+      "hook": false,
+      "phrase": false
+    }
+  ],
+  "atlas": {
+    "width": 8,
+    "height": 4,
+    "capHeight": 2,
+    "spread": 1,
+    "png": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAAAAACWpiEsAAAAFElEQVR42mOysTlhA8JMDFCAyQAAXdADAe34jnYAAAAASUVORK5CYII=",
+    "glyphs": [
+      {
+        "text": "LA",
+        "x": 0,
+        "y": 0,
+        "width": 5,
+        "height": 4,
+        "baseline": 3
+      },
+      {
+        "text": "OH",
+        "x": 5,
+        "y": 0,
+        "width": 3,
+        "height": 4,
+        "baseline": 3
+      }
+    ]
+  }
+}

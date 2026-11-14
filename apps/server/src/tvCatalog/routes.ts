@@ -25,6 +25,7 @@ import {
 import { TimedLyrics } from '../lyrics/service.ts'
 import { PlaylistStore } from '../playlists/store.ts'
 import { Prefetcher, pageJobs } from '../prefetch.ts'
+import { SongWords, emptyWords } from '../words/service.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import {
   albumCollection,
@@ -61,6 +62,13 @@ const HOME_DISCOVERY_WAIT = Duration.seconds(4)
  * server hasn't measured, before answering that it knows none.
  */
 const YOUTUBE_LOUDNESS_WAIT = Duration.seconds(3)
+
+/**
+ * How long the words wait for the song's analysis, which times them, before
+ * spreading them by their syllables alone. The TV asks once it has the
+ * analysis, so this only matters for others.
+ */
+const WORDS_ANALYSIS_WAIT = Duration.seconds(10)
 
 /** How long a like waits for the song's full details before using the queue's copy. */
 const LIKE_LOOKUP_TIMEOUT = Duration.seconds(3)
@@ -161,6 +169,7 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
     const timedLyrics = yield* TimedLyrics
     const songAnalysis = yield* SongAnalysis
     const prefetcher = yield* Prefetcher
+    const songWords = yield* SongWords
 
     /** The same page plans the RPCs make, so Play starts at once. */
     const prepare = (
@@ -326,6 +335,43 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
           Effect.logWarning('Analyzing a song failed', id, error.message),
         ),
         Effect.mapError(analysisRouteError),
+      )
+    })
+
+    /**
+     * The song's sung words, timed one by one, and their atlas: none for a
+     * song without timed lyrics.
+     */
+    const words = Effect.gen(function* () {
+      const { videoId: id } = yield* HttpServerRequest.schemaSearchParams(
+        SongParams,
+      ).pipe(Effect.mapError(badRequest('Needs a valid videoId')))
+      const details = yield* youTubeMusic
+        .getSong(id)
+        .pipe(
+          Effect.flatMap(timedLyrics.withTimedLines),
+          Effect.mapError(toRouteError),
+        )
+      const lines = Option.getOrElse(
+        Option.flatMap(details.maybeLyrics, lyrics => lyrics.maybeLines),
+        () => [],
+      )
+      if (lines.length === 0) return emptyWords(id)
+      const maybeAnalysis = yield* songAnalysis.analysis(id).pipe(
+        Effect.timeoutOption(WORDS_ANALYSIS_WAIT),
+        Effect.orElseSucceed(() => Option.none<Tv.TvAnalysis>()),
+      )
+      return yield* songWords.words(id, lines, maybeAnalysis).pipe(
+        Effect.tapError(error =>
+          Effect.logWarning('Making the words failed', id, error.message),
+        ),
+        Effect.mapError(
+          () =>
+            new TvRouteError({
+              status: 500,
+              message: 'Could not draw the words',
+            }),
+        ),
       )
     })
 
@@ -566,6 +612,7 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
     )
     yield* router.add('GET', '/tv/lyrics', respond(Tv.TvLyrics, lyrics))
     yield* router.add('GET', '/tv/analysis', respond(Tv.TvAnalysis, analysis))
+    yield* router.add('GET', '/tv/words', respond(Tv.TvWords, words))
     yield* router.add('GET', '/tv/loudness', respond(Tv.TvLoudness, loudness))
     yield* router.add('GET', '/tv/liked', respond(Tv.TvLiked, liked))
     yield* router.add('POST', '/tv/like', respond(Tv.TvLiked, like))

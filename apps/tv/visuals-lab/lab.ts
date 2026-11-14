@@ -28,6 +28,7 @@ import {
 } from './moments.ts'
 import { type MontageMeta, makeMontage, montagePage } from './montage.ts'
 import { type Sim, makeSwarm } from './particles'
+import { madeUpWords, makeWordsGl, wordsPage } from './words.ts'
 
 declare const SHADERS: Readonly<Record<string, string>>
 declare const MODE: string
@@ -685,6 +686,8 @@ const program = (
 interface Scene {
   readonly def: SceneDef
   readonly main: Program | null
+  /** With the sung words (`#define WORDS`), used while one shows: gpu.rs's `worded`. */
+  readonly worded: Program | null
   readonly land: Program | null
   readonly relief: Program | null
   targets: [Target, Target]
@@ -847,6 +850,14 @@ const makeEngine = (
   const scenes: Array<Scene> = SCENES.map((def, index) => ({
     def,
     main: program(gl, def.file, VERTEX, fragmentSource(def.file)),
+    worded: shaderText(def.file).includes('#ifdef WORDS')
+      ? program(
+          gl,
+          `${def.file} with words`,
+          VERTEX,
+          fragmentSource(def.file, '#define WORDS\n'),
+        )
+      : null,
     land: def.land
       ? program(gl, 'terrain.vert', LAND_VERTEX, LAND_FRAGMENT)
       : null,
@@ -927,6 +938,8 @@ const makeEngine = (
   const coverTexture = dataTexture(gl, COVER, COVER, 'rgba', false)
   // The song's own pictures, for Montage (montage.ts).
   const montage = makeMontage(gl)
+  // The sung words (words.ts), on their own unit.
+  const words = makeWordsGl(gl)
   const scoreTexture = dataTexture(gl, SCORE_COLUMNS, AHEAD_ROWS, 'r', false)
   let scoreRate = 0
   let scoreShift = 0
@@ -984,6 +997,7 @@ const makeEngine = (
       gl.bindTexture(gl.TEXTURE_2D, texture)
       gl.uniform1i(at, unit)
     })
+    words.bind(p)
   }
 
   const setMusic = (
@@ -1057,6 +1071,7 @@ const makeEngine = (
     const shakeAt = at('uShake')
     if (shakeAt !== undefined) gl.uniform2f(shakeAt, ...moved.shake)
     diorama.setUniforms(p, music, scene?.seed ?? 0, res, hit(music))
+    words.uniforms(p)
   }
 
   const fullscreen = () => gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -1113,12 +1128,14 @@ const makeEngine = (
     }
     sim?.before(music, scene.seed, prepare)
     beginPass(write)
-    if (scene.main !== null) {
-      gl.useProgram(scene.main.program)
-      setMusic(scene.main, music, [write.width, write.height], scene)
-      bindTextures(scene.main, read)
-      sim?.bind(scene.main)
-      montage.bind(scene.main, music)
+    // With the words while one shows, as gpu.rs's `worded`.
+    const shown = (words.showing() ? scene.worded : null) ?? main
+    if (shown !== null) {
+      gl.useProgram(shown.program)
+      setMusic(shown, music, [write.width, write.height], scene)
+      bindTextures(shown, read)
+      sim?.bind(shown)
+      montage.bind(shown, music)
       fullscreen()
     }
     sim?.after(write, prepare)
@@ -1153,9 +1170,11 @@ const makeEngine = (
   let side = 0
   const setSide = (on: boolean) => {
     side = on ? 1 : 0
+    words.setRoom(on ? 'Side' : 'Centre')
   }
 
   const update = (music: Music, dt: number) => {
+    words.update(music.time, width / height)
     scoreRate = music.ahead?.rate ?? 0
     scoreShift = music.ahead?.shift ?? 0
     if (music.ahead !== undefined) {
@@ -1323,6 +1342,7 @@ const makeEngine = (
         const loc = finalPass.uniforms.get(name)
         if (loc !== undefined) gl.uniform1i(loc, unit)
       })
+      words.bind(finalPass)
       const f = (name: string, value: number) => {
         const at = finalPass.uniforms.get(name)
         if (at !== undefined) gl.uniform1f(at, value)
@@ -1388,6 +1408,7 @@ const makeEngine = (
     setDepth: diorama.setDepth,
     setHistory,
     setSide,
+    setWords: words.load,
     clearScenes,
     scenes,
     montage,
@@ -1586,7 +1607,13 @@ const bench = () => {
         `bench ${width}x${height} ${sceneWidth}x${sceneHeight}\n${lines.join('\n')}`,
       )
   }
-  requestAnimationFrame(tick)
+  // `?words=1`: with the made-up song's words in flight.
+  if (params.get('words') === '1')
+    void madeUpWords(124).then(made => {
+      engine.setWords(made)
+      requestAnimationFrame(tick)
+    })
+  else requestAnimationFrame(tick)
 }
 
 const live = () => {
@@ -2280,4 +2307,6 @@ else if (MODE === 'montage')
     cover: madeUpCover,
     scene: SCENES.findIndex(def => def.name === 'Montage'),
   })
+else if (MODE === 'words')
+  wordsPage({ scenes: SCENES, makeEngine, madeUpSong, madeUpCover })
 else live()

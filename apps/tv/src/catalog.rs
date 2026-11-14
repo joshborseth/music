@@ -405,6 +405,101 @@ fn middling_drive() -> f32 {
     0.5
 }
 
+/// One sung line of a song's words (`GET /tv/words`): from its start to
+/// where its singing ends. A hook's words come back elsewhere in the song.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordLine {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub hook: bool,
+}
+
+/// One sung word, timed by the server. `line` indexes `Words::lines`;
+/// `glyph` the atlas's glyphs (none when the font can't draw it).
+/// `phrase` marks the song's most repeated short phrase.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Word {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+    pub line: usize,
+    pub glyph: Option<usize>,
+    pub hook: bool,
+    pub phrase: bool,
+}
+
+/// Where a word sits in the atlas, in pixels, and its baseline, pixels
+/// down from the top of its rectangle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Glyph {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub baseline: f32,
+}
+
+/// Every distinct word of the song in capitals as a signed distance field:
+/// a grayscale PNG (base64), 128 on the letters' edge, a step of 128 for
+/// every `spread` pixels. `cap_height` is a capital's height in pixels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordAtlas {
+    pub width: u32,
+    pub height: u32,
+    pub cap_height: f32,
+    pub spread: f32,
+    pub png: String,
+    pub glyphs: Vec<Glyph>,
+}
+
+/// A song's sung words, timed one by one, for the visuals to draw into
+/// their scenes; empty for a song without timed lyrics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Words {
+    pub video_id: String,
+    pub phrase: Option<String>,
+    pub lines: Vec<WordLine>,
+    pub words: Vec<Word>,
+    pub atlas: Option<WordAtlas>,
+    /// The atlas's pixels, `width` × `height` a row at a time, once
+    /// decoded (`Client::words`); then `atlas.png` is dropped.
+    #[serde(skip)]
+    pub pixels: Vec<u8>,
+}
+
+impl Words {
+    /// Decode the atlas's PNG into `pixels`, dropping the atlas when it is
+    /// not a grayscale picture of its stated size. True when it reads.
+    pub fn decode_atlas(&mut self) -> bool {
+        let Some(atlas) = self.atlas.as_mut() else {
+            return false;
+        };
+        let decoded = base64_decode(&atlas.png)
+            .and_then(|bytes| {
+                image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()
+            })
+            .map(image::DynamicImage::into_luma8)
+            .filter(|image| image.width() == atlas.width && image.height() == atlas.height);
+        atlas.png = String::new();
+        match decoded {
+            Some(image) => {
+                self.pixels = image.into_raw();
+                true
+            }
+            None => {
+                self.atlas = None;
+                false
+            }
+        }
+    }
+}
+
 /// One timed line, sung until the next starts. Empty `text` marks a break.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -659,6 +754,20 @@ impl Client {
         Ok((montage, bytes.to_vec()))
     }
 
+    /// The song's sung words and their atlas, decoded here, off the UI
+    /// thread.
+    pub async fn words(&self, video_id: &str) -> Result<Words, String> {
+        let path = format!(
+            "/tv/words?videoId={}",
+            crate::view::percent_encode(video_id)
+        );
+        let mut words: Words = self.get(&path).await?;
+        if words.atlas.is_some() && !words.decode_atlas() {
+            log::warn!("words: the atlas of {video_id} could not be read");
+        }
+        Ok(words)
+    }
+
     pub async fn liked(&self, video_id: &str) -> Result<bool, String> {
         let path = format!(
             "/tv/liked?videoId={}",
@@ -889,6 +998,26 @@ mod tests {
         // A source this app doesn't know yet reads as the artist's pictures.
         let newer: MontageSource = serde_json::from_str("\"Lyrics\"").unwrap();
         assert_eq!(newer, MontageSource::Artist);
+    }
+
+    #[test]
+    fn decodes_words_and_their_atlas() {
+        let mut words: Words = fixture("words.json");
+        assert_eq!(words.phrase.as_deref(), Some("la la"));
+        assert!(words.lines[0].hook);
+        assert_eq!(words.words[1].glyph, Some(0));
+        assert_eq!(words.words[3].glyph, None);
+        assert!(words.decode_atlas());
+        let atlas = words.atlas.as_ref().unwrap();
+        assert_eq!(words.pixels.len(), 8 * 4);
+        assert!(atlas.png.is_empty());
+        assert_eq!(atlas.glyphs[1].x, 5.0);
+        // The middle column of each glyph is inside the letters.
+        assert_eq!(words.pixels[2], 200);
+        assert_eq!(words.pixels[8 + 6], 200);
+        assert_eq!(words.pixels[8 + 7], 60);
+        let mut none: Words = fixture("words-none.json");
+        assert!(none.words.is_empty() && !none.decode_atlas());
     }
 
     #[test]

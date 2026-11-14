@@ -25,6 +25,8 @@ import { QueueTrack } from './session.ts'
  *   GET  /tv/collection?kind=…&id=…        TvCollection
  *   GET  /tv/lyrics?videoId=…              TvLyrics
  *   GET  /tv/analysis?videoId=…            TvAnalysis the song's beats, bars, sections and drops
+ *   GET  /tv/words?videoId=…               TvWords    when each sung word comes, and the words drawn
+ *                                                    as a distance field the visuals draw them from
  *   GET  /tv/loudness?videoId=…[&wait=true] TvLoudness the gain that levels the song (Sound Check):
  *                                                    the best known now, or with `wait`, once the
  *                                                    server has measured it
@@ -472,3 +474,78 @@ export const TvMontage = Schema.Struct({
   atlasPath: Schema.String,
 })
 export type TvMontage = typeof TvMontage.Type
+
+/**
+ * One sung line of the words (`TvWords`): from its start to where the
+ * singing of it ends. `hook` marks a line whose words come back elsewhere
+ * in the song (the chorus), which the visuals draw large.
+ */
+export const TvWordLine = Schema.Struct({
+  startSeconds: Schema.Number,
+  endSeconds: Schema.Number,
+  hook: Schema.Boolean,
+})
+export type TvWordLine = typeof TvWordLine.Type
+
+/**
+ * One sung word, estimated from its line's time, the lead melody's notes,
+ * and its syllables. `line` indexes `TvWords.lines`; `glyph` indexes the
+ * atlas's glyphs (null when the word can't be drawn: a script the font
+ * lacks). `phrase` marks the words of the song's most repeated short
+ * phrase, the biggest of all.
+ */
+export const TvWord = Schema.Struct({
+  startSeconds: Schema.Number,
+  endSeconds: Schema.Number,
+  text: Schema.String,
+  line: Schema.Number,
+  glyph: Schema.NullOr(Schema.Number),
+  hook: Schema.Boolean,
+  phrase: Schema.Boolean,
+})
+export type TvWord = typeof TvWord.Type
+
+/**
+ * Where a word sits in the atlas, in pixels from its top left corner, and
+ * its baseline: pixels down from the rectangle's top. Each rectangle holds
+ * the word's ink and `spread` pixels around it.
+ */
+export const TvGlyph = Schema.Struct({
+  text: Schema.String,
+  x: Schema.Number,
+  y: Schema.Number,
+  width: Schema.Number,
+  height: Schema.Number,
+  baseline: Schema.Number,
+})
+export type TvGlyph = typeof TvGlyph.Type
+
+/**
+ * Every distinct word of the song in capitals, as a signed distance field:
+ * a grayscale PNG (base64), 128 on the letters' edge, more inside, less
+ * outside, a step of 128 for every `spread` pixels. `capHeight` is a
+ * capital's height in pixels, to size words by.
+ */
+export const TvWordAtlas = Schema.Struct({
+  width: Schema.Number,
+  height: Schema.Number,
+  capHeight: Schema.Number,
+  spread: Schema.Number,
+  png: Schema.String,
+  glyphs: Schema.Array(TvGlyph),
+})
+export type TvWordAtlas = typeof TvWordAtlas.Type
+
+/**
+ * The sung words of a song, timed one by one, for the TV's visuals to draw
+ * into its scenes. Empty, with no atlas, for a song without timed lyrics.
+ * `phrase` is the most repeated short phrase, when one stands out.
+ */
+export const TvWords = Schema.Struct({
+  videoId: Schema.String,
+  phrase: Schema.NullOr(Schema.String),
+  lines: Schema.Array(TvWordLine),
+  words: Schema.Array(TvWord),
+  atlas: Schema.NullOr(TvWordAtlas),
+})
+export type TvWords = typeof TvWords.Type
