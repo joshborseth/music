@@ -403,9 +403,10 @@ export const momentsPage = <M>(lab: MomentLab<M>) => {
     }
   } else if (show === 'build') {
     // The build over bars 16 to 20 and the drop on bar 20, on Stars, which
-    // shatters into Tunnel on the landing. Picks in bars from the start.
-    const from = scene('Stars')
-    const to = scene('Tunnel')
+    // shatters into Tunnel on the landing (or `?from=` into `?to=`). Picks
+    // in bars from the start.
+    const from = scene(params.get('from') ?? 'Stars')
+    const to = scene(params.get('to') ?? 'Tunnel')
     const picks: Array<[number, string]> = [
       [15.5, 'before the build'],
       [17, 'build, bar 1'],
