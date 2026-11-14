@@ -45,7 +45,7 @@ use super::music::{
     AHEAD_BEHIND, AHEAD_ROWS, BANDS, HISTORY_ROWS, LEVELS, Listener, Music, SCORE_COLUMNS, WAVE,
 };
 use super::sizing::{Change, Sizing};
-use super::transition::SceneChange;
+use super::transition::{SceneChange, TRANSITIONS};
 
 const COMMON: &str = include_str!("shaders/common.glsl");
 const FRAGMENT: &str = include_str!("shaders/fragment.glsl");
@@ -128,6 +128,9 @@ pub struct Renderer {
     bright: Program,
     blur: Program,
     final_pass: Program,
+    /// `final` for each change of scene, by its code (`transition.rs`);
+    /// none for code 0, which is `final_pass`.
+    changes: [Option<Program>; TRANSITIONS],
     present: Program,
     slots: [Slot; 2],
     /// The finished picture, the scenes' size, before `present` stretches it.
@@ -223,6 +226,22 @@ impl Renderer {
                 &vertex,
                 &fragment(include_str!("shaders/final.glsl")),
             );
+            // Each change of scene is `final.glsl` with its own code in
+            // (`transition.rs`). One that fails to compile cuts instead.
+            let changes = std::array::from_fn(|code| {
+                (code > 0)
+                    .then(|| {
+                        compile(
+                            &format!("final.glsl (change {code})"),
+                            &vertex,
+                            &fragment(&format!(
+                                "#define TRANSITION {code}\n#line 1\n{}",
+                                include_str!("shaders/final.glsl")
+                            )),
+                        )
+                    })
+                    .flatten()
+            });
             let present = compile(
                 "present.glsl",
                 &vertex,
@@ -266,6 +285,7 @@ impl Renderer {
                 present,
                 slots,
                 final_pass,
+                changes,
                 picture,
                 picture_drawn: false,
                 bloom,
@@ -588,7 +608,10 @@ impl Renderer {
 
             // ...and the picture, the scenes' size.
             let picture = &self.picture;
-            let program = &self.final_pass;
+            // The change's own program, while one runs.
+            let program = b
+                .and_then(|_| self.changes[change.code()].as_ref())
+                .unwrap_or(&self.final_pass);
             begin_pass(gl, picture);
             gl.use_program(Some(program.program));
             self.set_music(
@@ -599,14 +622,22 @@ impl Renderer {
                 Some(current),
                 listener,
             );
-            bind_texture(gl, program, "uSceneA", 0, out_a.texture);
-            bind_texture(gl, program, "uSceneB", 1, out_b.texture);
+            // `final` reads the scene showing first, then the frozen one
+            // a change destroys.
+            let (showing, frozen) = if b.is_some() {
+                (out_b, out_a)
+            } else {
+                (out_a, out_b)
+            };
+            bind_texture(gl, program, "uSceneA", 0, showing.texture);
+            bind_texture(gl, program, "uSceneB", 1, frozen.texture);
             bind_texture(gl, program, "uBloom", 2, soft.texture);
             bind_texture(gl, program, "uNoise", 3, self.noise);
+            // The changes of scene read the fractal noise too.
+            bind_texture(gl, program, "uFbm", 4, self.fbm);
             set_f32(gl, program, "uMix", mix);
             // The change of scene (`transition.rs`) and the moments
             // (`Screen`): the build, the inhale, the glitch.
-            set_f32(gl, program, "uTransKind", change.code());
             set_f32(gl, program, "uTransSeed", change.seed);
             set_f32(gl, program, "uCueDrain", look.drain);
             set_f32(gl, program, "uCueInhale", look.inhale);
@@ -892,6 +923,7 @@ impl Renderer {
                 self.final_pass,
                 self.present,
             ]);
+            let programs = programs.chain(self.changes.into_iter().flatten());
             for program in programs {
                 gl.delete_program(program.program);
             }

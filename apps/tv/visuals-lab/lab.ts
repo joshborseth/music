@@ -16,6 +16,7 @@
 import {
   type Cues,
   type SceneChange,
+  TRANSITIONS,
   buildAndLanding,
   hit,
   madeUpCues,
@@ -626,8 +627,9 @@ const compile = (
 
 const shaderText = (name: string): string => SHADERS[name] ?? ''
 const VERSION = '#version 300 es\n'
-const fragmentSource = (name: string): string =>
+const fragmentSource = (name: string, defines = ''): string =>
   VERSION +
+  defines +
   shaderText('common.glsl') +
   shaderText('fragment.glsl') +
   shaderText('helpers.glsl') +
@@ -846,6 +848,17 @@ const makeEngine = (
   )
   const blur = program(gl, 'blur.glsl', VERTEX, fragmentSource('blur.glsl'))
   const final = program(gl, 'final.glsl', VERTEX, fragmentSource('final.glsl'))
+  // Each change of scene is `final.glsl` built with its own code (gpu.rs).
+  const changes = TRANSITIONS.map((name, code) =>
+    code === 0
+      ? null
+      : program(
+          gl,
+          `final.glsl (${name})`,
+          VERTEX,
+          fragmentSource('final.glsl', `#define TRANSITION ${code}\n`),
+        ),
+  )
   const present = program(
     gl,
     'present.glsl',
@@ -1209,32 +1222,34 @@ const makeEngine = (
         gl.uniform2f(blurTexelAt, 1 / brightParts.width, 1 / brightParts.height)
       fullscreen()
     }
-    if (runs('final') && final !== null) {
+    const finalPass = (kind > 0 ? changes[kind] : null) ?? final
+    if (runs('final') && finalPass !== null) {
       beginPass(picture)
-      gl.useProgram(final.program)
-      setMusic(final, music, [picture.width, picture.height], sceneA)
+      gl.useProgram(finalPass.program)
+      setMusic(finalPass, music, [picture.width, picture.height], sceneA)
+      // The scene showing first, then the frozen one a change destroys.
       const inputs: Array<[string, WebGLTexture]> = [
-        ['uSceneA', outA.texture],
-        ['uSceneB', outB.texture],
+        ['uSceneA', outB.texture],
+        ['uSceneB', outA.texture],
         ['uBloom', glow.texture],
         ['uNoise', noiseTexture],
+        ['uFbm', fbmTexture],
       ]
       inputs.forEach(([name, texture], unit) => {
         gl.activeTexture(gl.TEXTURE0 + unit)
         gl.bindTexture(gl.TEXTURE_2D, texture)
-        const loc = final.uniforms.get(name)
+        const loc = finalPass.uniforms.get(name)
         if (loc !== undefined) gl.uniform1i(loc, unit)
       })
       const f = (name: string, value: number) => {
-        const at = final.uniforms.get(name)
+        const at = finalPass.uniforms.get(name)
         if (at !== undefined) gl.uniform1f(at, value)
       }
       const v3 = (name: string, value: Rgb) => {
-        const at = final.uniforms.get(name)
+        const at = finalPass.uniforms.get(name)
         if (at !== undefined) gl.uniform3f(at, ...value)
       }
       f('uMix', mix)
-      f('uTransKind', kind)
       f('uTransSeed', change?.seed ?? 0.37)
       f('uCueDrain', look.drain)
       f('uCueInhale', look.inhale)
@@ -1254,7 +1269,7 @@ const makeEngine = (
       f('uSide', side)
       f('uCentre', 1 - side)
       const reach = 0.3 * Math.hypot(picture.width, picture.height)
-      const poolAt = final.uniforms.get('uPool')
+      const poolAt = finalPass.uniforms.get('uPool')
       if (poolAt !== undefined)
         gl.uniform2f(poolAt, picture.width / reach, picture.height / reach)
       fullscreen()
@@ -1399,7 +1414,9 @@ const bench = () => {
   const finish = () =>
     gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel)
   const FRAMES = 10
-  const at = (60 / 124) * 4 * 20.25
+  // `?bar=` times another moment of the made-up song (the drop's first
+  // bar by default).
+  const at = (60 / 124) * 4 * Number(params.get('bar') ?? 20.25)
   const columns = ['frame', 'scene', 'glow', 'picture', 'screen'] as const
   const passes: Record<(typeof columns)[number], Pass | undefined> = {
     frame: undefined,
@@ -1591,7 +1608,7 @@ const live = () => {
       if (choice !== current) {
         next = choice
         mix = 0.0001
-        change = { kind: transitionCode(way), seed: Math.random() }
+        change = { kind: transitionCode(way), seed: fract(music.beats * 0.618) }
         changeBeats = beats
       }
     }
