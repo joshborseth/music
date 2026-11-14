@@ -38,7 +38,7 @@ use crate::nav::{
 use crate::protocol::{Placement, RepeatMode};
 use crate::update::{self, UpdateStatus};
 use crate::view::{PlayClock, View, clock, playing_from_line};
-use crate::visuals::{Cover, Depth, Screenshot, Stage, Visuals};
+use crate::visuals::{Cover, Depth, MontageAtlas, Screenshot, Stage, Visuals};
 use crate::voice::VoiceEvent;
 use crate::{
     App, ButtonData, CardData, HintData, KeyData, LyricRowData, MenuItemData, RowData, ShelfData,
@@ -71,6 +71,10 @@ const ANALYSIS_TRIES: u32 = 6;
 /// the tries, this many times.
 const DEPTH_RETRY: Duration = Duration::from_secs(5);
 const DEPTH_TRIES: u32 = 6;
+/// A montage is asked for again this much later each time (the server may
+/// still be making it), and at most this many times.
+const MONTAGE_RETRY: Duration = Duration::from_secs(10);
+const MONTAGE_TRIES: u32 = 6;
 const TICK: Duration = Duration::from_millis(100);
 const UP_NEXT: usize = 1;
 
@@ -264,6 +268,16 @@ struct SongAnalysis {
     pending: bool,
 }
 
+/// The montage of one song (its own pictures, for the visuals): asked for,
+/// arrived, or not there for now.
+struct SongMontage {
+    video_id: String,
+    atlas: Option<Arc<MontageAtlas>>,
+    tries: u32,
+    next_try: Instant,
+    pending: bool,
+}
+
 pub struct Ui {
     app: slint::Weak<App>,
     nav: Nav,
@@ -294,6 +308,8 @@ pub struct Ui {
     analysis: Option<SongAnalysis>,
     /// The depth of the cover playing now, for the visuals.
     depth: Option<CoverDepth>,
+    /// The montage of the song playing now, for the visuals.
+    montage: Option<SongMontage>,
     capture_timer: Timer,
     ok_down: Option<Instant>,
     ok_held: bool,
@@ -361,6 +377,7 @@ impl Ui {
             visuals,
             analysis: None,
             depth: None,
+            montage: None,
             capture_timer: Timer::default(),
             ok_down: None,
             ok_held: false,
@@ -881,11 +898,13 @@ impl Ui {
             .artwork_url
             .as_deref()
             .and_then(|url| self.depth_for(url));
+        let montage = self.montage_for(&entry.track.video_id);
         Some(Stage {
             entry_id: entry.entry_id,
             cover: self.current_cover(),
             depth,
             analysis,
+            montage,
             playing: self.nav.session.playing,
             side,
         })
@@ -1004,6 +1023,75 @@ impl Ui {
             Err(message) => {
                 log::info!("no analysis of {video_id} yet: {message}");
                 song.next_try = Instant::now() + ANALYSIS_RETRY * song.tries;
+            }
+        }
+        self.update_visuals();
+    }
+
+    /// The song's montage for the visuals, asking for it when needed. It is
+    /// decoded off the UI thread.
+    fn montage_for(&mut self, video_id: &str) -> Option<Arc<MontageAtlas>> {
+        let now = Instant::now();
+        if self
+            .montage
+            .as_ref()
+            .is_none_or(|song| song.video_id != video_id)
+        {
+            self.montage = Some(SongMontage {
+                video_id: video_id.to_owned(),
+                atlas: None,
+                tries: 0,
+                next_try: now,
+                pending: false,
+            });
+        }
+        let song = self.montage.as_mut()?;
+        let ask = song.atlas.is_none()
+            && !song.pending
+            && song.tries < MONTAGE_TRIES
+            && now >= song.next_try;
+        let atlas = song.atlas.clone();
+        if ask {
+            song.pending = true;
+            song.tries += 1;
+            let catalog = self.catalog.clone();
+            let wanted = video_id.to_owned();
+            let video_id = video_id.to_owned();
+            self.spawn(
+                async move {
+                    let (montage, jpeg) = catalog.montage(&wanted).await?;
+                    tokio::task::spawn_blocking(move || MontageAtlas::decode(&montage, &jpeg))
+                        .await
+                        .map_err(|error| error.to_string())?
+                },
+                move |ui, result| ui.on_montage(&video_id, result),
+            );
+        }
+        atlas
+    }
+
+    fn on_montage(&mut self, video_id: &str, result: Result<MontageAtlas, String>) {
+        let Some(song) = self
+            .montage
+            .as_mut()
+            .filter(|song| song.video_id == video_id)
+        else {
+            return;
+        };
+        song.pending = false;
+        match result {
+            Ok(atlas) => {
+                log::info!(
+                    "montage of {video_id}: {} pictures, {}×{}",
+                    atlas.pictures.len(),
+                    atlas.width,
+                    atlas.height
+                );
+                song.atlas = Some(Arc::new(atlas));
+            }
+            Err(message) => {
+                log::info!("no montage of {video_id} yet: {message}");
+                song.next_try = Instant::now() + MONTAGE_RETRY * song.tries;
             }
         }
         self.update_visuals();

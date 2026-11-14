@@ -50,7 +50,7 @@ pub struct SceneSpec {
 }
 
 /// Every scene, in the order of `gpu::SCENE_SHADERS`.
-pub const SCENES: [SceneSpec; 10] = [
+pub const SCENES: [SceneSpec; 11] = [
     SceneSpec {
         name: "Silk",
         energy: 0.1,
@@ -91,7 +91,16 @@ pub const SCENES: [SceneSpec; 10] = [
         name: "Diorama",
         energy: 0.6,
     },
+    // The song's own pictures, cut to the beat (montage.rs): only once the
+    // song's montage has loaded (`Renderer::can_draw`).
+    SceneSpec {
+        name: "Montage",
+        energy: 0.75,
+    },
 ];
+
+/// The scene that shows the song's own pictures (`montage.rs`).
+pub const MONTAGE: usize = scene_index("Montage");
 
 /// The place in `SCENES` of the scene called `name`, worked out when the
 /// code compiles, so code can name a scene instead of counting to it.

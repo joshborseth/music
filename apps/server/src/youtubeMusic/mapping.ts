@@ -1220,6 +1220,34 @@ export const musicVideoIds = (
 export type MusicVideo = Pick<Song, 'videoId' | 'title' | 'artists'>
 
 /**
+ * A video a YouTube Music video search found, its title as it came ("Daft
+ * Punk - One More Time (Official Video)"): what finding a song's own music
+ * video needs (`montage/match.ts`).
+ */
+export interface VideoSearchResult {
+  readonly videoId: string
+  readonly title: string
+  readonly artists: ReadonlyArray<ArtistLink>
+  readonly maybeDurationSeconds: Option.Option<number>
+}
+
+/** A video from a video search, with its title left as it came. */
+export const videoFromListItem = (
+  item: YTNodes.MusicResponsiveListItem,
+): Option.Option<VideoSearchResult> =>
+  Option.all({
+    videoId: nonEmptyString(item.id),
+    title: nonEmptyString(item.title),
+  }).pipe(
+    Option.map(({ videoId, title }) => ({
+      videoId,
+      title,
+      artists: listItemArtistLinks(item),
+      maybeDurationSeconds: Option.fromNullishOr(item.duration?.seconds),
+    })),
+  )
+
+/**
  * Words that name a kind of video, not a version of the song: "(Official
  * Video)", "[4K]", "[1080p]", "(HQ)". "(Full Album)" is not one: the title
  * keeps it, so a whole album uploaded as one video is still known as one.

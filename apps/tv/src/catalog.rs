@@ -130,6 +130,42 @@ pub struct Loudness {
     pub true_peak_dbtp: Option<f64>,
 }
 
+/// Where a song's montage comes from. Mirrors `TvMontageSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MontageSource {
+    /// Key frames of the song's music video, in 16:9 cells.
+    Video,
+    /// The artist's photos and covers, in square cells.
+    #[serde(other)]
+    Artist,
+}
+
+/// One picture of a montage (`TvMontageFrame`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MontageFrame {
+    pub seconds: Option<f64>,
+    pub color: [f32; 3],
+    pub brightness: f32,
+    pub busyness: f32,
+}
+
+/// A song's own pictures for the visuals (`GET /tv/montage`), packed into
+/// one JPEG at `atlas_path`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Montage {
+    pub video_id: String,
+    pub source: MontageSource,
+    pub music_video_id: Option<String>,
+    pub columns: u32,
+    pub rows: u32,
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub frames: Vec<MontageFrame>,
+    pub atlas_path: String,
+}
+
 /// What a stretch of a song is, as the server's analysis heard it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SectionKind {
@@ -605,6 +641,24 @@ impl Client {
             .ok_or(DepthMissing::Never)
     }
 
+    /// The song's montage and its atlas, the JPEG's bytes, still encoded.
+    pub async fn montage(&self, video_id: &str) -> Result<(Montage, Vec<u8>), String> {
+        let path = format!(
+            "/tv/montage?videoId={}",
+            crate::view::percent_encode(video_id)
+        );
+        let montage: Montage = self.get(&path).await?;
+        let response = self
+            .http
+            .get(format!("{}{}", self.server, montage.atlas_path))
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|error| error.to_string())?;
+        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+        Ok((montage, bytes.to_vec()))
+    }
+
     pub async fn liked(&self, video_id: &str) -> Result<bool, String> {
         let path = format!(
             "/tv/liked?videoId={}",
@@ -814,6 +868,27 @@ mod tests {
         // A transition this app doesn't know yet wipes.
         let newer: TransitionKind = serde_json::from_str("\"Swirl\"").unwrap();
         assert_eq!(newer, TransitionKind::Wipe);
+    }
+
+    #[test]
+    fn decodes_a_montage() {
+        let montage: Montage = fixture("montage.json");
+        assert_eq!(montage.source, MontageSource::Video);
+        assert_eq!(montage.music_video_id.as_deref(), Some("gAjR4_CbPpQ"));
+        assert_eq!((montage.columns, montage.rows), (2, 2));
+        assert_eq!((montage.cell_width, montage.cell_height), (320, 180));
+        assert_eq!(montage.frames.len(), 3);
+        assert_eq!(montage.frames[0].seconds, Some(3.5));
+        assert_eq!(montage.frames[2].seconds, None);
+        assert_eq!(montage.frames[1].color, [0.6, 0.31, 0.5]);
+        assert!(
+            montage
+                .atlas_path
+                .starts_with("/tv/montage.jpg?videoId=abc123")
+        );
+        // A source this app doesn't know yet reads as the artist's pictures.
+        let newer: MontageSource = serde_json::from_str("\"Lyrics\"").unwrap();
+        assert_eq!(newer, MontageSource::Artist);
     }
 
     #[test]

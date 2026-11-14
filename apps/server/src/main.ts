@@ -18,6 +18,8 @@ import { DepthRoutes } from './depth/routes.ts'
 import { CoverDepthLive } from './depth/service.ts'
 import { CertificateRoute, LanTlsConfig, lanHttpsServer } from './lanHttps.ts'
 import { TimedLyricsLive } from './lyrics/service.ts'
+import { MontageRoutes } from './montage/routes.ts'
+import { SongMontageLive } from './montage/service.ts'
 import { ArtworkPaletteLive } from './palette/service.ts'
 import { PlaylistStoreLive } from './playlists/store.ts'
 import { PrefetcherLive } from './prefetch.ts'
@@ -43,10 +45,11 @@ const PlaylistsLive = PlaylistStoreLive.pipe(Layer.provide(BunServices.layer))
 
 /**
  * Songs on disk, downloaded through yt-dlp, the prefetcher that gets them
- * ready early, and each song's analysis and its cover's depth for the TV's
- * visuals: shared by the RPCs and playback.
+ * ready early, and each song's analysis, its cover's depth, and its montage
+ * for the TV's visuals: shared by the RPCs and playback.
  */
 const AudioLive = PrefetcherLive.pipe(
+  Layer.provideMerge(SongMontageLive.pipe(Layer.provide(YouTubeMusicLive))),
   Layer.provideMerge(SongAnalysisLive),
   Layer.provideMerge(CoverDepthLive),
   Layer.provideMerge(AudioStoreLive),
@@ -67,7 +70,11 @@ const RpcRoutes = RpcServer.layerHttp({
  * The catalog in both shapes: Effect RPC for the web app, plain JSON under
  * `/tv/` for the TV app. They share one playlist store and one prefetcher.
  */
-const CatalogRoutes = Layer.mergeAll(RpcRoutes, TvCatalogRoutes).pipe(
+const CatalogRoutes = Layer.mergeAll(
+  RpcRoutes,
+  TvCatalogRoutes,
+  MontageRoutes,
+).pipe(
   Layer.provide(YouTubeMusicLive),
   Layer.provide(ArtworkPaletteLive),
   Layer.provide(LyricsLive),

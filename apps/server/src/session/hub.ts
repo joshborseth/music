@@ -490,9 +490,22 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         { discard: true },
       )
 
+    /**
+     * Whether a TV may show the visuals soon: one is connected, or being
+     * woken. Only then are the queue's montages and cover depths, which
+     * only a TV shows, made ahead; a phone playing alone never asks for
+     * them, and a TV that connects later asks for the song playing itself.
+     */
+    const tvWatching = () =>
+      model.waking.length > 0 ||
+      Array.from(connections.values()).some(
+        connection => connection.kind === 'Tv',
+      )
+
     /** Keep the current song and the next five ready, and look ahead further. */
     const prepareAhead = Effect.suspend(() => {
       const ahead = lookahead(model)
+      const forTv = tvWatching()
       return Effect.all(
         [
           fillMissingDurations(ahead.download),
@@ -503,9 +516,11 @@ export const SessionHubLive = Layer.effect(SessionHub)(
               videoId,
               kind: 'Download' as const,
               priority: index,
-              artworkUrl:
-                model.queue.find(entry => entry.track.videoId === videoId)
-                  ?.track.artworkUrl ?? undefined,
+              artworkUrl: forTv
+                ? (model.queue.find(entry => entry.track.videoId === videoId)
+                    ?.track.artworkUrl ?? undefined)
+                : undefined,
+              montage: forTv,
             })),
             ...ahead.resolve.map((videoId, index) => ({
               videoId,

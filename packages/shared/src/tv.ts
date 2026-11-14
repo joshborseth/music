@@ -28,6 +28,9 @@ import { QueueTrack } from './session.ts'
  *   GET  /tv/loudness?videoId=…[&wait=true] TvLoudness the gain that levels the song (Sound Check):
  *                                                    the best known now, or with `wait`, once the
  *                                                    server has measured it
+ *   GET  /tv/montage?videoId=…             TvMontage  key frames of the song's music video (or the
+ *                                                    artist's photos and covers) for the visuals
+ *   GET  /tv/montage.jpg?videoId=…         the frames, packed into one JPEG (`TvMontage`)
  *   GET  /tv/liked?videoId=…               TvLiked
  *   POST /tv/like   (TvLikeRequest)        TvLiked
  *   GET  /tv/saved?kind=…&id=…             TvSaved    whether an album is saved or an artist followed
@@ -425,3 +428,47 @@ export const TvLoudness = Schema.Struct({
   truePeakDbtp: Schema.NullOr(Schema.Number),
 })
 export type TvLoudness = typeof TvLoudness.Type
+
+/**
+ * Where a song's montage comes from: key frames of its official music video
+ * (`Video`), or, for a song without one, the artist's photos and the
+ * artist's album covers (`Artist`).
+ */
+export const TvMontageSource = Schema.Literals(['Video', 'Artist'])
+export type TvMontageSource = typeof TvMontageSource.Type
+
+/**
+ * One picture of a montage, one cell of the atlas. `seconds` is where in
+ * the music video it was taken (null for a photo or a cover). `color` is
+ * its average color, `brightness` its average light, and `busyness` how
+ * much detail and contrast it holds (a plain sky 0, a crowd 1), all 0 to 1,
+ * so the visuals can pick dark, calm pictures for calm music and busy,
+ * bright ones for the loudest.
+ */
+export const TvMontageFrame = Schema.Struct({
+  seconds: Schema.NullOr(Schema.Number),
+  color: Schema.Tuple([Schema.Number, Schema.Number, Schema.Number]),
+  brightness: Schema.Number,
+  busyness: Schema.Number,
+})
+export type TvMontageFrame = typeof TvMontageFrame.Type
+
+/**
+ * A song's own pictures, cut into the TV's visuals: `frames.length`
+ * pictures packed into one JPEG (`atlasPath`, on this server), `columns`
+ * across and `rows` down, each `cellWidth` × `cellHeight` pixels, row by
+ * row from the top left. A video's frames fill 16:9 cells; photos and
+ * covers fill square ones. `musicVideoId` is the video they came from.
+ */
+export const TvMontage = Schema.Struct({
+  videoId: Schema.String,
+  source: TvMontageSource,
+  musicVideoId: Schema.NullOr(Schema.String),
+  columns: Schema.Number,
+  rows: Schema.Number,
+  cellWidth: Schema.Number,
+  cellHeight: Schema.Number,
+  frames: Schema.Array(TvMontageFrame),
+  atlasPath: Schema.String,
+})
+export type TvMontage = typeof TvMontage.Type

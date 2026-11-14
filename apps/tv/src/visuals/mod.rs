@@ -9,6 +9,8 @@
 //!   also run in the browser lab (`apps/tv/visuals-lab`). `motion.rs` works
 //!   out once a frame what they would otherwise work out at every pixel,
 //!   and `sizing.rs` picks each scene's size so frames come on time.
+//! - `montage.rs` cuts the song's own pictures (its music video's key
+//!   frames, from the server) to the beat, for the Montage scene.
 //!
 //! Everything here runs on the UI thread, inside Slint's rendering
 //! notifier. While the visuals show, each frame asks for the next.
@@ -19,6 +21,7 @@ mod diorama;
 mod director;
 mod gpu;
 mod look;
+mod montage;
 mod motion;
 mod music;
 mod particles;
@@ -39,6 +42,7 @@ use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 pub use diorama::Depth;
 pub use look::Cover;
+pub use montage::MontageAtlas;
 
 use crate::App;
 use crate::catalog::Analysis;
@@ -65,6 +69,8 @@ pub struct Stage {
     /// The cover's depth, for Diorama, once it has arrived.
     pub depth: Option<Arc<Depth>>,
     pub analysis: Option<Arc<Analysis>>,
+    /// The song's own pictures (`montage.rs`), once loaded.
+    pub montage: Option<Arc<MontageAtlas>>,
     pub playing: bool,
     /// The lyrics show on the right, beside the song.
     pub side: bool,
@@ -364,6 +370,7 @@ impl State {
         }
         renderer.set_cover(gl, stage.cover.as_ref());
         renderer.set_depth(gl, stage.depth.as_ref());
+        renderer.set_montage(gl, stage.montage.as_ref());
         // The clock already counts what is heard.
         let seconds = self
             .clock

@@ -104,6 +104,7 @@ const youTubeMusic = YouTubeMusic.of({
           ? Option.some(-17)
           : Option.none(),
     ),
+  searchVideos: () => down,
 })
 
 const analysisOf = (videoId: string): Tv.TvAnalysis => ({
