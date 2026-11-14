@@ -8,6 +8,8 @@
  * server's JSON and JPEG and renders contact sheets of chosen moments.
  */
 
+import { type Cues, FAR } from './moments.ts'
+
 /** What the server says about a montage (`TvMontage`). */
 export interface MontageMeta {
   readonly videoId: string
@@ -32,6 +34,11 @@ export interface MontageMusic {
   readonly drop: number
   readonly section: string
   readonly parts: { readonly fill: number; readonly stop: number }
+  /** The song's ceiling and choreography (moments.ts), when it has them. */
+  readonly ceiling?: number
+  readonly cue?: Cues
+  /** A drop landed this frame (a real song says so). */
+  readonly dropLanded?: boolean
 }
 
 /** The grades `montage.glsl` knows (montage.rs). */
@@ -42,6 +49,13 @@ const POSTER = 3
 const SHORTEST_CUT = 0.16
 const FLASH_EVERY = 0.34
 const BURST_BEATS = 8
+const BIG_LANDING = 0.5
+
+/** Whether the screen strobes now (`montage::strobing`). */
+const strobing = (music: MontageMusic): boolean => {
+  const t = Math.min(1, Math.max(0, ((music.ceiling ?? 1) - 0.35) / 0.55))
+  return (music.cue?.strobe ?? false) && t * t * (3 - 2 * t) > 0.3
+}
 const MONTAGE_UNIT = 9
 
 /** The TV's `motion::hash` and `unit`. */
@@ -120,6 +134,7 @@ const makeCutter = () => {
   let lastBeats = 0
   let burstUntil = Number.NEGATIVE_INFINITY
   let lastFlash = Number.NEGATIVE_INFINITY
+  let lastSince = FAR
   let lastDrop = 0
   let song: string | undefined
 
@@ -128,23 +143,27 @@ const makeCutter = () => {
 
   const pace = (music: MontageMusic): number | undefined => {
     if (music.parts.stop > 0.5) return undefined
-    if (music.beats < burstUntil || music.parts.fill > 0.5) return 0.5
-    if (music.intensity > 0.72 || music.drop > 0.25) return 1
+    if (music.beats < burstUntil || music.parts.fill > 0.5 || strobing(music))
+      return 0.5
+    if (
+      music.intensity > 0.72 ||
+      music.drop > 0.25 ||
+      (music.cue?.climax ?? 0) > 0
+    )
+      return 1
     if (music.intensity > 0.45) return 2
     if (music.intensity > 0.2) return 4
     return 8
   }
 
-  const cut = (
-    music: MontageMusic,
-    ranks: ReadonlyArray<Picture>,
-    landed: boolean,
-  ) => {
+  const cut = (music: MontageMusic, ranks: ReadonlyArray<Picture>) => {
     const count = ranks.length
     if (count === 0) return
     const burst = music.beats < burstUntil
     const intensity = Math.min(1, Math.max(0, music.intensity))
-    const target = burst ? 1 : intensity
+    const strobe = strobing(music)
+    const target =
+      burst || strobe || (music.cue?.climax ?? 0) > 0 ? 1 : intensity
     const remember = Math.min(16, Math.max(1, Math.floor(count / 2)))
     let best = 0
     let bestCost = Number.POSITIVE_INFINITY
@@ -167,11 +186,15 @@ const makeCutter = () => {
     const zoomTo = calm ? zoomFrom + 0.12 + 0.1 * random(102) : zoomFrom + 0.03
     const reach = (zoom: number, salt: number) =>
       (random(salt) * 2 - 1) * (1 - 1 / zoom) * 0.5
-    const flash = music.time - lastFlash >= FLASH_EVERY
+    // As `Cutter::cut`: no cut lights up while the screen flashes.
+    const flash =
+      music.time - lastFlash >= FLASH_EVERY &&
+      !strobe &&
+      (music.cue?.until ?? FAR) >= FLASH_EVERY
     if (flash) lastFlash = music.time
     const strength = !flash
       ? 0
-      : burst || landed
+      : burst
         ? 1
         : (0.25 + 0.75 * intensity) * (calm ? 0.4 : 1)
     let group = 0
@@ -222,11 +245,19 @@ const makeCutter = () => {
       lastBeats = music.beats
       burstUntil = Number.NEGATIVE_INFINITY
       lastFlash = Number.NEGATIVE_INFINITY
+      lastSince = FAR
     }
-    // The lab's music has no `drop_landed`: a drop lands where it leaps.
-    const landed = music.drop > 0.85 && lastDrop < music.drop - 0.3
+    // A real song says where a drop lands; the made-up one, where it leaps.
+    const landed =
+      music.dropLanded ?? (music.drop > 0.85 && lastDrop < music.drop - 0.3)
     lastDrop = music.drop
-    if (landed) burstUntil = music.beats + BURST_BEATS
+    // A build's landing: the choreography's latest landing starting over.
+    const since = music.cue?.since ?? FAR
+    const landing = since < lastSince
+    lastSince = since
+    if (landed || landing) lastFlash = music.time
+    if (landed || (landing && (music.cue?.landed ?? 0) >= BIG_LANDING))
+      burstUntil = music.beats + BURST_BEATS
     const sinceCut =
       current === undefined ? Number.POSITIVE_INFINITY : music.time - current.at
     const beatsApart = pace(music)
@@ -238,9 +269,10 @@ const makeCutter = () => {
     const stale = sinceCut > 12 && music.parts.stop < 0.5
     if (
       current === undefined ||
+      landing ||
       ((crossed || landed || stale) && sinceCut >= SHORTEST_CUT)
     ) {
-      cut(music, ranks, landed)
+      cut(music, ranks)
     }
     lastBeats = music.beats
     const shown = current

@@ -17,10 +17,18 @@
 //! the picture: a duotone or tritone in the cover's colors, a halftone or a
 //! posterized print, sometimes split into strips of different pictures.
 //!
+//! It follows the server's choreography too (`cues.rs`): it cuts on the
+//! frame a build lands, slams through the busiest pictures every half beat
+//! in strobe bars and every beat through the climax, and leaves the
+//! flashing to the screen (`motion::Screen`) whenever the screen flashes:
+//! no cut lights up in a strobe bar, near a landing, or on a drop, so the
+//! two together stay within three bright flashes a second.
+//!
 //! The lab (`visuals-lab/montage.ts`) works out the same.
 
 use crate::catalog::{Montage, MontageSource};
 
+use super::cues::FAR;
 use super::motion::{hash, unit};
 use super::music::Music;
 
@@ -37,6 +45,15 @@ const SHORTEST_CUT: f32 = 0.16;
 const FLASH_EVERY: f32 = 0.34;
 /// Beats of cutting at every half beat after a drop lands.
 const BURST_BEATS: f32 = 8.0;
+/// A landing at least this big (`Cues::landed`) bursts like a drop.
+const BIG_LANDING: f32 = 0.5;
+
+/// Whether the screen strobes now (`motion::Screen`, the same test): the
+/// cuts then go dark-to-dark and leave the flashing to it.
+fn strobing(music: &Music) -> bool {
+    let t = ((music.ceiling - 0.35) / (0.9 - 0.35)).clamp(0.0, 1.0);
+    music.parts.cue.strobe && t * t * (3.0 - 2.0 * t) > 0.3
+}
 
 /// A song's montage, decoded: RGB pixels for the GPU and what the cutter
 /// needs to know about each picture.
@@ -178,7 +195,11 @@ pub struct Cutter {
     cuts: u32,
     last_beats: f32,
     burst_until: f32,
+    /// When a cut or the screen last flashed bright.
     last_flash: f32,
+    /// The choreography's seconds since its latest landing, last frame: it
+    /// falls back to 0 on the frame a landing lands.
+    last_since: f32,
     song: Option<String>,
 }
 
@@ -199,6 +220,7 @@ impl Cutter {
             last_beats: 0.0,
             burst_until: f32::NEG_INFINITY,
             last_flash: f32::NEG_INFINITY,
+            last_since: FAR,
             song: None,
         }
     }
@@ -219,9 +241,9 @@ impl Cutter {
             return None;
         }
         Some(
-            if music.beats < self.burst_until || music.parts.fill > 0.5 {
+            if music.beats < self.burst_until || music.parts.fill > 0.5 || strobing(music) {
                 0.5
-            } else if music.intensity > 0.72 || music.drop > 0.25 {
+            } else if music.intensity > 0.72 || music.drop > 0.25 || music.parts.cue.climax > 0.0 {
                 1.0
             } else if music.intensity > 0.45 {
                 2.0
@@ -246,7 +268,15 @@ impl Cutter {
                 ..Self::new()
             };
         }
-        if music.drop_landed {
+        // A build's landing (the choreography's latest landing starting
+        // over) or a drop: the screen flashes on it, and a big one bursts.
+        let cue = &music.parts.cue;
+        let landing = cue.since < self.last_since;
+        self.last_since = cue.since;
+        if music.drop_landed || landing {
+            self.last_flash = music.time;
+        }
+        if music.drop_landed || (landing && cue.landed >= BIG_LANDING) {
             self.burst_until = music.beats + BURST_BEATS;
         }
         let since_cut = self
@@ -258,7 +288,9 @@ impl Cutter {
         });
         // Long past its pace (no beat heard), a picture moves on anyway.
         let stale = since_cut > 12.0 && music.parts.stop < 0.5;
+        // A landing cuts on its frame, however lately the last cut came.
         if self.current.is_none()
+            || landing
             || ((crossed || music.drop_landed || stale) && since_cut >= SHORTEST_CUT)
         {
             self.cut(music, atlas);
@@ -274,7 +306,13 @@ impl Cutter {
         }
         let burst = music.beats < self.burst_until;
         let intensity = music.intensity.clamp(0.0, 1.0);
-        let target = if burst { 1.0 } else { intensity };
+        let strobe = strobing(music);
+        // A burst, a strobe bar, and the climax cut through the busiest.
+        let target = if burst || strobe || music.parts.cue.climax > 0.0 {
+            1.0
+        } else {
+            intensity
+        };
         // Pictures shown lately cost more the more lately, so a song of a
         // few pictures still runs through them all.
         let remember = (count / 2).clamp(1, 16);
@@ -314,13 +352,18 @@ impl Cutter {
             |zoom: f32, salt: u32| (self.random(salt) * 2.0 - 1.0) * (1.0 - 1.0 / zoom) * 0.5;
         let from = [reach(zoom_from, 103), reach(zoom_from, 104), zoom_from];
         let to = [reach(zoom_to, 105), reach(zoom_to, 106), zoom_to];
-        let flash = music.time - self.last_flash >= FLASH_EVERY;
+        // The cut lights up only when the screen isn't flashing: not in a
+        // strobe bar, not just before a landing (the cues know it's
+        // coming), and not on a landing or a drop, which set `last_flash`.
+        let flash = music.time - self.last_flash >= FLASH_EVERY
+            && !strobe
+            && music.parts.cue.until >= FLASH_EVERY;
         if flash {
             self.last_flash = music.time;
         }
         let strength = if !flash {
             0.0
-        } else if burst || music.drop_landed {
+        } else if burst {
             1.0
         } else {
             (0.25 + 0.75 * intensity) * if calm { 0.4 } else { 1.0 }
@@ -559,6 +602,103 @@ mod tests {
         assert_eq!(after[..5], [2.0, 2.5, 3.0, 3.5, 4.0]);
         // The burst lasts two bars, then it is every beat again.
         assert!(after.contains(&9.5) && !after.contains(&10.5) && after.contains(&11.0));
+    }
+
+    #[test]
+    fn cuts_on_the_frame_a_build_lands_and_leaves_the_flash_to_the_screen() {
+        let atlas = mixed_atlas();
+        // A build lands 2.4 beats in (between beats, past the shortest cut).
+        let landing = 2.4;
+        let shape = |beats: f32| {
+            let mut music = music(beats, 0.6);
+            let at = beats * 0.5;
+            let land = landing * 0.5;
+            if at < land {
+                music.parts.cue.until = land - at;
+            } else {
+                music.parts.cue.since = at - land;
+                music.parts.cue.landed = 1.0;
+            }
+            music
+        };
+        let mut cutter = Cutter::new();
+        let mut landed_with = None;
+        for step in 0..(8.0 * 60.0) as u32 {
+            let beats = step as f32 / 60.0;
+            let before = cutter.cuts;
+            let shot = cutter.update(&shape(beats), &atlas);
+            if cutter.cuts != before && (beats - landing).abs() < 1.0 / 60.0 {
+                landed_with = Some(shot.cut[1]);
+            }
+        }
+        // It cut on that frame, without lighting up, and the landing burst.
+        assert_eq!(landed_with, Some(0.0));
+        assert!(cutter.burst_until > landing);
+    }
+
+    #[test]
+    fn cuts_and_the_screen_flash_bright_at_most_three_times_a_second() {
+        use super::super::cues::Cues;
+        use super::super::motion::Screen;
+        let atlas = mixed_atlas();
+        for bpm in [90.0f32, 128.0, 174.0] {
+            let beat = 60.0 / bpm;
+            let mut cutter = Cutter::new();
+            let mut flashes = Vec::new();
+            let (mut cut_flashes, mut screen_flashes) = (0, 0);
+            let mut screen_bright = false;
+            // Strobe bars, landings every two bars, fills, a drop, the
+            // climax: everything that flashes, at 60 frames a second.
+            for step in 0..(30.0 * 60.0) as u32 {
+                let time = step as f32 / 60.0;
+                let beats = time / beat;
+                let mut music = music(beats, 0.95);
+                music.time = time;
+                music.beat_seconds = beat;
+                let bar = (beats / 4.0).floor() as i32;
+                let land = |at: f32| (at / (8.0 * beat)).floor() * 8.0 * beat;
+                music.parts.cue = Cues {
+                    strobe: bar % 4 >= 2,
+                    climax: if bar >= 16 { 1.0 } else { 0.0 },
+                    since: time - land(time),
+                    landed: 1.0,
+                    until: land(time) + 8.0 * beat - time,
+                    strength: 1.0,
+                    ..Cues::default()
+                };
+                music.parts.fill = if bar % 8 == 7 { 1.0 } else { 0.0 };
+                music.drop_landed = step == 600;
+                music.drop = if step >= 600 {
+                    0.9 * (-(time - 10.0) / 2.0).exp()
+                } else {
+                    0.0
+                };
+                let before = cutter.cuts;
+                let shot = cutter.update(&music, &atlas);
+                if cutter.cuts != before && shot.cut[1] > 0.0 {
+                    flashes.push(time);
+                    cut_flashes += 1;
+                }
+                let bright = Screen::new(&music, [1.0, 0.4, 0.2]).flash[0] > 0.25;
+                if bright && !screen_bright {
+                    flashes.push(time);
+                    screen_flashes += 1;
+                }
+                screen_bright = bright;
+            }
+            assert!(
+                cut_flashes > 10 && screen_flashes > 10,
+                "{bpm} BPM: {cut_flashes} {screen_flashes}"
+            );
+            flashes.sort_by(f32::total_cmp);
+            for (index, at) in flashes.iter().enumerate() {
+                let within = flashes[index..].iter().filter(|t| **t < at + 1.0).count();
+                assert!(
+                    within <= 3,
+                    "{bpm} BPM: {within} flashes from {at}: {flashes:?}"
+                );
+            }
+        }
     }
 
     #[test]
