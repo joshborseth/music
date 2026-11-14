@@ -45,6 +45,11 @@ export interface PrefetchJob {
   readonly priority: number
   /** The song's cover, when its depth should be ready before it plays. */
   readonly artworkUrl?: string | undefined
+  /**
+   * Make the song's montage early too. Only a TV shows one, so the session
+   * asks for it only while a TV is on (`tvWatching` in `session/hub.ts`).
+   */
+  readonly montage?: boolean | undefined
 }
 
 export class Prefetcher extends Context.Service<
@@ -217,7 +222,10 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
             if (source === 'Queue') {
               montageSongs = new Set(
                 Array.take(
-                  Array.filter(jobs, job => job.kind === 'Download'),
+                  Array.filter(
+                    jobs,
+                    job => job.kind === 'Download' && job.montage === true,
+                  ),
                   QUEUE_MONTAGES,
                 ).map(job => job.videoId),
               )
