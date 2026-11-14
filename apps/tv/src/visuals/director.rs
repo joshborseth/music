@@ -49,7 +49,7 @@ pub struct SceneSpec {
 }
 
 /// Every scene, in the order of `gpu::SCENE_SHADERS`.
-pub const SCENES: [SceneSpec; 7] = [
+pub const SCENES: [SceneSpec; 9] = [
     SceneSpec {
         name: "Silk",
         energy: 0.1,
@@ -78,7 +78,36 @@ pub const SCENES: [SceneSpec; 7] = [
         name: "Stars",
         energy: 0.82,
     },
+    SceneSpec {
+        name: "Swarm",
+        energy: 0.8,
+    },
+    SceneSpec {
+        name: "Coral",
+        energy: 0.4,
+    },
 ];
+
+/// The place in `SCENES` of the scene called `name`, worked out when the
+/// code compiles, so code can name a scene instead of counting to it.
+pub const fn scene_index(name: &str) -> usize {
+    let name = name.as_bytes();
+    let mut index = 0;
+    while index < SCENES.len() {
+        let other = SCENES[index].name.as_bytes();
+        if other.len() == name.len() {
+            let mut at = 0;
+            while at < name.len() && other[at] == name[at] {
+                at += 1;
+            }
+            if at == name.len() {
+                return index;
+            }
+        }
+        index += 1;
+    }
+    panic!("no scene by that name");
+}
 
 /// A phrase, in bars: a scene that has shown a while moves on at the end
 /// of one, counted from when it came on.

@@ -13,13 +13,17 @@
 //! Everything here runs on the UI thread, inside Slint's rendering
 //! notifier. While the visuals show, each frame asks for the next.
 
+mod coral;
 mod cues;
 mod director;
 mod gpu;
 mod look;
 mod motion;
 mod music;
+mod particles;
+mod sims;
 mod sizing;
+mod swarm;
 mod transition;
 
 #[cfg(test)]
