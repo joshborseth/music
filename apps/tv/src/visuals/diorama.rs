@@ -121,10 +121,13 @@ pub struct Shatter {
 }
 
 impl Shatter {
-    /// Note this frame's music: a drop landing starts a shatter, as hard as
-    /// the drop (a calm song's barely loosens the picture).
-    pub fn hear(&mut self, music: &Music) {
-        if music.drop_landed {
+    /// Note this frame's music: a drop landing while Diorama shows alone
+    /// (`alone`) starts a shatter, as hard as the drop (a calm song's
+    /// barely loosens the picture). A drop that changes the scene is the
+    /// change's to shatter: Diorama coming in on it starts whole, and one
+    /// leaving is frozen.
+    pub fn hear(&mut self, music: &Music, alone: bool) {
+        if music.drop_landed && alone {
             self.landed = Some((music.beats, music.drop.clamp(0.0, 1.0)));
         }
     }
@@ -307,7 +310,10 @@ mod tests {
         assert_eq!(shatter.now(&music), [0.0, 0.0]);
         music.drop_landed = true;
         music.drop = 0.9;
-        shatter.hear(&music);
+        // Coming in on the drop, it starts whole.
+        shatter.hear(&music, false);
+        assert_eq!(shatter.now(&music), [0.0, 0.0]);
+        shatter.hear(&music, true);
         assert_eq!(shatter.now(&music), [0.0, 0.9]);
         let later = music_at(104.0);
         assert_eq!(shatter.now(&later), [0.5, 0.9]);

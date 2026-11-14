@@ -1151,7 +1151,6 @@ const makeEngine = (
   }
 
   const update = (music: Music, dt: number) => {
-    diorama.hear(music)
     scoreRate = music.ahead?.rate ?? 0
     scoreShift = music.ahead?.shift ?? 0
     if (music.ahead !== undefined) {
@@ -1253,7 +1252,14 @@ const makeEngine = (
     const look = screenLook(music, colors[0] ?? [1, 1, 1])
     const moving = sceneB ?? sceneA
     if (runs('scene')) {
-      if (!onScreen.has(moving)) sims.get(moving.def.file)?.reset()
+      // Diorama shatters itself only on a drop landing while it shows
+      // alone; one it comes in on, the change shatters (`Shatter::hear`),
+      // and coming on, even by a cut, it starts whole.
+      diorama.hear(music, sceneB === undefined && sceneA.relief !== null)
+      if (!onScreen.has(moving)) {
+        sims.get(moving.def.file)?.reset()
+        if (moving.relief !== null) diorama.clear()
+      }
       onScreen = new Set(sceneB === undefined ? [sceneA] : [sceneA, sceneB])
     }
     if (runs('scene') && !look.hold) drawScene(moving, music)

@@ -147,11 +147,16 @@ export const makeShatter = () => {
   let landed: [number, number] | null = null
   let lastDrop = 0
   return {
-    hear: (music: DioramaMusic) => {
+    /** As `Shatter::hear`: only a drop landing while Diorama shows alone. */
+    hear: (music: DioramaMusic, alone: boolean) => {
       // The made-up song says nothing of landing: its drop leaps to 1.
       const landing = music.dropLanded ?? (music.drop > 0.9 && lastDrop < 0.5)
       lastDrop = music.drop
-      if (landing) landed = [music.beats, Math.min(1, Math.max(0, music.drop))]
+      if (landing && alone)
+        landed = [music.beats, Math.min(1, Math.max(0, music.drop))]
+    },
+    clear: () => {
+      landed = null
     },
     now: (music: DioramaMusic): [number, number] => {
       if (landed === null) return [0, 0]
@@ -365,7 +370,14 @@ export const makeDiorama = (gl: WebGL2RenderingContext) => {
     gl.depthMask(true)
   }
 
-  return { texture, setDepth, setUniforms, draw, hear: shatter.hear }
+  return {
+    texture,
+    setDepth,
+    setUniforms,
+    draw,
+    hear: shatter.hear,
+    clear: shatter.clear,
+  }
 }
 
 /** The relief's shaders, from the TV's files, as gpu.rs puts them together. */

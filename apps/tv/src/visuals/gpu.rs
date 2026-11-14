@@ -500,7 +500,10 @@ impl Renderer {
             return;
         }
         self.frame = self.frame.wrapping_add(1);
-        self.shatter.hear(music);
+        // Diorama shatters itself only on a drop that lands while it shows
+        // alone; a drop it comes in on, the change shatters (`Shatter`).
+        self.shatter
+            .hear(music, shot.current.scene == DIORAMA && shot.next.is_none());
         let saved = Saved::save(gl);
         unsafe {
             gl.bind_vertex_array(Some(self.vao));
@@ -840,6 +843,10 @@ impl Renderer {
         unsafe {
             let scene = showing.scene;
             if scene == DIORAMA {
+                if self.slots[slot].fresh {
+                    // Coming on, it starts whole.
+                    self.shatter = Shatter::default();
+                }
                 let target = &self.slots[slot].targets[1];
                 self.ensure_depth_buffer(gl, target.width, target.height);
                 self.draw_diorama(gl, slot, showing, music, listener);
