@@ -4,10 +4,13 @@
 //! (session commands, catalog loads); their results come back through the
 //! `on_*` methods.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::catalog::{Card, Collection, CollectionKind, SaveKind, Shelf};
+use crate::catalog::{
+    Card, CardKind, Collection, CollectionKind, LIKED_PLAYLIST_ID, Link, SaveKind, Shelf, SongLinks,
+};
 use crate::controller::UiAction;
 use crate::lyrics::SongLyrics;
 use crate::protocol::{Placement, PlayingFrom, PlayingFromKind, QueueTrack};
@@ -95,6 +98,16 @@ pub enum Effect {
         track: QueueTrack,
         liked: bool,
     },
+    /// Find the album and artists of the song with this videoId
+    /// ([`Nav::on_song_links`]).
+    LoadSongLinks(String),
+    /// Fetch the playlists made in the app, then offer them for this song
+    /// ([`Nav::show_playlists`]).
+    LoadPlaylists(QueueTrack),
+    AddToPlaylist {
+        playlist_id: String,
+        track: QueueTrack,
+    },
     /// Ask whether an album is saved or an artist followed.
     LoadSaved {
         kind: SaveKind,
@@ -132,7 +145,22 @@ pub enum MenuAction {
     PlayNext(Target),
     AddToQueue(Target),
     Open(CollectionKind, String),
+    /// Open an album or artist, named by it: one of a song's artists.
+    OpenLink(CollectionKind, Link),
+    /// Pick which of the song's artists to open.
+    ChooseArtist(Vec<Link>),
     Like(QueueTrack),
+    Unlike(QueueTrack),
+    /// Play the song's radio (`UiAction::StartRadio`).
+    StartRadio(QueueTrack),
+    /// Pick one of your playlists to add the song to.
+    ChoosePlaylist(QueueTrack),
+    /// Add the song to this playlist, named by its title.
+    AddToPlaylist {
+        id: String,
+        title: String,
+        track: QueueTrack,
+    },
     /// Save an album or follow an artist (`saved: true`), or undo it.
     SetSaved {
         kind: SaveKind,
@@ -163,8 +191,8 @@ pub enum MenuAction {
 }
 
 impl MenuAction {
-    pub fn label(&self) -> &'static str {
-        match self {
+    pub fn label(&self) -> Cow<'_, str> {
+        Cow::Borrowed(match self {
             MenuAction::Play(_) => "Play now",
             MenuAction::Shuffle(_) => "Shuffle",
             MenuAction::PlayNext(_) => "Play next",
@@ -174,7 +202,13 @@ impl MenuAction {
             MenuAction::Open(CollectionKind::Playlist | CollectionKind::MyPlaylist, _) => {
                 "Go to playlist"
             }
+            MenuAction::OpenLink(_, link) => &link.name,
+            MenuAction::ChooseArtist(_) => "Go to artist",
             MenuAction::Like(_) => "Add to Liked Songs",
+            MenuAction::Unlike(_) => "Remove from Liked Songs",
+            MenuAction::StartRadio(_) => "Start radio",
+            MenuAction::ChoosePlaylist(_) => "Add to a playlist",
+            MenuAction::AddToPlaylist { title, .. } => title,
             MenuAction::SetSaved { kind, saved, .. } => match (kind, saved) {
                 (SaveKind::Album, true) => "Save to library",
                 (SaveKind::Album, false) => "Remove from library",
@@ -196,14 +230,16 @@ impl MenuAction {
                 PlayingFromKind::Artist => "Go to artist",
                 PlayingFromKind::Mix => "Go to mix",
                 PlayingFromKind::Radio => "Go to radio",
-                PlayingFromKind::Search => "Go to search",
+                PlayingFromKind::Search => {
+                    return Cow::Owned(format!("Back to “{}” results", from.title));
+                }
             },
             MenuAction::ShowScanCode => "Show code to add songs",
             MenuAction::SetSoundCheck(true) => "Turn on Sound Check",
             MenuAction::SetSoundCheck(false) => "Turn off Sound Check",
             MenuAction::Close => "Cancel",
             MenuAction::Decline => "Not now",
-        }
+        })
     }
 
     pub fn icon(&self) -> &'static str {
@@ -212,9 +248,14 @@ impl MenuAction {
             MenuAction::Shuffle(_) => "shuffle",
             MenuAction::PlayNext(_) => "play-next",
             MenuAction::AddToQueue(_) => "queue",
-            MenuAction::Open(CollectionKind::Artist, _) => "artist",
-            MenuAction::Open(_, _) => "open",
+            MenuAction::Open(CollectionKind::Artist, _)
+            | MenuAction::OpenLink(CollectionKind::Artist, _)
+            | MenuAction::ChooseArtist(_) => "artist",
+            MenuAction::Open(_, _) | MenuAction::OpenLink(_, _) => "open",
             MenuAction::Like(_) => "heart",
+            MenuAction::Unlike(_) => "heart-outline",
+            MenuAction::StartRadio(_) => "radio",
+            MenuAction::ChoosePlaylist(_) | MenuAction::AddToPlaylist { .. } => "add",
             MenuAction::SetSaved { saved: true, .. } => "add",
             MenuAction::SetSaved { saved: false, .. } => "remove",
             MenuAction::RemoveEntry(_)
@@ -264,6 +305,16 @@ pub fn playing_from_search(query: &str) -> PlayingFrom {
         kind: PlayingFromKind::Search,
         title: query.to_owned(),
         id: query.to_owned(),
+    }
+}
+
+/// A song's radio, as the phone names it: YouTube Music's radio playlist
+/// for the song (`songRadioPlaylistId` in `packages/shared`), titled by it.
+pub fn playing_from_radio(track: &QueueTrack) -> PlayingFrom {
+    PlayingFrom {
+        kind: PlayingFromKind::Radio,
+        title: track.title.clone(),
+        id: format!("RDAMVM{}", track.video_id),
     }
 }
 
@@ -854,6 +905,8 @@ pub struct Nav {
     pub session: View,
     /// Whether the current song is in Liked songs, once known.
     pub liked: Option<(String, bool)>,
+    /// The current song's album and artists, for its menu, once asked.
+    pub links: Option<(String, Load<SongLinks>)>,
     /// Which albums are saved and artists followed, as last heard.
     pub saved: HashMap<(SaveKind, String), bool>,
     /// Lyrics for the song with this videoId.
@@ -898,6 +951,7 @@ impl Nav {
             menu: None,
             session: View::default(),
             liked: None,
+            links: None,
             saved: HashMap::new(),
             lyrics: None,
             notice: None,
@@ -973,6 +1027,7 @@ impl Nav {
             .map(|entry| entry.track.video_id.clone());
         if current != before {
             self.liked = None;
+            self.links = None;
             self.scrub = None;
             self.seek_sent = None;
             self.song_started = current.is_some().then(Instant::now);
@@ -1305,7 +1360,65 @@ impl Nav {
             .is_some_and(|entry| entry.track.video_id == video_id)
         {
             self.liked = Some((video_id.to_owned(), liked));
+            self.refresh_song_menu(video_id);
         }
+    }
+
+    /// The album and artists of the song with this videoId, for its menu.
+    /// An open menu for the song takes them in, keeping its selection.
+    pub fn on_song_links(&mut self, video_id: &str, result: Result<SongLinks, String>) {
+        if let Some((current, load)) = &mut self.links
+            && current == video_id
+        {
+            *load = to_load(result);
+            self.refresh_song_menu(video_id);
+        }
+    }
+
+    /// Offer the playlists made in the app (the MyPlaylist cards of the
+    /// Library's shelves, but Liked songs) to add `track` to.
+    pub fn show_playlists(
+        &mut self,
+        track: QueueTrack,
+        library: Result<Vec<Shelf>, String>,
+        now: Instant,
+    ) {
+        let shelves = match library {
+            Ok(shelves) => shelves,
+            Err(message) => return self.say(message, now),
+        };
+        let mut items: Vec<MenuAction> = shelves
+            .iter()
+            .flat_map(|shelf| shelf.cards.iter())
+            .filter(|card| card.kind == CardKind::MyPlaylist && card.id != LIKED_PLAYLIST_ID)
+            .map(|card| MenuAction::AddToPlaylist {
+                id: card.id.clone(),
+                title: card.title.clone(),
+                track: track.clone(),
+            })
+            .collect();
+        if items.is_empty() {
+            return self.say("Make a playlist on your phone first", now);
+        }
+        items.push(MenuAction::Close);
+        self.menu = Some(Menu {
+            title: "Add to a playlist".into(),
+            subtitle: track.title,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// The server added a song to a playlist, or found it there already.
+    pub fn on_added_to_playlist(&mut self, title: &str, added: bool, now: Instant) {
+        self.say(
+            if added {
+                format!("Added to {title}")
+            } else {
+                format!("Already in {title}")
+            },
+            now,
+        );
     }
 
     /// Whether an album is saved or an artist followed, from the server. An
@@ -1540,7 +1653,7 @@ impl Nav {
             Key::Up => self.on_bar = true,
             Key::Down => {}
             Key::Ok => self.press_control(now, effects),
-            Key::Hold => self.song_menu(),
+            Key::Hold => self.song_menu(effects),
             Key::Back => self.hide_controls(),
             _ => {}
         }
@@ -1556,7 +1669,7 @@ impl Nav {
             Key::Down => self.on_bar = false,
             Key::Ok if self.scrub.is_some() => effects.extend(self.send_seek(now, true)),
             Key::Ok => effects.push(Effect::Session(UiAction::PlayPause)),
-            Key::Hold => self.song_menu(),
+            Key::Hold => self.song_menu(effects),
             Key::Back if self.scrub.is_some() => self.scrub = None,
             Key::Back => self.hide_controls(),
             _ => {}
@@ -1564,23 +1677,163 @@ impl Nav {
         true
     }
 
-    fn song_menu(&mut self) {
-        if let Some(entry) = self.session.current_entry() {
-            let mut items = vec![MenuAction::Like(entry.track.clone())];
-            items.extend(self.go_to_item());
-            items.push(MenuAction::Close);
-            self.menu = Some(Menu {
-                title: entry.track.title.clone(),
-                subtitle: entry.track.artists.clone(),
-                items,
-                selected: 0,
+    /// The song playing's menu. Its album and artists come from the server
+    /// the first time it opens for a song, and join it when they arrive.
+    fn song_menu(&mut self, effects: &mut Vec<Effect>) {
+        let Some(track) = self
+            .session
+            .current_entry()
+            .map(|entry| entry.track.clone())
+        else {
+            return;
+        };
+        let asked = self
+            .links
+            .as_ref()
+            .is_some_and(|(id, load)| *id == track.video_id && !matches!(load, Load::Failed(_)));
+        if !asked {
+            self.links = Some((track.video_id.clone(), Load::Loading));
+            effects.push(Effect::LoadSongLinks(track.video_id.clone()));
+        }
+        self.menu = Some(Menu {
+            title: track.title.clone(),
+            subtitle: track.artists.clone(),
+            items: self.song_menu_items(&track),
+            selected: 0,
+        });
+    }
+
+    /// Like or unlike, add to a playlist, start its radio, go to its album
+    /// and artists (a choice when there are several), and go to what the
+    /// queue plays from when that is something else.
+    fn song_menu_items(&self, track: &QueueTrack) -> Vec<MenuAction> {
+        let liked = self
+            .liked
+            .as_ref()
+            .is_some_and(|(id, liked)| *id == track.video_id && *liked);
+        let mut items = vec![
+            if liked {
+                MenuAction::Unlike(track.clone())
+            } else {
+                MenuAction::Like(track.clone())
+            },
+            MenuAction::ChoosePlaylist(track.clone()),
+            MenuAction::StartRadio(track.clone()),
+        ];
+        let links = self
+            .links
+            .as_ref()
+            .filter(|(id, _)| *id == track.video_id)
+            .and_then(|(_, load)| load.loaded());
+        let link = |kind: PlayingFromKind, link: &Link| PlayingFrom {
+            kind,
+            title: link.name.clone(),
+            id: link.id.clone(),
+        };
+        if let Some(links) = links {
+            if let Some(album) = &links.album {
+                items.push(MenuAction::GoTo(link(PlayingFromKind::Album, album)));
+            }
+            match links.artists.as_slice() {
+                [] => {}
+                [artist] => items.push(MenuAction::GoTo(link(PlayingFromKind::Artist, artist))),
+                artists => items.push(MenuAction::ChooseArtist(artists.to_vec())),
+            }
+        }
+        if let Some(from) = self.go_to_item() {
+            let shown = links.is_some_and(|links| match from {
+                MenuAction::GoTo(PlayingFrom {
+                    kind: PlayingFromKind::Album,
+                    ref id,
+                    ..
+                }) => links.album.as_ref().is_some_and(|album| album.id == *id),
+                MenuAction::GoTo(PlayingFrom {
+                    kind: PlayingFromKind::Artist,
+                    ref id,
+                    ..
+                }) => links.artists.iter().any(|artist| artist.id == *id),
+                _ => false,
             });
+            if !shown {
+                items.push(from);
+            }
+        }
+        items.push(MenuAction::Close);
+        items
+    }
+
+    /// The song menu for `video_id`, if open, built again with what is now
+    /// known, keeping the selection on the same item.
+    fn refresh_song_menu(&mut self, video_id: &str) {
+        let Some(menu) = &self.menu else { return };
+        let is_song_menu = menu.items.iter().any(
+            |item| matches!(item, MenuAction::StartRadio(track) if track.video_id == video_id),
+        );
+        let Some(track) = self
+            .session
+            .current_entry()
+            .map(|entry| entry.track.clone())
+            .filter(|track| is_song_menu && track.video_id == video_id)
+        else {
+            return;
+        };
+        let selected = menu.items.get(menu.selected).cloned();
+        let items = self.song_menu_items(&track);
+        let selected = selected
+            .and_then(|wanted| {
+                items.iter().position(|item| {
+                    *item == wanted
+                        || matches!(
+                            (item, &wanted),
+                            (MenuAction::Like(_), MenuAction::Unlike(_))
+                                | (MenuAction::Unlike(_), MenuAction::Like(_))
+                        )
+                })
+            })
+            .unwrap_or(0);
+        if let Some(menu) = &mut self.menu {
+            menu.items = items;
+            menu.selected = selected;
         }
     }
 
-    /// "Go to album" and the like, when the queue plays from something.
+    /// "Go to album" and the like, when the queue plays from something
+    /// and the song playing is one of its own, not one autoplay added.
     fn go_to_item(&self) -> Option<MenuAction> {
+        if self
+            .session
+            .current_entry()
+            .is_some_and(|entry| entry.autoplay)
+        {
+            return None;
+        }
         self.session.playing_from.clone().map(MenuAction::GoTo)
+    }
+
+    /// Like or unlike a song, showing it at once.
+    fn set_liked(
+        &mut self,
+        track: QueueTrack,
+        liked: bool,
+        now: Instant,
+        effects: &mut Vec<Effect>,
+    ) {
+        if self
+            .session
+            .current_entry()
+            .is_some_and(|entry| entry.track.video_id == track.video_id)
+        {
+            self.liked = Some((track.video_id.clone(), liked));
+        }
+        effects.push(Effect::SetLiked { track, liked });
+        self.say(
+            if liked {
+                "Added to Liked Songs"
+            } else {
+                "Removed from Liked Songs"
+            },
+            now,
+        );
     }
 
     /// Open what the queue plays from where the phone would: your own
@@ -1630,27 +1883,18 @@ impl Nav {
             Control::Shuffle => effects.push(Effect::Session(UiAction::ToggleShuffle)),
             Control::Repeat => effects.push(Effect::Session(UiAction::CycleRepeat)),
             Control::Like => {
-                let Some(entry) = self.session.current_entry() else {
+                let Some(track) = self
+                    .session
+                    .current_entry()
+                    .map(|entry| entry.track.clone())
+                else {
                     return;
                 };
-                let video_id = entry.track.video_id.clone();
                 let liked = self
                     .liked
                     .as_ref()
-                    .is_some_and(|(id, liked)| *id == video_id && *liked);
-                effects.push(Effect::SetLiked {
-                    track: entry.track.clone(),
-                    liked: !liked,
-                });
-                self.liked = Some((video_id, !liked));
-                self.say(
-                    if liked {
-                        "Removed from Liked Songs"
-                    } else {
-                        "Added to Liked Songs"
-                    },
-                    now,
-                );
+                    .is_some_and(|(id, liked)| *id == track.video_id && *liked);
+                self.set_liked(track, !liked, now, effects);
             }
             Control::Queue => {
                 self.panel = Panel::Queue;
@@ -2317,16 +2561,45 @@ impl Nav {
                 self.say("Added to the queue", now);
             }
             MenuAction::Open(kind, id) => self.open_collection(kind, id, effects),
-            MenuAction::Like(track) => {
-                if self
-                    .session
-                    .current_entry()
-                    .is_some_and(|entry| entry.track.video_id == track.video_id)
-                {
-                    self.liked = Some((track.video_id.clone(), true));
-                }
-                effects.push(Effect::SetLiked { track, liked: true });
-                self.say("Added to Liked Songs", now);
+            MenuAction::Like(track) => self.set_liked(track, true, now, effects),
+            MenuAction::Unlike(track) => self.set_liked(track, false, now, effects),
+            MenuAction::StartRadio(track) => {
+                effects.push(Effect::Session(UiAction::StartRadio(track)));
+                self.say("Starting radio", now);
+            }
+            MenuAction::ChoosePlaylist(track) => effects.push(Effect::LoadPlaylists(track)),
+            MenuAction::AddToPlaylist { id, track, .. } => effects.push(Effect::AddToPlaylist {
+                playlist_id: id,
+                track,
+            }),
+            MenuAction::ChooseArtist(artists) => {
+                let mut items: Vec<MenuAction> = artists
+                    .into_iter()
+                    .map(|artist| MenuAction::OpenLink(CollectionKind::Artist, artist))
+                    .collect();
+                items.push(MenuAction::Close);
+                self.menu = Some(Menu {
+                    title: "Go to artist".into(),
+                    subtitle: String::new(),
+                    items,
+                    selected: 0,
+                });
+            }
+            MenuAction::OpenLink(kind, link) => {
+                let kind = match kind {
+                    CollectionKind::Artist => PlayingFromKind::Artist,
+                    CollectionKind::Album => PlayingFromKind::Album,
+                    CollectionKind::MyPlaylist => PlayingFromKind::MyPlaylist,
+                    CollectionKind::Playlist => PlayingFromKind::Playlist,
+                };
+                self.go_to(
+                    PlayingFrom {
+                        kind,
+                        title: link.name,
+                        id: link.id,
+                    },
+                    effects,
+                );
             }
             MenuAction::PlayEntry(entry_id) => {
                 effects.push(Effect::Session(UiAction::SkipTo(entry_id)));
@@ -2871,9 +3144,9 @@ mod tests {
         // The first key brings up the controls; then hold.
         press(&mut nav, &[Key::Right, Key::Hold]);
         let menu = nav.menu.as_ref().unwrap();
-        assert_eq!(menu.items[1], MenuAction::GoTo(from_album()));
-        assert_eq!(menu.items[1].label(), "Go to album");
-        let effects = press(&mut nav, &[Key::Down, Key::Ok]);
+        assert_eq!(menu.items[3], MenuAction::GoTo(from_album()));
+        assert_eq!(menu.items[3].label(), "Go to album");
+        let effects = press(&mut nav, &[Key::Down, Key::Down, Key::Down, Key::Ok]);
         assert_eq!(nav.tab, Tab::Search);
         assert_eq!(nav.focus, Focus::Content);
         assert!(effects.contains(&Effect::LoadCollection {
@@ -2888,7 +3161,10 @@ mod tests {
         );
         // Back returns to Search, and going again doesn't stack it twice.
         nav.show_now_playing();
-        press(&mut nav, &[Key::Right, Key::Hold, Key::Down]);
+        press(
+            &mut nav,
+            &[Key::Right, Key::Hold, Key::Down, Key::Down, Key::Down],
+        );
         let effects = press(&mut nav, &[Key::Ok]);
         assert!(
             !effects
@@ -2896,6 +3172,182 @@ mod tests {
                 .any(|effect| matches!(effect, Effect::LoadCollection { .. }))
         );
         assert_eq!(nav.search.browse.stack.len(), 1);
+    }
+
+    fn links(video_id: &str, artists: &[(&str, &str)]) -> SongLinks {
+        SongLinks {
+            video_id: video_id.into(),
+            album: Some(Link {
+                id: "MPREb_killed".into(),
+                name: "Getting Killed".into(),
+            }),
+            artists: artists
+                .iter()
+                .map(|(id, name)| Link {
+                    id: (*id).into(),
+                    name: (*name).into(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_song_menu_offers_everything_about_the_song() {
+        let mut nav = Nav::new();
+        let mix = PlayingFrom {
+            kind: PlayingFromKind::Mix,
+            title: "Mix: Geese".into(),
+            id: "RDAMVMq9".into(),
+        };
+        nav.on_session(View {
+            playing_from: Some(mix.clone()),
+            ..playing_view()
+        });
+        nav.on_liked("q0", true);
+        let effects = press(&mut nav, &[Key::Right, Key::Hold]);
+        assert_eq!(effects, vec![Effect::LoadSongLinks("q0".into())]);
+        let labels = |nav: &Nav| -> Vec<String> {
+            let menu = nav.menu.as_ref().unwrap();
+            menu.items
+                .iter()
+                .map(|item| item.label().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            labels(&nav),
+            [
+                "Remove from Liked Songs",
+                "Add to a playlist",
+                "Start radio",
+                "Go to mix",
+                "Cancel"
+            ]
+        );
+        // Down to Go to mix; the album and artists arrive and join the
+        // menu, and the selection stays on the mix.
+        press(&mut nav, &[Key::Down, Key::Down, Key::Down]);
+        nav.on_song_links(
+            "q0",
+            Ok(links("q0", &[("UCg", "Geese"), ("UCc", "Cameron")])),
+        );
+        assert_eq!(
+            labels(&nav),
+            [
+                "Remove from Liked Songs",
+                "Add to a playlist",
+                "Start radio",
+                "Go to album",
+                "Go to artist",
+                "Go to mix",
+                "Cancel"
+            ]
+        );
+        assert_eq!(nav.menu.as_ref().unwrap().selected, 5);
+        // Several artists: pick one.
+        press(&mut nav, &[Key::Up, Key::Ok]);
+        assert_eq!(labels(&nav), ["Geese", "Cameron", "Cancel"]);
+        let effects = press(&mut nav, &[Key::Down, Key::Ok]);
+        assert_eq!(nav.tab, Tab::Search);
+        assert!(effects.contains(&Effect::LoadCollection {
+            tab: Tab::Search,
+            kind: CollectionKind::Artist,
+            id: "UCc".into(),
+        }));
+        // The menu again asks for nothing it already knows.
+        nav.show_now_playing();
+        let effects = press(&mut nav, &[Key::Right, Key::Hold]);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn the_song_menu_skips_going_to_the_album_twice() {
+        let mut nav = Nav::new();
+        nav.on_session(View {
+            playing_from: Some(from_album()),
+            ..playing_view()
+        });
+        press(&mut nav, &[Key::Right, Key::Hold]);
+        nav.on_song_links("q0", Ok(links("q0", &[("UCg", "Geese")])));
+        let menu = nav.menu.as_ref().unwrap();
+        let goes: Vec<_> = menu
+            .items
+            .iter()
+            .filter(|item| matches!(item, MenuAction::GoTo(_)))
+            .map(|item| item.label().into_owned())
+            .collect();
+        assert_eq!(goes, ["Go to album", "Go to artist"]);
+    }
+
+    #[test]
+    fn the_song_menu_starts_its_radio_and_likes_it() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        press(&mut nav, &[Key::Right, Key::Hold, Key::Down, Key::Down]);
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(
+            effects,
+            vec![Effect::Session(UiAction::StartRadio(track("q0")))]
+        );
+        assert_eq!(
+            playing_from_radio(&track("q0")),
+            PlayingFrom {
+                kind: PlayingFromKind::Radio,
+                title: "Song q0".into(),
+                id: "RDAMVMq0".into(),
+            }
+        );
+        let effects = press(&mut nav, &[Key::Hold, Key::Ok]);
+        assert_eq!(
+            effects,
+            vec![Effect::SetLiked {
+                track: track("q0"),
+                liked: true,
+            }]
+        );
+        assert_eq!(nav.liked, Some(("q0".into(), true)));
+    }
+
+    #[test]
+    fn the_song_menu_adds_to_one_of_your_playlists() {
+        let mut nav = Nav::new();
+        nav.on_session(playing_view());
+        press(&mut nav, &[Key::Right, Key::Hold, Key::Down]);
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(effects, vec![Effect::LoadPlaylists(track("q0"))]);
+        let playlist = |id: &str, title: &str| Card {
+            kind: CardKind::MyPlaylist,
+            id: id.into(),
+            title: title.into(),
+            subtitle: String::new(),
+            artwork_url: None,
+            track: None,
+        };
+        let library = vec![Shelf {
+            title: "Your playlists".into(),
+            cards: vec![
+                playlist(LIKED_PLAYLIST_ID, "Liked Songs"),
+                playlist("p1", "Road trip"),
+            ],
+        }];
+        let now = Instant::now();
+        nav.show_playlists(track("q0"), Ok(library), now);
+        let menu = nav.menu.as_ref().unwrap();
+        assert_eq!(menu.items[0].label(), "Road trip");
+        assert_eq!(menu.items.len(), 2);
+        let effects = press(&mut nav, &[Key::Ok]);
+        assert_eq!(
+            effects,
+            vec![Effect::AddToPlaylist {
+                playlist_id: "p1".into(),
+                track: track("q0"),
+            }]
+        );
+        nav.on_added_to_playlist("Road trip", false, now);
+        assert_eq!(nav.notice(now), Some("Already in Road trip"));
+        // With none of your own, it says how to make one.
+        nav.show_playlists(track("q0"), Ok(Vec::new()), now);
+        assert!(nav.menu.is_none());
+        assert_eq!(nav.notice(now), Some("Make a playlist on your phone first"));
     }
 
     #[test]
@@ -2957,8 +3409,11 @@ mod tests {
             ..playing_view()
         });
         press(&mut nav, &[Key::Right, Key::Hold]);
-        assert_eq!(nav.menu.as_ref().unwrap().items[1].label(), "Go to search");
-        let effects = press(&mut nav, &[Key::Down, Key::Ok]);
+        assert_eq!(
+            nav.menu.as_ref().unwrap().items[3].label(),
+            "Back to “daft punk” results"
+        );
+        let effects = press(&mut nav, &[Key::Down, Key::Down, Key::Down, Key::Ok]);
         assert_eq!(nav.tab, Tab::Search);
         assert_eq!(nav.search.query, "daft punk");
         assert_eq!(effects, vec![Effect::Search("daft punk".into())]);
@@ -3222,14 +3677,20 @@ mod tests {
         nav.menu = None;
         press(&mut nav, &[Key::Down, Key::Hold]);
         let menu = nav.menu.clone().unwrap();
-        assert_eq!(menu.items.last().map(MenuAction::label), Some("Cancel"));
+        assert_eq!(
+            menu.items.last().map(|item| item.label()),
+            Some("Cancel".into())
+        );
         // An album's menu goes to it with an arrow, not a dot.
         let open = menu
             .items
             .iter()
             .find(|item| matches!(item, MenuAction::Open(..)))
             .unwrap();
-        assert_eq!((open.label(), open.icon()), ("Go to album", "open"));
+        assert_eq!(
+            (open.label().as_ref(), open.icon()),
+            ("Go to album", "open")
+        );
     }
 
     #[test]

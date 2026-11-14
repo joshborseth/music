@@ -2,6 +2,7 @@ import { Array, Duration, Effect, Fiber, Match, Option, Schema } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
 import {
+  LIKED_PLAYLIST_ID,
   type MusicNotFoundError,
   type MyLibrary,
   type PlaylistEdit,
@@ -38,6 +39,7 @@ import {
   savedOf,
   searchShelves,
   songFromQueueTrack,
+  songLinksOf,
 } from './mapping.ts'
 
 /*
@@ -497,6 +499,63 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
       return yield* applySave(request).pipe(Effect.mapError(toRouteError))
     })
 
+    /** The song's album and artists, for the TV's Go to album and Go to artist. */
+    const songLinks = Effect.gen(function* () {
+      const id = yield* videoId
+      return yield* youTubeMusic.getSong(id).pipe(
+        Effect.map(details => songLinksOf(details.song)),
+        Effect.mapError(toRouteError),
+      )
+    })
+
+    /**
+     * Adds the song to the end of one of your playlists, with its album and
+     * artist links when YouTube Music answers in time, as the phone would.
+     * A song already in it stays where it is.
+     */
+    const addToPlaylist = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.schemaBodyJson(
+        Tv.TvAddToPlaylistRequest,
+      ).pipe(
+        Effect.mapError(
+          badRequest('The body must be a TvAddToPlaylistRequest'),
+        ),
+      )
+      if (request.playlistId === LIKED_PLAYLIST_ID) {
+        return yield* new TvRouteError({
+          status: 400,
+          message: 'Liked songs takes songs through /tv/like',
+        })
+      }
+      const before = yield* playlistStore
+        .playlist(request.playlistId)
+        .pipe(Effect.mapError(toRouteError))
+      const already = Array.some(
+        before.songs,
+        song => song.videoId === request.track.videoId,
+      )
+      if (already) {
+        return {
+          playlistId: before.playlist.id,
+          title: before.playlist.title,
+          added: false,
+        }
+      }
+      const song = yield* fullSong(request.track)
+      yield* playlistStore
+        .edit({
+          _tag: 'AddSongs',
+          playlistId: request.playlistId,
+          songs: [song],
+        })
+        .pipe(Effect.mapError(toRouteError))
+      return {
+        playlistId: before.playlist.id,
+        title: before.playlist.title,
+        added: true,
+      }
+    })
+
     yield* router.add('GET', '/tv/home', respond(Tv.TvShelves, home))
     yield* router.add('GET', '/tv/library', respond(Tv.TvShelves, library))
     yield* router.add('GET', '/tv/search', respond(Tv.TvShelves, search))
@@ -512,5 +571,11 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
     yield* router.add('POST', '/tv/like', respond(Tv.TvLiked, like))
     yield* router.add('GET', '/tv/saved', respond(Tv.TvSaved, saved))
     yield* router.add('POST', '/tv/save', respond(Tv.TvSaved, save))
+    yield* router.add('GET', '/tv/song', respond(Tv.TvSong, songLinks))
+    yield* router.add(
+      'POST',
+      '/tv/playlist-add',
+      respond(Tv.TvAddedToPlaylist, addToPlaylist),
+    )
   }),
 )

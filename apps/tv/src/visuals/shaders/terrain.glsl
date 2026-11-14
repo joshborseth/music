@@ -34,7 +34,8 @@ float horizon() {
 
 vec3 sky(highp vec3 dir) {
   float up = clamp(dir.y * 3.0, 0.0, 1.0);
-  vec3 color = mix(uColorB * 0.35, uColorC * 0.04, pow(up, 0.6));
+  // The haze at the horizon is the cover's second color; the sun its strong one.
+  vec3 color = mix(uColorD * 0.26, uColorC * 0.04, pow(up, 0.6));
   // The sun: banded like an old poster, swelling on the bass.
   vec2 s = vec2(dir.x, dir.y - 0.1) * 3.2;
   float radius = 0.36 + 0.05 * uBands.x + 0.05 * uHit;
@@ -62,7 +63,7 @@ void main() {
   // Well below the horizon the land always covers the sky (it reaches
   // DEPTH + 1 ahead, and the eye is never below 0.5): skip the sun there.
   if (dir.y < -0.08) {
-    fragColor = vec4(uColorB * 0.35, 1.0);
+    fragColor = vec4(uColorD * 0.26, 1.0);
     return;
   }
   fragColor = vec4(sky(dir), 1.0);

@@ -3,8 +3,9 @@
 // the bar's first; lines run along the walls, lit by the spectrum around
 // them; the tunnel bends and turns with the song, and races on a drop.
 //
-// Light and dark only, in the cover's color: no picture to smear when it
-// is drawn small, and few sums a pixel.
+// Light and dark only: the rings in the cover's strong color, the lines in
+// its second. No picture to smear when it is drawn small, and few sums a
+// pixel.
 
 // How the tunnel bends (x, y) and the cosine and sine of its spin, worked
 // out once a frame (motion.rs).
@@ -43,7 +44,8 @@ void main() {
   // Fade into the distance.
   float fog = exp(-depth * 0.22);
   float level = (rings + lines) * fog;
-  vec3 color = glow(clamp(level, 0.0, 0.92));
+  float share = lines / max(rings + lines, 1e-3);
+  vec3 color = glowIn(clamp(level, 0.0, 0.92), mix(uColorA, uColorD, share));
   // A light at the end, in the color itself, swelling with the bass and
   // the beat, and bursting on a drop.
   color += uColorA * exp(-r * 9.0) * (0.25 + 0.5 * uBands.x + 0.6 * uHit + 0.9 * uDrop);

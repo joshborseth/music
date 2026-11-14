@@ -35,6 +35,7 @@ import {
   searchShelves,
   songCard,
   songFromQueueTrack,
+  songLinksOf,
   toQueueTrack,
 } from './mapping.ts'
 
@@ -171,9 +172,15 @@ describe('cards', () => {
     ).toMatchObject({ subtitle: 'Playlist · YouTube Music', artworkUrl: null })
   })
 
-  test('the kind label leads once, with middle dots', () => {
+  test('the kind label leads once, with middle dots, and no view counts', () => {
     expect(labelled('Playlist', 'Playlist • Aaron · 14 views')).toBe(
-      'Playlist · Aaron · 14 views',
+      'Playlist · Aaron',
+    )
+    expect(labelled('Playlist', 'Playlist • Lofi Girl • 1.3K views')).toBe(
+      'Playlist · Lofi Girl',
+    )
+    expect(labelled('Playlist', 'Playlist • 52 songs')).toBe(
+      'Playlist · 52 songs',
     )
     expect(labelled('Playlist', 'Chart • YouTube Charts')).toBe(
       'Playlist · Chart · YouTube Charts',
@@ -230,7 +237,14 @@ describe('shelves', () => {
     ])
     expect(shelves[0]?.cards).toHaveLength(HOME_LIKED_SONGS)
     expect(shelves[0]?.cards[0]).toMatchObject({ kind: 'Song', id: 'l0' })
-    expect(shelves[2]?.cards.map(({ id }) => id)).toEqual(['liked', 'p1'])
+    // Liked songs shows once: as its shelf, not also as a playlist.
+    expect(shelves[2]?.cards.map(({ id }) => id)).toEqual(['p1'])
+  })
+
+  test('home keeps Liked songs among your playlists while nothing is liked', () => {
+    const { shelves } = home(library, [], [])
+    expect(titles(shelves)).toEqual(['Your playlists'])
+    expect(shelves[0]?.cards.map(({ id }) => id)).toEqual(['liked', 'p1'])
   })
 
   test('home splits what played lately as the phone does: albums more than one song played from, then the other songs', () => {
@@ -544,6 +558,19 @@ describe('lyrics', () => {
   })
 })
 
+describe('song links', () => {
+  test('a song leads to its album and the credited artists with a page', () => {
+    expect(songLinksOf(song('a'))).toEqual({
+      videoId: 'a',
+      album: { id: 'MPREb_abc', name: 'Whenever' },
+      artists: [{ id: 'UCa', name: 'Rick Astley' }],
+    })
+    expect(
+      songLinksOf(song('b', { maybeAlbum: Option.none(), artists: [] })),
+    ).toEqual({ videoId: 'b', album: null, artists: [] })
+  })
+})
+
 describe('saved albums and followed artists', () => {
   test('says whether an album is saved or an artist followed', () => {
     const withBoth: MyLibrary = {
@@ -619,6 +646,9 @@ describe('fixtures shared with the TV app', () => {
     ['like-request.json', Tv.TvLikeRequest],
     ['saved.json', Tv.TvSaved],
     ['save-request.json', Tv.TvSaveRequest],
+    ['song.json', Tv.TvSong],
+    ['add-to-playlist-request.json', Tv.TvAddToPlaylistRequest],
+    ['added-to-playlist.json', Tv.TvAddedToPlaylist],
     ['version.json', Tv.TvVersion],
     ['version-none.json', Tv.TvVersion],
     ['analysis.json', Tv.TvAnalysis],

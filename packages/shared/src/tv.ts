@@ -32,6 +32,9 @@ import { QueueTrack } from './session.ts'
  *   POST /tv/like   (TvLikeRequest)        TvLiked
  *   GET  /tv/saved?kind=…&id=…             TvSaved    whether an album is saved or an artist followed
  *   POST /tv/save   (TvSaveRequest)        TvSaved
+ *   GET  /tv/song?videoId=…                TvSong     the album and the artists a song links to
+ *   POST /tv/playlist-add (TvAddToPlaylistRequest)
+ *                                          TvAddedToPlaylist  add a song to a playlist you made
  *   GET  /tv/version                       TvVersion
  *   POST /tv/updating                      204: the TV is installing an update; reopen it after
  *
@@ -163,6 +166,42 @@ export const TvSaveRequest = Schema.Struct({
   saved: Schema.Boolean,
 })
 export type TvSaveRequest = typeof TvSaveRequest.Type
+
+/** An album or an artist a song links to: enough to open its page. */
+export const TvLink = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+})
+export type TvLink = typeof TvLink.Type
+
+/**
+ * Where a song leads: its album, and the credited artists that have a page,
+ * in credit order. The queue keeps both only as text.
+ */
+export const TvSong = Schema.Struct({
+  videoId: Schema.String,
+  album: Schema.NullOr(TvLink),
+  artists: Schema.Array(TvLink),
+})
+export type TvSong = typeof TvSong.Type
+
+/**
+ * Add a song to one of the playlists made in the app. The playlists come
+ * from `/tv/library` (its MyPlaylist cards other than Liked songs).
+ */
+export const TvAddToPlaylistRequest = Schema.Struct({
+  playlistId: Schema.String,
+  track: QueueTrack,
+})
+export type TvAddToPlaylistRequest = typeof TvAddToPlaylistRequest.Type
+
+/** The playlist a song went to; `added` is false when it was there already. */
+export const TvAddedToPlaylist = Schema.Struct({
+  playlistId: Schema.String,
+  title: Schema.String,
+  added: Schema.Boolean,
+})
+export type TvAddedToPlaylist = typeof TvAddedToPlaylist.Type
 
 /** The TV app build the server has. Null when none is built. */
 export const TvVersion = Schema.Struct({

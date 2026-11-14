@@ -23,8 +23,8 @@ use slint::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::catalog::{
-    self, Analysis, Card, CardKind, CollectionKind, LIKED_PLAYLIST_ID, LikeRequest, SaveKind,
-    SaveRequest,
+    self, AddToPlaylistRequest, Analysis, Card, CardKind, CollectionKind, LIKED_PLAYLIST_ID,
+    LikeRequest, SaveKind, SaveRequest,
 };
 use crate::controller::UiAction;
 use crate::images::Shape;
@@ -304,9 +304,7 @@ impl Ui {
         let visuals = Visuals::install(app, clock.clone(), {
             let (http, server, runtime) = (http.clone(), server.clone(), runtime.clone());
             move |level: log::Level, line: String| {
-                let request = http
-                    .post(crate::server_log::url(&server, level))
-                    .body(line);
+                let request = http.post(crate::server_log::url(&server, level)).body(line);
                 runtime.spawn(async move {
                     let _ = request.send().await;
                 });
@@ -633,6 +631,37 @@ impl Ui {
                             if let Err(message) = result {
                                 ui.nav.on_failure(&message, Instant::now());
                             }
+                        },
+                    );
+                }
+                Effect::LoadSongLinks(video_id) => {
+                    let catalog = self.catalog.clone();
+                    let wanted = video_id.clone();
+                    self.spawn(
+                        async move { catalog.song_links(&wanted).await },
+                        move |ui, result| ui.nav.on_song_links(&video_id, result),
+                    );
+                }
+                Effect::LoadPlaylists(track) => {
+                    let catalog = self.catalog.clone();
+                    self.spawn(async move { catalog.library().await }, move |ui, result| {
+                        ui.nav.show_playlists(track, result, Instant::now());
+                    });
+                }
+                Effect::AddToPlaylist { playlist_id, track } => {
+                    let catalog = self.catalog.clone();
+                    let request = AddToPlaylistRequest { playlist_id, track };
+                    self.spawn(
+                        async move { catalog.add_to_playlist(&request).await },
+                        |ui, result| match result {
+                            Ok(added) => {
+                                ui.nav.on_added_to_playlist(
+                                    &added.title,
+                                    added.added,
+                                    Instant::now(),
+                                );
+                            }
+                            Err(message) => ui.nav.on_failure(&message, Instant::now()),
                         },
                     );
                 }
@@ -1312,7 +1341,14 @@ impl Ui {
             let after = session.current.map_or(0, |index| index + 1);
             let upcoming = session.queue.get(after..).unwrap_or_default();
             let autoplay = upcoming.iter().filter(|entry| entry.autoplay).count();
-            app.set_queue_summary(queue_summary(upcoming.len(), autoplay).into());
+            let seconds = session
+                .queue
+                .iter()
+                .filter_map(|entry| entry.track.duration_seconds)
+                .sum();
+            app.set_queue_summary(
+                queue_summary(session.queue.len(), seconds, upcoming.len(), autoplay).into(),
+            );
             app.set_queue_clear_shown(self.nav.clearable() > 0);
             app.set_queue_clear(ButtonData {
                 icon: "remove".into(),
@@ -1389,9 +1425,11 @@ impl Ui {
                 shape_of(card.kind),
             )
         };
+        let (subtitle, subtitle_end) = split_year(card_subtitle(shelf, &card.subtitle));
         CardData {
             title: card.title.clone().into(),
-            subtitle: card_subtitle(shelf, &card.subtitle).into(),
+            subtitle: subtitle.into(),
+            subtitle_end: subtitle_end.into(),
             has_image: image.is_some(),
             image: image.unwrap_or_default(),
             round: card.kind == CardKind::Artist,
@@ -1435,9 +1473,12 @@ impl Ui {
                     {
                         self.card_data(card, &shelf.title, is_selected)
                     } else {
+                        let (subtitle, subtitle_end) =
+                            split_year(card_subtitle(&shelf.title, &card.subtitle));
                         CardData {
                             title: card.title.clone().into(),
-                            subtitle: card_subtitle(&shelf.title, &card.subtitle).into(),
+                            subtitle: subtitle.into(),
+                            subtitle_end: subtitle_end.into(),
                             round: card.kind == CardKind::Artist,
                             liked: card.is_liked_songs(),
                             selected: is_selected,
@@ -1709,7 +1750,7 @@ impl Ui {
             .enumerate()
             .map(|(index, action)| MenuItemData {
                 icon: action.icon().into(),
-                label: action.label().into(),
+                label: action.label().as_ref().into(),
                 selected: index == menu.selected,
             })
             .collect();
@@ -1854,6 +1895,19 @@ fn card_subtitle(shelf: &str, subtitle: &str) -> String {
         .join(" · ")
 }
 
+/// A card's subtitle and the year it ends with, if it does: " · 2024".
+/// The card cuts the first part short to fit, never the year.
+fn split_year(subtitle: String) -> (String, String) {
+    match subtitle.rsplit_once(" · ") {
+        Some((rest, year))
+            if year.len() == 4 && year.chars().all(|character| character.is_ascii_digit()) =>
+        {
+            (rest.to_owned(), format!(" · {year}"))
+        }
+        _ => (subtitle, String::new()),
+    }
+}
+
 /// How far a seek being picked goes: "+0:30", "−1:05".
 fn seek_delta(offset: f64) -> String {
     let sign = if offset < 0.0 { '−' } else { '+' };
@@ -1887,16 +1941,31 @@ fn drift() -> (f32, f32) {
 
 /// The line over the queue: how many songs follow, and how many of those
 /// autoplay added.
-fn queue_summary(upcoming: usize, autoplay: usize) -> String {
-    let songs = match upcoming {
-        0 => return "This is the last song".to_owned(),
-        1 => "1 song after this one".to_owned(),
-        count => format!("{count} songs after this one"),
+/// The whole queue at a glance, then what is left of it: "14 songs, 1 hr 5
+/// min · 11 after this one, 10 from autoplay". Songs of unknown length
+/// count as none.
+fn queue_summary(songs: usize, seconds: f64, upcoming: usize, autoplay: usize) -> String {
+    let left = match (upcoming, autoplay) {
+        (0, _) => "this is the last".to_owned(),
+        (count, 0) => format!("{count} after this one"),
+        (count, from) if from == count => format!("{count} after this one, all from autoplay"),
+        (count, from) => format!("{count} after this one, {from} from autoplay"),
     };
-    match autoplay {
-        0 => songs,
-        count if count == upcoming => format!("{songs}, all from autoplay"),
-        count => format!("{songs}, {count} from autoplay"),
+    format!("{} · {left}", queue_length(songs, seconds))
+}
+
+fn queue_length(songs: usize, seconds: f64) -> String {
+    let count = if songs == 1 {
+        "1 song".to_owned()
+    } else {
+        format!("{songs} songs")
+    };
+    let minutes = (seconds / 60.0).round() as u64;
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => count,
+        (0, minutes) => format!("{count}, {minutes} min"),
+        (hours, 0) => format!("{count}, {hours} hr"),
+        (hours, minutes) => format!("{count}, {hours} hr {minutes} min"),
     }
 }
 
@@ -1916,7 +1985,31 @@ fn encode_png(screenshot: Screenshot) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, card_subtitle, map_key, plain_lyric_lines, queue_summary, seek_delta};
+    use super::{
+        Key, card_subtitle, map_key, plain_lyric_lines, queue_length, queue_summary, seek_delta,
+        split_year,
+    };
+
+    #[test]
+    fn keeps_the_year_apart_so_it_always_shows() {
+        assert_eq!(
+            split_year("Westside Gunn · 2024".into()),
+            ("Westside Gunn".into(), " · 2024".into())
+        );
+        assert_eq!(
+            split_year("11 songs".into()),
+            ("11 songs".into(), String::new())
+        );
+        assert_eq!(split_year("2024".into()), ("2024".into(), String::new()));
+    }
+
+    #[test]
+    fn sums_up_the_whole_queue() {
+        assert_eq!(queue_length(14, 3900.0), "14 songs, 1 hr 5 min");
+        assert_eq!(queue_length(1, 200.0), "1 song, 3 min");
+        assert_eq!(queue_length(20, 7190.0), "20 songs, 2 hr");
+        assert_eq!(queue_length(2, 0.0), "2 songs");
+    }
 
     #[test]
     fn shortens_card_subtitles_for_their_shelf() {
@@ -1973,16 +2066,21 @@ mod tests {
 
     #[test]
     fn summarizes_the_queue_with_autoplay() {
-        assert_eq!(queue_summary(0, 0), "This is the last song");
-        assert_eq!(queue_summary(1, 0), "1 song after this one");
-        assert_eq!(queue_summary(3, 0), "3 songs after this one");
         assert_eq!(
-            queue_summary(12, 10),
-            "12 songs after this one, 10 from autoplay"
+            queue_summary(1, 200.0, 0, 0),
+            "1 song, 3 min · this is the last"
         );
         assert_eq!(
-            queue_summary(10, 10),
-            "10 songs after this one, all from autoplay"
+            queue_summary(4, 800.0, 3, 0),
+            "4 songs, 13 min · 3 after this one"
+        );
+        assert_eq!(
+            queue_summary(14, 3900.0, 12, 10),
+            "14 songs, 1 hr 5 min · 12 after this one, 10 from autoplay"
+        );
+        assert_eq!(
+            queue_summary(11, 3000.0, 10, 10),
+            "11 songs, 50 min · 10 after this one, all from autoplay"
         );
     }
 }

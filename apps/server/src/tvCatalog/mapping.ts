@@ -48,15 +48,26 @@ export const joinDetails = (parts: ReadonlyArray<string>): string =>
     Array.join(' · '),
   )
 
-/**
- * `subtitle` led by `label`: "Playlist · YouTube Music". YouTube's own
- * subtitles sometimes already start with it, and use "•" between parts.
- */
-export const labelled = (label: string, subtitle: string): string => {
-  const parts = subtitle
+/** "1.3K views", "52M plays": how often YouTube says a thing was seen. */
+const COUNT_OF_VIEWS = /^[\d.,]+\s*[KMB]?\s+(views?|plays?)$/i
+
+/** A subtitle's parts, with YouTube's "•" or our "·" between them. */
+const subtitleParts = (subtitle: string): ReadonlyArray<string> =>
+  subtitle
     .split(/\s+[·•]\s+/)
     .map(part => part.trim())
     .filter(part => part.length > 0)
+
+/**
+ * `subtitle` led by `label`: "Playlist · YouTube Music". YouTube's own
+ * subtitles sometimes already start with it, and use "•" between parts.
+ * View counts are left out: a playlist says who made it and how long it
+ * is, not how often YouTube showed it.
+ */
+export const labelled = (label: string, subtitle: string): string => {
+  const parts = subtitleParts(subtitle).filter(
+    part => !COUNT_OF_VIEWS.test(part),
+  )
   return joinDetails(parts[0] === label ? parts : [label, ...parts])
 }
 
@@ -233,13 +244,28 @@ export const nonEmptyShelves = (
 export const YOUR_PLAYLISTS_TITLE = 'Your playlists'
 export const ARTISTS_YOU_FOLLOW_TITLE = 'Artists you follow'
 
-/** Liked songs first: the library already keeps that order. */
-export const yourPlaylistsShelf = (library: MyLibrary): Tv.TvShelf => ({
+/**
+ * Liked songs first: the library already keeps that order. Home leaves it
+ * out (`withLiked` false) while it shows Liked songs as a shelf of its own,
+ * so it appears once.
+ */
+export const yourPlaylistsShelf = (
+  library: MyLibrary,
+  withLiked = true,
+): Tv.TvShelf => ({
   title: YOUR_PLAYLISTS_TITLE,
-  cards: Array.map(library.playlists, myPlaylistCard),
+  cards: Array.map(
+    withLiked
+      ? library.playlists
+      : Array.filter(
+          library.playlists,
+          playlist => playlist.id !== LIKED_PLAYLIST_ID,
+        ),
+    myPlaylistCard,
+  ),
 })
 
-/** The most liked songs Home shows; the whole list is one OK away. */
+/** The most liked songs Home shows; the whole list is in the Library. */
 export { HOME_LIKED_SONGS }
 /** The most followed artists Home shows, the latest followed first. */
 export const HOME_FOLLOWED_ARTISTS = 20
@@ -260,7 +286,11 @@ export const radioTitle = (seed: Song): string => `More like ${seed.title}`
  */
 export const mixCard = (mix: PlaylistSummary): Tv.TvCard => ({
   ...playlistCard(mix),
-  subtitle: Option.getOrElse(mix.maybeSubtitle, () => 'Mix'),
+  subtitle: joinDetails(
+    subtitleParts(Option.getOrElse(mix.maybeSubtitle, () => 'Mix')).filter(
+      part => !COUNT_OF_VIEWS.test(part),
+    ),
+  ),
 })
 
 /**
@@ -354,7 +384,10 @@ export const homeShelves = (input: HomeShelvesInput): Tv.TvShelves => ({
         title: NEW_RELEASES_TITLE,
         cards: Array.map(input.newReleases ?? [], album => albumCard(album)),
       },
-      yourPlaylistsShelf(input.library),
+      yourPlaylistsShelf(
+        input.library,
+        !Array.isReadonlyArrayNonEmpty(input.likedSongs),
+      ),
       {
         title: 'Liked Songs',
         cards: Array.map(
@@ -484,6 +517,19 @@ export const lyricsOf = (details: SongDetails): Tv.TvLyrics =>
       lines: Option.getOrNull(lyrics.maybeLines),
     }),
   })
+
+/** The album and the artists with a page, as the TV opens them. */
+export const songLinksOf = (song: Song): Tv.TvSong => ({
+  videoId: song.videoId,
+  album: Option.getOrNull(
+    Option.map(song.maybeAlbum, ({ id, name }) => ({ id, name })),
+  ),
+  artists: Array.getSomes(
+    Array.map(song.artists, ({ maybeId, name }) =>
+      Option.map(maybeId, id => ({ id, name })),
+    ),
+  ),
+})
 
 export const likedOf = (library: MyLibrary, videoId: string): Tv.TvLiked => ({
   videoId,

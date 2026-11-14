@@ -4,8 +4,9 @@
 // bursts it out from the middle.
 //
 // The ink is kept as one amount in the picture's alpha, and shown through
-// the cover's light (`glow`): thin ink is the deep shade, thick ink burns
-// to a pale core. One hue throughout, never muddy where colors pile up.
+// the cover's light (`glowIn`): thin ink is the cover's second color in its
+// deep shade, thick ink its strong color, burning to a pale core. The
+// color follows the amount, so it never muddies where ink piles up.
 
 // Each pourer's place, size, and how much it pours this frame (motion.rs).
 uniform vec4 uPour[3];
@@ -39,5 +40,5 @@ void main() {
   }
   // Keep the thin ink from banding in 8 bits.
   ink = clamp(ink + (hash12(gl_FragCoord.xy + uTime) - 0.5) / 255.0, 0.0, 1.0);
-  fragColor = vec4(glow(ink * 0.95), ink);
+  fragColor = vec4(glowIn(ink * 0.95, mix(uColorD, uColorA, smoothstep(0.15, 0.6, ink))), ink);
 }

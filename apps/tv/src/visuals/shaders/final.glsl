@@ -8,7 +8,10 @@
 // the right (`uSide`) or a pool behind the song in the middle (`uCentre`),
 // whose stops match the Slint gradients they replace (`ui/app.slint`, NOW
 // PLAYING). Where the lyrics run, the light is also held down, so a bright
-// line never crosses the words.
+// line never crosses the words: a thin line is pulled toward how bright
+// its neighborhood is (it softens to a haze), bright light is held down
+// past a dim knee, and the drop's flash is kept low there, so the dim
+// lines of the lyrics stay readable.
 //
 // Drawn at the scenes' size, never the screen's: the scenes are drawn
 // small, so everything that works on them happens at their size, where a
@@ -97,25 +100,37 @@ void main() {
   }
 
   // The light lifts on the kick and through a drop, and glows.
-  color = color * uLift + texture(uBloom, uv).rgb * uGlow;
+  vec4 bloom = texture(uBloom, uv);
+  color = color * uLift + bloom.rgb * uGlow;
 
-  // Where the lyrics run, bright light is held down: past a dim knee, the
-  // brighter it is the more it loses, so a ray crossing the words fades to
-  // a glimmer, while the dark and the dim keep their shades and the
-  // calm shows no edge. Out of the words' way, nothing changes. (Every
-  // pixel takes the same side of a branch on a uniform, so the pixels
-  // without lyrics on screen skip it for free.)
+  // Where the lyrics run, the light is calmed, and out of the words' way
+  // nothing changes. (Every pixel takes the same side of a branch on a
+  // uniform, so the pixels without lyrics on screen skip it for free.)
+  float calm = 0.0;
   if (uSide > 0.0) {
-    float calm = uSide * wordsZone(vUv);
+    calm = uSide * wordsZone(vUv);
     float lit = max(color.r, max(color.g, color.b));
-    float over = max(lit - 0.15, 0.0);
-    color *= (lit - over + over / (1.0 + 5.0 * calm * over)) / max(lit, 1e-4);
+    // A thin bright line is far brighter than its neighborhood on average
+    // (the glow's alpha, the picture's brightness blurred), so it loses
+    // the more the brighter it stands out: by the square of how much of
+    // its neighborhood's light it has. A line fades into the haze around
+    // it, while broad light, as bright as its neighborhood, keeps its
+    // level, and the calm shows no edge.
+    float around = bloom.a * uLift + max(bloom.r, max(bloom.g, bloom.b)) * uGlow;
+    float stands = min(around / max(lit, 1e-4), 1.0);
+    float soft = lit * (1.0 - 0.9 * calm * (1.0 - stands * stands));
+    // Past a dim knee, the brighter it is the more it loses, so a ray
+    // crossing the words fades to a glimmer, while the dark and the dim
+    // keep their shades.
+    float over = max(soft - 0.1, 0.0);
+    color *= (soft - over + over / (1.0 + 8.0 * calm * over)) / max(lit, 1e-4);
   }
 
-  // When a drop lands, a flash in the cover's color, everywhere alike. It
-  // is over in a beat; the rest of the drop lives in the lift, the glow,
-  // and the scenes.
-  color += uFlash;
+  // When a drop lands, a flash in the cover's color, everywhere alike but
+  // behind the lyrics, where it would wash out their dim lines. It is over
+  // in a beat; the rest of the drop lives in the lift, the glow, and the
+  // scenes.
+  color += uFlash * (1.0 - 0.75 * calm);
 
   // A soft curve so bright light rolls off instead of clipping, worked on
   // the brightest channel and applied to all three: a channel clipping on
