@@ -451,6 +451,7 @@ impl Director {
                 // already has its scene: move on, as if it were new.
                 Some(section)
                     if music.parts.stop_ended
+                        && !self.in_climax
                         && section_now == self.section
                         && section.left > beat * 4.0 * 4.0 =>
                 {

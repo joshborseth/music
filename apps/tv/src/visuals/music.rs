@@ -719,7 +719,13 @@ impl Listener {
             if parts.stop_ended || !running {
                 self.last_stop = Some(index);
             }
-            if stop.end_seconds - stop.start_seconds >= 0.3 {
+            // Not when a drop lands right after: one hit, not two flashes
+            // faster than comfort allows.
+            let drop_near = analysis
+                .drops
+                .iter()
+                .any(|drop| (drop - stop.end_seconds).abs() < 0.4);
+            if stop.end_seconds - stop.start_seconds >= 0.3 && !drop_near {
                 music.drop = music.drop.max((-back * 1.2).exp() * wild.max(0.5));
                 music.drop_landed |= parts.stop_ended;
             }

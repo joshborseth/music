@@ -55,6 +55,9 @@ impl Default for Cues {
 
 /// Two moments this close, in seconds, are the same one.
 const SAME: f64 = 0.2;
+/// Landings closer than this, in seconds, land as one: bright flashes
+/// come no faster than three a second.
+const FLASH_GAP: f64 = 0.4;
 
 impl Cues {
     /// The cues at `t` seconds into the song, the section playing having
@@ -80,10 +83,18 @@ impl Cues {
             .rev()
             .find(|build| build.land_seconds <= t)
             .map(|build| (build.land_seconds, build.strength));
+        // A return this near a build's landing is the same hit: two flashes
+        // so close would come faster than comfort allows.
         let breathed = plan
             .breaths
             .iter()
             .rev()
+            .filter(|breath| {
+                !plan
+                    .builds
+                    .iter()
+                    .any(|build| (build.land_seconds - breath.end_seconds).abs() < FLASH_GAP)
+            })
             .find(|breath| breath.end_seconds <= t)
             .map(|breath| (breath.end_seconds, 1.0));
         let latest = match (built, breathed) {
@@ -168,6 +179,18 @@ mod tests {
         assert_eq!(landed.climax, 1.0);
         assert!(landed.strobe);
         assert_eq!(landed.transition, Some((TransitionKind::Shatter, 2.0)));
+    }
+
+    #[test]
+    fn a_breath_ending_on_a_landing_lands_once() {
+        let mut plan = plan();
+        plan.breaths.push(Span {
+            start_seconds: 15.0,
+            end_seconds: 15.8,
+        });
+        let landed = Cues::at(&plan, 16.1, Some(16.0));
+        assert!((landed.since - 0.1).abs() < 1e-5);
+        assert!((Cues::at(&plan, 15.9, Some(0.0)).since - 0.1).abs() > 1.0);
     }
 
     #[test]
