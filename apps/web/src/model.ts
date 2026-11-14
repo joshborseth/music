@@ -21,6 +21,7 @@ import {
   artistSearchQuery,
   artworkBackdropQuery,
   homeQuery,
+  librarySongsQuery,
   moodGroupsQuery,
   moodQuery,
   myLibraryQuery,
@@ -81,6 +82,8 @@ export const Model = Schema.Struct({
   albums: albumQuery.Model,
   playlists: playlistQuery.Model,
   myLibrary: myLibraryQuery.Model,
+  /** Every song in my playlists and Liked Songs, for the Library's Songs. */
+  librarySongs: librarySongsQuery.Model,
   myPlaylists: myPlaylistQuery.Model,
   /** What played lately on any device, from the server's history. */
   home: homeQuery.Model,

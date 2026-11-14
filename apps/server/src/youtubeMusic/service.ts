@@ -56,6 +56,7 @@ import {
   perceptualLoudnessOf,
   playlistFromListItem,
   playlistOwnerFromResponse,
+  playlistWithoutViewCount,
   rankArtistsForQuery,
   rankSongsForQuery,
   releasesFromItems,
@@ -647,11 +648,14 @@ const make = Effect.gen(function* () {
       ],
       { concurrency: 'unbounded' },
     )
-    return filterPlaylistsForQuery(
-      query,
-      filterSome(items, playlistFromListItem),
-      focus,
-      featured,
+    return Array.map(
+      filterPlaylistsForQuery(
+        query,
+        filterSome(items, playlistFromListItem),
+        focus,
+        featured,
+      ),
+      playlistWithoutViewCount,
     )
   })
 

@@ -126,6 +126,58 @@ describe('playlist store', () => {
         ({ videoId }) => videoId,
       ),
     ).toEqual(['a', 'c', 'b'])
+    expect(result.alreadyHeldVideoIds).toEqual(['a'])
+  })
+
+  test('says when every song added was already there', () => {
+    const store = makeStore()
+    edit(store, { _tag: 'Create', title: 'Mix', songs: [song('a')] })
+    const again = edit(store, {
+      _tag: 'AddSongs',
+      playlistId: 'playlist-1',
+      songs: [song('a')],
+    })
+
+    expect(again.alreadyHeldVideoIds).toEqual(['a'])
+    expect(songIds(again)).toEqual(['a'])
+    expect(
+      edit(store, { _tag: 'SetLiked', song: song('a'), isLiked: true })
+        .alreadyHeldVideoIds,
+    ).toEqual([])
+  })
+
+  test('lists every song in my playlists and Liked Songs once, latest added first', () => {
+    const store = makeStore()
+    edit(store, { _tag: 'Create', title: 'Mix', songs: [song('a'), song('b')] })
+    edit(store, { _tag: 'SetLiked', song: song('c'), isLiked: true })
+    edit(store, { _tag: 'SetLiked', song: song('a'), isLiked: true })
+    edit(store, { _tag: 'Create', title: 'Empty', songs: [] })
+
+    const songs = Result.getOrThrow(run(store.librarySongs()))
+
+    expect(songs.map(({ song: { videoId } }) => videoId)).toEqual([
+      'c',
+      'a',
+      'b',
+    ])
+    expect(songs[1]?.song).toEqual(song('a'))
+    expect(songs.map(({ addedAt }) => addedAt)).toEqual([1_005, 1_003, 1_003])
+  })
+
+  test('lists two videos of one song once', () => {
+    const store = makeStore()
+    edit(store, { _tag: 'Create', title: 'Mix', songs: [song('a')] })
+    edit(store, {
+      _tag: 'SetLiked',
+      song: { ...song('video-of-a'), title: 'song a' },
+      isLiked: true,
+    })
+
+    expect(
+      Result.getOrThrow(run(store.librarySongs())).map(
+        ({ song: { videoId } }) => videoId,
+      ),
+    ).toEqual(['video-of-a'])
   })
 
   test('lists the most recently changed playlist first, after Liked songs', () => {

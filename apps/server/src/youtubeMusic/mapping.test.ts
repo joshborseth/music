@@ -27,6 +27,7 @@ import {
   hexFromArgb,
   isExplicit,
   musicVideoIds,
+  playlistLengthSummary,
   playlistOwnerFromResponse,
   playsFromListItem,
   radioOf,
@@ -43,6 +44,7 @@ import {
   topResultFromCard,
   topSongAlbumId,
   withTopSongAlbum,
+  withoutViewCount,
 } from './mapping.ts'
 
 const thumbnail = (url: string, size: number) => ({
@@ -2067,6 +2069,41 @@ describe('playlists in a search', () => {
         filterPlaylistsForQuery('bohemian rhapsody', playlists, rhapsodyFocus),
       ),
     ).toEqual(['VLPLlike'])
+  })
+})
+
+describe('withoutViewCount', () => {
+  test('leaves out how often a playlist was watched', () => {
+    expect(withoutViewCount('1.6M views • 100 songs • 6+ hours')).toEqual(
+      Option.some('100 songs · 6+ hours'),
+    )
+    expect(withoutViewCount('Batson · 1,234 views')).toEqual(
+      Option.some('Batson'),
+    )
+    expect(withoutViewCount('1 view')).toEqual(Option.none())
+  })
+
+  test('keeps everything else', () => {
+    expect(withoutViewCount('YouTube Music · 126 songs')).toEqual(
+      Option.some('YouTube Music · 126 songs'),
+    )
+    expect(withoutViewCount('Views from the 6')).toEqual(
+      Option.some('Views from the 6'),
+    )
+  })
+})
+
+describe('playlistLengthSummary', () => {
+  test('counts songs, not tracks or views', () => {
+    expect(playlistLengthSummary('1.6M views • 7 tracks • 31 minutes')).toEqual(
+      Option.some('7 songs · 31 minutes'),
+    )
+    expect(playlistLengthSummary('1 track • 3 minutes')).toEqual(
+      Option.some('1 song · 3 minutes'),
+    )
+    expect(playlistLengthSummary('100 songs • 6+ hours')).toEqual(
+      Option.some('100 songs · 6+ hours'),
+    )
   })
 })
 

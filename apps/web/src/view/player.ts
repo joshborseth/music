@@ -913,7 +913,9 @@ const queuePanel = (
                                   'truncate text-[13px] text-white/60 active:opacity-60',
                                 ),
                               ],
-                              [`From ${playingFromName(playingFrom)}`],
+                              [
+                                `From ${playingFromName(playingFrom)}${playingFrom.kind === 'Radio' ? ' Radio' : ''}`,
+                              ],
                             ),
                         },
                       ),

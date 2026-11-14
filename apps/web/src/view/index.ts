@@ -1,9 +1,16 @@
 import { Array, Option } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Document, Html, HtmlBuilder } from 'foldkit/html'
-import { Check, CircleArrowDown, CircleCheck, Ellipsis, Plus } from 'lucide'
+import {
+  Check,
+  CircleArrowDown,
+  CircleCheck,
+  Ellipsis,
+  Heart,
+  Plus,
+} from 'lucide'
 
-import { type AlbumSummary, type MyLibrary } from '@music/shared'
+import { type AlbumSummary, type MyLibrary, type Song } from '@music/shared'
 
 import {
   DownloadStatus,
@@ -198,6 +205,52 @@ const downloadButton = (
     },
   )
 
+/**
+ * The song page's heart, which adds it to Liked Songs or takes it out, and
+ * ⋯, everything else that can be done with it. The heart shows once the
+ * Library has loaded, so it never shows the wrong state.
+ */
+const songButtons = (
+  maybeSong: Option.Option<Song>,
+  maybeLibrary: Option.Option<MyLibrary>,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(maybeSong, {
+    onNone: () => h.empty,
+    onSome: song =>
+      navBarButtons(
+        [
+          Option.match(maybeLibrary, {
+            onNone: () => h.empty,
+            onSome: ({ likedVideoIds }) => {
+              const isLiked = Array.contains(likedVideoIds, song.videoId)
+              return navBarButton(
+                {
+                  onClick: Message.ClickedToggleLiked({ song }),
+                  iconNode: Heart,
+                  label: isLiked
+                    ? 'Remove from Liked Songs'
+                    : 'Add to Liked Songs',
+                  isOn: isLiked,
+                  iconClass: isLiked ? 'fill-current' : '',
+                },
+                h,
+              )
+            },
+          }),
+          navBarButton(
+            {
+              onClick: Message.ClickedSongActions({ song }),
+              iconNode: Ellipsis,
+              label: 'Song Options',
+            },
+            h,
+          ),
+        ],
+        h,
+      ),
+  })
+
 const navBarButtons = (
   buttons: ReadonlyArray<Html>,
   h: HtmlBuilder<Message>,
@@ -214,15 +267,23 @@ const routeParts = (
     Home: () => homeView(model, h),
     Search: () => searchView(model, h),
     Library: () => libraryView(model, h),
-    Song: ({ videoId }) =>
-      detailPage(
-        Option.map(
-          AsyncData.getData(songQuery.read(model.songs, { videoId })),
-          ({ song }) => song.title,
-        ),
+    Song: ({ videoId }) => {
+      const maybeSong = Option.map(
+        AsyncData.getData(songQuery.read(model.songs, { videoId })),
+        ({ song }) => song,
+      )
+      return detailPage(
+        Option.map(maybeSong, ({ title }) => title),
         songView(model, videoId, h),
         h,
-      ),
+        songButtons(
+          maybeSong,
+          AsyncData.getData(myLibraryQuery.read(model.myLibrary)),
+          h,
+        ),
+        2,
+      )
+    },
     Artist: ({ artistId }) =>
       detailPage(
         Option.map(

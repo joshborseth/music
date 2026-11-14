@@ -8,6 +8,7 @@ import {
   ArtistDetails,
   ArtistSummary,
   HomeFeed,
+  LibrarySong,
   MoodDetails,
   MoodGroup,
   type MusicNotFoundError,
@@ -192,6 +193,16 @@ export const myLibraryQuery = Query.define({
   data: MyLibrary,
   error: RequestError,
   execute: MusicClient.use(client => client.getMyLibrary()).pipe(
+    withRequestError,
+  ),
+})
+
+/** Every song in my playlists and Liked Songs, each once, latest added first. */
+export const librarySongsQuery = Query.define({
+  name: 'LibrarySongs',
+  data: Schema.Array(LibrarySong),
+  error: RequestError,
+  execute: MusicClient.use(client => client.getLibrarySongs()).pipe(
     withRequestError,
   ),
 })

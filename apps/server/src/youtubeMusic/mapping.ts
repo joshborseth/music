@@ -929,6 +929,7 @@ export const toPlaylistDetails = (
                 Option.liftPredicate(String.isNonEmpty),
               ),
             ),
+            Option.flatMap(withoutViewCount),
           ),
           artwork: toArtwork(header.thumbnail?.contents),
         },
@@ -940,7 +941,10 @@ export const toPlaylistDetails = (
           ),
         ),
         maybeDescription: textToOption(header.description?.description),
-        maybeLengthSummary: textToOption(header.second_subtitle),
+        maybeLengthSummary: Option.flatMap(
+          textToOption(header.second_subtitle),
+          playlistLengthSummary,
+        ),
         tracks: filterSome(page.items, item =>
           item.is(YTNodes.MusicResponsiveListItem)
             ? songFromListItem(item.as(YTNodes.MusicResponsiveListItem))
@@ -1008,7 +1012,9 @@ const playlistSubtitle = (
 ): Option.Option<string> =>
   pipe(
     subtitleSegments(maybeSubtitle),
-    Array.filter(segment => segment !== PLAYLIST_LABEL),
+    Array.filter(
+      segment => segment !== PLAYLIST_LABEL && !isViewCount(segment),
+    ),
     Array.join(' · '),
     Option.liftPredicate(String.isNonEmpty),
   )
@@ -2154,6 +2160,45 @@ export const topSongAlbumId = (focus: SearchFocus): Option.Option<string> =>
   )
 
 const VIEW_COUNT = /([\d.,]+\s*[KMB]?)\s+views?\b/i
+
+/** One detail that is only a view count: "1.6M views". */
+const isViewCount = (segment: string): boolean =>
+  /^[\d.,]+\s*[KMB]?\s+views?$/i.test(segment.trim())
+
+/**
+ * Details without how often a playlist was watched, which a music app
+ * leaves out: "Batson · 1.6M views" is "Batson", and "1.6M views • 100
+ * songs • 6+ hours" is "100 songs · 6+ hours".
+ */
+export const withoutViewCount = (text: string): Option.Option<string> =>
+  pipe(
+    text.split(/\s+[•·]\s+/),
+    Array.map(String.trim),
+    Array.filter(
+      segment => String.isNonEmpty(segment) && !isViewCount(segment),
+    ),
+    Array.join(' · '),
+    Option.liftPredicate(String.isNonEmpty),
+  )
+
+/**
+ * How long a playlist is, as a music app says it: "1.6M views • 7 tracks
+ * • 31 minutes" is "7 songs · 31 minutes".
+ */
+export const playlistLengthSummary = (text: string): Option.Option<string> =>
+  Option.map(withoutViewCount(text), summary =>
+    summary.replace(/\b(\d[\d,]*)\s+tracks?\b/i, (_, count: string) =>
+      count === '1' ? '1 song' : `${count} songs`,
+    ),
+  )
+
+/** A playlist as the app shows it: its subtitle without a view count. */
+export const playlistWithoutViewCount = (
+  playlist: PlaylistSummary,
+): PlaylistSummary => ({
+  ...playlist,
+  maybeSubtitle: Option.flatMap(playlist.maybeSubtitle, withoutViewCount),
+})
 
 /** How often a playlist was viewed, from "Candie Schane · 1.9K views". */
 export const playlistViews = (

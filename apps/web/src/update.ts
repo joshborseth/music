@@ -97,6 +97,7 @@ import {
   artistSearchQuery,
   artworkBackdropQuery,
   homeQuery,
+  librarySongsQuery,
   moodGroupsQuery,
   moodQuery,
   myLibraryQuery,
@@ -184,6 +185,11 @@ const moods = moodQuery.lift<Model, Message>({
 const myLibrary = myLibraryQuery.lift<Model, Message>({
   parentField: 'myLibrary',
   toParentMessage: message => Message.GotMyLibraryMessage({ message }),
+})
+
+const librarySongs = librarySongsQuery.lift<Model, Message>({
+  parentField: 'librarySongs',
+  toParentMessage: message => Message.GotLibrarySongsMessage({ message }),
 })
 
 const myPlaylists = myPlaylistQuery.lift<Model, Message>({
@@ -997,6 +1003,18 @@ const showNotice =
 
 const addedNotice = (title: string): string => `Added to “${title}”`
 
+const alreadyInNotice = (title: string): string => `Already in “${title}”`
+
+/** Every song an edit adds was in the playlist already. */
+const isAllAlreadyHeld = (
+  songs: ReadonlyArray<Song>,
+  result: PlaylistEditResult,
+): boolean =>
+  Array.isReadonlyArrayNonEmpty(songs) &&
+  Array.every(songs, ({ videoId }) =>
+    Array.contains(result.alreadyHeldVideoIds, videoId),
+  )
+
 const stay: UpdateStep = model => ({ model })
 
 /**
@@ -1021,10 +1039,18 @@ const followEdit = (
           ? navigateTo(myPlaylistHref(playlistId), 'Push')
           : showNotice(addedNotice(title)),
       ),
-    AddSongs: (): UpdateStep => model =>
-      isAddingSongs(model)
-        ? { model }
-        : withChangedPlaylist(title => showNotice(addedNotice(title)))(model),
+    AddSongs:
+      ({ songs: added }): UpdateStep =>
+      model =>
+        isAddingSongs(model)
+          ? { model }
+          : withChangedPlaylist(title =>
+              showNotice(
+                isAllAlreadyHeld(added, result)
+                  ? alreadyInNotice(title)
+                  : addedNotice(title),
+              ),
+            )(model),
     Rename: () => stay,
     Delete: () => stay,
     RemoveSong: () => stay,
@@ -1045,19 +1071,18 @@ const completeEditPlaylists = (
   result: Result.Result<PlaylistEditResult, RequestError>,
 ): UpdateStep =>
   Result.match(result, {
-    onSuccess:
-      (saved): UpdateStep =>
-      model =>
-        followEdit(
-          edit,
-          saved,
-        )(
-          Option.match(saved.maybePlaylist, {
+    onSuccess: (saved): UpdateStep =>
+      Update.combine([
+        model => ({
+          model: Option.match(saved.maybePlaylist, {
             onNone: () => withMyLibrary(model, saved.library),
             onSome: details =>
               withMyPlaylist(withMyLibrary(model, saved.library), details),
           }),
-        ),
+        }),
+        model => librarySongs.revalidate(model),
+        followEdit(edit, saved),
+      ]),
     onFailure: (): UpdateStep =>
       Update.combine([
         showNotice('Could not save that change. Try again.'),
@@ -1287,6 +1312,35 @@ const loadHome: UpdateStep = Update.combine([
     myPlaylists.revalidateOrLoad(model, { playlistId: LIKED_PLAYLIST_ID }),
 ])
 
+/** The Library lists my playlists, and searches and lists their songs. */
+const loadLibrary: UpdateStep = Update.combine([
+  model => myLibrary.revalidateOrLoad(model),
+  model => librarySongs.revalidateOrLoad(model),
+])
+
+/**
+ * The artist's playlist of every song, most played first, once their page
+ * has loaded, so Play and Shuffle queue all of it and not only the few top
+ * songs the page lists.
+ */
+const loadArtistSongs: UpdateStep = model =>
+  AppRoute.matchOrElse(
+    model.route,
+    {
+      Artist: ({ artistId }) =>
+        pipe(
+          AsyncData.getData(artistQuery.read(model.artists, { artistId })),
+          Option.flatMap(details => details.maybeAllSongsPlaylistId),
+          Option.match({
+            onNone: () => ({ model }),
+            onSome: playlistId =>
+              playlists.loadIfMissing(model, { playlistId }),
+          }),
+        ),
+    },
+    () => ({ model }),
+  )
+
 const loadRoute = (route: AppRoute): UpdateStep =>
   AppRoute.match<UpdateStep>(route, {
     Home: () => loadHome,
@@ -1295,15 +1349,16 @@ const loadRoute = (route: AppRoute): UpdateStep =>
         onNone: () => model => moodGroups.loadIfMissing(model),
         onSome: query => loadSearch(query, routeSearchKind(route)),
       }),
-    Library: () => model => myLibrary.revalidateOrLoad(model),
+    Library: () => loadLibrary,
     Song:
       ({ videoId }) =>
       model =>
         songs.loadIfMissing(model, { videoId }),
-    Artist:
-      ({ artistId }) =>
-      model =>
-        artists.loadIfMissing(model, { artistId }),
+    Artist: ({ artistId }) =>
+      Update.combine([
+        model => artists.loadIfMissing(model, { artistId }),
+        loadArtistSongs,
+      ]),
     ArtistAlbums:
       ({ artistId }) =>
       model =>
@@ -1339,7 +1394,7 @@ const retryRoute = (route: AppRoute): UpdateStep =>
         onNone: () => model => moodGroups.revalidateOrLoad(model),
         onSome: query => revalidateSearch(query, routeSearchKind(route)),
       }),
-    Library: () => model => myLibrary.revalidateOrLoad(model),
+    Library: () => loadLibrary,
     Song:
       ({ videoId }) =>
       model =>
@@ -1410,6 +1465,7 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     albums: albumQuery.init(),
     playlists: playlistQuery.init(),
     myLibrary: myLibraryQuery.init(),
+    librarySongs: librarySongsQuery.init(),
     myPlaylists: myPlaylistQuery.init(),
     home: homeQuery.init(),
     newReleases: newReleasesQuery.init(),
@@ -1686,6 +1742,7 @@ const updateMessage = (model: Model, message: Message) =>
       Update.combine([
         stepModel => artists.fold(stepModel, message),
         rememberViewed,
+        loadArtistSongs,
       ])(model),
     GotAlbumMessage: ({ message }) =>
       Update.combine([
@@ -1700,6 +1757,7 @@ const updateMessage = (model: Model, message: Message) =>
     GotPlaylistSearchMessage: ({ message }) =>
       playlistSearch.fold(model, message),
     GotMyLibraryMessage: ({ message }) => myLibrary.fold(model, message),
+    GotLibrarySongsMessage: ({ message }) => librarySongs.fold(model, message),
     GotMyPlaylistMessage: ({ message }) => myPlaylists.fold(model, message),
     GotHomeMessage: ({ message }) =>
       Update.combine([stepModel => home.fold(stepModel, message), loadRadio])(

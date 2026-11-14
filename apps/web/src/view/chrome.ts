@@ -137,6 +137,8 @@ export const navBarButton = (
     iconNode: IconNode
     label: string
     isOn?: boolean
+    /** Classes for the icon, such as `fill-current` for a filled heart. */
+    iconClass?: string
   }>,
   h: HtmlBuilder<Message>,
 ): Html =>
@@ -152,7 +154,7 @@ export const navBarButton = (
         ),
       ),
     ],
-    [icon(h, config.iconNode, 'size-[22px]')],
+    [icon(h, config.iconNode, cn('size-[22px]', config.iconClass))],
   )
 
 /** Room a row of round nav bar buttons takes from the screen's edge. */

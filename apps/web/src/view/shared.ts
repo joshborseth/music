@@ -80,15 +80,6 @@ export const playlistLength = (playlist: MyPlaylistSummary): string => {
   return joinDetails([songs, length])
 }
 
-const compactNumber = new Intl.NumberFormat('en', {
-  notation: 'compact',
-  maximumFractionDigits: 1,
-})
-
-/** `168462775` → `168.5M views`. */
-export const formatViews = (viewCount: number): string =>
-  `${compactNumber.format(viewCount)} views`
-
 /** Joins the non-empty parts with a middle dot. */
 export const joinDetails = (parts: ReadonlyArray<string>): string =>
   pipe(

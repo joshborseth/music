@@ -19,6 +19,7 @@ import {
   AlbumSummary,
   ArtistSummary,
   LIKED_PLAYLIST_ID,
+  type LibrarySong,
   MAX_PLAYLIST_DESCRIPTION_LENGTH,
   MAX_PLAYLIST_TITLE_LENGTH,
   MusicNotFoundError,
@@ -143,6 +144,10 @@ const SummaryRow = Schema.Struct({
 type SummaryRow = typeof SummaryRow.Type
 
 const SongRow = Schema.Struct({ song: Schema.String })
+const AddedSongRow = Schema.Struct({
+  song: Schema.String,
+  added_at: Schema.Number,
+})
 
 const PlayedRow = Schema.Struct({
   song: Schema.String,
@@ -203,10 +208,24 @@ const latestPlays = (
     ),
   )
 
+/** What makes two videos one song: its title and artists, in any case. */
+const sameSongKey = (song: Song): string =>
+  [song.title, ...Array.map(song.artists, ({ name }) => name)]
+    .join('\n')
+    .toLocaleLowerCase()
+
 // SERVICE
 
 export interface PlaylistStoreShape {
   readonly library: () => Effect.Effect<MyLibrary, PlaylistStoreError>
+  /**
+   * Every song in my playlists and Liked Songs, each once, the latest added
+   * first.
+   */
+  readonly librarySongs: () => Effect.Effect<
+    ReadonlyArray<LibrarySong>,
+    PlaylistStoreError
+  >
   readonly playlist: (
     playlistId: string,
   ) => Effect.Effect<MyPlaylistDetails, MusicNotFoundError | PlaylistStoreError>
@@ -463,6 +482,34 @@ export const makePlaylistStore = (
       ),
     }
   }
+
+  /**
+   * Each song once, with when it first went into any playlist. SQLite takes
+   * a bare column from the row MIN picked, so `song` is that copy. Two
+   * videos of one song, such as a like kept from before the app swapped
+   * music videos for songs, list once too, as the one added last.
+   */
+  const readLibrarySongs = (): ReadonlyArray<LibrarySong> =>
+    pipe(
+      db
+        .query(
+          `SELECT song, MIN(added_at) AS added_at FROM playlist_songs
+           GROUP BY video_id
+           ORDER BY added_at DESC, MIN(rowid)`,
+        )
+        .all(),
+      decodeRows(AddedSongRow),
+      Array.map(row =>
+        Option.map(decodeStoredSong(row.song), song => ({
+          song,
+          addedAt: row.added_at,
+        })),
+      ),
+      Array.getSomes,
+      Array.dedupeWith(
+        (left, right) => sameSongKey(left.song) === sameSongKey(right.song),
+      ),
+    )
 
   const readDetails = (playlistId: string): Option.Option<MyPlaylistDetails> =>
     Option.map(readSummary(playlistId), playlist => ({
@@ -732,14 +779,29 @@ export const makePlaylistStore = (
         },
     })
 
+  /** The songs an edit would add that the playlist already holds. */
+  const alreadyHeld = (edit: PlaylistEdit): ReadonlyArray<string> =>
+    edit._tag === 'AddSongs'
+      ? pipe(
+          edit.songs,
+          Array.map(({ videoId }) => videoId),
+          Array.dedupe,
+          Array.intersection(videoIdsOf(edit.playlistId)),
+        )
+      : []
+
   /** Runs the change in one transaction, then reads back what it changed. */
   const applyEdit = (
     edit: PlaylistEdit,
   ): Result.Result<PlaylistEditResult, MusicNotFoundError> =>
-    Result.map(db.transaction(change(edit))(), maybeChangedId => ({
-      library: readLibrary(),
-      maybePlaylist: Option.flatMap(maybeChangedId, readDetails),
-    }))
+    db.transaction(() => {
+      const alreadyHeldVideoIds = alreadyHeld(edit)
+      return Result.map(change(edit)(), maybeChangedId => ({
+        library: readLibrary(),
+        maybePlaylist: Option.flatMap(maybeChangedId, readDetails),
+        alreadyHeldVideoIds,
+      }))
+    })()
 
   /** Moves the song to the top of the history and drops the oldest plays. */
   const writePlay = (song: Song): void => {
@@ -840,6 +902,9 @@ export const makePlaylistStore = (
   return {
     library: Effect.fn('PlaylistStore.library')(function* () {
       return yield* attempt(readLibrary)
+    }),
+    librarySongs: Effect.fn('PlaylistStore.librarySongs')(function* () {
+      return yield* attempt(readLibrarySongs)
     }),
     playlist: Effect.fn('PlaylistStore.playlist')(function* (
       playlistId: string,

@@ -38,6 +38,7 @@ export type PageModel = Readonly<
     | 'albums'
     | 'playlists'
     | 'myLibrary'
+    | 'librarySongs'
     | 'myPlaylists'
     | 'home'
     | 'newReleases'
@@ -93,6 +94,7 @@ const renderPage = (
   albums: Model['albums'],
   playlists: Model['playlists'],
   myLibrary: Model['myLibrary'],
+  librarySongs: Model['librarySongs'],
   myPlaylists: Model['myPlaylists'],
   home: Model['home'],
   newReleases: Model['newReleases'],
@@ -131,6 +133,7 @@ const renderPage = (
       albums,
       playlists,
       myLibrary,
+      librarySongs,
       myPlaylists,
       home,
       newReleases,
@@ -187,6 +190,7 @@ export const memoizedPage = (
     model.albums,
     model.playlists,
     model.myLibrary,
+    model.librarySongs,
     model.myPlaylists,
     model.home,
     model.newReleases,
