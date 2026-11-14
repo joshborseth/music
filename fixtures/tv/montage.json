@@ -1,0 +1,30 @@
+{
+  "videoId": "abc123",
+  "source": "Video",
+  "musicVideoId": "gAjR4_CbPpQ",
+  "columns": 2,
+  "rows": 2,
+  "cellWidth": 320,
+  "cellHeight": 180,
+  "frames": [
+    {
+      "seconds": 3.5,
+      "color": [0.12, 0.2, 0.31],
+      "brightness": 0.19,
+      "busyness": 0.42
+    },
+    {
+      "seconds": 41,
+      "color": [0.6, 0.31, 0.5],
+      "brightness": 0.41,
+      "busyness": 0.77
+    },
+    {
+      "seconds": null,
+      "color": [0.05, 0.05, 0.09],
+      "brightness": 0.08,
+      "busyness": 0.12
+    }
+  ],
+  "atlasPath": "/tv/montage.jpg?videoId=abc123&v=1"
+}

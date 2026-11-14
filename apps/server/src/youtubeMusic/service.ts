@@ -42,6 +42,7 @@ import {
   type SearchFocus,
   type TopCard,
   type TopSong,
+  type VideoSearchResult,
   albumFromListItem,
   artistFromListItem,
   audioTrackFor,
@@ -73,6 +74,7 @@ import {
   topCardSong,
   topSongAlbumId,
   twoRowItemsOf,
+  videoFromListItem,
   withTopSongAlbum,
 } from './mapping.ts'
 
@@ -121,7 +123,7 @@ const orNotFound =
       onSome: Effect.succeed,
     })
 
-type SearchType = 'song' | 'artist' | 'album' | 'playlist'
+type SearchType = 'song' | 'video' | 'artist' | 'album' | 'playlist'
 
 type PlaylistPage = YTMusic.Playlist
 
@@ -206,6 +208,9 @@ type WithoutSong = 'Keep' | 'Drop'
 /** A song's loudness figure doesn't change; a day keeps the cache small. */
 const LOUDNESS_TTL = Duration.days(1)
 const LOUDNESS_CAPACITY = 1024
+/** Video searches, for the montage's music videos: one a song, kept a day. */
+const VIDEO_SEARCH_TTL = Duration.days(1)
+const VIDEO_SEARCH_CAPACITY = 256
 
 const MOODS_AND_GENRES_BROWSE_ID = 'FEmusic_moods_and_genres'
 const MOOD_BROWSE_ID = 'FEmusic_moods_and_genres_category'
@@ -297,6 +302,13 @@ export interface YouTubeMusicShape {
   readonly getLoudnessLufs: (
     videoId: string,
   ) => Effect.Effect<Option.Option<number>, YouTubeMusicError>
+  /**
+   * A video search, in YouTube Music's order, titles as they came: for
+   * finding a song's own music video (`montage/`). Kept for a day.
+   */
+  readonly searchVideos: (
+    query: string,
+  ) => Effect.Effect<ReadonlyArray<VideoSearchResult>, YouTubeMusicError>
 }
 
 /** Read-only access to the YouTube Music catalog, mapped to shared Schemas. */
@@ -1159,6 +1171,20 @@ const make = Effect.gen(function* () {
     },
   )
 
+  const videoSearches = yield* Cache.makeWith(
+    (query: string) =>
+      Effect.map(searchShelf(query, 'video'), items =>
+        filterSome(items, videoFromListItem),
+      ),
+    {
+      capacity: VIDEO_SEARCH_CAPACITY,
+      timeToLive: Exit.match({
+        onFailure: () => Duration.zero,
+        onSuccess: () => VIDEO_SEARCH_TTL,
+      }),
+    },
+  )
+
   return YouTubeMusic.of({
     searchSongs,
     searchArtists,
@@ -1178,6 +1204,7 @@ const make = Effect.gen(function* () {
     getSongForVideo: audioTrackOf,
     getRadio,
     getLoudnessLufs: videoId => Cache.get(loudnesses, videoId),
+    searchVideos: query => Cache.get(videoSearches, query),
   })
 })
 

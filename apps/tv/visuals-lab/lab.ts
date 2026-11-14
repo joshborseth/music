@@ -26,6 +26,7 @@ import {
   screenLook,
   transitionCode,
 } from './moments.ts'
+import { makeMontage, montagePage } from './montage.ts'
 import { type Sim, makeSwarm } from './particles'
 
 declare const SHADERS: Readonly<Record<string, string>>
@@ -51,6 +52,7 @@ const SCENES: ReadonlyArray<SceneDef> = [
   { name: 'Swarm', file: 'swarm.glsl', land: false },
   { name: 'Coral', file: 'coral.glsl', land: false },
   { name: 'Diorama', file: 'diorama.glsl', land: false, relief: true },
+  { name: 'Montage', file: 'montage.glsl', land: false },
 ]
 
 const BANDS = 48
@@ -923,6 +925,8 @@ const makeEngine = (
     fbmPixels(),
   )
   const coverTexture = dataTexture(gl, COVER, COVER, 'rgba', false)
+  // The song's own pictures, for Montage (montage.ts).
+  const montage = makeMontage(gl)
   const scoreTexture = dataTexture(gl, SCORE_COLUMNS, AHEAD_ROWS, 'r', false)
   let scoreRate = 0
   let scoreShift = 0
@@ -1114,6 +1118,7 @@ const makeEngine = (
       setMusic(scene.main, music, [write.width, write.height], scene)
       bindTextures(scene.main, read)
       sim?.bind(scene.main)
+      montage.bind(scene.main, music)
       fullscreen()
     }
     sim?.after(write, prepare)
@@ -1385,6 +1390,7 @@ const makeEngine = (
     setSide,
     clearScenes,
     scenes,
+    montage,
   }
 }
 
@@ -2255,4 +2261,11 @@ else if (MODE === 'diorama')
     scene: SCENES.findIndex(scene => scene.name === 'Diorama'),
   })
 else if (MODE === 'song') song()
+else if (MODE === 'montage')
+  montagePage({
+    makeEngine,
+    song: () => madeUpSong(124),
+    cover: madeUpCover,
+    scene: SCENES.findIndex(def => def.name === 'Montage'),
+  })
 else live()

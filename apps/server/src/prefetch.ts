@@ -13,6 +13,7 @@ import { SongAnalysis } from './analysis/service.ts'
 import { AudioSource } from './audio.ts'
 import { AudioStore } from './audioStore.ts'
 import { CoverDepth } from './depth/service.ts'
+import { SongMontage } from './montage/service.ts'
 
 /*
  * Gets songs ready before anyone presses Play. The session, the page being
@@ -30,6 +31,8 @@ import { CoverDepth } from './depth/service.ts'
  * sections, for the TV's visuals), which runs in the background. A song
  * the queue will play soon has its cover's depth worked out too, for the
  * TV's Diorama, whether or not its audio comes.
+ * The queue's next few songs also get their montage made (the music
+ * video's key frames, for the visuals), one at a time, after their audio.
  */
 
 export type PlanSource = 'Queue' | 'Page'
@@ -55,6 +58,8 @@ export class Prefetcher extends Context.Service<
 >()('music/Prefetcher') {}
 
 const WORKERS = 2
+/** The queue's songs, from the one playing, that get a montage made early. */
+const QUEUE_MONTAGES = 3
 /** yt-dlp runs prefetching may spend in a day, leaving room for real plays. */
 const DAILY_YT_DLP_RUNS = 400
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -101,7 +106,10 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
     const audioSource = yield* AudioSource
     const analysis = yield* SongAnalysis
     const coverDepth = yield* CoverDepth
+    const songMontage = yield* SongMontage
     const plans = new Map<PlanSource, Array<PrefetchJob>>()
+    /** The songs up next in the queue whose montage is made early. */
+    let montageSongs: ReadonlySet<string> = new Set()
     const running = new Set<string>()
     const wake = yield* Queue.sliding<void>(WORKERS)
     let runs: Array<number> = []
@@ -145,7 +153,14 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
       })
 
     const analyze = (job: PrefetchJob) =>
-      job.kind === 'Download' ? analysis.warm(job.videoId) : Effect.void
+      job.kind === 'Download'
+        ? Effect.andThen(
+            analysis.warm(job.videoId),
+            montageSongs.has(job.videoId)
+              ? songMontage.warm(job.videoId)
+              : Effect.void,
+          )
+        : Effect.void
 
     const run = (job: PrefetchJob) =>
       Effect.gen(function* () {
@@ -197,7 +212,17 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
     return Prefetcher.of({
       plan: (source, jobs) =>
         Effect.andThen(
-          Effect.sync(() => plans.set(source, [...jobs])),
+          Effect.sync(() => {
+            plans.set(source, [...jobs])
+            if (source === 'Queue') {
+              montageSongs = new Set(
+                Array.take(
+                  Array.filter(jobs, job => job.kind === 'Download'),
+                  QUEUE_MONTAGES,
+                ).map(job => job.videoId),
+              )
+            }
+          }),
           Effect.forEach(
             Array.range(1, WORKERS),
             () => Queue.offer(wake, undefined),

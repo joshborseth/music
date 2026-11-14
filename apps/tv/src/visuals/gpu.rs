@@ -42,8 +42,9 @@ use std::sync::Arc;
 use glow::HasContext;
 
 use super::diorama::{self, Camera, Depth, Shatter};
-use super::director::{SCENES, Shot, Showing, scene_index};
+use super::director::{MONTAGE, SCENES, Shot, Showing, scene_index};
 use super::look::{COVER_SIDE, Cover, DEFAULT_COLORS, turned};
+use super::montage::{Cutter, MontageAtlas, MontageShot};
 use super::motion::{Motion, Screen, hash, hit, unit};
 use super::music::{
     AHEAD_BEHIND, AHEAD_ROWS, BANDS, HISTORY_ROWS, LEVELS, Listener, Music, SCORE_COLUMNS, WAVE,
@@ -69,7 +70,10 @@ const SCENE_SHADERS: [(&str, &str); SCENES.len()] = [
     ("swarm.glsl", include_str!("shaders/swarm.glsl")),
     ("coral.glsl", include_str!("shaders/coral.glsl")),
     ("diorama.glsl", include_str!("shaders/diorama.glsl")),
+    ("montage.glsl", include_str!("shaders/montage.glsl")),
 ];
+/// The montage's atlas (`montage.rs`).
+const MONTAGE_UNIT: u32 = 9;
 /// The scene whose land is drawn as a mesh on top of its sky.
 const TERRAIN: usize = 2;
 /// Terrain's mesh (`terrain.vert`, which works out the same): a column on
@@ -90,7 +94,8 @@ const BLOOM_DIVISOR: i32 = 8;
 const STEADY_AFTER: u32 = 3;
 /// Texture units the scenes may use, all saved and put back: the eight
 /// every scene reads, and those of the scenes' own inputs and state
-/// (`uDepth` on 8, `particles::STATE_UNIT` and `STATE2_UNIT`).
+/// (`uDepth` on 8, `uMontage` on 9, `particles::STATE_UNIT` and
+/// `STATE2_UNIT`).
 const UNITS: usize = 13;
 
 pub(super) type Gl = glow::Context;
@@ -187,6 +192,14 @@ pub struct Renderer {
     steady: u32,
     /// The scenes that simulate before they draw (`sims.rs`).
     sims: Sims,
+    /// The song's montage atlas (`uMontage`), the one uploaded, and which
+    /// of its pictures shows this frame.
+    montage: glow::Texture,
+    montage_shown: Option<Arc<MontageAtlas>>,
+    /// False until a montage that fits this GPU is uploaded.
+    montage_fits: bool,
+    cutter: Cutter,
+    montage_shot: MontageShot,
 }
 
 impl Renderer {
@@ -312,6 +325,7 @@ impl Renderer {
                 glow::LINEAR_MIPMAP_LINEAR as i32,
             );
             gl.generate_mipmap(glow::TEXTURE_2D);
+            let montage = data_texture(gl, 1, 1, glow::R8, false)?;
             let (width, height) = (16, 16);
             let slot = || -> Option<Slot> {
                 Some(Slot {
@@ -358,12 +372,18 @@ impl Renderer {
                 alone: None,
                 steady: 0,
                 sims,
+                montage,
+                montage_shown: None,
+                montage_fits: false,
+                cutter: Cutter::new(),
+                montage_shot: MontageShot::default(),
             })
         }
     }
 
     /// Whether `scene` compiled, and has what it needs: a simulation's
-    /// textures, and for Diorama the cover and its depth.
+    /// textures, for Diorama the cover and its depth, and for Montage the
+    /// song's montage.
     pub fn can_draw(&self, scene: usize) -> bool {
         ready(
             scene,
@@ -372,6 +392,7 @@ impl Renderer {
             self.relief.is_some(),
             self.has_cover && self.depth_shown.is_some(),
         ) && self.sims.ready(scene)
+            && (scene != MONTAGE || self.montage_fits)
     }
 
     /// Whether a slot holds a frame `scene` drew, which a change of scene
@@ -380,6 +401,47 @@ impl Renderer {
         self.slots
             .iter()
             .any(|slot| slot.scene == Some(scene) && slot.drawn)
+    }
+
+    /// Show `atlas` (the song playing's montage) from now on, or none.
+    pub fn set_montage(&mut self, gl: &Gl, atlas: Option<&Arc<MontageAtlas>>) {
+        let same = match (atlas, &self.montage_shown) {
+            (Some(new), Some(old)) => Arc::ptr_eq(new, old),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        let saved = Saved::save(gl);
+        unsafe {
+            let largest = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE);
+            let (width, height, pixels) = match atlas {
+                Some(atlas) if atlas.width as i32 <= largest && atlas.height as i32 <= largest => (
+                    atlas.width as i32,
+                    atlas.height as i32,
+                    Some(atlas.rgba.as_slice()),
+                ),
+                // None, or too large for this GPU: a pixel, so the memory goes.
+                _ => (1, 1, None),
+            };
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.montage));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                width,
+                height,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(pixels),
+            );
+            self.montage_shown = atlas.cloned();
+            self.montage_fits = pixels.is_some();
+        }
+        saved.restore(gl);
     }
 
     /// Each scene shown so far and its size, for the server's log:
@@ -527,6 +589,15 @@ impl Renderer {
             gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
             for unit in 0..UNITS as u32 {
                 gl.bind_sampler(unit, None);
+            }
+
+            // The montage's cut, once a frame, while it may show.
+            if self.montage_fits
+                && let Some(atlas) = &self.montage_shown
+                && (shot.current.scene == MONTAGE
+                    || shot.next.is_some_and(|(next, _)| next.scene == MONTAGE))
+            {
+                self.montage_shot = self.cutter.update(music, atlas);
             }
 
             upload(
@@ -1017,6 +1088,22 @@ impl Renderer {
             bind_texture(gl, program, "uFbm", 6, self.fbm);
             bind_texture(gl, program, "uScore", 7, self.score);
             bind_texture(gl, program, "uDepth", 8, self.depth);
+            if program.uniforms.contains_key("uMontage") {
+                bind_texture(gl, program, "uMontage", MONTAGE_UNIT, self.montage);
+                let shot = &self.montage_shot;
+                for (name, [x, y, z, w]) in [
+                    ("uMontageGrid", shot.grid),
+                    ("uMontageA", shot.a),
+                    ("uMontageB", shot.b),
+                    ("uMontageCut", shot.cut),
+                    ("uMontageMix", shot.mix),
+                    ("uMontageTone", shot.tone),
+                ] {
+                    if let Some(at) = program.uniforms.get(name) {
+                        gl.uniform_4_f32(Some(at), x, y, z, w);
+                    }
+                }
+            }
         }
     }
 
@@ -1189,6 +1276,7 @@ impl Renderer {
                 self.score,
                 self.cover,
                 self.depth,
+                self.montage,
             ] {
                 gl.delete_texture(texture);
             }
