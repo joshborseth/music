@@ -31,8 +31,9 @@
 //! server's choreography names the kind for each section's start
 //! (`cues.rs`); without one, it is guessed from how the intensity moves.
 //!
-//! The climax (the song's biggest stretch, from the choreography) gets the
-//! wildest scene the song may show, and keeps it to its end. Only scenes
+//! The climax (the song's biggest stretch, from the choreography) gets one
+//! of the wildest scenes the song may show (the song's seed picks which,
+//! among those near the wildest), and keeps it to its end. Only scenes
 //! the renderer can draw now are picked (`set_available`): some need
 //! content that loads with each song.
 
@@ -134,6 +135,9 @@ const LONGEST_CHANGE: f32 = 4.0;
 /// The climax may show a scene this much wilder than the song's ceiling,
 /// and no more: a ballad's climax stays calm.
 const CLIMAX_REACH: f32 = 0.1;
+/// The climax picks among the scenes this close to the wildest it may
+/// show, so it isn't always the same one (Tunnel, Stars, and Swarm).
+const CLIMAX_BAND: f32 = 0.15;
 
 /// A scene showing, and the look it was given.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -271,13 +275,23 @@ impl Director {
         self.available = available;
     }
 
-    /// The wildest scene that may show now, for the climax: the song's
-    /// ceiling caps it, so a ballad's climax is wild for a ballad.
-    fn wildest(&self, ceiling: f32) -> Option<usize> {
-        (0..SCENES.len())
+    /// One of the wildest scenes that may show now, for the climax: the
+    /// song's ceiling caps it, so a ballad's climax is wild for a ballad.
+    fn wildest(&mut self, ceiling: f32) -> Option<usize> {
+        let allowed: Vec<usize> = (0..SCENES.len())
             .filter(|scene| self.available[*scene])
             .filter(|scene| SCENES[*scene].energy <= ceiling + CLIMAX_REACH)
-            .max_by(|a, b| SCENES[*a].energy.total_cmp(&SCENES[*b].energy))
+            .collect();
+        let top = allowed
+            .iter()
+            .map(|scene| SCENES[*scene].energy)
+            .max_by(f32::total_cmp)?;
+        let near: Vec<usize> = allowed
+            .into_iter()
+            .filter(|scene| SCENES[*scene].energy >= top - CLIMAX_BAND)
+            .collect();
+        let at = ((self.unit() * near.len() as f32) as usize).min(near.len() - 1);
+        Some(near[at])
     }
 
     /// Move to `scene` the way `kind` does, over `beats` beats of
@@ -799,12 +813,9 @@ mod tests {
     }
 
     #[test]
-    fn the_climax_gets_the_wildest_scene_and_keeps_it() {
+    fn the_climax_gets_one_of_the_wildest_scenes_and_keeps_it() {
         use super::super::cues::Cues;
-        let tunnel = SCENES
-            .iter()
-            .position(|scene| scene.name == "Tunnel")
-            .unwrap();
+        let wild = |scene: usize| SCENES[scene].energy >= 0.92 - CLIMAX_BAND;
         let mut director = Director::new(2);
         settle(
             &mut director,
@@ -817,14 +828,15 @@ mod tests {
             ..Cues::default()
         };
         let shot = settle(&mut director, &climax);
-        assert_eq!(shot.current.scene, tunnel);
+        let chosen = shot.current.scene;
+        assert!(wild(chosen), "{}", SCENES[chosen].name);
         // A phrase later, it is still the climax's scene.
         for _ in 0..40 {
             let mut downbeat = climax.clone();
             downbeat.on_downbeat = true;
             director.direct(&downbeat, Some("song"));
             let shot = settle(&mut director, &climax);
-            assert_eq!(shot.current.scene, tunnel);
+            assert_eq!(shot.current.scene, chosen);
         }
         // A ballad's climax is wild for a ballad, no more.
         let mut director = Director::new(2);
@@ -839,6 +851,35 @@ mod tests {
             "{}",
             SCENES[shot.current.scene].name
         );
+    }
+
+    #[test]
+    fn songs_climax_on_different_wild_scenes() {
+        use super::super::cues::Cues;
+        // Each song seeds the picks, so the songs differ, not the TVs.
+        let mut seen = std::collections::HashSet::new();
+        for song in 0..40 {
+            let song = format!("song {song}");
+            let mut director = Director::new(1);
+            let mut play = |frame: &Music| {
+                let mut shot = director.direct(frame, Some(&song));
+                for _ in 0..300 {
+                    shot = director.direct(frame, Some(&song));
+                }
+                shot
+            };
+            play(&music(section(0, SectionKind::Verse, 0, 0.7)));
+            let mut climax = music(section(1, SectionKind::Chorus, 1, 1.0));
+            climax.parts.cue = Cues {
+                climax: 1.0,
+                transition: Some((TransitionKind::Shatter, 2.0)),
+                ..Cues::default()
+            };
+            seen.insert(SCENES[play(&climax).current.scene].name);
+        }
+        for name in ["Tunnel", "Stars", "Swarm"] {
+            assert!(seen.contains(name), "{name} never: {seen:?}");
+        }
     }
 
     #[test]
