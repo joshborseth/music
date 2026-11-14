@@ -263,6 +263,62 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// How the visuals leave one scene for the next (`TvTransitionKind` in
+/// `packages/shared/src/tv.ts`): the old scene's last frame is frozen and
+/// destroyed while the new one shows through. A kind this app doesn't know
+/// yet plays as a wipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransitionKind {
+    Cut,
+    Shatter,
+    Melt,
+    ZoomThrough,
+    Datamosh,
+    #[serde(other)]
+    Wipe,
+}
+
+/// A build-up and the moment it lands, and how big the landing is (0 to 1).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Build {
+    pub start_seconds: f64,
+    pub land_seconds: f64,
+    pub strength: f32,
+}
+
+/// How the scene changes where a section starts, over `beats` beats.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Transition {
+    pub at_seconds: f64,
+    pub kind: TransitionKind,
+    pub beats: f32,
+}
+
+/// The song's single biggest stretch, and where it lands.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Climax {
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub land_seconds: f64,
+}
+
+/// The song planned as a VJ would cue it (`TvChoreography`): its climax,
+/// its builds and where each lands, its breaths, the bars that strobe,
+/// and how the scene changes at each section's start. A server from
+/// before it sends none.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Choreography {
+    pub climax: Option<Climax>,
+    pub builds: Vec<Build>,
+    pub breaths: Vec<Span>,
+    pub strobes: Vec<Span>,
+    pub transitions: Vec<Transition>,
+}
+
 /// A song's beats, bars, sections, and drops, worked out by the server from
 /// the audio before it plays. Times are seconds into the song. A server
 /// from before the parts (drums, harmony, moments, score) sends none.
@@ -301,6 +357,8 @@ pub struct Analysis {
     pub fills: Vec<Span>,
     #[serde(default, rename = "score")]
     pub score_image: Option<ScoreImage>,
+    #[serde(default)]
+    pub choreography: Choreography,
     /// `score_image` decoded, once it arrives (`Catalog::analysis`).
     #[serde(skip)]
     pub score: Option<Score>,
@@ -707,18 +765,39 @@ mod tests {
         assert!((score.at(25, 0.125) - 0.5).abs() < 0.01);
         assert!((score.at(30, 3.0) - 128.0 / 255.0).abs() < 0.01);
         assert_eq!(score.at(25, 100.0), 0.0);
+        let plan = &analysis.choreography;
+        assert_eq!(plan.climax.map(|climax| climax.land_seconds), Some(4.5));
+        assert_eq!(plan.builds[0].start_seconds, 2.5);
+        assert_eq!(plan.builds[0].strength, 1.0);
+        assert_eq!(plan.breaths[0].start_seconds, 4.1);
+        assert_eq!(plan.strobes[0].end_seconds, 6.5);
+        assert_eq!(plan.transitions[0].kind, TransitionKind::Shatter);
+        assert_eq!(plan.transitions[0].beats, 2.0);
+        // A transition this app doesn't know yet wipes.
+        let newer: TransitionKind = serde_json::from_str("\"Swirl\"").unwrap();
+        assert_eq!(newer, TransitionKind::Wipe);
     }
 
     #[test]
     fn an_analysis_from_before_the_parts_still_reads() {
         let mut json: serde_json::Value = fixture("analysis.json");
         for field in [
-            "kicks", "snares", "hats", "chords", "keys", "stops", "risers", "fills", "score",
+            "kicks",
+            "snares",
+            "hats",
+            "chords",
+            "keys",
+            "stops",
+            "risers",
+            "fills",
+            "score",
+            "choreography",
         ] {
             json.as_object_mut().unwrap().remove(field);
         }
         let analysis: Analysis = serde_json::from_value(json).unwrap();
         assert!(analysis.kicks.is_empty() && analysis.score_image.is_none());
+        assert_eq!(analysis.choreography, Choreography::default());
     }
 
     #[test]

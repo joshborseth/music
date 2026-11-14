@@ -22,10 +22,24 @@
 //!
 //! Without an analysis, scenes change when the music surges, or after a
 //! while on a kick.
+//!
+//! Each change destroys the old scene's last frame, frozen, while the new
+//! scene shows through (`final.glsl`), in the way the moment asks for, over
+//! a number of beats: a drop shatters it on its beat, a riser's end rushes
+//! through it, a chorus coming back datamoshes into its scene, a part
+//! falling quieter melts it away, and a calm change wipes it slowly. The
+//! server's choreography names the kind for each section's start
+//! (`cues.rs`); without one, it is guessed from how the intensity moves.
+//!
+//! The climax (the song's biggest stretch, from the choreography) gets the
+//! wildest scene the song may show, and keeps it to its end. Only scenes
+//! the renderer can draw now are picked (`set_available`): some need
+//! content that loads with each song.
 
 use std::collections::HashMap;
 
 use super::music::{Music, SectionNow};
+use crate::catalog::TransitionKind;
 
 /// One scene the engine can draw.
 pub struct SceneSpec {
@@ -82,9 +96,15 @@ const LAST_BARS: f32 = 8.0;
 /// before a kick will.
 const LIVE_MIN: f32 = 14.0;
 const LIVE_MAX: f32 = 40.0;
-/// The longest a dissolve from one scene to the next lasts (a long section
-/// moving on takes half as long again).
-const MOST_FADE: f32 = 1.2;
+/// How long a new song's scene takes to melt in over the last song's.
+const NEW_SONG_SECONDS: f32 = 1.6;
+/// The shortest and longest a change of scene lasts, however fast or slow
+/// the beat.
+const SHORTEST_CHANGE: f32 = 0.35;
+const LONGEST_CHANGE: f32 = 4.0;
+/// The climax may show a scene this much wilder than the song's ceiling,
+/// and no more: a ballad's climax stays calm.
+const CLIMAX_REACH: f32 = 0.1;
 
 /// A scene showing, and the look it was given.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,14 +118,37 @@ pub struct Showing {
 /// What to draw this frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shot {
+    /// The scene showing; while another takes over, the one leaving, whose
+    /// last frame stays frozen.
     pub current: Showing,
     /// The scene taking over, and how far (0 to 1).
     pub next: Option<(Showing, f32)>,
+    /// How the scene taking over destroys the frozen one (`Cut` when none
+    /// is).
+    pub kind: TransitionKind,
+}
+
+/// The beats each kind of change takes when nothing says otherwise.
+fn usual_beats(kind: TransitionKind) -> f32 {
+    match kind {
+        TransitionKind::Cut => 0.0,
+        TransitionKind::Shatter | TransitionKind::ZoomThrough => 2.0,
+        TransitionKind::Melt | TransitionKind::Datamosh | TransitionKind::Wipe => 4.0,
+    }
 }
 
 pub struct Director {
     current: Showing,
+    /// The scene taking over: how far, over how many seconds, and how.
     next: Option<(Showing, f32, f32)>,
+    kind: TransitionKind,
+    /// The scenes the renderer can draw now, in the order of `SCENES`.
+    available: [bool; SCENES.len()],
+    /// The intensity the section before aimed for, to tell a part rising
+    /// from one falling.
+    aim: f32,
+    /// True once the climax has its scene, until it ends.
+    in_climax: bool,
     /// The scene and look each group of sections got.
     by_group: HashMap<u32, (usize, f32)>,
     recent: Vec<usize>,
@@ -128,6 +171,10 @@ impl Director {
                 age: 0.0,
             },
             next: None,
+            kind: TransitionKind::Cut,
+            available: [true; SCENES.len()],
+            aim: 0.0,
+            in_climax: false,
             by_group: HashMap::new(),
             recent: Vec::new(),
             shown: Vec::new(),
@@ -184,16 +231,50 @@ impl Director {
                 + if energy > target + 0.3 { 10.0 } else { 0.0 }
         };
         (0..SCENES.len())
-            .filter(|scene| Some(*scene) != latest)
+            .filter(|scene| Some(*scene) != latest && self.available[*scene])
             .min_by(|a, b| cost(*a).total_cmp(&cost(*b)))
             .unwrap_or(self.current.scene)
     }
 
-    /// Move to `scene` over `seconds` (0 cuts at once).
-    fn change(&mut self, scene: usize, seed: f32, seconds: f32) {
+    /// Only these scenes may be picked from now on: the renderer can draw
+    /// them (their shader compiled, and any content they need has loaded).
+    pub fn set_available(&mut self, available: [bool; SCENES.len()]) {
+        self.available = available;
+    }
+
+    /// The wildest scene that may show now, for the climax: the song's
+    /// ceiling caps it, so a ballad's climax is wild for a ballad.
+    fn wildest(&self, ceiling: f32) -> Option<usize> {
+        (0..SCENES.len())
+            .filter(|scene| self.available[*scene])
+            .filter(|scene| SCENES[*scene].energy <= ceiling + CLIMAX_REACH)
+            .max_by(|a, b| SCENES[*a].energy.total_cmp(&SCENES[*b].energy))
+    }
+
+    /// Move to `scene` the way `kind` does, over `beats` beats of
+    /// `beat_seconds`.
+    fn change_by(
+        &mut self,
+        scene: usize,
+        seed: f32,
+        kind: TransitionKind,
+        beats: f32,
+        beat_seconds: f32,
+    ) {
+        let seconds = if kind == TransitionKind::Cut {
+            0.0
+        } else {
+            (beats * beat_seconds).clamp(SHORTEST_CHANGE, LONGEST_CHANGE)
+        };
+        self.change(scene, seed, seconds, kind);
+    }
+
+    /// Move to `scene` over `seconds` (0 cuts at once), the way `kind` does.
+    fn change(&mut self, scene: usize, seed: f32, seconds: f32, kind: TransitionKind) {
         if scene == self.latest() {
             return;
         }
+        self.kind = kind;
         if let Some((next, _, _)) = self.next.take() {
             // A change during a change: the one coming in is now current.
             self.current = next;
@@ -221,22 +302,78 @@ impl Director {
     /// Move on from a scene that has shown a while, within a section of
     /// `group`, to a new one that is not the one before it either. The
     /// rest of the section, and any after it in its group, keep it.
-    fn move_on(&mut self, group: u32, target: f32, seconds: f32) {
+    fn move_on(&mut self, group: u32, target: f32, kind: TransitionKind, music: &Music) {
         let before = self.recent.last().copied();
         let scene = self.pick_avoiding(target, before);
         let seed = self.unit();
         self.by_group.insert(group, (scene, seed));
-        self.change(scene, seed, seconds);
+        self.change_by(scene, seed, kind, usual_beats(kind), music.beat_seconds);
     }
 
-    /// The scene for a section: its group's scene if it had one before.
+    /// How a scene that has shown a while moves on: a slow wipe in calm
+    /// music, a datamosh in busy music.
+    fn moving_on(target: f32) -> TransitionKind {
+        if target >= 0.6 {
+            TransitionKind::Datamosh
+        } else {
+            TransitionKind::Wipe
+        }
+    }
+
+    /// The scene for a section: its group's scene if it had one before
+    /// (and it can still be drawn).
     fn for_section(&mut self, section: SectionNow, target: f32) -> (usize, f32) {
-        if let Some(&chosen) = self.by_group.get(&section.group) {
+        if let Some(&chosen) = self.by_group.get(&section.group)
+            && self.available[chosen.0]
+        {
             return chosen;
         }
         let chosen = (self.pick(target), self.unit());
         self.by_group.insert(section.group, chosen);
         chosen
+    }
+
+    /// The scene for a section, or for the climax landing in it: the
+    /// wildest scene the song may show, which its group keeps.
+    fn for_moment(&mut self, music: &Music, section: SectionNow, target: f32) -> (usize, f32) {
+        if music.parts.cue.climax > 0.0
+            && !self.in_climax
+            && let Some(scene) = self.wildest(music.ceiling)
+        {
+            self.in_climax = true;
+            let chosen = match self.by_group.get(&section.group) {
+                Some(&(held, seed)) if held == scene => (held, seed),
+                _ => (scene, self.unit()),
+            };
+            self.by_group.insert(section.group, chosen);
+            return chosen;
+        }
+        self.for_section(section, target)
+    }
+
+    /// How a section starts: as the choreography says, or else by how
+    /// the intensity moves: up rushes through, down melts, a part coming
+    /// back datamoshes, the rest wipe (slowly when calm).
+    fn section_change(
+        &self,
+        music: &Music,
+        section: SectionNow,
+        aim: f32,
+    ) -> (TransitionKind, f32) {
+        if let Some((kind, beats)) = music.parts.cue.transition {
+            return (kind, beats);
+        }
+        let kind = if aim > self.aim + 0.2 {
+            TransitionKind::ZoomThrough
+        } else if aim < self.aim - 0.15 {
+            TransitionKind::Melt
+        } else if self.by_group.contains_key(&section.group) {
+            TransitionKind::Datamosh
+        } else {
+            TransitionKind::Wipe
+        };
+        let calm = kind == TransitionKind::Wipe && aim < 0.4;
+        (kind, if calm { 8.0 } else { usual_beats(kind) })
     }
 
     /// Decide this frame's shot.
@@ -259,18 +396,21 @@ impl Director {
         let aim = music.section.map_or(music.intensity, |section| {
             music.ceiling * super::music::section_intensity(section.kind, section.energy)
         });
+        if self.in_climax && music.parts.cue.climax <= 0.0 {
+            self.in_climax = false;
+        }
 
-        // Dissolves last two beats, at most 1.2 seconds: while one runs, both
-        // scenes are drawn, taking turns.
-        let fade = (music.beat_seconds * 2.0).clamp(0.4, MOST_FADE);
+        let beat = music.beat_seconds;
         let section_now = music.section.map(|section| section.index);
         if song != self.song.as_deref() {
             // A new song: its first section's scene, or one for what is
             // heard until the analysis comes. The very first song fades in
-            // on it, with nothing before to dissolve from.
+            // on it, with nothing before to change from; later ones melt
+            // the last song's scene away.
             let first_song = self.song.is_none();
             self.by_group.clear();
             self.shown.clear();
+            self.in_climax = false;
             // The song picks its own scenes and looks: the same each time
             // it plays, its own beside every other song.
             if let Some(id) = song {
@@ -296,21 +436,38 @@ impl Director {
                     self.next = None;
                     self.bars_on_scene = 0;
                 } else {
-                    self.change(scene, seed, MOST_FADE);
+                    self.change(scene, seed, NEW_SONG_SECONDS, TransitionKind::Melt);
                 }
             } else {
                 self.song = None;
             }
         } else if music.drop_landed {
             // As wild as this song gets: a piano piece's swell is no club
-            // track's drop.
+            // track's drop. The old picture shatters on the drop's beat.
             let wild = aim.max(0.85 * music.ceiling);
-            let (scene, seed) = match music.section {
-                Some(section) => self.for_section(section, wild),
-                None => (self.pick(wild), self.unit()),
-            };
+            let shatter = TransitionKind::Shatter;
+            match music.section {
+                // The music came back after a stop, within a section that
+                // already has its scene: move on, as if it were new.
+                Some(section)
+                    if music.parts.stop_ended
+                        && !self.in_climax
+                        && section_now == self.section
+                        && section.left > beat * 4.0 * 4.0 =>
+                {
+                    self.move_on(section.group, wild, shatter, music);
+                }
+                Some(section) => {
+                    let (scene, seed) = self.for_moment(music, section, wild);
+                    self.change_by(scene, seed, shatter, usual_beats(shatter), beat);
+                }
+                None => {
+                    let (scene, seed) = (self.pick(wild), self.unit());
+                    self.change_by(scene, seed, shatter, usual_beats(shatter), beat);
+                }
+            }
             self.section = section_now;
-            self.change(scene, seed, 0.0);
+            self.aim = aim;
         } else if section_now != self.section {
             let first = self.section.is_none();
             self.section = section_now;
@@ -325,25 +482,30 @@ impl Director {
                     let seed = self.current.seed;
                     self.by_group.insert(section.group, (self.latest(), seed));
                 } else {
-                    let (scene, seed) = self.for_section(section, aim);
+                    let (kind, beats) = self.section_change(music, section, aim);
+                    let (scene, seed) = self.for_moment(music, section, aim);
                     if scene == self.latest()
                         && self.next.is_none()
                         && self.current.age >= LONGEST_SECONDS
+                        && !self.in_climax
                     {
                         // Held for minutes through sections that share it,
                         // none with a phrase far enough from its end: a
                         // section's start is a phrase too.
-                        self.move_on(section.group, aim, fade * 1.5);
+                        self.move_on(section.group, aim, kind, music);
                     } else {
-                        self.change(scene, seed, fade);
+                        self.change_by(scene, seed, kind, beats, beat);
                     }
                 }
             }
+            self.aim = aim;
         } else if let Some(section) = music.section
             && music.on_downbeat
             && self.next.is_none()
+            && !self.in_climax
         {
-            // A scene that has shown a while moves on at a phrase.
+            // A scene that has shown a while moves on at a phrase (the
+            // climax keeps its scene to its end).
             let shown = self.current.age;
             let phrase = if shown >= LONGEST_SECONDS {
                 PHRASE_BARS / 2
@@ -351,20 +513,25 @@ impl Director {
                 PHRASE_BARS
             };
             let due = aim >= 0.4 || shown >= CALM_SECONDS;
-            let bar_seconds = music.beat_seconds * 4.0;
+            let bar_seconds = beat * 4.0;
             if due
                 && self.bars_on_scene > 0
                 && self.bars_on_scene.is_multiple_of(phrase)
                 && section.left > bar_seconds * LAST_BARS
             {
-                self.move_on(section.group, aim, fade * 1.5);
+                self.move_on(section.group, aim, Self::moving_on(aim), music);
             }
         } else if music.section.is_none() {
             let age = self.current.age;
             if (music.surge && age > LIVE_MIN) || (music.on_downbeat && age > LIVE_MAX) {
                 let scene = self.pick(music.intensity);
                 let seed = self.unit();
-                self.change(scene, seed, fade);
+                let kind = if music.surge {
+                    TransitionKind::ZoomThrough
+                } else {
+                    TransitionKind::Wipe
+                };
+                self.change_by(scene, seed, kind, usual_beats(kind), beat);
             }
         }
 
@@ -373,6 +540,11 @@ impl Director {
             next: self
                 .next
                 .map(|(next, progress, _)| (next, progress.clamp(0.0, 1.0))),
+            kind: if self.next.is_some() {
+                self.kind
+            } else {
+                TransitionKind::Cut
+            },
         }
     }
 
@@ -381,7 +553,7 @@ impl Director {
     pub fn skip(&mut self) {
         let scene = (self.latest() + 1) % SCENES.len();
         let seed = self.unit();
-        self.change(scene, seed, 0.0);
+        self.change(scene, seed, 0.0, TransitionKind::Cut);
     }
 }
 
@@ -434,7 +606,7 @@ mod tests {
     /// Run until any change of scene has finished.
     fn settle(director: &mut Director, frame: &Music) -> Shot {
         let mut shot = director.direct(frame, Some("song"));
-        for _ in 0..200 {
+        for _ in 0..300 {
             shot = director.direct(frame, Some("song"));
         }
         shot
@@ -501,21 +673,156 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_cuts_at_once_to_a_wild_scene() {
+    fn a_drop_shatters_into_a_wild_scene_on_its_beat() {
         let mut director = Director::new(3);
-        settle(
+        let before = settle(
             &mut director,
             &music(section(0, SectionKind::Intro, 0, 0.2)),
-        );
+        )
+        .current;
         let mut landing = music(section(1, SectionKind::Drop, 1, 1.0));
         landing.drop_landed = true;
         let shot = director.direct(&landing, Some("song"));
-        assert!(shot.next.is_none());
+        // The old scene stays, frozen, while the new one shatters it from
+        // this very frame, over two beats.
+        assert_eq!(shot.kind, TransitionKind::Shatter);
+        assert_eq!(shot.current.scene, before.scene);
+        let (next, progress) = shot.next.expect("a change");
+        assert!(progress < 0.05, "{progress}");
         assert!(
-            SCENES[shot.current.scene].energy >= 0.7,
+            SCENES[next.scene].energy >= 0.7,
+            "{}",
+            SCENES[next.scene].name
+        );
+        let mut frames = 1;
+        let mut after = landing.clone();
+        after.drop_landed = false;
+        while director.direct(&after, Some("song")).next.is_some() {
+            frames += 1;
+        }
+        // Two beats of half a second, at 60 frames a second.
+        assert!((59..=61).contains(&frames), "{frames} frames");
+    }
+
+    #[test]
+    fn each_section_changes_the_way_the_choreography_says() {
+        use super::super::cues::Cues;
+        let mut director = Director::new(6);
+        settle(
+            &mut director,
+            &music(section(0, SectionKind::Verse, 0, 0.6)),
+        );
+        let mut chorus = music(section(1, SectionKind::Chorus, 1, 0.9));
+        chorus.parts.cue = Cues {
+            transition: Some((TransitionKind::Datamosh, 4.0)),
+            ..Cues::default()
+        };
+        let shot = director.direct(&chorus, Some("song"));
+        assert_eq!(shot.kind, TransitionKind::Datamosh);
+        let frames = 1
+            + (0..400)
+                .take_while(|_| director.direct(&chorus, Some("song")).next.is_some())
+                .count();
+        assert!((119..=121).contains(&frames), "{frames} frames");
+        // Without a plan: falling quieter melts, rising rushes through.
+        let shot = director.direct(
+            &music(section(2, SectionKind::Breakdown, 2, 0.2)),
+            Some("song"),
+        );
+        assert_eq!(shot.kind, TransitionKind::Melt);
+        settle(
+            &mut director,
+            &music(section(2, SectionKind::Breakdown, 2, 0.2)),
+        );
+        let shot = director.direct(&music(section(3, SectionKind::Drop, 3, 1.0)), Some("song"));
+        assert_eq!(shot.kind, TransitionKind::ZoomThrough);
+    }
+
+    #[test]
+    fn only_scenes_the_renderer_can_draw_are_picked() {
+        for seed in 1..20 {
+            let mut director = Director::new(seed);
+            // Halo, Tunnel, and Stars are still loading.
+            let mut available = [true; SCENES.len()];
+            for name in ["Halo", "Tunnel", "Stars"] {
+                available[SCENES.iter().position(|scene| scene.name == name).unwrap()] = false;
+            }
+            director.set_available(available);
+            for (index, (kind, energy)) in [
+                (SectionKind::Intro, 0.2),
+                (SectionKind::Drop, 1.0),
+                (SectionKind::Verse, 0.6),
+                (SectionKind::Drop, 1.0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut frame = music(section(index, kind, index as u32, energy));
+                frame.drop_landed = kind == SectionKind::Drop;
+                let shot = settle(&mut director, &frame);
+                assert!(
+                    available[shot.current.scene],
+                    "seed {seed}: {}",
+                    SCENES[shot.current.scene].name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_climax_gets_the_wildest_scene_and_keeps_it() {
+        use super::super::cues::Cues;
+        let tunnel = SCENES
+            .iter()
+            .position(|scene| scene.name == "Tunnel")
+            .unwrap();
+        let mut director = Director::new(2);
+        settle(
+            &mut director,
+            &music(section(0, SectionKind::Verse, 0, 0.7)),
+        );
+        let mut climax = music(section(1, SectionKind::Chorus, 1, 1.0));
+        climax.parts.cue = Cues {
+            climax: 1.0,
+            transition: Some((TransitionKind::Shatter, 2.0)),
+            ..Cues::default()
+        };
+        let shot = settle(&mut director, &climax);
+        assert_eq!(shot.current.scene, tunnel);
+        // A phrase later, it is still the climax's scene.
+        for _ in 0..40 {
+            let mut downbeat = climax.clone();
+            downbeat.on_downbeat = true;
+            director.direct(&downbeat, Some("song"));
+            let shot = settle(&mut director, &climax);
+            assert_eq!(shot.current.scene, tunnel);
+        }
+        // A ballad's climax is wild for a ballad, no more.
+        let mut director = Director::new(2);
+        let ceiling = super::super::music::intensity_ceiling(0.05);
+        let mut verse = music(section(0, SectionKind::Verse, 0, 0.7));
+        verse.ceiling = ceiling;
+        settle(&mut director, &verse);
+        climax.ceiling = ceiling;
+        let shot = settle(&mut director, &climax);
+        assert!(
+            SCENES[shot.current.scene].energy < 0.6,
             "{}",
             SCENES[shot.current.scene].name
         );
+    }
+
+    #[test]
+    fn the_music_coming_back_after_a_stop_shatters_into_a_new_scene() {
+        let mut director = Director::new(12);
+        let verse = music(section(0, SectionKind::Verse, 0, 0.8));
+        let before = settle(&mut director, &verse).current.scene;
+        let mut back = verse.clone();
+        back.drop_landed = true;
+        back.parts.stop_ended = true;
+        let shot = director.direct(&back, Some("song"));
+        assert_eq!(shot.kind, TransitionKind::Shatter);
+        assert_ne!(shot.next.expect("a change").0.scene, before);
     }
 
     #[test]

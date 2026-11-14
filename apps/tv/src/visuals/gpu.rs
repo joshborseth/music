@@ -8,15 +8,18 @@
 //! The passes, each a fragment shader from `shaders/`:
 //! 1. Each scene showing draws into its own pair of textures at a reduced
 //!    size, reading its last frame from the other (trails, ink, echoes).
-//!    While one scene dissolves into the next, the two take turns, one a
-//!    frame, so a change of scene costs no more than one scene. Terrain
-//!    draws its land on top, as a mesh over the sky.
+//!    While one scene takes over from another, only the one coming in
+//!    draws; the one leaving keeps its last frame, frozen, so a change of
+//!    scene costs no more than one scene (`transition.rs`). Terrain draws
+//!    its land on top, as a mesh over the sky.
 //! 2. The bright parts are cut out at an eighth of the scenes' size
 //!    (`bright.glsl`) and blurred there in one pass (`blur.glsl`): the glow,
 //!    drawn over a thirty-second as many pixels as a scene.
-//! 3. `final.glsl` dissolves one scene into the next and adds the glow, the
-//!    camera tricks, the tone, the vignette, and the shade the app's words
-//!    need, into a picture the scenes' size.
+//! 3. `final.glsl` destroys the frozen scene (shatters, melts, rushes
+//!    through, datamoshes, or wipes it) to show the next, and adds the
+//!    glow, the camera tricks, the build-ups and landings, the glitch
+//!    layer, the tone, the vignette, and the shade the app's words need,
+//!    into a picture the scenes' size.
 //! 4. `present.glsl` stretches the picture to the screen, with a fine
 //!    grain. It is the only pass at the screen's size, and reads one pixel
 //!    for each it draws: a full-size pass costs as much as a whole scene on
@@ -42,6 +45,7 @@ use super::music::{
     AHEAD_BEHIND, AHEAD_ROWS, BANDS, HISTORY_ROWS, LEVELS, Listener, Music, SCORE_COLUMNS, WAVE,
 };
 use super::sizing::{Change, Sizing};
+use super::transition::{SceneChange, TRANSITIONS};
 
 const COMMON: &str = include_str!("shaders/common.glsl");
 const FRAGMENT: &str = include_str!("shaders/fragment.glsl");
@@ -124,6 +128,9 @@ pub struct Renderer {
     bright: Program,
     blur: Program,
     final_pass: Program,
+    /// `final` for each change of scene, by its code (`transition.rs`);
+    /// none for code 0, which is `final_pass`.
+    changes: [Option<Program>; TRANSITIONS],
     present: Program,
     slots: [Slot; 2],
     /// The finished picture, the scenes' size, before `present` stretches it.
@@ -219,6 +226,22 @@ impl Renderer {
                 &vertex,
                 &fragment(include_str!("shaders/final.glsl")),
             );
+            // Each change of scene is `final.glsl` with its own code in
+            // (`transition.rs`). One that fails to compile cuts instead.
+            let changes = std::array::from_fn(|code| {
+                (code > 0)
+                    .then(|| {
+                        compile(
+                            &format!("final.glsl (change {code})"),
+                            &vertex,
+                            &fragment(&format!(
+                                "#define TRANSITION {code}\n#line 1\n{}",
+                                include_str!("shaders/final.glsl")
+                            )),
+                        )
+                    })
+                    .flatten()
+            });
             let present = compile(
                 "present.glsl",
                 &vertex,
@@ -262,6 +285,7 @@ impl Renderer {
                 present,
                 slots,
                 final_pass,
+                changes,
                 picture,
                 picture_drawn: false,
                 bloom,
@@ -435,32 +459,33 @@ impl Renderer {
 
             let screen = (width, height);
             let next = shot.next.map(|(next, _)| next.scene);
-            let a = self.ensure_slot(gl, shot.current, next, screen);
-            let b = shot
-                .next
-                .map(|(next, _)| self.ensure_slot(gl, next, Some(shot.current.scene), screen));
+            // While another scene takes over, the one leaving is frozen:
+            // its slot keeps its last frame, at its size, untouched.
+            let a = self.ensure_slot(gl, shot.current, next, screen, next.is_some());
+            let b = shot.next.map(|(next, _)| {
+                self.ensure_slot(gl, next, Some(shot.current.scene), screen, false)
+            });
             let mix = shot.next.map_or(0.0, |(_, progress)| progress);
+            let look = Screen::new(music, self.colors[0]);
 
             // Which scenes move this frame.
             let even = self.frame.is_multiple_of(2);
             let (draw_a, draw_b) = match b {
-                // During a change of scene the two take turns, so each moves
-                // at 30 a second for that moment and the frame costs no more
-                // than one scene. A scene draws first as soon as it comes in.
-                Some(b) if !self.slots[b].drawn => (false, true),
-                Some(_) if !self.slots[a].drawn => (true, false),
-                Some(_) => (even, !even),
+                // During a change of scene only the one coming in draws, at
+                // full rate; the one leaving holds its last frame, which
+                // `final` destroys. (One never drawn draws once.)
+                Some(b) => (!self.slots[a].drawn, !look.hold || !self.slots[b].drawn),
                 // A scene too heavy for this TV even at its smallest moves
                 // every other frame; the screen still shows every frame.
+                // A held frame (a stutter, a stop) repeats.
                 None => (
-                    !self.sizing[shot.current.scene].half_rate()
-                        || even
-                        || !self.slots[a].drawn
-                        || !self.picture_drawn,
+                    (!self.sizing[shot.current.scene].half_rate() || even || !self.picture_drawn)
+                        && !look.hold
+                        || !self.slots[a].drawn,
                     false,
                 ),
             };
-            let alone = b.is_none().then_some(shot.current.scene);
+            let alone = (b.is_none() && !look.hold).then_some(shot.current.scene);
             self.steady = if alone.is_some() && alone == self.alone {
                 self.steady.saturating_add(1)
             } else {
@@ -474,8 +499,26 @@ impl Renderer {
             if draw_b && let (Some(b), Some((next, _))) = (b, shot.next) {
                 self.draw_scene(gl, b, next, music, listener);
             }
-            if draw_a || draw_b {
-                self.compose(gl, a, b, shot.current, mix, fade, shade, music, listener);
+            // The camera moves every frame a change runs or a frame is held;
+            // otherwise only when a scene drew.
+            if draw_a || draw_b || b.is_some() || look.hold {
+                let change = SceneChange {
+                    kind: shot.kind,
+                    progress: mix,
+                    seed: shot.next.map_or(0.0, |(next, _)| next.seed),
+                };
+                self.compose(
+                    gl,
+                    a,
+                    b,
+                    shot.current,
+                    change,
+                    &look,
+                    fade,
+                    shade,
+                    music,
+                    listener,
+                );
             }
 
             // The screen. Skia cleared it and has moved on to our passes,
@@ -501,12 +544,14 @@ impl Renderer {
         a: usize,
         b: Option<usize>,
         current: Showing,
-        mix: f32,
+        change: SceneChange,
+        look: &Screen,
         fade: f32,
         shade: Shade,
         music: &Music,
         listener: &Listener,
     ) {
+        let mix = change.progress;
         unsafe {
             let out_a = &self.slots[a].targets[0];
             let out_b = &self.slots[b.unwrap_or(a)].targets[0];
@@ -563,7 +608,10 @@ impl Renderer {
 
             // ...and the picture, the scenes' size.
             let picture = &self.picture;
-            let program = &self.final_pass;
+            // The change's own program, while one runs.
+            let program = b
+                .and_then(|_| self.changes[change.code()].as_ref())
+                .unwrap_or(&self.final_pass);
             begin_pass(gl, picture);
             gl.use_program(Some(program.program));
             self.set_music(
@@ -574,12 +622,28 @@ impl Renderer {
                 Some(current),
                 listener,
             );
-            bind_texture(gl, program, "uSceneA", 0, out_a.texture);
-            bind_texture(gl, program, "uSceneB", 1, out_b.texture);
+            // `final` reads the scene showing first, then the frozen one
+            // a change destroys.
+            let (showing, frozen) = if b.is_some() {
+                (out_b, out_a)
+            } else {
+                (out_a, out_b)
+            };
+            bind_texture(gl, program, "uSceneA", 0, showing.texture);
+            bind_texture(gl, program, "uSceneB", 1, frozen.texture);
             bind_texture(gl, program, "uBloom", 2, soft.texture);
             bind_texture(gl, program, "uNoise", 3, self.noise);
+            // The changes of scene read the fractal noise too.
+            bind_texture(gl, program, "uFbm", 4, self.fbm);
             set_f32(gl, program, "uMix", mix);
-            let look = Screen::new(music, self.colors[0]);
+            // The change of scene (`transition.rs`) and the moments
+            // (`Screen`): the build, the inhale, the glitch.
+            set_f32(gl, program, "uTransSeed", change.seed);
+            set_f32(gl, program, "uCueDrain", look.drain);
+            set_f32(gl, program, "uCueInhale", look.inhale);
+            set_f32(gl, program, "uGlitch", look.glitch);
+            set_f32(gl, program, "uGlitchSeed", look.glitch_seed);
+            set_f32(gl, program, "uGlitchPosterize", look.posterize);
             set_f32(gl, program, "uPunch", look.punch);
             set_f32(gl, program, "uBulge", look.bulge);
             set_f32(gl, program, "uLift", look.lift);
@@ -611,13 +675,16 @@ impl Renderer {
     }
 
     /// The slot holding `showing`, at its size, giving it one (cleared) if
-    /// it has none, never the one holding `keep`.
+    /// it has none, never the one holding `keep`. A `frozen` scene (one
+    /// leaving, whose last frame a change destroys) keeps its slot as it
+    /// is, whatever its size.
     unsafe fn ensure_slot(
         &mut self,
         gl: &Gl,
         showing: Showing,
         keep: Option<usize>,
         screen: (u32, u32),
+        frozen: bool,
     ) -> usize {
         unsafe {
             let (wide, tall) = self.scene_size(showing.scene, screen);
@@ -625,6 +692,9 @@ impl Renderer {
                 .slots
                 .iter()
                 .position(|slot| slot.scene == Some(showing.scene));
+            if frozen && let Some(index) = held {
+                return index;
+            }
             let index = held.unwrap_or_else(|| {
                 // Take a slot no scene on screen is using.
                 self.slots
@@ -780,6 +850,11 @@ impl Renderer {
             f("uRiser", parts.riser);
             f("uFill", parts.fill);
             f("uRepeat", parts.repeat);
+            // The choreography (`cues.rs`): seconds until the build under
+            // way lands, how far into it, and the climax.
+            f("uCueIn", parts.cue.until);
+            f("uCueBuild", parts.cue.build);
+            f("uCueClimax", parts.cue.climax);
             f("uScoreRate", listener.ahead_rate);
             f("uScoreShift", listener.ahead_shift);
             f("uScoreBehind", AHEAD_BEHIND as f32);
@@ -848,6 +923,7 @@ impl Renderer {
                 self.final_pass,
                 self.present,
             ]);
+            let programs = programs.chain(self.changes.into_iter().flatten());
             for program in programs {
                 gl.delete_program(program.program);
             }

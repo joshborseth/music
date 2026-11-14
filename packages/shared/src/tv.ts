@@ -279,6 +279,80 @@ export const TvScore = Schema.Struct({
 export type TvScore = typeof TvScore.Type
 
 /**
+ * How the visuals leave one scene for the next: the old scene's last frame
+ * is frozen and destroyed while the new one shows through. `Shatter` breaks
+ * it into shards that fly at the camera (a drop), `ZoomThrough` rushes it
+ * past the camera (the end of a riser), `Melt` drips it away and `Wipe`
+ * sweeps an edge in the cover's color across it (calm changes), and
+ * `Datamosh` drags its pixels along the new scene's shapes (a chorus coming
+ * back). `Cut` changes at once.
+ */
+export const TvTransitionKind = Schema.Literals([
+  'Cut',
+  'Shatter',
+  'Melt',
+  'ZoomThrough',
+  'Datamosh',
+  'Wipe',
+])
+export type TvTransitionKind = typeof TvTransitionKind.Type
+
+/**
+ * A build-up and the moment it lands: from `startSeconds` the screen pushes
+ * in and closes in, until `landSeconds`, on a beat, where it hits.
+ * `strength` is how big the landing is, 0 to 1: a drop is 1, a louder
+ * section after a riser less.
+ */
+export const TvBuild = Schema.Struct({
+  startSeconds: Schema.Number,
+  landSeconds: Schema.Number,
+  strength: Schema.Number,
+})
+export type TvBuild = typeof TvBuild.Type
+
+/** How the scene changes where a section starts, over `beats` beats. */
+export const TvTransition = Schema.Struct({
+  atSeconds: Schema.Number,
+  kind: TvTransitionKind,
+  beats: Schema.Number,
+})
+export type TvTransition = typeof TvTransition.Type
+
+/**
+ * The song's single biggest stretch (usually its last chorus or biggest
+ * drop), from `startSeconds` to `endSeconds`, landing at `landSeconds`.
+ */
+export const TvClimax = Schema.Struct({
+  startSeconds: Schema.Number,
+  endSeconds: Schema.Number,
+  landSeconds: Schema.Number,
+})
+export type TvClimax = typeof TvClimax.Type
+
+/**
+ * The song planned as a VJ would cue it, from the rest of the analysis, so
+ * the visuals can anticipate its moments rather than react to them:
+ *
+ * - `climax`: the biggest stretch, which gets the wildest scene and the
+ *   biggest effects; null when nothing stands out (a flat ambient piece).
+ * - `builds`: each build-up and the exact moment it lands.
+ * - `breaths`: where the music stops dead; the picture freezes, and the
+ *   return lands like a drop.
+ * - `strobes`: the bars where hard strobing fits (drops and the climax of
+ *   a driving song only), a span from one downbeat to another.
+ * - `transitions`: how the scene changes at each section's start but the
+ *   first.
+ */
+export const TvChoreography = Schema.Struct({
+  climax: Schema.NullOr(TvClimax),
+  builds: Schema.Array(TvBuild),
+  breaths: Schema.Array(TvSpan),
+  strobes: Schema.Array(TvSpan),
+  transitions: Schema.Array(TvTransition),
+})
+export type TvChoreography = typeof TvChoreography.Type
+
+/**
  * What the TV's visuals know about a song before it plays, worked out once
  * from the cached audio. Times are seconds into the song.
  *
@@ -296,6 +370,7 @@ export type TvScore = typeof TvScore.Type
  *   changes where the song modulates (a last chorus a step up).
  * - `stops`: where the music cuts out mid-song. `risers`: sweeps and builds
  *   that climb into what follows. `fills`: drum fills into a new section.
+ * - `choreography`: the song's moments planned from all of the above.
  */
 export const TvAnalysis = Schema.Struct({
   videoId: Schema.String,
@@ -318,6 +393,7 @@ export const TvAnalysis = Schema.Struct({
   risers: Schema.Array(TvSpan),
   fills: Schema.Array(TvSpan),
   score: TvScore,
+  choreography: TvChoreography,
 })
 export type TvAnalysis = typeof TvAnalysis.Type
 
