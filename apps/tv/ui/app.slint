@@ -166,6 +166,7 @@ component Icon inherits Path {
         : name == "update" ? "M10.7 3 H13.3 V12.2 L16.6 8.9 L18.4 10.7 L12 17.1 L5.6 10.7 L7.4 8.9 L10.7 12.2 Z M4 18.5 H20 V21 H4 Z"
         : name == "artist" ? "M12 3 C14.5 3 16.5 5 16.5 7.5 C16.5 10 14.5 12 12 12 C9.5 12 7.5 10 7.5 7.5 C7.5 5 9.5 3 12 3 Z M3.5 21 C3.5 16.6 7.3 14 12 14 C16.7 14 20.5 16.6 20.5 21 Z"
         : name == "open" ? "M3.5 10.7 H15.3 L10.7 6.1 L12.5 4.3 L20.2 12 L12.5 19.7 L10.7 17.9 L15.3 13.3 H3.5 Z"
+        : name == "mic" ? "M12 2.5 C13.7 2.5 15 3.8 15 5.5 V11.5 C15 13.2 13.7 14.5 12 14.5 C10.3 14.5 9 13.2 9 11.5 V5.5 C9 3.8 10.3 2.5 12 2.5 Z M5.5 11 H7.5 C7.5 13.5 9.5 15.5 12 15.5 C14.5 15.5 16.5 13.5 16.5 11 H18.5 C18.5 14.3 16.1 17 13 17.4 V19.5 H16 V21.5 H8 V19.5 H11 V17.4 C7.9 17 5.5 14.3 5.5 11 Z"
         : name == "qr" ? "M3 3 H10.5 V10.5 H3 Z M5 5 V8.5 H8.5 V5 Z M13.5 3 H21 V10.5 H13.5 Z M15.5 5 V8.5 H19 V5 Z M3 13.5 H10.5 V21 H3 Z M5 15.5 V19 H8.5 V15.5 Z M13.5 13.5 H16.5 V16.5 H13.5 Z M18 13.5 H21 V16.5 H18 Z M13.5 18 H16.5 V21 H13.5 Z M18 18 H21 V21 H18 Z"
         : name == "radio" ? "M12 9.6 C13.3 9.6 14.4 10.7 14.4 12 C14.4 13.3 13.3 14.4 12 14.4 C10.7 14.4 9.6 13.3 9.6 12 C9.6 10.7 10.7 9.6 12 9.6 Z M7.4 6.2 L9.1 7.9 C6.9 10.2 6.9 13.8 9.1 16.1 L7.4 17.8 C4.2 14.6 4.2 9.4 7.4 6.2 Z M16.6 6.2 C19.8 9.4 19.8 14.6 16.6 17.8 L14.9 16.1 C17.1 13.8 17.1 10.2 14.9 7.9 Z M4.2 4.2 L5.9 5.9 C2.6 9.2 2.6 14.8 5.9 18.1 L4.2 19.8 C0.6 16.2 0.6 7.8 4.2 4.2 Z M19.8 4.2 C23.4 7.8 23.4 16.2 19.8 19.8 L18.1 18.1 C21.4 14.8 21.4 9.2 18.1 5.9 Z"
         : name == "album" ? "M12 2.5 C17.2 2.5 21.5 6.8 21.5 12 C21.5 17.2 17.2 21.5 12 21.5 C6.8 21.5 2.5 17.2 2.5 12 C2.5 6.8 6.8 2.5 12 2.5 Z M12 9.5 C10.6 9.5 9.5 10.6 9.5 12 C9.5 13.4 10.6 14.5 12 14.5 C13.4 14.5 14.5 13.4 14.5 12 C14.5 10.6 13.4 9.5 12 9.5 Z"
@@ -837,6 +838,12 @@ export component App inherits Window {
     // Before anything is typed: the searches used lately, latest first.
     in property <[RowData]> recent-searches;
     in property <bool> keyboard-focused;
+    // The mic button at the end of the search field has the selection.
+    in property <bool> mic-focused;
+    // Voice search: 0 off, 1 starting, 2 asking for the microphone,
+    // 3 listening, 4 making out the words. `voice-heard` is what it heard.
+    in property <int> voice-state;
+    in property <string> voice-heard;
 
     // A collection
     in property <string> col-kind;
@@ -1454,34 +1461,53 @@ export component App inherits Window {
             width: search-page.key-size * 6 + search-page.key-gap * 5;
             height: self.preferred-height;
             spacing: Metrics.u * 1.2;
-            Rectangle {
-                height: Metrics.u * 3.6;
-                border-radius: Metrics.u * 0.9;
-                background: root.keyboard-focused ? #ffffff1f : Theme.surface;
-                HorizontalLayout {
-                    padding-left: Metrics.u * 1;
-                    padding-right: Metrics.u * 1;
-                    spacing: Metrics.u * 0.7;
-                    VerticalLayout {
-                        alignment: center;
-                        Icon { name: "search"; width: Metrics.u * 1.4; height: self.width; color: Theme.text-3; }
+            HorizontalLayout {
+                spacing: Metrics.u * 0.5;
+                Rectangle {
+                    height: Metrics.u * 3.6;
+                    horizontal-stretch: 1;
+                    border-radius: Metrics.u * 0.9;
+                    background: root.keyboard-focused ? #ffffff1f : Theme.surface;
+                    HorizontalLayout {
+                        padding-left: Metrics.u * 1;
+                        padding-right: Metrics.u * 1;
+                        spacing: Metrics.u * 0.7;
+                        VerticalLayout {
+                            alignment: center;
+                            Icon { name: "search"; width: Metrics.u * 1.4; height: self.width; color: Theme.text-3; }
+                        }
+                        Text {
+                            text: root.query == "" ? "Search music" : root.query;
+                            color: root.query == "" ? Theme.text-3 : white;
+                            font-size: Metrics.u * 1.3;
+                            font-weight: root.query == "" ? 400 : 600;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if root.keyboard-focused: Rectangle {
+                            width: 2px;
+                            height: Metrics.u * 1.6;
+                            y: (parent.height - self.height) / 2;
+                            background: Theme.green;
+                            opacity: Math.mod(animation-tick() / 1s, 1) < 0.5 ? 1 : 0;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
                     }
-                    Text {
-                        text: root.query == "" ? "Songs, artists, albums" : root.query;
-                        color: root.query == "" ? Theme.text-3 : white;
-                        font-size: Metrics.u * 1.3;
-                        font-weight: root.query == "" ? 400 : 600;
-                        vertical-alignment: center;
-                        overflow: elide;
+                }
+                // Voice search: up from the keyboard's top row. Green while it
+                // listens.
+                Rectangle {
+                    width: Metrics.u * 3.6;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: root.mic-focused ? white : root.voice-state != 0 ? Theme.green-deep : Theme.surface;
+                    animate background { duration: Theme.quick; }
+                    Icon {
+                        name: "mic";
+                        width: Metrics.u * 1.6;
+                        height: self.width;
+                        color: root.mic-focused || root.voice-state != 0 ? #0b0d12 : white;
                     }
-                    if root.keyboard-focused: Rectangle {
-                        width: 2px;
-                        height: Metrics.u * 1.6;
-                        y: (parent.height - self.height) / 2;
-                        background: Theme.green;
-                        opacity: Math.mod(animation-tick() / 1s, 1) < 0.5 ? 1 : 0;
-                    }
-                    Rectangle { horizontal-stretch: 1; }
                 }
             }
             Rectangle {
@@ -1521,7 +1547,7 @@ export component App inherits Window {
             y: Metrics.u * 5.4;
             width: root.width - self.x - Metrics.safe-x;
             height: root.height - self.y;
-            if root.query == "" && root.shelves.length == 0: VerticalLayout {
+            if root.voice-state == 0 && root.query == "" && root.shelves.length == 0: VerticalLayout {
                 x: 0;
                 y: Metrics.u * 3;
                 height: self.preferred-height;
@@ -1534,9 +1560,10 @@ export component App inherits Window {
                     font-weight: 800;
                 }
                 Text {
-                    text: "Type with the remote. Results show up as you go.";
+                    text: "Type with the remote, or pick the mic and say it. Results show up as you go.";
                     color: Theme.text-3;
                     font-size: Metrics.u * 1.2;
+                    wrap: word-wrap;
                 }
                 if root.recent-searches.length > 0: Text {
                     text: "Recent searches";
@@ -1554,13 +1581,67 @@ export component App inherits Window {
                     top: 0;
                 }
             }
-            Shelves {
+            if root.voice-state == 0: Shelves {
                 x: -self.pad;
                 width: results.width + self.pad * 2;
                 shelves: root.shelves;
                 offsets: root.shelf-offsets;
                 top: root.shelf-top;
                 columns: 5;
+            }
+            // Listening: the mic, pulsing with a ring while it listens, and
+            // the words as they are heard.
+            if root.voice-state != 0: VerticalLayout {
+                x: 0;
+                y: Metrics.u * 3;
+                width: results.width;
+                height: self.preferred-height;
+                spacing: Metrics.u * 1.2;
+                Rectangle {
+                    width: Metrics.u * 9;
+                    height: self.width;
+                    property <float> pulse: root.voice-state == 3 ? (1 - Math.cos(Math.mod(animation-tick() / 1.4s, 1) * 360deg)) / 2 : 0;
+                    Rectangle {
+                        width: Metrics.u * (6 + 3 * parent.pulse);
+                        height: self.width;
+                        border-radius: self.width / 2;
+                        background: #22d46f33;
+                    }
+                    Rectangle {
+                        width: Metrics.u * 6;
+                        height: self.width;
+                        border-radius: self.width / 2;
+                        background: root.voice-state == 3 ? Theme.green-deep : Theme.surface-strong;
+                        Icon {
+                            name: "mic";
+                            width: Metrics.u * 2.8;
+                            height: self.width;
+                            color: root.voice-state == 3 ? #0b0d12 : white;
+                        }
+                    }
+                }
+                Text {
+                    text: root.voice-heard != "" ? root.voice-heard
+                        : root.voice-state == 1 ? "Starting the microphone…"
+                        : root.voice-state == 2 ? "Allow the microphone"
+                        : root.voice-state == 3 ? "Listening…"
+                        : "One moment…";
+                    color: white;
+                    font-family: "Inter Display";
+                    font-size: Metrics.u * 2.6;
+                    font-weight: 800;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    height: min(self.preferred-height, Metrics.u * 6.6);
+                }
+                Text {
+                    text: root.voice-state == 2 ? "Android asks once whether Joshify may use the microphone. Pick Allow."
+                        : root.voice-state == 4 ? "Searching for that…"
+                        : "Say a song, an artist, or an album.";
+                    color: Theme.text-3;
+                    font-size: Metrics.u * 1.3;
+                    wrap: word-wrap;
+                }
             }
         }
     }
@@ -1652,11 +1733,11 @@ export component App inherits Window {
 
     // Loading and empty states for shelf pages.
 
-    if (root.page == 2 || (root.page == 3 && root.query != "")) && root.page-loading: Spinner {
+    if (root.page == 2 || (root.page == 3 && root.query != "" && root.voice-state == 0)) && root.page-loading: Spinner {
         x: (root.width - self.width) / 2 + (root.page == 3 ? Metrics.u * 15 : 0);
         y: root.height * 0.45;
     }
-    if (root.page == 2 || root.page == 3) && !root.page-loading && root.page-message != "": Text {
+    if (root.page == 2 || (root.page == 3 && root.voice-state == 0)) && !root.page-loading && root.page-message != "": Text {
         x: root.page == 3 ? Metrics.u * 30 : Metrics.safe-x;
         y: Metrics.u * 12;
         text: root.page-message;

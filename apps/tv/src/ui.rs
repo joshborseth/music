@@ -32,12 +32,14 @@ use crate::local_time::LocalTime;
 use crate::lyrics::{self, RowKind};
 use crate::nav::{
     self, CONTROLS, CollectionButton, Control, Effect, Focus, IDLE_BUTTONS, IdleButton,
-    KEY_COLUMNS, KEYBOARD, Key, Load, Nav, Panel, PlayMode, RowRef, ShelfTip, Tab, WIDE_KEYS,
+    KEY_COLUMNS, KEYBOARD, Key, Listening, Load, Nav, Panel, PlayMode, RowRef, ShelfTip, Tab,
+    WIDE_KEYS,
 };
 use crate::protocol::{Placement, RepeatMode};
 use crate::update::{self, UpdateStatus};
 use crate::view::{PlayClock, View, clock, playing_from_line};
 use crate::visuals::{Cover, Screenshot, Stage, Visuals};
+use crate::voice::VoiceEvent;
 use crate::{
     App, ButtonData, CardData, HintData, KeyData, LyricRowData, MenuItemData, RowData, ShelfData,
     UpNextData,
@@ -229,6 +231,12 @@ pub struct Hooks {
     pub check_for_updates: Box<dyn Fn()>,
     /// Install the update that is ready, from the settings menu.
     pub install_update: Box<dyn Fn()>,
+    /// Voice search: start listening, stop and search for what was said,
+    /// or stop without searching. What happens comes back to
+    /// [`Ui::on_voice`].
+    pub start_voice: Box<dyn Fn()>,
+    pub finish_voice: Box<dyn Fn()>,
+    pub cancel_voice: Box<dyn Fn()>,
 }
 
 /// The analysis of one song: asked for, arrived, or failed for now.
@@ -432,6 +440,13 @@ impl Ui {
 
     pub fn on_session(&mut self, view: View) {
         let effects = self.nav.on_session(view);
+        self.run(effects);
+        self.render();
+    }
+
+    /// How voice search is going.
+    pub fn on_voice(&mut self, event: VoiceEvent) {
+        let effects = self.nav.on_voice(event, Instant::now());
         self.run(effects);
         self.render();
     }
@@ -715,6 +730,9 @@ impl Ui {
                     (self.hooks.install_update)();
                     self.nav.say("Installing the update…", Instant::now());
                 }
+                Effect::StartVoice => (self.hooks.start_voice)(),
+                Effect::FinishVoice => (self.hooks.finish_voice)(),
+                Effect::CancelVoice => (self.hooks.cancel_voice)(),
             }
         }
     }
@@ -1522,9 +1540,29 @@ impl Ui {
 
     fn draw_search(&mut self, app: &App) {
         let search = self.nav.search.clone();
-        let in_keyboard = self.content_focused() && !search.in_results && !search.in_recent;
+        let in_keyboard = self.content_focused()
+            && !search.in_results
+            && !search.in_recent
+            && !search.on_mic
+            && search.voice.is_none();
         app.set_query(search.query.clone().into());
         app.set_keyboard_focused(in_keyboard);
+        app.set_mic_focused(self.content_focused() && search.on_mic && search.voice.is_none());
+        app.set_voice_state(match &search.voice {
+            None => 0,
+            Some(Listening::Starting) => 1,
+            Some(Listening::Asking) => 2,
+            Some(Listening::Hearing(_)) => 3,
+            Some(Listening::Thinking(_)) => 4,
+        });
+        app.set_voice_heard(
+            search
+                .voice
+                .as_ref()
+                .map(|listening| listening.heard().to_owned())
+                .unwrap_or_default()
+                .into(),
+        );
         let mut keys: Vec<KeyData> = KEYBOARD
             .chars()
             .enumerate()
@@ -1759,7 +1797,8 @@ impl Ui {
 
     fn draw_hints(&mut self, page: i32) {
         let search = &self.nav.search;
-        let search_keyboard = page == 3 && !search.in_results && !search.in_recent;
+        let search_keyboard =
+            page == 3 && !search.in_results && !search.in_recent && !search.on_mic;
         let on_save = self.nav.collection().and_then(|page| {
             let button = page.buttons().get(page.button).copied();
             let kind = SaveKind::from_collection(page.kind)?;
@@ -1775,6 +1814,12 @@ impl Ui {
         };
         let save_hints = [("OK", save_label), ("Back", "Go back")];
         let hints: &[(&str, &str)] = match page {
+            3 if search.voice.is_some() => &[("OK", "Search"), ("Back", "Cancel")],
+            3 if search.on_mic => &[
+                ("OK", "Voice search"),
+                ("▼", "Keyboard"),
+                ("Back", "Menu bar"),
+            ],
             2 => &[
                 ("OK", "Play or open"),
                 ("Hold OK", "More options"),
@@ -1820,7 +1865,7 @@ impl Ui {
 /// The remote's media keys, as the patched Slint Android backend sends them
 /// (`media_key` in `vendor/i-slint-backend-android-activity`): characters
 /// from Unicode's private use area, which no keyboard types.
-const MEDIA_KEYS: [(&str, Key); 8] = [
+const MEDIA_KEYS: [(&str, Key); 9] = [
     ("\u{E000}", Key::PlayPause),
     ("\u{E001}", Key::Play),
     ("\u{E002}", Key::Pause),
@@ -1829,6 +1874,8 @@ const MEDIA_KEYS: [(&str, Key); 8] = [
     ("\u{E005}", Key::Previous),
     ("\u{E006}", Key::FastForward),
     ("\u{E007}", Key::Rewind),
+    // The search key, and the voice key where Android passes it on.
+    ("\u{E008}", Key::Voice),
 ];
 
 /// The remote's keys as Slint names them.
@@ -2059,6 +2106,7 @@ mod tests {
         assert_eq!(map_key("\u{E000}"), Some(Key::PlayPause));
         assert_eq!(map_key("\u{E004}"), Some(Key::Next));
         assert_eq!(map_key("\u{E007}"), Some(Key::Rewind));
+        assert_eq!(map_key("\u{E008}"), Some(Key::Voice));
         assert_eq!(map_key("\n"), Some(Key::Ok));
         assert_eq!(map_key("a"), Some(Key::Char('a')));
         assert_eq!(map_key("\u{E0FF}"), None);

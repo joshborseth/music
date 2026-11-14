@@ -2711,6 +2711,7 @@ dependencies = [
 name = "music-tv"
 version = "0.1.0"
 dependencies = [
+ "android-build",
  "android_logger",
  "cpal",
  "futures-util",

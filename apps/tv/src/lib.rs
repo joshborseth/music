@@ -26,6 +26,7 @@ pub mod update;
 pub mod view;
 mod visualizer;
 mod visuals;
+pub mod voice;
 mod volume;
 
 use tokio::sync::mpsc::unbounded_channel;
@@ -71,6 +72,11 @@ pub fn run(data_dir: Option<std::path::PathBuf>) -> Result<(), slint::PlatformEr
 
     let (actions, action_receiver) = unbounded_channel();
     let clock = view::PlayClock::default();
+    let voice = std::rc::Rc::new(voice::Voice::new(|event| {
+        let _ = slint::invoke_from_event_loop(move || {
+            ui::with(|ui| ui.on_voice(event));
+        });
+    }));
     ui::Ui::install(
         &app,
         SERVER_URL.to_owned(),
@@ -88,6 +94,15 @@ pub fn run(data_dir: Option<std::path::PathBuf>) -> Result<(), slint::PlatformEr
                 move || updater.check_now()
             }),
             install_update: Box::new(move || updater.install_now()),
+            start_voice: Box::new({
+                let voice = voice.clone();
+                move || voice.start()
+            }),
+            finish_voice: Box::new({
+                let voice = voice.clone();
+                move || voice.finish()
+            }),
+            cancel_voice: Box::new(move || voice.cancel()),
         },
     );
     app.on_key(|text, pressed, repeat| {

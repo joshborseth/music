@@ -5,6 +5,7 @@ use std::time::Duration;
 use music_tv::catalog::{CardKind, Client, Shelf};
 use music_tv::protocol::{PlayingFrom, PlayingFromKind};
 use music_tv::screenshots::{Step, run, sample_view};
+use music_tv::voice::{VoiceEvent, VoiceFailure};
 
 fn main() {
     let server =
@@ -69,6 +70,8 @@ fn main() {
     };
 
     let (up, down, left, right) = ("\u{f700}", "\u{f701}", "\u{f702}", "\u{f703}");
+    // As the patched Slint Android backend sends the search and voice keys.
+    let voice = "\u{E008}";
     let ok = "\n";
     // As the patched Slint Android backend sends the media key.
     let fast_forward = "\u{E006}";
@@ -266,6 +269,26 @@ fn main() {
             Step::Key(right),
             Step::Key(right),
             Step::Shot("13c-search-recent-selected"),
+            // Up from the keyboard's top row: the mic, and voice search.
+            Step::Key(left),
+            Step::Key(up),
+            Step::Shot("13d-search-mic"),
+            Step::Key(ok),
+            Step::Voice(VoiceEvent::Asking),
+            Step::Shot("13e-voice-asking"),
+            Step::Voice(VoiceEvent::Ready),
+            Step::Shot("13f-voice-listening"),
+            Step::Voice(VoiceEvent::Heard("daft punk one more".into())),
+            Step::Shot("13g-voice-heard"),
+            Step::Voice(VoiceEvent::Ended),
+            Step::Voice(VoiceEvent::Done("daft punk one more time".into())),
+            wait(5000),
+            Step::Shot("13h-voice-results"),
+            // The remote's voice key, from anywhere; nobody spoke.
+            Step::Key(voice),
+            Step::Voice(VoiceEvent::Ready),
+            Step::Voice(VoiceEvent::Failed(VoiceFailure::NoSpeech)),
+            Step::Shot("13i-voice-nothing-heard"),
             // Back to now playing.
             Step::Key(back),
             Step::Session(sample_view(tracks.clone(), current, true)),

@@ -45,7 +45,7 @@ The phone is the exception, because a locked phone may hear from the server late
 
 ## TV app
 
-Build it with `scripts/build-tv-apk.sh` (see README). Slint's Android backend always uses Skia. The backend is a patched copy in `vendor/i-slint-backend-android-activity` (`[patch.crates-io]` in the root `Cargo.toml`): upstream drops the remote's media keys, and the copy sends them as private-use characters that `map_key` in `src/ui.rs` reads. When upgrading Slint, copy the new release's backend there and re-apply the `media_key` change. 64-bit Skia comes prebuilt; 32-bit is compiled from source. `cargo test -p music-tv` runs on the host: there cpal is left out and a thread drains the audio ring in real time, so the engine runs unchanged.
+Build it with `scripts/build-tv-apk.sh` (see README). Slint's Android backend always uses Skia. The backend is a patched copy in `vendor/i-slint-backend-android-activity` (`[patch.crates-io]` in the root `Cargo.toml`): upstream drops the remote's media keys and its search and voice keys, and the copy sends them as private-use characters that `map_key` in `src/ui.rs` reads. When upgrading Slint, copy the new release's backend there and re-apply the `media_key` change. Voice search (`src/voice/`) is the app's one piece of Java: `java/VoiceSearch.java`, compiled to dex by `build.rs` and loaded from memory; keep its event numbers in step with `src/voice/android.rs`. 64-bit Skia comes prebuilt; 32-bit is compiled from source. `cargo test -p music-tv` runs on the host: there cpal is left out and a thread drains the audio ring in real time, so the engine runs unchanged.
 
 ## foldcn components
 

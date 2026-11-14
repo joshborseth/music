@@ -68,6 +68,9 @@ ndk-context = "0.1.1"
 
 [build-dependencies]
 slint-build = "=1.18.1"
+# Compiles the voice search's Java listener into a dex file (build.rs). Already
+# in the tree: the vendored Slint backend builds its own helper with it.
+android-build = "0.1.4"
 
 # APK settings for `cargo apk build` (see README "TV app").
 [package.metadata.android]
@@ -97,6 +100,18 @@ name = "android.permission.REQUEST_INSTALL_PACKAGES"
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION"
+
+# Voice search (src/voice): the microphone, asked for the first time it is used.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.microphone"
+required = false
+
+# Android 11+ only lets the app see the speech recognizer when it says so.
+[[package.metadata.android.queries.intent]]
+actions = ["android.speech.RecognitionService"]
 
 [package.metadata.android.application]
 label = "Joshify"
