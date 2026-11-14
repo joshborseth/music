@@ -50,7 +50,7 @@ pub struct SceneSpec {
 }
 
 /// Every scene, in the order of `gpu::SCENE_SHADERS`.
-pub const SCENES: [SceneSpec; 9] = [
+pub const SCENES: [SceneSpec; 10] = [
     SceneSpec {
         name: "Silk",
         energy: 0.1,
@@ -86,6 +86,10 @@ pub const SCENES: [SceneSpec; 9] = [
     SceneSpec {
         name: "Coral",
         energy: 0.4,
+    },
+    SceneSpec {
+        name: "Diorama",
+        energy: 0.6,
     },
 ];
 

@@ -14,6 +14,8 @@ import { SongAnalysisLive } from './analysis/service.ts'
 import { ArtworkRoutes } from './artwork.ts'
 import { AudioRoutes, AudioSourceLive } from './audio.ts'
 import { AudioStoreLive } from './audioStore.ts'
+import { DepthRoutes } from './depth/routes.ts'
+import { CoverDepthLive } from './depth/service.ts'
 import { CertificateRoute, LanTlsConfig, lanHttpsServer } from './lanHttps.ts'
 import { TimedLyricsLive } from './lyrics/service.ts'
 import { ArtworkPaletteLive } from './palette/service.ts'
@@ -41,11 +43,12 @@ const PlaylistsLive = PlaylistStoreLive.pipe(Layer.provide(BunServices.layer))
 
 /**
  * Songs on disk, downloaded through yt-dlp, the prefetcher that gets them
- * ready early, and each song's analysis for the TV's visuals: shared by the
- * RPCs and playback.
+ * ready early, and each song's analysis and its cover's depth for the TV's
+ * visuals: shared by the RPCs and playback.
  */
 const AudioLive = PrefetcherLive.pipe(
   Layer.provideMerge(SongAnalysisLive),
+  Layer.provideMerge(CoverDepthLive),
   Layer.provideMerge(AudioStoreLive),
   Layer.provideMerge(AudioSourceLive),
   Layer.provide(BunServices.layer),
@@ -76,6 +79,7 @@ const PlaybackRoutes = Layer.mergeAll(
   AudioRoutes,
   SessionRoutes,
   TvUpdatingRoute,
+  DepthRoutes,
 ).pipe(
   Layer.provide(SessionHubLive.pipe(Layer.provide(BunServices.layer))),
   Layer.provide(YouTubeMusicLive),

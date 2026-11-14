@@ -12,6 +12,7 @@ import {
 import { SongAnalysis } from './analysis/service.ts'
 import { AudioSource } from './audio.ts'
 import { AudioStore } from './audioStore.ts'
+import { CoverDepth } from './depth/service.ts'
 
 /*
  * Gets songs ready before anyone presses Play. The session, the page being
@@ -26,7 +27,9 @@ import { AudioStore } from './audioStore.ts'
  * back) pauses prefetching for a while.
  *
  * A song downloaded whole is also queued for analysis (its beats and
- * sections, for the TV's visuals), which runs in the background.
+ * sections, for the TV's visuals), which runs in the background. A song
+ * the queue will play soon has its cover's depth worked out too, for the
+ * TV's Diorama, whether or not its audio comes.
  */
 
 export type PlanSource = 'Queue' | 'Page'
@@ -37,6 +40,8 @@ export interface PrefetchJob {
   readonly kind: 'Download' | 'Resolve'
   /** Lower runs first. */
   readonly priority: number
+  /** The song's cover, when its depth should be ready before it plays. */
+  readonly artworkUrl?: string | undefined
 }
 
 export class Prefetcher extends Context.Service<
@@ -95,6 +100,7 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
     const store = yield* AudioStore
     const audioSource = yield* AudioSource
     const analysis = yield* SongAnalysis
+    const coverDepth = yield* CoverDepth
     const plans = new Map<PlanSource, Array<PrefetchJob>>()
     const running = new Set<string>()
     const wake = yield* Queue.sliding<void>(WORKERS)
@@ -143,6 +149,9 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
 
     const run = (job: PrefetchJob) =>
       Effect.gen(function* () {
+        if (job.kind === 'Download' && job.artworkUrl !== undefined) {
+          yield* coverDepth.warm(job.artworkUrl)
+        }
         if (yield* store.isStored(job.videoId)) {
           yield* analyze(job)
           return

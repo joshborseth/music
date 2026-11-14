@@ -15,6 +15,7 @@
 
 mod coral;
 mod cues;
+mod diorama;
 mod director;
 mod gpu;
 mod look;
@@ -36,6 +37,7 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
+pub use diorama::Depth;
 pub use look::Cover;
 
 use crate::App;
@@ -60,6 +62,8 @@ const FIRST_PACE_REPORT: Duration = Duration::from_secs(20);
 pub struct Stage {
     pub entry_id: String,
     pub cover: Option<Arc<Cover>>,
+    /// The cover's depth, for Diorama, once it has arrived.
+    pub depth: Option<Arc<Depth>>,
     pub analysis: Option<Arc<Analysis>>,
     pub playing: bool,
     /// The lyrics show on the right, beside the song.
@@ -359,6 +363,7 @@ impl State {
             self.listener.new_song();
         }
         renderer.set_cover(gl, stage.cover.as_ref());
+        renderer.set_depth(gl, stage.depth.as_ref());
         // The clock already counts what is heard.
         let seconds = self
             .clock
@@ -391,8 +396,11 @@ impl State {
             .set_available(std::array::from_fn(|scene| renderer.can_draw(scene)));
         let mut shot: Shot = self.director.direct(&music, Some(stage.entry_id.as_str()));
         // The director picks only scenes the renderer can draw, but one it
-        // picked may have stopped being drawable since: show another.
-        if !renderer.can_draw(shot.current.scene) {
+        // picked may have stopped being drawable since: show another. One
+        // leaving keeps its frozen last frame, which needs nothing (Diorama
+        // loses its depth the moment a new song starts, as it melts away).
+        let frozen = shot.next.is_some() && renderer.holds_frame(shot.current.scene);
+        if !renderer.can_draw(shot.current.scene) && !frozen {
             shot.current.scene = (0..director::SCENES.len())
                 .find(|scene| renderer.can_draw(*scene))
                 .unwrap_or(0);
