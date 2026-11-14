@@ -917,6 +917,15 @@ const makeEngine = (
     fragmentSource('present.glsl'),
   )
   const picture = makeTarget(gl, width, height)
+  // The shatter's shards, once a change, at half the picture's size
+  // (gpu.rs's `SHARDS_DIVISOR`), and the change's seed they are for.
+  const shards = program(gl, 'shards.glsl', VERTEX, fragmentSource('shards.glsl'))
+  const shardField = makeTarget(
+    gl,
+    Math.max(1, Math.floor(width / 2)),
+    Math.max(1, Math.floor(height / 2)),
+  )
+  let shardsDrawn: number | null = null
   // The glow, which `final` reads, and the bright parts it is blurred
   // from, an eighth of the scenes' size each way (`BLOOM_DIVISOR`).
   const bloomWidth = Math.max(1, Math.floor(width / BLOOM_DIVISOR))
@@ -1343,6 +1352,23 @@ const makeEngine = (
         gl.uniform2f(blurTexelAt, 1 / brightParts.width, 1 / brightParts.height)
       fullscreen()
     }
+    const shattering = kind === transitionCode('Shatter') && shards !== null
+    const shardSeed = change?.seed ?? 0.37
+    if (runs('final') && shattering && shardsDrawn !== shardSeed) {
+      beginPass(shardField)
+      gl.useProgram(shards.program)
+      const resAt = shards.uniforms.get('uRes')
+      if (resAt !== undefined)
+        gl.uniform2f(resAt, shardField.width, shardField.height)
+      const seedAt = shards.uniforms.get('uTransSeed')
+      if (seedAt !== undefined) gl.uniform1f(seedAt, shardSeed)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, noiseTexture)
+      const noiseAt = shards.uniforms.get('uNoise')
+      if (noiseAt !== undefined) gl.uniform1i(noiseAt, 0)
+      fullscreen()
+      shardsDrawn = shardSeed
+    }
     const finalPass = (kind > 0 ? changes[kind] : null) ?? final
     if (runs('final') && finalPass !== null) {
       beginPass(picture)
@@ -1355,6 +1381,8 @@ const makeEngine = (
         ['uBloom', glow.texture],
         ['uNoise', noiseTexture],
         ['uFbm', fbmTexture],
+        // Unit 5 (gpu.rs's `SHARDS_UNIT`).
+        ['uShards', shardField.texture],
       ]
       inputs.forEach(([name, texture], unit) => {
         gl.activeTexture(gl.TEXTURE0 + unit)

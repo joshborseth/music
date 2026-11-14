@@ -98,6 +98,11 @@ const FINAL_WORDS_UNIT: u32 = 8;
 const BASE_HEIGHT: u32 = 720;
 /// The glow is this many times smaller than the scenes, each way.
 const BLOOM_DIVISOR: i32 = 8;
+/// The shatter's shards (`shards.glsl`) are worked out at this many
+/// times smaller than the picture, each way, once a change.
+const SHARDS_DIVISOR: i32 = 2;
+/// The unit `final` reads the shards from (the moments' units are 4 to 7).
+const SHARDS_UNIT: u32 = 5;
 /// Frames a scene must show alone before its frames are counted: the
 /// first ones after a change of scene still carry the change's cost.
 const STEADY_AFTER: u32 = 3;
@@ -167,6 +172,12 @@ pub struct Renderer {
     /// `final` for each change of scene, by its code (`transition.rs`);
     /// none for code 0, which is `final_pass`.
     changes: [Option<Program>; TRANSITIONS],
+    /// The shatter's shards (`shards.glsl`): the program, the texture they
+    /// are drawn into, and the change's seed and the picture's size they
+    /// were drawn for.
+    shards: Option<Program>,
+    shard_field: Target,
+    shards_drawn: Option<(u32, i32, i32)>,
     present: Program,
     slots: [Slot; 2],
     /// The finished picture, the scenes' size, before `present` stretches it.
@@ -342,6 +353,17 @@ impl Renderer {
                 &vertex,
                 &fragment(include_str!("shaders/present.glsl")),
             );
+            // The shatter reads its shards from a texture this works out;
+            // without it, a shatter cuts.
+            let shards = compile(
+                "shards.glsl",
+                &vertex,
+                &fragment(include_str!("shaders/shards.glsl")),
+            );
+            let mut changes = changes;
+            if shards.is_none() {
+                changes[1] = None;
+            }
             let (Some(bright), Some(blur), Some(final_pass), Some(present)) =
                 (bright, blur, final_pass, present)
             else {
@@ -385,6 +407,7 @@ impl Renderer {
             let slots = [slot()?, slot()?];
             let bloom = [target(gl, 4, 4)?, target(gl, 4, 4)?];
             let picture = target(gl, width, height)?;
+            let shard_field = target(gl, 4, 4)?;
             Some(Self {
                 vao,
                 scenes,
@@ -396,6 +419,9 @@ impl Renderer {
                 slots,
                 final_pass,
                 changes,
+                shards,
+                shard_field,
+                shards_drawn: None,
                 picture,
                 picture_drawn: false,
                 bloom,
@@ -900,6 +926,29 @@ impl Renderer {
             );
             fullscreen(gl);
 
+            // A shatter's shards, once a change, at half the picture's
+            // size: which shard each place belongs to (`shards.glsl`).
+            let shattering = b.is_some() && change.code() == 1;
+            if shattering && let Some(shards) = &self.shards {
+                let (wide, tall) = (
+                    (wide / SHARDS_DIVISOR).max(1),
+                    (tall / SHARDS_DIVISOR).max(1),
+                );
+                let drawn = Some((change.seed.to_bits(), wide, tall));
+                if self.shards_drawn != drawn {
+                    if (self.shard_field.width, self.shard_field.height) != (wide, tall) {
+                        resize(gl, &mut self.shard_field, wide, tall);
+                    }
+                    begin_pass(gl, &self.shard_field);
+                    gl.use_program(Some(shards.program));
+                    set_vec2(gl, shards, "uRes", wide as f32, tall as f32);
+                    set_f32(gl, shards, "uTransSeed", change.seed);
+                    bind_texture(gl, shards, "uNoise", 0, self.noise);
+                    fullscreen(gl);
+                    self.shards_drawn = drawn;
+                }
+            }
+
             // ...and the picture, the scenes' size.
             let picture = &self.picture;
             // The change's own program, while one runs.
@@ -927,8 +976,18 @@ impl Renderer {
             bind_texture(gl, program, "uSceneB", 1, frozen.texture);
             bind_texture(gl, program, "uBloom", 2, soft.texture);
             bind_texture(gl, program, "uNoise", 3, self.noise);
-            // The changes of scene read the fractal noise too.
+            // The changes of scene read the fractal noise too, and the
+            // shatter its shards.
             bind_texture(gl, program, "uFbm", 4, self.fbm);
+            if shattering {
+                bind_texture(
+                    gl,
+                    program,
+                    "uShards",
+                    SHARDS_UNIT,
+                    self.shard_field.texture,
+                );
+            }
             // Where a word is sung, the shade lifts (`final.glsl`).
             bind_texture(
                 gl,
@@ -1424,7 +1483,9 @@ impl Renderer {
                 .chain(self.relief)
                 .chain(self.relief_worded)
                 .chain([self.bright, self.blur, self.final_pass, self.present]);
-            let programs = programs.chain(self.changes.into_iter().flatten());
+            let programs = programs
+                .chain(self.changes.into_iter().flatten())
+                .chain(self.shards);
             for program in programs {
                 gl.delete_program(program.program);
             }
@@ -1433,7 +1494,7 @@ impl Renderer {
                 .into_iter()
                 .flat_map(|slot| slot.targets)
                 .chain(self.bloom)
-                .chain([self.picture])
+                .chain([self.picture, self.shard_field])
             {
                 gl.delete_framebuffer(target.framebuffer);
                 gl.delete_texture(target.texture);

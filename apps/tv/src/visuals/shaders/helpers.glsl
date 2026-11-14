@@ -152,6 +152,29 @@ float hasScore() {
   return step(0.001, uScoreRate);
 }
 
+// SHATTER's shards (`shards.glsl` works them out, `final.glsl` reads
+// them): the sheet's shards are smaller toward the middle, so it is read
+// at the square root of the distance from it (no `pow`, which a TV's GPU
+// and the lab's software renderer both pay for), and back.
+const float SHARDS = 3.0;
+// The shard texture keeps a cell plus this in a byte.
+const float SHARD_CELL_BIAS = 8.0;
+highp vec2 toShards(highp vec2 p) {
+  return p * sqrt(inversesqrt(max(dot(p, p), 1e-6))) * SHARDS;
+}
+highp vec2 fromShards(highp vec2 g) {
+  return g * length(g) / (SHARDS * SHARDS);
+}
+// Where in the noise texture a change's shards read, from its seed.
+ivec2 shardShift(float seed) {
+  return ivec2(128.0 + seed * 61.0);
+}
+// The noise texture's values for the shard of cell `n`: its point, its
+// turn, its tilt.
+vec4 shard(highp vec2 n, ivec2 shift) {
+  return texelFetch(uNoise, (ivec2(n) + shift) & 255, 0);
+}
+
 // THE WORDS being sung (words.rs): three words, `WORD_NOW` the one sung
 // now, `WORD_NEXT` the next, `WORD_BEFORE` the one it replaced, each a
 // signed distance field in the atlas `uWords`. A word's rect is where it

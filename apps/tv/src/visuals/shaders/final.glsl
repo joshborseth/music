@@ -139,58 +139,41 @@ highp vec2 torn(highp vec2 uv) {
 // lit along its edges in the cover's color, and drops away, the middle
 // first, showing the new scene behind through the widening cracks. Most of
 // it happens at once, on the beat, then slows.
-const float SHARDS = 3.0;
-// Shards are smaller toward the middle: the sheet is read at the square
-// root of the distance from it (no `pow`, which a TV's GPU and the lab's
-// software renderer both pay for), and back.
-highp vec2 toShards(highp vec2 p) {
-  return p * sqrt(inversesqrt(max(dot(p, p), 1e-6))) * SHARDS;
-}
-highp vec2 fromShards(highp vec2 g) {
-  return g * length(g) / (SHARDS * SHARDS);
-}
-// The noise texture's values for shard `n`: its point, its tilt.
-vec4 shard(highp vec2 n, ivec2 shift) {
-  return texelFetch(uNoise, (ivec2(n) + shift) & 255, 0);
-}
+//
+// The two shards nearest each place were worked out once for the change
+// (`shards.glsl`, `uShards`), so each pixel here reads them instead of
+// searching four: the sheet coming closer only reads them nearer the
+// middle. Which of the two is nearer, and the edge between them, are
+// worked out here, so the cracks stay sharp.
+uniform sampler2D uShards;
 vec3 shatter(vec3 fresh, highp vec2 uv, float t) {
   highp vec2 aspect = vec2(uRes.x / uRes.y, 1.0);
   float fast = 1.0 - (1.0 - t) * (1.0 - t);
   // The whole sheet flies at the camera; the shards spread with it.
   float zoom = 1.0 + 2.4 * fast * fast;
-  highp vec2 g = toShards((uv - 0.5) * aspect / zoom);
-  // The four cells nearest: each shard's point stays well inside its
-  // cell, so the nearest point is all but always among theirs (under half
-  // the work of the usual nine). Kept: the two nearest distances, and
-  // which cell is nearest, worked out again after.
-  highp vec2 cell = floor(g - 0.5);
-  vec2 inside = vec2(g - cell);
+  highp vec2 at = 0.5 + (uv - 0.5) / zoom;
+  highp vec2 g = toShards((at - 0.5) * aspect);
+  ivec2 size = textureSize(uShards, 0);
+  ivec2 texel = clamp(ivec2(at * vec2(size)), ivec2(0), size - 1);
+  highp vec4 cells = floor(texelFetch(uShards, texel, 0) * 255.0 + 0.5) - SHARD_CELL_BIAS;
+  ivec2 shift = shardShift(uTransSeed);
+  vec4 first = shard(cells.xy, shift);
+  vec4 other = shard(cells.zw, shift);
+  // Each shard's point drifts its own way as it goes.
   float drift = 0.24 * fast;
-  ivec2 shift = ivec2(128.0 + uTransSeed * 61.0);
-  float near = 99.0;
-  float second = 99.0;
-  vec2 nearest = vec2(0.0);
-  for (int y = 0; y <= 1; y++) {
-    for (int x = 0; x <= 1; x++) {
-      vec2 n = vec2(float(x), float(y));
-      vec2 r = shard(cell + n, shift).rg;
-      // Each shard drifts its own way as it goes.
-      vec2 to = inside - n - 0.2 - 0.6 * r - (r.yx - 0.5) * drift;
-      float d = dot(to, to);
-      // Without branches: neighbouring pixels would take different ones,
-      // and a GPU then runs both.
-      float closer = step(d, near);
-      second = mix(min(second, d), near, closer);
-      near = min(near, d);
-      nearest = mix(nearest, n, closer);
-    }
-  }
-  vec4 chosen = shard(cell + nearest, shift);
-  highp vec2 point = cell + nearest + 0.2 + 0.6 * chosen.rg;
-  highp vec2 moved = point + (chosen.gr - 0.5) * drift;
-  near = sqrt(near);
-  second = sqrt(second);
-  float edge = second - near;
+  highp vec2 firstAt = cells.xy + 0.2 + 0.6 * first.rg + (first.gr - 0.5) * drift;
+  highp vec2 otherAt = cells.zw + 0.2 + 0.6 * other.rg + (other.gr - 0.5) * drift;
+  float toFirst = length(vec2(g - firstAt));
+  float toOther = length(vec2(g - otherAt));
+  // The nearer of the two is this place's shard (picked without a
+  // branch: neighbouring pixels pick differently, and a GPU would then
+  // run both).
+  float second = step(toOther, toFirst);
+  vec4 chosen = mix(first, other, second);
+  highp vec2 cell = mix(cells.xy, cells.zw, second);
+  highp vec2 moved = mix(firstAt, otherAt, second);
+  float edge = abs(toOther - toFirst);
+  highp vec2 point = cell + 0.2 + 0.6 * chosen.rg;
   // Each shard turns and grows (comes nearer) at its own pace.
   float spin = (fract(chosen.r * 31.7) - 0.5) * 1.6 * fast;
   float nearer = 1.0 + 1.5 * fract(chosen.g * 23.1) * fast;
