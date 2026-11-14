@@ -49,6 +49,9 @@ global Theme {
 export struct CardData {
     title: string,
     subtitle: string,
+    /// The year the subtitle ends with (" · 2024"), kept apart so that
+    /// cutting the subtitle short never cuts it.
+    subtitle-end: string,
     image: image,
     has-image: bool,
     /// Artists are round.
@@ -164,6 +167,7 @@ component Icon inherits Path {
         : name == "artist" ? "M12 3 C14.5 3 16.5 5 16.5 7.5 C16.5 10 14.5 12 12 12 C9.5 12 7.5 10 7.5 7.5 C7.5 5 9.5 3 12 3 Z M3.5 21 C3.5 16.6 7.3 14 12 14 C16.7 14 20.5 16.6 20.5 21 Z"
         : name == "open" ? "M3.5 10.7 H15.3 L10.7 6.1 L12.5 4.3 L20.2 12 L12.5 19.7 L10.7 17.9 L15.3 13.3 H3.5 Z"
         : name == "qr" ? "M3 3 H10.5 V10.5 H3 Z M5 5 V8.5 H8.5 V5 Z M13.5 3 H21 V10.5 H13.5 Z M15.5 5 V8.5 H19 V5 Z M3 13.5 H10.5 V21 H3 Z M5 15.5 V19 H8.5 V15.5 Z M13.5 13.5 H16.5 V16.5 H13.5 Z M18 13.5 H21 V16.5 H18 Z M13.5 18 H16.5 V21 H13.5 Z M18 18 H21 V21 H18 Z"
+        : name == "radio" ? "M12 9.6 C13.3 9.6 14.4 10.7 14.4 12 C14.4 13.3 13.3 14.4 12 14.4 C10.7 14.4 9.6 13.3 9.6 12 C9.6 10.7 10.7 9.6 12 9.6 Z M7.4 6.2 L9.1 7.9 C6.9 10.2 6.9 13.8 9.1 16.1 L7.4 17.8 C4.2 14.6 4.2 9.4 7.4 6.2 Z M16.6 6.2 C19.8 9.4 19.8 14.6 16.6 17.8 L14.9 16.1 C17.1 13.8 17.1 10.2 14.9 7.9 Z M4.2 4.2 L5.9 5.9 C2.6 9.2 2.6 14.8 5.9 18.1 L4.2 19.8 C0.6 16.2 0.6 7.8 4.2 4.2 Z M19.8 4.2 C23.4 7.8 23.4 16.2 19.8 19.8 L18.1 18.1 C21.4 14.8 21.4 9.2 18.1 5.9 Z"
         : name == "album" ? "M12 2.5 C17.2 2.5 21.5 6.8 21.5 12 C21.5 17.2 17.2 21.5 12 21.5 C6.8 21.5 2.5 17.2 2.5 12 C2.5 6.8 6.8 2.5 12 2.5 Z M12 9.5 C10.6 9.5 9.5 10.6 9.5 12 C9.5 13.4 10.6 14.5 12 14.5 C13.4 14.5 14.5 13.4 14.5 12 C14.5 10.6 13.4 9.5 12 9.5 Z"
         : "M12 3 V14.6 C11.4 14.2 10.7 14 10 14 C7.8 14 6 15.8 6 18 C6 20.2 7.8 22 10 22 C12.2 22 14 20.2 14 18 V7 H18 V3 Z";
 }
@@ -314,14 +318,27 @@ component Card inherits Rectangle {
         overflow: elide;
         horizontal-alignment: root.data.round ? center : left;
     }
-    Text {
+    // The subtitle is cut short to fit, but never the year it ends with.
+    HorizontalLayout {
         y: card-title.y + card-title.height + Metrics.u * 0.15;
         width: root.size;
-        text: root.data.subtitle;
-        color: Theme.text-3;
-        font-size: Metrics.u * 1.1;
-        overflow: elide;
-        horizontal-alignment: root.data.round ? center : left;
+        height: Metrics.u * 1.6;
+        alignment: root.data.round ? center : start;
+        Text {
+            text: root.data.subtitle;
+            color: Theme.text-3;
+            font-size: Metrics.u * 1.1;
+            overflow: elide;
+            min-width: 0;
+            horizontal-stretch: 1;
+            horizontal-alignment: root.data.round ? center : left;
+        }
+        if root.data.subtitle-end != "": Text {
+            text: root.data.subtitle-end;
+            color: Theme.text-3;
+            font-size: Metrics.u * 1.1;
+            horizontal-stretch: 0;
+        }
     }
 }
 
@@ -362,7 +379,7 @@ component WideCard inherits Rectangle {
             height: min(self.preferred-height, Metrics.u * 5.2);
         }
         if root.data.subtitle != "": Text {
-            text: root.data.subtitle;
+            text: root.data.subtitle + root.data.subtitle-end;
             color: Theme.text-3;
             font-size: Metrics.u * 1.15;
             wrap: word-wrap;

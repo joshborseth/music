@@ -425,6 +425,53 @@ describe('TV catalog routes', () => {
     })
   })
 
+  test("a song's album and artists, and 404 for a missing song", async () => {
+    expect(await (await get('/tv/song?videoId=a')).json()).toEqual({
+      videoId: 'a',
+      album: null,
+      artists: [],
+    })
+    expect((await get('/tv/song?videoId=missing')).status).toBe(404)
+    expect((await get('/tv/song')).status).toBe(400)
+  })
+
+  test('adding a song to a playlist you made, once', async () => {
+    const add = (playlistId: string) =>
+      handler(
+        new Request('http://tv/tv/playlist-add', {
+          method: 'POST',
+          body: JSON.stringify({
+            playlistId,
+            track: {
+              videoId: 'added',
+              title: 'Song',
+              artists: 'Artist',
+              album: null,
+              durationSeconds: 200,
+              artworkUrl: null,
+            },
+          }),
+        }),
+      )
+    // "Road trip", made in an earlier test.
+    expect(await (await add('playlist-1')).json()).toEqual({
+      playlistId: 'playlist-1',
+      title: 'Road trip',
+      added: true,
+    })
+    const page = Schema.decodeUnknownSync(Tv.TvCollection)(
+      await (await get('/tv/collection?kind=MyPlaylist&id=playlist-1')).json(),
+    )
+    expect(page.tracks.map(({ videoId }) => videoId)).toContain('added')
+    expect(await (await add('playlist-1')).json()).toEqual({
+      playlistId: 'playlist-1',
+      title: 'Road trip',
+      added: false,
+    })
+    expect((await add('nowhere')).status).toBe(404)
+    expect((await add('liked')).status).toBe(400)
+  })
+
   test('saving an album and following an artist, and undoing both', async () => {
     const save = (kind: string, id: string, saved: boolean) =>
       handler(

@@ -134,10 +134,19 @@ fn main() {
             Step::Key(right),
             wait(800),
             Step::Shot("06-controls"),
-            // Holding OK offers to go to what the queue plays from.
+            // Holding OK opens the song's menu; its album and artists
+            // join it as the server finds them.
             Step::Hold,
+            wait(4000),
             Step::Shot("06b-song-menu"),
+            // Add to a playlist lists the ones made on the phone.
+            Step::Key(down),
+            Step::Key(ok),
+            wait(1500),
+            Step::Shot("06c-add-to-playlist"),
             Step::Key(back),
+            // The controls rested meanwhile: a key brings them back.
+            Step::Key(down),
             // Up to the seek bar, and three steps forward.
             Step::Key(up),
             Step::Key(right),
@@ -291,10 +300,16 @@ fn main() {
             Step::Session(short_queue),
             wait(600),
             Step::Shot("16b-controls-short-queue"),
-            // Go to search, from the song's menu, searches again.
+            // Back to the results, from the song's menu (the last item
+            // before Cancel), searches again.
             Step::Key(right),
             Step::Hold,
-            Step::Key(down),
+            wait(3000),
+        ],
+        (0..10).map(|_| Step::Key(down)).collect(),
+        vec![
+            Step::Key(up),
+            Step::Shot("16c-song-menu-back-to-results"),
             Step::Key(ok),
             wait(5000),
             Step::Shot("17-go-to-search"),

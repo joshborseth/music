@@ -3,8 +3,9 @@
 // that drifts outward and turns, so the rings trail into a vortex.
 //
 // The light is kept as one amount in the picture's alpha and shown through
-// the cover's light (`glow`), so the echo fades through the color's own
-// shades instead of greying.
+// the cover's light (`glowIn`), so the echo fades through the color's own
+// shades instead of greying. The ring is the cover's strong color, its
+// echo trailing off in the second.
 
 void main() {
   vec2 p = centered();
@@ -45,5 +46,6 @@ void main() {
 
   // The echo holds what was brightest; it never piles up.
   float amount = min(max(echo, light), 1.0);
-  fragColor = vec4(glow(amount * 0.95), amount);
+  float trail = clamp((echo - light) * 4.0, 0.0, 0.85);
+  fragColor = vec4(glowIn(amount * 0.95, mix(uColorA, uColorD, trail)), amount);
 }

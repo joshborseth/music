@@ -49,25 +49,31 @@ vec2 fbmSlope(highp vec2 p) {
   return (textureLod(uFbm, p / 8.0, 0.0).gb - 0.5) * 8.0;
 }
 
-// The cover's color, swinging through its shades as t goes 0 to 1 and on:
-// A to B, B to C, C back to A, easing in and out of each. Only the pair it
-// is between is mixed, as every scene calls this at every pixel.
+// The cover's colors, swinging as t goes 0 to 1 and on: the strong color,
+// the second color a little deep, the strong color deeper, and back,
+// easing in and out of each. Only the pair it is between is mixed.
 vec3 palette(highp float t) {
   float s = fract(t) * 3.0;
   float f = fract(s);
   f = f * f * (3.0 - 2.0 * f);
-  vec3 from = s < 1.0 ? uColorA : (s < 2.0 ? uColorB : uColorC);
-  vec3 to = s < 1.0 ? uColorB : (s < 2.0 ? uColorC : uColorA);
+  vec3 second = uColorD * 0.8;
+  vec3 from = s < 1.0 ? uColorA : (s < 2.0 ? second : uColorB);
+  vec3 to = s < 1.0 ? second : (s < 2.0 ? uColorB : uColorA);
   return mix(from, to, f);
 }
 
-// Light in the cover's color, 0 to 1: near black, through the deep shade
-// and the full color, to a pale, hot core. One hue throughout, so a scene
-// shaded with it looks lit rather than painted.
+// Light in the color `hue` (one at full strength), 0 to 1: near black,
+// through its deep shade and the full color, to a pale, hot core. One hue
+// throughout, so a scene shaded with it looks lit rather than painted.
+vec3 glowIn(float x, vec3 hue) {
+  vec3 color = mix(hue * 0.03, hue * 0.525, smoothstep(0.0, 0.45, x));
+  color = mix(color, hue, smoothstep(0.35, 0.8, x));
+  return mix(color, mix(hue, vec3(1.0), 0.3), smoothstep(0.8, 1.0, x));
+}
+
+// Light in the cover's strong color.
 vec3 glow(float x) {
-  vec3 color = mix(uColorC * 0.06, uColorB * 0.7, smoothstep(0.0, 0.45, x));
-  color = mix(color, uColorA, smoothstep(0.35, 0.8, x));
-  return mix(color, mix(uColorA, vec3(1.0), 0.3), smoothstep(0.8, 1.0, x));
+  return glowIn(x, uColorA);
 }
 
 // 0 to 1 and back, so a picture repeats as mirror images instead of seams.

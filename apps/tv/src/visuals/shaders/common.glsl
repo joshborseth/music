@@ -50,10 +50,14 @@ uniform float uDrop;
 uniform float uIntensity;
 // Different for each scene showing, so a scene never looks the same twice.
 uniform float uSeed;
-// The cover's one strong color: full strength, a little deeper, and deep.
+// The cover's strong color: full strength, a little deeper, and deep.
 uniform vec3 uColorA;
 uniform vec3 uColorB;
 uniform vec3 uColorC;
+// The cover's second color, at full strength: another hue the cover holds
+// plenty of, or, when it has one hue only, a neighbor of it (look.rs).
+// Each scene lights one part of itself in it, so no two look alike.
+uniform vec3 uColorD;
 // 1 when the song has a cover.
 uniform float uHasCover;
 

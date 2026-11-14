@@ -139,7 +139,7 @@ pub struct Renderer {
     cover: glow::Texture,
     /// The cover uploaded, held so its identity can't be reused.
     cover_shown: Option<Arc<Cover>>,
-    colors: [[f32; 3]; 3],
+    colors: [[f32; 3]; 4],
     has_cover: bool,
     /// Each scene's size, in the order of `SCENES`.
     sizing: [Sizing; SCENES.len()],
@@ -498,10 +498,8 @@ impl Renderer {
             let tall = out_a.height.max(out_b.height);
             if (self.picture.width, self.picture.height) != (wide, tall) {
                 resize(gl, &mut self.picture, wide, tall);
-                let (glow_wide, glow_tall) = (
-                    (wide / BLOOM_DIVISOR).max(1),
-                    (tall / BLOOM_DIVISOR).max(1),
-                );
+                let (glow_wide, glow_tall) =
+                    ((wide / BLOOM_DIVISOR).max(1), (tall / BLOOM_DIVISOR).max(1));
                 for target in &mut self.bloom {
                     resize(gl, target, glow_wide, glow_tall);
                 }
@@ -751,7 +749,10 @@ impl Renderer {
                 let levels: [f32; LEVELS] = music.levels;
                 gl.uniform_1_f32_slice(Some(at), &levels);
             }
-            for (name, color) in ["uColorA", "uColorB", "uColorC"].iter().zip(self.colors) {
+            for (name, color) in ["uColorA", "uColorB", "uColorC", "uColorD"]
+                .iter()
+                .zip(self.colors)
+            {
                 if let Some(at) = program.uniforms.get(*name) {
                     gl.uniform_3_f32(Some(at), color[0], color[1], color[2]);
                 }

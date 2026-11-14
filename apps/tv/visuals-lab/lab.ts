@@ -352,9 +352,12 @@ const hsvToRgb = (hue: number, sat: number, value: number): Rgb => {
 }
 
 /**
- * The cover's one strong color in three shades, like `look.rs`: the hue that
- * covers the most of it, averaged from its own pixels, at full brightness and
- * at least 0.9 saturation; then a little deeper, and deep.
+ * The cover's strong color in three shades, then its second color, like
+ * `look.rs` (`cover_colors`): the hue that covers the most of it, averaged
+ * from its own pixels, at full brightness and at least 0.9 saturation; a
+ * little deeper, and deep; then the next heaviest hue at least 60° away,
+ * when the cover holds at least 12% as much of it, or else the strong
+ * color's neighbor 40° round the wheel, at 0.75 saturation.
  */
 const strongColors = (pixels: Uint8ClampedArray): Array<Rgb> => {
   const hues = 24
@@ -379,41 +382,57 @@ const strongColors = (pixels: Uint8ClampedArray): Array<Rgb> => {
     weight[bucket] = (weight[bucket] ?? 0) + sat * max
   }
   const total = weight.reduce((sum, w) => sum + w, 0)
-  const strong: Rgb =
-    total < (pixels.length / 4) * 0.01
-      ? [0.13, 0.83, 0.44]
-      : (() => {
-          const around = (center: number) =>
-            [0, 1, 2].map(step => (center + hues - 1 + step) % hues)
-          const sumAround = (center: number) =>
-            around(center).reduce((sum, b) => sum + (weight[b] ?? 0), 0)
-          let peak = 0
-          for (let b = 1; b < hues; b++) {
-            if (sumAround(b) > sumAround(peak)) peak = b
-          }
-          const near = around(peak)
-          let x = 0
-          let y = 0
-          let satSum = 0
-          let sum = 0
-          for (const pixel of colorful) {
-            if (!near.includes(bucketOf(pixel.hue))) continue
-            const angle = pixel.hue * Math.PI * 2
-            x += Math.cos(angle) * pixel.strength
-            y += Math.sin(angle) * pixel.strength
-            satSum += pixel.sat * pixel.strength
-            sum += pixel.strength
-          }
-          const hue = (((Math.atan2(y, x) / (Math.PI * 2)) % 1) + 1) % 1
-          const sat = Math.min(1, Math.max(0.9, satSum / Math.max(sum, 1e-6)))
-          return hsvToRgb(hue, sat, 1)
-        })()
-  const shade = (k: number): Rgb => [
-    strong[0] * k,
-    strong[1] * k,
-    strong[2] * k,
-  ]
-  return [shade(1), shade(0.75), shade(0.5)]
+  const withSecond = (strong: Rgb, second: Rgb): Array<Rgb> => {
+    const shade = (k: number): Rgb => [
+      strong[0] * k,
+      strong[1] * k,
+      strong[2] * k,
+    ]
+    return [shade(1), shade(0.75), shade(0.5), second]
+  }
+  if (total < (pixels.length / 4) * 0.01) {
+    return withSecond([0.13, 0.83, 0.44], [0.15, 0.85, 0.95])
+  }
+  const around = (center: number) =>
+    [0, 1, 2].map(step => (center + hues - 1 + step) % hues)
+  const run = (center: number) =>
+    around(center).reduce((sum, b) => sum + (weight[b] ?? 0), 0)
+  const heaviest = (candidates: ReadonlyArray<number>): number | undefined =>
+    candidates.reduce<number | undefined>(
+      (best, b) => (best === undefined || run(b) >= run(best) ? b : best),
+      undefined,
+    )
+  const all = Array.from({ length: hues }, (_, b) => b)
+  const peak = heaviest(all) ?? 0
+  const strong = (center: number): [number, number] => {
+    const near = around(center)
+    let x = 0
+    let y = 0
+    let satSum = 0
+    let sum = 0
+    for (const pixel of colorful) {
+      if (!near.includes(bucketOf(pixel.hue))) continue
+      const angle = pixel.hue * Math.PI * 2
+      x += Math.cos(angle) * pixel.strength
+      y += Math.sin(angle) * pixel.strength
+      satSum += pixel.sat * pixel.strength
+      sum += pixel.strength
+    }
+    const hue = (((Math.atan2(y, x) / (Math.PI * 2)) % 1) + 1) % 1
+    const sat = Math.min(1, Math.max(0.9, satSum / Math.max(sum, 1e-6)))
+    return [hue, sat]
+  }
+  const [hue, sat] = strong(peak)
+  const apart = (b: number) => {
+    const distance = (b + hues - peak) % hues
+    return Math.min(distance, hues - distance) >= 4
+  }
+  const next = heaviest(all.filter(apart))
+  const second: Rgb =
+    next !== undefined && run(next) >= run(peak) * 0.12
+      ? hsvToRgb(...strong(next), 1)
+      : hsvToRgb((hue + 40 / 360) % 1, 0.75, 1)
+  return withSecond(hsvToRgb(hue, sat, 1), second)
 }
 
 // GL --------------------------------------------------------------------
@@ -766,11 +785,12 @@ const makeEngine = (
   const coverTexture = dataTexture(gl, COVER, COVER, 'rgba', false)
   const history = new Uint8Array(BANDS * HISTORY_ROWS)
   let historyAge = 0
-  // Joshify green in its three shades, until a cover loads.
+  // Joshify green in its three shades and teal, until a cover loads.
   let colors: Array<Rgb> = [
     [0.13, 0.83, 0.44],
     [0.0975, 0.6225, 0.33],
     [0.065, 0.415, 0.22],
+    [0.15, 0.85, 0.95],
   ]
   let hasCover = 0
 
@@ -851,7 +871,7 @@ const makeEngine = (
     if (bandsAt !== undefined) gl.uniform4f(bandsAt, ...music.bands)
     const levelsAt = at('uLevels')
     if (levelsAt !== undefined) gl.uniform1fv(levelsAt, music.levels)
-    const names = ['uColorA', 'uColorB', 'uColorC']
+    const names = ['uColorA', 'uColorB', 'uColorC', 'uColorD']
     names.forEach((name, i) => {
       const c = at(name)
       const color = colors[i]

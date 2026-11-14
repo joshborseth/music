@@ -252,6 +252,41 @@ pub struct SaveRequest {
     pub saved: bool,
 }
 
+/// An album or an artist a song links to: enough to open its page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Link {
+    pub id: String,
+    pub name: String,
+}
+
+/// Where a song leads: its album, and the credited artists with a page, in
+/// credit order. The queue keeps both only as text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SongLinks {
+    pub video_id: String,
+    pub album: Option<Link>,
+    pub artists: Vec<Link>,
+}
+
+/// Add a song to one of the playlists made in the app.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddToPlaylistRequest {
+    pub playlist_id: String,
+    pub track: QueueTrack,
+}
+
+/// The playlist a song went to; `added` is false when it was there already.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddedToPlaylist {
+    pub playlist_id: String,
+    pub title: String,
+    pub added: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Version {
@@ -360,6 +395,18 @@ impl Client {
         self.post::<Saved>("/tv/save", request)
             .await
             .map(|saved| saved.saved)
+    }
+
+    pub async fn song_links(&self, video_id: &str) -> Result<SongLinks, String> {
+        let path = format!("/tv/song?videoId={}", crate::view::percent_encode(video_id));
+        self.get(&path).await
+    }
+
+    pub async fn add_to_playlist(
+        &self,
+        request: &AddToPlaylistRequest,
+    ) -> Result<AddedToPlaylist, String> {
+        self.post("/tv/playlist-add", request).await
     }
 
     async fn post<T: serde::de::DeserializeOwned>(
@@ -523,6 +570,20 @@ mod tests {
             Some(SaveKind::Artist)
         );
         assert_eq!(SaveKind::from_collection(CollectionKind::MyPlaylist), None);
+    }
+
+    #[test]
+    fn decodes_song_links_and_adding_to_a_playlist() {
+        let links: SongLinks = fixture("song.json");
+        assert_eq!(links.album.unwrap().id, "MPREb_abc");
+        assert_eq!(links.artists.len(), 2);
+        let request: AddToPlaylistRequest = fixture("add-to-playlist-request.json");
+        assert_eq!(request.playlist_id, "p1");
+        let expected: serde_json::Value = fixture("add-to-playlist-request.json");
+        assert_eq!(serde_json::to_value(&request).unwrap(), expected);
+        let added: AddedToPlaylist = fixture("added-to-playlist.json");
+        assert!(added.added);
+        assert_eq!(added.title, "Road trip");
     }
 
     #[test]

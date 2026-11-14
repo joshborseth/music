@@ -9,9 +9,10 @@ uniform vec2 uTexel; // one pixel of the source, in texture units
 
 void main() {
   highp vec2 corner = 0.5 * uTexel;
-  vec3 sum = texture(uSource, vUv - corner).rgb
-    + texture(uSource, vUv + corner).rgb
-    + texture(uSource, vUv + vec2(corner.x, -corner.y)).rgb
-    + texture(uSource, vUv + vec2(-corner.x, corner.y)).rgb;
-  fragColor = vec4(sum * 0.25, 1.0);
+  // The alpha, how bright the picture is on average, blurs along.
+  vec4 sum = texture(uSource, vUv - corner)
+    + texture(uSource, vUv + corner)
+    + texture(uSource, vUv + vec2(corner.x, -corner.y))
+    + texture(uSource, vUv + vec2(-corner.x, corner.y));
+  fragColor = sum * 0.25;
 }

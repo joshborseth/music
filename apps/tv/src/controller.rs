@@ -55,6 +55,9 @@ pub enum UiAction {
     ClearUpcoming,
     /// Turn Sound Check on or off for the whole session.
     SetSoundCheck(bool),
+    /// Play the song's radio, as the phone does: the song alone, in order,
+    /// from its radio, with autoplay on to bring in more like it.
+    StartRadio(QueueTrack),
 }
 
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -316,6 +319,20 @@ impl Controller {
             }
             UiAction::ClearUpcoming => {
                 self.send(ClientMessage::ClearUpcoming {});
+                return;
+            }
+            UiAction::StartRadio(track) => {
+                let autoplay = self.state.as_ref().is_some_and(|state| state.autoplay);
+                let from = crate::nav::playing_from_radio(&track);
+                self.on_action(UiAction::PlayTracks {
+                    tracks: vec![track],
+                    start: 0,
+                    from: Some(from),
+                    shuffle: Some(false),
+                });
+                if !autoplay {
+                    self.send(ClientMessage::SetAutoplay { enabled: true });
+                }
                 return;
             }
             UiAction::PlayHere => {

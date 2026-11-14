@@ -1,7 +1,9 @@
 // AURORA: curtains of light hanging in the dark, folding slowly in the
 // wind. Fine rays run up from a bright hem, each stretch lit by its band
 // of the spectrum; on the beat the hem drops and burns, and the curtains
-// flare. For calm songs and calm parts, beside Silk and Ink.
+// flare. Like a real aurora, the hem is one color (the cover's strong
+// one) and the rays turn another (its second) as they rise. For calm songs
+// and calm parts, beside Silk and Ink.
 //
 // Two reads a pixel: the noise worked out ahead (`uFbm`), which folds the
 // curtains, and the spectrum. The rest is a few sines.
@@ -11,10 +13,12 @@
 // `height` before they fade.
 float curtain(float y, float hem, float edge, float rays, float height) {
   float above = y - hem;
-  // The light spills a little below the hem, and rises in rays above it.
-  float lit = smoothstep(-0.05, 0.0, above);
   float up = max(above, 0.0);
-  return lit * (exp(-up / height) * rays + exp(-up * 25.0) * edge);
+  // The light rises in rays above the hem, and spills below it in a glow
+  // that fades as softly as the burn does above, so the hem has no hard
+  // edge, even where it runs flat.
+  float spill = exp(above * 8.0 - up * 8.0);
+  return spill * (exp(-up / height) * rays + exp(-up * 25.0) * edge);
 }
 
 void main() {
@@ -45,5 +49,7 @@ void main() {
   level += 0.22 * curtain(p.y, far, 0.15, 1.0 - 0.5 * fine, height * 1.5);
 
   level *= 0.75 + 0.3 * uEnergy + 0.3 * uHit;
-  fragColor = vec4(glow(clamp(level, 0.0, 1.0)), 1.0);
+  // The rays turn to the second color as they rise.
+  float rise = clamp((p.y - hem) / (height * 2.5), 0.0, 0.85);
+  fragColor = vec4(glowIn(clamp(level, 0.0, 1.0), mix(uColorA, uColorD, rise)), 1.0);
 }

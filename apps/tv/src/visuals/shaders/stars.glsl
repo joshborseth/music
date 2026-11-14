@@ -58,5 +58,8 @@ void main() {
 
   // The afterglow holds what was brightest; it never piles up.
   float amount = min(max(trail, light), 1.0);
-  fragColor = vec4(glow(amount * 0.95), amount);
+  // Half the sky's slices are the cover's strong color, half its second,
+  // turning slowly; a star and its trail keep their slice, so its color.
+  float side = 0.5 + 0.5 * sin(float(around) * TAU * 2.0 + uDrive * 0.02 + uSeed * 6.0);
+  fragColor = vec4(glowIn(amount * 0.95, mix(uColorA, uColorD, side * side)), amount);
 }
