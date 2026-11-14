@@ -16,6 +16,10 @@
 //! scenes: how wild a part looks is its intensity, which the song's drive
 //! caps (`music.rs`), so a ballad never gets the tunnel.
 //!
+//! Each song seeds the picks, so a song shows the same scenes, in the same
+//! looks, every time it plays. When the music stops dead and comes back,
+//! it cuts as on a drop (`music.rs` lands one there).
+//!
 //! Without an analysis, scenes change when the music surges, or after a
 //! while on a kick.
 
@@ -267,6 +271,14 @@ impl Director {
             let first_song = self.song.is_none();
             self.by_group.clear();
             self.shown.clear();
+            // The song picks its own scenes and looks: the same each time
+            // it plays, its own beside every other song.
+            if let Some(id) = song {
+                let folded = id.bytes().fold(0x811c_9dc5u32, |sum, byte| {
+                    (sum ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+                });
+                self.random = super::motion::hash(folded) | 1;
+            }
             self.section = section_now;
             if song.is_some() {
                 let (scene, seed) = match music.section {
@@ -375,6 +387,7 @@ impl Director {
 
 #[cfg(test)]
 mod tests {
+    use super::super::music::Parts;
     use super::*;
     use crate::catalog::SectionKind;
 
@@ -404,6 +417,7 @@ mod tests {
             section,
             live: true,
             analyzed: true,
+            parts: Parts::default(),
         }
     }
 

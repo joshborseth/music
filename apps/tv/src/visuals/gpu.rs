@@ -36,9 +36,11 @@ use std::sync::Arc;
 use glow::HasContext;
 
 use super::director::{SCENES, Shot, Showing};
-use super::look::{COVER_SIDE, Cover, DEFAULT_COLORS};
+use super::look::{COVER_SIDE, Cover, DEFAULT_COLORS, turned};
 use super::motion::{Motion, Screen, hash, hit, unit};
-use super::music::{BANDS, HISTORY_ROWS, LEVELS, Listener, Music, WAVE};
+use super::music::{
+    AHEAD_BEHIND, AHEAD_ROWS, BANDS, HISTORY_ROWS, LEVELS, Listener, Music, SCORE_COLUMNS, WAVE,
+};
 use super::sizing::{Change, Sizing};
 
 const COMMON: &str = include_str!("shaders/common.glsl");
@@ -136,6 +138,8 @@ pub struct Renderer {
     wave: glow::Texture,
     noise: glow::Texture,
     fbm: glow::Texture,
+    /// The song's score around now (`Listener::ahead`).
+    score: glow::Texture,
     cover: glow::Texture,
     /// The cover uploaded, held so its identity can't be reused.
     cover_shown: Option<Arc<Cover>>,
@@ -236,6 +240,7 @@ impl Renderer {
             let fbm = data_texture(gl, side, side, glow::RGBA8, true)?;
             upload(gl, fbm, side, side, glow::RGBA, &fbm_pixels());
             let cover = data_texture(gl, COVER_SIDE as i32, COVER_SIDE as i32, glow::RGBA8, false)?;
+            let score = data_texture(gl, SCORE_COLUMNS as i32, AHEAD_ROWS as i32, glow::R8, false)?;
             let (width, height) = (16, 16);
             let slot = || -> Option<Slot> {
                 Some(Slot {
@@ -265,6 +270,7 @@ impl Renderer {
                 wave,
                 noise,
                 fbm,
+                score,
                 cover,
                 cover_shown: None,
                 colors: DEFAULT_COLORS,
@@ -406,6 +412,16 @@ impl Renderer {
                 &listener.spectrum,
             );
             upload(gl, self.wave, WAVE as i32, 1, glow::RED, &listener.wave);
+            if listener.take_ahead_changed() {
+                upload(
+                    gl,
+                    self.score,
+                    SCORE_COLUMNS as i32,
+                    AHEAD_ROWS as i32,
+                    glow::RED,
+                    &listener.ahead,
+                );
+            }
             if listener.take_history_changed() {
                 upload(
                     gl,
@@ -708,6 +724,7 @@ impl Renderer {
             }
             bind_texture(gl, program, "uNoise", 5, self.noise);
             bind_texture(gl, program, "uFbm", 6, self.fbm);
+            bind_texture(gl, program, "uScore", 7, self.score);
         }
     }
 
@@ -749,9 +766,31 @@ impl Renderer {
                 let levels: [f32; LEVELS] = music.levels;
                 gl.uniform_1_f32_slice(Some(at), &levels);
             }
+            let parts = &music.parts;
+            f("uBeatSeconds", music.beat_seconds);
+            f("uSnare", parts.snare);
+            f("uHat", parts.hat);
+            f("uDrums", parts.drums);
+            f("uLead", parts.lead);
+            f("uMelody", parts.melody);
+            f("uBass", parts.bass);
+            f("uBright", parts.brightness);
+            f("uChordChange", parts.chord_change);
+            f("uStop", parts.stop);
+            f("uRiser", parts.riser);
+            f("uFill", parts.fill);
+            f("uRepeat", parts.repeat);
+            f("uScoreRate", listener.ahead_rate);
+            f("uScoreShift", listener.ahead_shift);
+            f("uScoreBehind", AHEAD_BEHIND as f32);
+            // The harmony turns the cover's colors, and a minor chord
+            // deepens them a little.
+            let colors = self
+                .colors
+                .map(|color| turned(color, parts.turn, 0.12 * parts.minor));
             for (name, color) in ["uColorA", "uColorB", "uColorC", "uColorD"]
                 .iter()
-                .zip(self.colors)
+                .zip(colors)
             {
                 if let Some(at) = program.uniforms.get(*name) {
                     gl.uniform_3_f32(Some(at), color[0], color[1], color[2]);
@@ -828,6 +867,7 @@ impl Renderer {
                 self.wave,
                 self.noise,
                 self.fbm,
+                self.score,
                 self.cover,
             ] {
                 gl.delete_texture(texture);

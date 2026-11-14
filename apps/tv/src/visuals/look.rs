@@ -129,6 +129,16 @@ fn cover_colors(pixels: &[Rgb]) -> [Rgb; 4] {
     with_second(rgb(hue, sat, 1.0), second)
 }
 
+/// `color` turned `turns` round the color wheel, and `deeper` (0 to 1)
+/// darker: how the song's harmony moves the cover's colors.
+pub fn turned(color: Rgb, turns: f32, deeper: f32) -> Rgb {
+    if turns == 0.0 && deeper == 0.0 {
+        return color;
+    }
+    let (hue, sat, value) = hsv(color);
+    rgb((hue + turns).rem_euclid(1.0), sat, value * (1.0 - deeper))
+}
+
 fn bucket(hue: f32) -> usize {
     ((hue * HUES as f32) as usize).min(HUES - 1)
 }
@@ -169,6 +179,16 @@ mod tests {
 
     fn hue_degrees(color: Rgb) -> f32 {
         hsv(color).0 * 360.0
+    }
+
+    #[test]
+    fn turning_keeps_a_color_strong_and_moves_its_hue() {
+        let red = [1.0, 0.1, 0.1];
+        assert_eq!(turned(red, 0.0, 0.0), red);
+        let moved = turned(red, 1.0 / 3.0, 0.0);
+        assert!((hue_degrees(moved) - 120.0).abs() < 1.0);
+        assert!((hsv(moved).1 - hsv(red).1).abs() < 1e-4);
+        assert!((hsv(turned(red, 0.0, 0.5)).2 - 0.5).abs() < 1e-4);
     }
 
     #[test]

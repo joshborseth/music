@@ -42,11 +42,19 @@ impl Motion {
             let phase = drive * (0.21 + 0.07 * i) + i * 2.1 + seed * 5.0;
             let level = music.bands[index];
             let first = if index == 0 { 1.0 } else { 0.0 };
+            // The second pours on each snare and drifts with the tune, the
+            // third spits on each hi-hat.
+            let parts = &music.parts;
+            let (lifted, hits) = match index {
+                1 => (0.25 * (parts.melody - 0.5) * parts.lead, 0.25 * parts.snare),
+                2 => (0.0, 0.2 * parts.hat),
+                _ => (0.0, 0.0),
+            };
             *pourer = [
                 0.55 * (phase * 1.3).sin(),
-                0.32 * phase.cos(),
+                0.32 * phase.cos() + lifted,
                 0.025 + 0.05 * level + 0.06 * music.beat_pulse * first,
-                0.02 + 0.22 * level + 0.35 * music.kick * first,
+                0.02 + 0.22 * level + 0.35 * music.kick * first + hits,
             ];
         }
 
@@ -67,7 +75,10 @@ impl Motion {
             roll.sin(),
         ];
 
-        let shake = music.tension * music.tension * 0.006;
+        // A drum fill rattles the picture, harder on its snares.
+        let parts = &music.parts;
+        let shake =
+            music.tension * music.tension * 0.006 + parts.fill * 0.003 * (0.5 + parts.snare);
         let shake = [
             (smooth_noise(music.time * 23.0) - 0.5) * shake,
             (smooth_noise(music.time * 27.0 + 57.0) - 0.5) * shake,
@@ -124,12 +135,20 @@ impl Screen {
         // The flash is over in about a beat; the drop's light stays up
         // through its two bars, falling away.
         let flash = drop.powi(8) * 0.8;
+        // When the music stops dead, the light goes with it.
+        let parts = &music.parts;
+        let held = 1.0 - 0.8 * parts.stop;
         Self {
             punch: 1.0 - 0.05 * hit - 0.05 * drop,
             bulge: 0.08 * hit + 0.08 * drop * drop,
-            lift: 1.0 + 0.4 * hit + 0.45 * drop,
-            split: 0.006 * drop * drop * drop,
-            glow: 0.3 + 0.5 * music.energy + 0.8 * hit + 0.7 * drop,
+            lift: (1.0 + 0.4 * hit + 0.45 * drop) * held,
+            // Each snare splits the colors a hair, in wild music.
+            split: 0.006 * drop * drop * drop + 0.0015 * parts.snare * music.intensity,
+            // The glow swells a little on each new chord, and more each
+            // time a part of the song comes back.
+            glow: (0.3 + 0.5 * music.energy + 0.8 * hit + 0.7 * drop + 0.15 * parts.chord_change)
+                * held
+                * (1.0 + 0.1 * parts.repeat.min(3.0)),
             flash: color.map(|channel| (channel + 0.3 * (1.0 - channel)) * flash),
             vignette: [
                 1.05 - 0.4 * tension,
@@ -173,6 +192,7 @@ fn smooth_noise(x: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::music::Parts;
     use super::*;
 
     fn music() -> Music {
@@ -201,6 +221,7 @@ mod tests {
             section: None,
             live: true,
             analyzed: true,
+            parts: Parts::default(),
         }
     }
 

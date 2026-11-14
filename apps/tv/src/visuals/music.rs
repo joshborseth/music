@@ -9,7 +9,7 @@
 //! Until the analysis arrives, or when the server could not make one, the
 //! beat is guessed from the kick drum.
 
-use crate::catalog::{Analysis, SectionKind};
+use crate::catalog::{Analysis, Score, SectionKind};
 use crate::visualizer::{Analyzer, BARS};
 
 /// Bands in the spectrum the shaders get.
@@ -42,6 +42,24 @@ const ENERGY_SPAN: f64 = 0.4;
 /// chorus coming in looks bigger at once.
 const INTENSITY_RATE: f32 = 2.5;
 
+/// The score's columns (`TvScore` in `packages/shared/src/tv.ts`): the
+/// spectrum, then the drums, kick, snare, hi-hat, bass, lead, melody, and
+/// brightness.
+pub const SCORE_COLUMNS: usize = 32;
+const SPECTRUM_COLUMNS: usize = 24;
+const BASS_COLUMN: usize = SPECTRUM_COLUMNS + 4;
+const LEAD_COLUMN: usize = SPECTRUM_COLUMNS + 5;
+const MELODY_COLUMN: usize = SPECTRUM_COLUMNS + 6;
+const BRIGHTNESS_COLUMN: usize = SPECTRUM_COLUMNS + 7;
+/// Rows of the score the GPU sees at once: at the server's 20 a second, a
+/// little under half a second behind and six ahead.
+pub const AHEAD_ROWS: usize = 128;
+pub const AHEAD_BEHIND: usize = 8;
+/// How far each semitone the key moves turns the colors, and each step
+/// round the circle of fifths a chord lies from the key, in turns.
+const KEY_TURN: f32 = 20.0 / 360.0;
+const CHORD_TURN: f32 = 5.0 / 360.0;
+
 /// The section playing now, as the director needs it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SectionNow {
@@ -51,6 +69,44 @@ pub struct SectionNow {
     pub energy: f32,
     /// Seconds until it ends.
     pub left: f32,
+}
+
+/// What the server's analysis tells apart in the song, this frame: each
+/// drum, the tune, the harmony, and the moments a VJ would cue. All 0
+/// without an analysis.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Parts {
+    /// The snare (or clap) and the hi-hat, 1 on each hit and falling away.
+    pub snare: f32,
+    pub hat: f32,
+    /// How much the song is driven by drums, 0 to 1: a club track's kick
+    /// on every beat is 1, a ballad with none 0.
+    pub drums: f32,
+    /// How clearly a lead melody stands out, its height across the song's
+    /// own range (held while it rests), the bass, and how bright the sound
+    /// is, all 0 to 1, from the score.
+    pub lead: f32,
+    pub melody: f32,
+    pub bass: f32,
+    pub brightness: f32,
+    /// How far the harmony turns the cover's colors, in turns of the color
+    /// wheel: a key change turns them a long way, each chord a little,
+    /// both eased.
+    pub turn: f32,
+    /// 1 while the chord is minor, eased; and 1 on each change of chord,
+    /// falling away.
+    pub minor: f32,
+    pub chord_change: f32,
+    /// 1 while the music stops dead, easing in and out; and true on the
+    /// frame it comes back.
+    pub stop: f32,
+    pub stop_ended: bool,
+    /// How far through a riser, 0 to 1, squared; 1 through a drum fill.
+    pub riser: f32,
+    pub fill: f32,
+    /// How many times this section's part has come before: a chorus sung
+    /// the third time is 2.
+    pub repeat: f32,
 }
 
 /// The music in one frame: what the shaders get as uniforms, and the
@@ -92,6 +148,7 @@ pub struct Music {
     pub live: bool,
     /// True when the beat comes from the server's analysis.
     pub analyzed: bool,
+    pub parts: Parts,
 }
 
 /// Where the song is, for the timeline: the analysis and the position
@@ -134,6 +191,21 @@ pub struct Listener {
     guess_period: f64,
     kick_gaps: Vec<f64>,
     since_guess_kick: f64,
+
+    /// The score around now (`AHEAD_ROWS` of `SCORE_COLUMNS`), the first
+    /// row `AHEAD_BEHIND` rows before the one playing, for the GPU.
+    pub ahead: Vec<u8>,
+    /// How far into the row playing, 0 to 1, and the score's rows a
+    /// second (0 when there is no score).
+    pub ahead_shift: f32,
+    pub ahead_rate: f32,
+    ahead_row: Option<i64>,
+    ahead_changed: bool,
+    turn: f32,
+    minor: f32,
+    melody: f32,
+    last_chord: Option<usize>,
+    last_stop: Option<usize>,
 
     // The song's timeline.
     clock: Option<f64>,
@@ -179,6 +251,16 @@ impl Listener {
             guess_period: 0.5,
             kick_gaps: Vec::new(),
             since_guess_kick: 10.0,
+            ahead: vec![0; SCORE_COLUMNS * AHEAD_ROWS],
+            ahead_shift: 0.0,
+            ahead_rate: 0.0,
+            ahead_row: None,
+            ahead_changed: true,
+            turn: 0.0,
+            minor: 0.0,
+            melody: 0.5,
+            last_chord: None,
+            last_stop: None,
             clock: None,
             last_beats: 0.0,
             last_bar_count: 0.0,
@@ -195,10 +277,18 @@ impl Listener {
         std::mem::take(&mut self.history_changed)
     }
 
+    /// True once since the score around now last changed.
+    pub fn take_ahead_changed(&mut self) -> bool {
+        std::mem::take(&mut self.ahead_changed)
+    }
+
     /// Forget the song's clock: a new song, or a seek.
     pub fn new_song(&mut self) {
         self.clock = None;
         self.last_drop = None;
+        self.last_chord = None;
+        self.last_stop = None;
+        self.ahead_row = None;
     }
 
     /// Hear the next frame, `dt` seconds after the last.
@@ -318,7 +408,16 @@ impl Listener {
             section: None,
             live,
             analyzed: false,
+            parts: Parts::default(),
         };
+        if song
+            .as_ref()
+            .is_none_or(|song| song.analysis.score.is_none())
+            && self.ahead_rate != 0.0
+        {
+            self.ahead_rate = 0.0;
+            self.ahead_row = None;
+        }
         match song {
             Some(song) if !song.analysis.beats.is_empty() => self.follow(&mut music, &song, dt),
             _ => self.guess(&mut music, kicked, dt),
@@ -492,6 +591,187 @@ impl Listener {
         let bar_weight = 0.75 + 0.25 * music.bar_pulse.min(1.0);
         music.kick = (music.beat_pulse * strength * bar_weight).max(music.drop.powi(3));
         music.analyzed = true;
+        self.follow_parts(
+            music,
+            analysis,
+            t,
+            dt,
+            song.playing && !jumped,
+            strength,
+            wild,
+        );
+    }
+
+    /// The parts of the song the analysis tells apart: real drum hits, the
+    /// tune and the harmony, the stops, risers, and fills, and the score
+    /// around now.
+    #[allow(clippy::too_many_arguments)]
+    fn follow_parts(
+        &mut self,
+        music: &mut Music,
+        analysis: &Analysis,
+        t: f64,
+        dt: f32,
+        running: bool,
+        strength: f32,
+        wild: f32,
+    ) {
+        let mut parts = music.parts;
+        let since = |times: &[f64]| {
+            let after = times.partition_point(|time| *time <= t);
+            after
+                .checked_sub(1)
+                .map_or(f32::INFINITY, |index| (t - times[index]) as f32)
+        };
+        // The beat's pulse stands in for drums the analysis didn't find; in
+        // a song driven by them, each real kick punches.
+        let ratio = analysis.kicks.len() as f32 / analysis.beats.len().max(1) as f32;
+        parts.drums = smoothstep(0.15, 0.6, ratio);
+        let kick = (-since(&analysis.kicks) * 9.0).exp() * strength;
+        music.kick = (music.kick * (1.0 - 0.6 * parts.drums)).max(kick * parts.drums);
+        parts.snare = (-since(&analysis.snares) * 12.0).exp() * parts.drums;
+        parts.hat = (-since(&analysis.hats) * 25.0).exp() * parts.drums;
+        music.accent = music.accent.max(parts.snare * 0.8);
+
+        if let Some(score) = &analysis.score {
+            parts.lead = score.at(LEAD_COLUMN, t);
+            let melody = score.at(MELODY_COLUMN, t);
+            if melody > 0.0 && parts.lead > 0.1 {
+                self.melody += (melody - self.melody) * (dt * 12.0).min(1.0);
+            }
+            parts.melody = self.melody;
+            parts.bass = score.at(BASS_COLUMN, t);
+            parts.brightness = score.at(BRIGHTNESS_COLUMN, t);
+            self.fill_ahead(score, t);
+        }
+
+        // The harmony turns the colors: a key change a long way, and each
+        // chord a little, by how far round the circle of fifths it lies.
+        let key_at = |t: f64| {
+            let after = analysis.keys.partition_point(|key| key.start_seconds <= t);
+            analysis.keys.get(after.saturating_sub(1)).copied()
+        };
+        let first_key = analysis.keys.first().map_or(0, |key| key.tonic);
+        let key = key_at(t);
+        let tonic = key.map_or(0, |key| key.tonic);
+        let semitones = (i32::from(tonic) - i32::from(first_key) + 18).rem_euclid(12) - 6;
+        let chord_index = analysis
+            .chords
+            .partition_point(|chord| chord.start_seconds <= t)
+            .checked_sub(1);
+        let chord = chord_index.map(|index| analysis.chords[index]);
+        let (fifths, minor) = match chord {
+            Some(chord) => match chord.root {
+                Some(root) => {
+                    let steps = ((i32::from(root) - i32::from(tonic)) * 7 + 18).rem_euclid(12) - 6;
+                    (steps as f32, if chord.minor { 1.0 } else { 0.0 })
+                }
+                None => (0.0, self.minor),
+            },
+            None => (0.0, 0.0),
+        };
+        let aim = semitones as f32 * KEY_TURN + fifths * CHORD_TURN;
+        self.turn += (aim - self.turn) * (dt * 5.0).min(1.0);
+        self.minor += (minor - self.minor) * (dt * 5.0).min(1.0);
+        parts.turn = self.turn;
+        parts.minor = self.minor;
+        if chord_index != self.last_chord {
+            if self.last_chord.is_some() {
+                parts.chord_change = 1.0;
+            }
+            self.last_chord = chord_index;
+        }
+        parts.chord_change = parts.chord_change.max(chord.map_or(0.0, |chord| {
+            (-((t - chord.start_seconds) as f32) * 4.0).exp()
+        }));
+
+        // Stops: the screen holds its breath, and the music coming back
+        // lands like a drop.
+        let in_stop = analysis
+            .stops
+            .iter()
+            .position(|stop| stop.start_seconds <= t && t < stop.end_seconds);
+        let ended = analysis
+            .stops
+            .iter()
+            .rposition(|stop| stop.end_seconds <= t);
+        parts.stop = match in_stop {
+            Some(index) => {
+                let stop = analysis.stops[index];
+                ((t - stop.start_seconds) / 0.06).min(1.0) as f32
+            }
+            None => ended.map_or(0.0, |index| {
+                (1.0 - (t - analysis.stops[index].end_seconds) / 0.15).max(0.0) as f32
+            }),
+        };
+        if let Some(index) = ended {
+            let stop = analysis.stops[index];
+            let back = (t - stop.end_seconds) as f32;
+            parts.stop_ended = running && self.last_stop != Some(index) && back < 0.25;
+            if parts.stop_ended || !running {
+                self.last_stop = Some(index);
+            }
+            if stop.end_seconds - stop.start_seconds >= 0.3 {
+                music.drop = music.drop.max((-back * 1.2).exp() * 0.8 * wild.max(0.4));
+                music.drop_landed |= parts.stop_ended;
+            }
+        }
+
+        let within = |spans: &[crate::catalog::Span]| {
+            spans
+                .iter()
+                .find(|span| span.start_seconds <= t && t < span.end_seconds)
+                .map(|span| {
+                    ((t - span.start_seconds) / (span.end_seconds - span.start_seconds)) as f32
+                })
+        };
+        if let Some(progress) = within(&analysis.risers) {
+            parts.riser = progress * progress;
+            music.tension = music.tension.max(parts.riser * (0.4 + 0.5 * wild));
+        }
+        parts.fill = if within(&analysis.fills).is_some() {
+            1.0
+        } else {
+            0.0
+        };
+
+        if let Some(section) = music.section {
+            parts.repeat = analysis.sections[..section.index]
+                .iter()
+                .filter(|before| before.group == section.group)
+                .count() as f32;
+            // Each time a part comes back, it comes back a little bigger.
+            music.intensity = (music.intensity + 0.06 * parts.repeat.min(3.0)).min(music.ceiling);
+        }
+        music.parts = parts;
+    }
+
+    /// Copy the score's rows around `t` for the GPU, when a new row starts.
+    fn fill_ahead(&mut self, score: &Score, t: f64) {
+        let position = t * score.rate;
+        let first = position.floor() as i64 - AHEAD_BEHIND as i64;
+        self.ahead_shift = (position - position.floor()) as f32;
+        self.ahead_rate = score.rate as f32;
+        if self.ahead_row == Some(first) {
+            return;
+        }
+        self.ahead_row = Some(first);
+        self.ahead_changed = true;
+        for (index, out) in self.ahead.chunks_exact_mut(SCORE_COLUMNS).enumerate() {
+            let row = first + index as i64;
+            let source = usize::try_from(row)
+                .ok()
+                .filter(|row| *row < score.rows)
+                .map(|row| &score.pixels[row * score.columns..(row + 1) * score.columns]);
+            match source {
+                Some(source) => {
+                    let n = SCORE_COLUMNS.min(source.len());
+                    out[..n].copy_from_slice(&source[..n]);
+                    out[n..].fill(0);
+                }
+                None => out.fill(0),
+            }
+        }
     }
 
     /// Without an analysis: a beat that follows the kick drum.
@@ -654,6 +934,16 @@ mod tests {
                 .map(|second| if second < 16 { 0.3 } else { 1.0 })
                 .collect(),
             drive: 0.8,
+            kicks: vec![],
+            snares: vec![],
+            hats: vec![],
+            chords: vec![],
+            keys: vec![],
+            stops: vec![],
+            risers: vec![],
+            fills: vec![],
+            score_image: None,
+            score: None,
         }
     }
 
@@ -673,6 +963,101 @@ mod tests {
             t += dt;
         }
         frames
+    }
+
+    /// `song()` with its parts: a kick on every beat, a stop, a key a step
+    /// up from 8 s, and a score whose lead column counts rows.
+    fn song_with_parts() -> Analysis {
+        use crate::catalog::{Chord, Key, Score, Span};
+        let mut analysis = song();
+        analysis.kicks = analysis.beats.clone();
+        analysis.stops = vec![Span {
+            start_seconds: 10.0,
+            end_seconds: 10.6,
+        }];
+        analysis.keys = vec![
+            Key {
+                start_seconds: 0.0,
+                tonic: 9,
+                minor: true,
+            },
+            Key {
+                start_seconds: 8.0,
+                tonic: 11,
+                minor: true,
+            },
+        ];
+        analysis.chords = vec![Chord {
+            start_seconds: 0.0,
+            root: Some(9),
+            minor: true,
+        }];
+        let rows = 32 * 20;
+        let mut pixels = vec![0u8; rows * SCORE_COLUMNS];
+        for row in 0..rows {
+            pixels[row * SCORE_COLUMNS + LEAD_COLUMN] = (row % 256) as u8;
+        }
+        analysis.score = Some(Score {
+            rate: 20.0,
+            columns: SCORE_COLUMNS,
+            rows,
+            pixels,
+        });
+        analysis
+    }
+
+    #[test]
+    fn real_kicks_punch_and_the_key_turns_the_colors() {
+        let analysis = song_with_parts();
+        let mut listener = Listener::new();
+        let frames = play(&mut listener, &analysis, 4.0, 7.0);
+        let last = frames.last().unwrap();
+        assert!(last.parts.drums > 0.9);
+        assert!(last.parts.minor > 0.9);
+        assert!(last.parts.turn.abs() < 1e-3);
+        let frames = play(&mut listener, &analysis, 7.0, 9.5);
+        // Two semitones up, less a little: A minor now lies two steps of
+        // fifths below the new key, B.
+        let turn = frames.last().unwrap().parts.turn;
+        assert!(
+            (turn - (2.0 * KEY_TURN - 2.0 * CHORD_TURN)).abs() < 0.01,
+            "{turn}"
+        );
+    }
+
+    #[test]
+    fn a_stop_holds_its_breath_then_lands() {
+        let analysis = song_with_parts();
+        let mut listener = Listener::new();
+        let frames = play(&mut listener, &analysis, 9.0, 11.5);
+        let at = |seconds: f64| &frames[((seconds - 9.0) * 60.0) as usize];
+        assert!(at(10.3).parts.stop > 0.95);
+        assert!(at(9.5).parts.stop == 0.0);
+        assert_eq!(frames.iter().filter(|m| m.parts.stop_ended).count(), 1);
+        assert!(at(10.7).drop > 0.3);
+        assert!(
+            at(10.7).drop_landed || at(10.65).drop_landed || frames.iter().any(|m| m.drop_landed)
+        );
+    }
+
+    #[test]
+    fn the_score_around_now_goes_to_the_gpu() {
+        let analysis = song_with_parts();
+        let mut listener = Listener::new();
+        play(&mut listener, &analysis, 2.0, 3.0);
+        assert!(listener.take_ahead_changed());
+        assert_eq!(listener.ahead_rate, 20.0);
+        // The first row is `AHEAD_BEHIND` before the one playing.
+        let first = listener.ahead[LEAD_COLUMN] as i64;
+        let playing = ((3.0 - 1.0 / 60.0 + SHOW_AHEAD) * 20.0).floor() as i64;
+        assert!(
+            (first - (playing - AHEAD_BEHIND as i64)).abs() <= 1,
+            "{first} {playing}"
+        );
+        assert_eq!(
+            listener.ahead[SCORE_COLUMNS + LEAD_COLUMN] as i64,
+            first + 1
+        );
     }
 
     #[test]

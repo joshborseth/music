@@ -27,7 +27,9 @@ void main() {
     float centre = (0.2 + 0.08 * uHit) * sin(p.x * (1.1 + 0.35 * fi) + swing)
       + 0.4 * wind.x * (1.0 + 0.4 * fi)
       + 0.14 * (fi - 1.0);
-    float width = (0.05 + 0.03 * sin(p.x * 1.7 - swing + fi) + 0.04 * uBands.x) * (1.0 + 0.6 * uHit);
+    // The middle ribbon rides the lead melody, high notes high.
+    if (i == 1) centre += 0.35 * (uMelody - 0.5) * uLead;
+    float width = (0.05 + 0.03 * sin(p.x * 1.7 - swing + fi) + 0.04 * uBands.x + 0.03 * uBass) * (1.0 + 0.6 * uHit);
     float d = (p.y - centre) / max(width, 0.015);
     float core = exp(-d * d);
     // A sheen running along the ribbon, where it twists toward the light.

@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use super::director::{Director, Shot};
 use super::music::{Listener, Music, Song};
 use crate::audio::scope::SCOPE;
-use crate::catalog::Analysis;
+use crate::catalog::{Analysis, Score};
 
 const RATE: u32 = 44_100;
 const FPS: f64 = 60.0;
@@ -61,6 +61,22 @@ fn music_json(music: &Music) -> Value {
         "onDownbeat": music.on_downbeat,
         "dropLanded": music.drop_landed,
         "section": music.section.map(|section| format!("{:?}", section.kind)),
+        "parts": {
+            "snare": music.parts.snare,
+            "hat": music.parts.hat,
+            "drums": music.parts.drums,
+            "lead": music.parts.lead,
+            "melody": music.parts.melody,
+            "bass": music.parts.bass,
+            "brightness": music.parts.brightness,
+            "turn": music.parts.turn,
+            "minor": music.parts.minor,
+            "chordChange": music.parts.chord_change,
+            "stop": music.parts.stop,
+            "riser": music.parts.riser,
+            "fill": music.parts.fill,
+            "repeat": music.parts.repeat,
+        },
     })
 }
 
@@ -89,9 +105,13 @@ fn play_a_song_for_the_lab() {
         .iter()
         .map(|bytes| f32::from_le_bytes(*bytes))
         .collect();
-    let analysis: Analysis =
+    let mut analysis: Analysis =
         serde_json::from_slice(&std::fs::read(var("VISUALS_SONG_ANALYSIS")).expect("analysis"))
             .expect("an analysis");
+    analysis.score = analysis
+        .score_image
+        .take()
+        .and_then(|image| Score::decode(&image));
     let windows: Vec<(f64, f64)> = std::env::var("VISUALS_SONG_WINDOWS")
         .unwrap_or_default()
         .split(',')
@@ -172,6 +192,9 @@ fn play_a_song_for_the_lab() {
                 "wave": hex(&listener.wave),
                 "rows": rows,
                 "historyAge": listener.history_age,
+                "ahead": (listener.ahead_rate > 0.0).then(|| hex(&listener.ahead)),
+                "aheadShift": listener.ahead_shift,
+                "aheadRate": listener.ahead_rate,
             }));
         }
         frame += 1;

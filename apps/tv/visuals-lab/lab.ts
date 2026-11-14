@@ -36,6 +36,11 @@ const BANDS = 48
 const HISTORY_ROWS = 128
 const HISTORY_RATE = 32
 const WAVE = 512
+/** The song's score around now (music.rs, `SCORE_COLUMNS` × `AHEAD_ROWS`). */
+const SCORE_COLUMNS = 32
+const AHEAD_ROWS = 128
+const AHEAD_BEHIND = 8
+const SCORE_RATE = 20
 const COVER = 256
 /**
  * Terrain's mesh: a column on each band, the road and its edge, and five
@@ -53,8 +58,53 @@ type Pass = 'scene' | 'bloom' | 'final' | 'present'
 
 // MUSIC ----------------------------------------------------------------
 
+/** What the server's analysis tells apart: the TV's `music::Parts`. */
+interface Parts {
+  snare: number
+  hat: number
+  drums: number
+  lead: number
+  melody: number
+  bass: number
+  brightness: number
+  turn: number
+  minor: number
+  chordChange: number
+  stop: number
+  riser: number
+  fill: number
+  repeat: number
+}
+
+const NO_PARTS: Parts = {
+  snare: 0,
+  hat: 0,
+  drums: 0,
+  lead: 0,
+  melody: 0,
+  bass: 0,
+  brightness: 0,
+  turn: 0,
+  minor: 0,
+  chordChange: 0,
+  stop: 0,
+  riser: 0,
+  fill: 0,
+  repeat: 0,
+}
+
+/** The score around now, as the TV's `Listener` keeps it for the GPU. */
+interface Ahead {
+  rows: Uint8Array
+  shift: number
+  rate: number
+}
+
 interface Music {
   time: number
+  beatSeconds: number
+  parts: Parts
+  ahead?: Ahead
   drive: number
   beats: number
   bar: number
@@ -127,18 +177,23 @@ const motion = (music: Music, seed: number): Motion => {
     const phase = drive * (0.21 + 0.07 * i) + i * 2.1 + seed * 5
     const level = music.bands[i] ?? 0
     const first = i === 0 ? 1 : 0
+    const parts = music.parts
+    const lifted = i === 1 ? 0.25 * (parts.melody - 0.5) * parts.lead : 0
+    const hits = i === 1 ? 0.25 * parts.snare : i === 2 ? 0.2 * parts.hat : 0
     pour.push(
       0.55 * Math.sin(phase * 1.3),
-      0.32 * Math.cos(phase),
+      0.32 * Math.cos(phase) + lifted,
       0.025 + 0.05 * level + 0.06 * music.beatPulse * first,
-      0.02 + 0.22 * level + 0.35 * music.kick * first,
+      0.02 + 0.22 * level + 0.35 * music.kick * first + hits,
     )
   }
 
   const spin = drive * 0.05 + 0.15 * Math.sin(music.beats * Math.PI * 0.25)
   const bob = 0.04 * music.beatPulse * music.energy - 0.12 * music.drop
   const roll = 0.04 * Math.sin(drive * 0.09)
-  const shake = music.tension * music.tension * 0.006
+  const shake =
+    music.tension * music.tension * 0.006 +
+    music.parts.fill * 0.003 * (0.5 + music.parts.snare)
   return {
     pour,
     turn: [
@@ -187,12 +242,21 @@ const screenLook = (music: Music, color: Rgb): ScreenLook => {
   const { drop, tension } = music
   const beat = hit(music)
   const flash = drop ** 8 * 0.8
+  const parts = music.parts
+  const held = 1 - 0.8 * parts.stop
   return {
     punch: 1 - 0.05 * beat - 0.05 * drop,
     bulge: 0.08 * beat + 0.08 * drop * drop,
-    lift: 1 + 0.4 * beat + 0.45 * drop,
-    split: 0.006 * drop * drop * drop,
-    glow: 0.3 + 0.5 * music.energy + 0.8 * beat + 0.7 * drop,
+    lift: (1 + 0.4 * beat + 0.45 * drop) * held,
+    split: 0.006 * drop * drop * drop + 0.0015 * parts.snare * music.intensity,
+    glow:
+      (0.3 +
+        0.5 * music.energy +
+        0.8 * beat +
+        0.7 * drop +
+        0.15 * parts.chordChange) *
+      held *
+      (1 + 0.1 * Math.min(parts.repeat, 3)),
     flash: [
       (color[0] + 0.3 * (1 - color[0])) * flash,
       (color[1] + 0.3 * (1 - color[1])) * flash,
@@ -292,8 +356,64 @@ const madeUpSong = (bpm: number) => {
         sum += spectrum[i * (BANDS / 8) + j] ?? 0
       levels.push(sum / (BANDS / 8))
     }
+    // The score a made-up server would send: the same song, ahead.
+    const rows = new Uint8Array(SCORE_COLUMNS * AHEAD_ROWS)
+    const position = time * SCORE_RATE
+    const firstRow = Math.floor(position) - AHEAD_BEHIND
+    for (let r = 0; r < AHEAD_ROWS; r++) {
+      const at = (firstRow + r) / SCORE_RATE
+      const b = at / beatSeconds
+      const bar = Math.floor(b / 4) % 32
+      const e = bar >= 20 && bar < 28 ? 1 : bar >= 8 && bar < 20 ? 0.55 : 0.3
+      const since = fract(b) * beatSeconds
+      const k = e > 0.4 ? Math.exp(-since / 0.12) : 0
+      const s = Math.floor(b) % 2 === 1 ? k : 0
+      const h =
+        e > 0.4 ? Math.exp((-Math.abs(fract(b) - 0.5) * beatSeconds) / 0.12) : 0
+      const row = rows.subarray(r * SCORE_COLUMNS, (r + 1) * SCORE_COLUMNS)
+      for (let c = 0; c < 24; c++) {
+        const x = c / 24
+        row[c] = Math.round(
+          255 *
+            clamp01(
+              (0.3 + 0.6 * k) * e * Math.exp(-x * 6) +
+                0.4 * e * Math.exp(-(((x - 0.45) / 0.2) ** 2)) +
+                0.3 * h * Math.exp(-(((x - 0.85) / 0.15) ** 2)),
+            ),
+        )
+      }
+      const melody = 0.5 + 0.4 * Math.sin(b * 0.7)
+      ;[
+        e,
+        k,
+        s,
+        h,
+        0.3 + 0.5 * k * e,
+        e > 0.4 ? 0.8 : 0,
+        e > 0.4 ? melody : 0,
+        0.3 + 0.4 * e,
+      ].forEach((value, i) => {
+        row[24 + i] = Math.round(255 * clamp01(value))
+      })
+    }
+    const melodyNow = 0.5 + 0.4 * Math.sin(beats * 0.7)
     return {
       time,
+      beatSeconds,
+      parts: {
+        ...NO_PARTS,
+        snare,
+        hat: kicking * offbeat,
+        drums: 1,
+        lead: energy > 0.4 ? 0.8 : 0,
+        melody: melodyNow,
+        bass,
+        brightness: 0.3 + 0.4 * energy,
+        turn: barIndex >= 20 && barIndex < 28 ? 40 / 360 : 0,
+        chordChange: Math.exp(-sinceBar * 4),
+        riser: section === 'Build' ? tension : 0,
+      },
+      ahead: { rows, shift: fract(position), rate: SCORE_RATE },
       drive,
       beats,
       bar: fract(beats / 4),
@@ -349,6 +469,26 @@ const hsvToRgb = (hue: number, sat: number, value: number): Rgb => {
     return value - value * sat * Math.min(1, Math.max(0, Math.min(k, 4 - k)))
   }
   return [channel(5), channel(3), channel(1)]
+}
+
+const rgbToHsv = ([red, green, blue]: Rgb): Rgb => {
+  const max = Math.max(red, green, blue)
+  const chroma = max - Math.min(red, green, blue)
+  if (chroma <= 0) return [0, 0, max]
+  const hue =
+    max === red
+      ? ((((green - blue) / chroma) % 6) + 6) % 6
+      : max === green
+        ? (blue - red) / chroma + 2
+        : (red - green) / chroma + 4
+  return [hue / 6, chroma / max, max]
+}
+
+/** `color` turned round the wheel and deepened: the TV's `look::turned`. */
+const turned = (color: Rgb, turns: number, deeper: number): Rgb => {
+  if (turns === 0 && deeper === 0) return color
+  const [hue, sat, value] = rgbToHsv(color)
+  return hsvToRgb((((hue + turns) % 1) + 1) % 1, sat, value * (1 - deeper))
 }
 
 /**
@@ -783,6 +923,9 @@ const makeEngine = (
     fbmPixels(),
   )
   const coverTexture = dataTexture(gl, COVER, COVER, 'rgba', false)
+  const scoreTexture = dataTexture(gl, SCORE_COLUMNS, AHEAD_ROWS, 'r', false)
+  let scoreRate = 0
+  let scoreShift = 0
   const history = new Uint8Array(BANDS * HISTORY_ROWS)
   let historyAge = 0
   // Joshify green in its three shades and teal, until a cover loads.
@@ -827,6 +970,7 @@ const makeEngine = (
       ['uPrev', prev?.texture ?? null],
       ['uNoise', noiseTexture],
       ['uFbm', fbmTexture],
+      ['uScore', scoreTexture],
     ]
     units.forEach(([name, texture], unit) => {
       const at = p.uniforms.get(name)
@@ -867,6 +1011,23 @@ const makeEngine = (
     f('uSeed', scene?.seed ?? 0)
     f('uHasCover', hasCover)
     f('uHistoryAge', historyAge)
+    f('uBeatSeconds', music.beatSeconds)
+    const parts = music.parts
+    f('uSnare', parts.snare)
+    f('uHat', parts.hat)
+    f('uDrums', parts.drums)
+    f('uLead', parts.lead)
+    f('uMelody', parts.melody)
+    f('uBass', parts.bass)
+    f('uBright', parts.brightness)
+    f('uChordChange', parts.chordChange)
+    f('uStop', parts.stop)
+    f('uRiser', parts.riser)
+    f('uFill', parts.fill)
+    f('uRepeat', parts.repeat)
+    f('uScoreRate', scoreRate)
+    f('uScoreShift', scoreShift)
+    f('uScoreBehind', AHEAD_BEHIND)
     const bandsAt = at('uBands')
     if (bandsAt !== undefined) gl.uniform4f(bandsAt, ...music.bands)
     const levelsAt = at('uLevels')
@@ -875,7 +1036,8 @@ const makeEngine = (
     names.forEach((name, i) => {
       const c = at(name)
       const color = colors[i]
-      if (c !== undefined && color !== undefined) gl.uniform3f(c, ...color)
+      if (c !== undefined && color !== undefined)
+        gl.uniform3f(c, ...turned(color, parts.turn, 0.12 * parts.minor))
     })
     const moved = motion(music, scene?.seed ?? 0)
     const pourAt = at('uPour')
@@ -940,6 +1102,22 @@ const makeEngine = (
   }
 
   const update = (music: Music, dt: number) => {
+    scoreRate = music.ahead?.rate ?? 0
+    scoreShift = music.ahead?.shift ?? 0
+    if (music.ahead !== undefined) {
+      gl.bindTexture(gl.TEXTURE_2D, scoreTexture)
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.R8,
+        SCORE_COLUMNS,
+        AHEAD_ROWS,
+        0,
+        gl.RED,
+        gl.UNSIGNED_BYTE,
+        music.ahead.rows,
+      )
+    }
     gl.bindTexture(gl.TEXTURE_2D, spectrumTexture)
     gl.texImage2D(
       gl.TEXTURE_2D,
@@ -1478,7 +1656,13 @@ interface SongFrame {
     readonly drop: number
     readonly intensity: number
     readonly section: string | null
+    readonly beatSeconds: number
+    readonly parts?: Partial<Parts>
   }
+  /** The score around now, as hex, when the song has one. */
+  readonly ahead?: string
+  readonly aheadShift?: number
+  readonly aheadRate?: number
   readonly shot: {
     readonly scene: number
     readonly seed: number
@@ -1540,6 +1724,17 @@ const songMusic = (frame: SongFrame): Music => {
   const m = frame.music
   return {
     time: m.time,
+    beatSeconds: m.beatSeconds,
+    parts: { ...NO_PARTS, ...m.parts },
+    ...(frame.ahead === undefined
+      ? {}
+      : {
+          ahead: {
+            rows: fromHex(frame.ahead),
+            shift: frame.aheadShift ?? 0,
+            rate: frame.aheadRate ?? 0,
+          },
+        }),
     drive: m.drive,
     beats: m.beats,
     bar: m.bar,

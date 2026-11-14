@@ -11,6 +11,17 @@ import {
   trackBeats,
 } from './beats.ts'
 import {
+  KICK,
+  MIDS,
+  bandDb,
+  drumHits,
+  separate,
+  snaresAndHats,
+} from './drums.ts'
+import { findChords, findKeys, listenForTune } from './harmony.ts'
+import { findFills, findRisers, findStops } from './moments.ts'
+import { buildScore } from './score.ts'
+import {
   MEL_BANDS,
   type Spectrogram,
   bandsBetween,
@@ -24,7 +35,7 @@ import { type Bar, analyzeStructure } from './structure.ts'
  */
 
 /** Bump when the analysis changes, so cached results are worked out again. */
-export const ANALYZER_VERSION = 2
+export const ANALYZER_VERSION = 3
 
 /** The sample rate the analysis expects (ffmpeg resamples to it). */
 export const SAMPLE_RATE = 22050
@@ -217,29 +228,91 @@ export const analyzeSamples = (
   const structure = analyzeStructure(spec, bars, onset, bassBands)
   const barTime = (bar: number) =>
     frameTime(refinePeak(onset, bars[bar]?.start ?? 0))
+  const sections = structure.sections.map((section, i) => ({
+    startSeconds: i === 0 ? 0 : round3(barTime(section.startBar)),
+    endSeconds:
+      i === structure.sections.length - 1
+        ? round3(durationSeconds)
+        : round3(barTime(section.endBar)),
+    kind: section.kind,
+    group: section.group,
+    energy: round3(section.energy),
+  }))
+  const drops = structure.dropBars.map(bar => round3(barTime(bar)))
+  const downbeatTimes = beatTimes.filter((_, i) => isDownbeat(i)).map(round3)
+
+  // The parts: drums told apart from the rest, the tune and the harmony.
+  const parts = separate(spec)
+  const kicks = drumHits(spec, parts.percussive, KICK)
+  const { snares, hats } = snaresAndHats(spec, parts.percussive)
+  const mids = drumHits(spec, parts.percussive, MIDS)
+  const lowBands = bandsBetween(spec, 30, 200)
+  const highBands = bandsBetween(spec, 3000, SAMPLE_RATE / 2)
+  const tune = listenForTune(samples, SAMPLE_RATE)
+  const brightness = Float32Array.from({ length: spec.frames }, (_, t) => {
+    let weighted = 0
+    let total = 0
+    for (let band = 0; band < MEL_BANDS; band++) {
+      const power = 10 ** ((spec.melDb[t * MEL_BANDS + band] ?? 0) / 10)
+      weighted += power * Math.log2(spec.melHz[band] ?? 1)
+      total += power
+    }
+    return total > 0 ? weighted / total : 0
+  })
+  const targets = [
+    ...sections.slice(1).map(section => section.startSeconds),
+    ...drops,
+  ].sort((a, b) => a - b)
+  const hitTimes = (hits: ReadonlyArray<{ readonly frame: number }>) =>
+    hits.map(hit => round3(frameTime(hit.frame)))
 
   return {
     videoId,
     durationSeconds: round3(durationSeconds),
     tempo: round3(tempo),
     beats: beatTimes.map(round3),
-    downbeats: beatTimes.filter((_, i) => isDownbeat(i)).map(round3),
-    sections: structure.sections.map((section, i) => ({
-      startSeconds: i === 0 ? 0 : round3(barTime(section.startBar)),
-      endSeconds:
-        i === structure.sections.length - 1
-          ? round3(durationSeconds)
-          : round3(barTime(section.endBar)),
-      kind: section.kind,
-      group: section.group,
-      energy: round3(section.energy),
-    })),
-    drops: structure.dropBars.map(bar => round3(barTime(bar))),
+    downbeats: downbeatTimes,
+    sections,
+    drops,
     accents: accentFrames(onset, snareOnset, spec.frameRate).map(frame =>
       round3(frameTime(refinePeak(onset, frame))),
     ),
     energyStepSeconds: ENERGY_STEP_SECONDS,
     energy: energyCurve(samples, SAMPLE_RATE),
     drive: songDrive(spec, onset),
+    kicks: hitTimes(kicks),
+    snares: hitTimes(snares),
+    hats: hitTimes(hats),
+    chords: findChords(tune, beatTimes, durationSeconds),
+    keys: findKeys(tune, sections),
+    stops: findStops(
+      spec.power,
+      spec.frameRate,
+      beatTimes[0] ?? 0,
+      beatTimes[beatTimes.length - 1] ?? 0,
+    ),
+    risers: findRisers(
+      bandDb(parts.power, spec.frames, highBands.from, highBands.to),
+      spec.frameRate,
+      downbeatTimes,
+      targets,
+    ),
+    fills: findFills(
+      [...kicks, ...snares, ...mids].sort((a, b) => a.frame - b.frame),
+      spec.frameRate,
+      downbeatTimes,
+      targets,
+    ),
+    score: buildScore({
+      durationSeconds,
+      spec,
+      drumsDb: bandDb(parts.percussive, spec.frames, 0, MEL_BANDS),
+      bassDb: bandDb(parts.harmonic, spec.frames, lowBands.from, lowBands.to),
+      kicks,
+      snares,
+      hats,
+      tune,
+      brightness,
+    }),
   }
 }

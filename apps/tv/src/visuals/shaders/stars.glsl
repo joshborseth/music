@@ -26,7 +26,7 @@ void main() {
   highp float out_ = log(r) * 2.5 - (uDrive * 0.5 + uSeed * 9.0);
   // How long each streak is, in its cell: with the music's drive, and on
   // the beat and in a drop as you surge forward.
-  float streak = 0.06 + 0.1 * uEnergy + 0.25 * uHit + 0.3 * uDrop;
+  float streak = 0.06 + 0.1 * uEnergy + 0.25 * uHit + 0.3 * uDrop + 0.15 * uSnare;
 
   float light = 0.0;
   for (int i = 0; i < 2; i++) {
@@ -52,7 +52,8 @@ void main() {
     light += star * (0.6 + 0.6 * uLevels[i * 3 + 1]);
   }
   // Out of the dark ahead: none right in the middle, where they bunch up.
-  light *= smoothstep(0.04, 0.3, r) * (1.0 + 0.8 * uHit + 0.6 * uDrop);
+  // Every hi-hat makes the field twinkle.
+  light *= smoothstep(0.04, 0.3, r) * (1.0 + 0.8 * uHit + 0.6 * uDrop + 0.7 * uHat);
   // A faint haze ahead, where the stars come from.
   light += 0.1 * (0.4 + uEnergy) * exp(-r * r * 9.0);
 

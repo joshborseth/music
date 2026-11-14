@@ -60,6 +60,35 @@ uniform vec3 uColorC;
 uniform vec3 uColorD;
 // 1 when the song has a cover.
 uniform float uHasCover;
+// Seconds per beat.
+uniform float uBeatSeconds;
+
+// What the server's analysis tells apart in the song (music.rs, `Parts`),
+// all 0 without one. The snare (or clap) and the hi-hat, 1 on each hit
+// and falling away; how much the song is driven by drums at all.
+uniform float uSnare;
+uniform float uHat;
+uniform float uDrums;
+// How clearly a lead melody stands out, its height across the song's own
+// range, the bass, and how bright the sound is, each 0 to 1.
+uniform float uLead;
+uniform float uMelody;
+uniform float uBass;
+uniform float uBright;
+// 1 on each change of chord, falling away.
+uniform float uChordChange;
+// 1 while the music stops dead; how far through a riser (squared); 1
+// through a drum fill; how many times this part of the song came before.
+uniform float uStop;
+uniform float uRiser;
+uniform float uFill;
+uniform float uRepeat;
+// The song's score around now (`score` in helpers.glsl): its rows a
+// second (0 without one), how far into the row playing, and the rows
+// before it.
+uniform float uScoreRate;
+uniform float uScoreShift;
+uniform float uScoreBehind;
 
 uniform sampler2D uCover;    // the cover, square
 uniform sampler2D uSpectrum; // live bands, low to high, across x
@@ -70,6 +99,7 @@ uniform sampler2D uNoise;    // 256 × 256 random values; g is r moved by (37, 1
 // Fractal noise, worked out ahead (`gpu::fbm_pixels`): r is the value, g
 // and b its slope across and up. It repeats every 8 units; see `fbm`.
 uniform sampler2D uFbm;
+uniform sampler2D uScore;    // the song around now, from the server: see `score`
 
 const float PI = 3.14159265;
 const float TAU = 6.28318531;

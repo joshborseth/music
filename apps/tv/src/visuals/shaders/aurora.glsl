@@ -39,16 +39,19 @@ void main() {
   // Each stretch lit by its band: bass in the middle, treble at the sides.
   float band = 0.4 + 0.9 * spectrum(abs(along) * 1.1);
   // Tall when the music is loud, a little taller on the beat.
-  float height = 0.14 + 0.2 * uEnergy + 0.08 * uHit;
+  // Tall when the music is loud, a little taller on the beat, and as tall
+  // as the lead melody climbs.
+  float height = 0.14 + 0.2 * uEnergy + 0.08 * uHit + 0.1 * uLead * uMelody;
 
   // The front curtain, its hem in wide folds, dropping on the beat; and a
   // fainter one further off, higher up, folding the other way.
-  float hem = -0.16 + 0.16 * sin(p.x * 1.7 + sway) + 0.25 * (fold.y - 0.5) - 0.05 * uHit;
+  float hem = -0.16 + 0.16 * sin(p.x * 1.7 + sway) + 0.25 * (fold.y - 0.5) - 0.05 * uHit
+    + 0.1 * (uMelody - 0.5) * uLead;
   float level = curtain(p.y, hem, 0.6, rays, height) * band * (1.0 + 0.6 * uHit);
   float far = 0.08 + 0.12 * sin(p.x * 1.1 - sway + 2.0) + 0.2 * (fold.x - 0.5);
   level += 0.22 * curtain(p.y, far, 0.15, 1.0 - 0.5 * fine, height * 1.5);
 
-  level *= 0.75 + 0.3 * uEnergy + 0.3 * uHit;
+  level *= 0.75 + 0.3 * uEnergy + 0.3 * uHit + 0.25 * uHat;
   // The rays turn to the second color as they rise.
   float rise = clamp((p.y - hem) / (height * 2.5), 0.0, 0.85);
   fragColor = vec4(glowIn(clamp(level, 0.0, 1.0), mix(uColorA, uColorD, rise)), 1.0);

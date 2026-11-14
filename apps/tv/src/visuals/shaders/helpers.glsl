@@ -116,3 +116,38 @@ highp float beatSteps() {
   highp float f = fract(uBeats);
   return floor(uBeats) + smoothstep(0.0, 0.22, f);
 }
+
+// The song's score (music.rs, `AHEAD_ROWS` rows of `SCORE_COLUMNS`): what
+// the music does from a moment ago to six seconds ahead, worked out by the
+// server from the whole song. What a scene draws from it at `ahead`
+// seconds arrives exactly as that music plays. 0 without a score.
+const float SCORE_COLUMNS = 32.0;
+const float SCORE_ROWS = 128.0;
+const float SCORE_DRUMS = 24.0;
+const float SCORE_KICK = 25.0;
+const float SCORE_SNARE = 26.0;
+const float SCORE_HAT = 27.0;
+const float SCORE_BASS = 28.0;
+const float SCORE_LEAD = 29.0;
+const float SCORE_MELODY = 30.0;
+const float SCORE_BRIGHT = 31.0;
+
+highp float scoreRow(highp float ahead) {
+  return (uScoreBehind + uScoreShift + ahead * uScoreRate + 0.5) / SCORE_ROWS;
+}
+
+// One column of the score, `ahead` seconds from now (negative: past).
+float score(float column, highp float ahead) {
+  return texture(uScore, vec2((column + 0.5) / SCORE_COLUMNS, scoreRow(ahead))).r;
+}
+
+// The spectrum `ahead` seconds from now, x from low (0) to high (1).
+float futureSpectrum(highp float x, highp float ahead) {
+  highp float u = (0.5 + clamp(x, 0.0, 1.0) * 23.0) / SCORE_COLUMNS;
+  return texture(uScore, vec2(u, scoreRow(ahead))).r;
+}
+
+// 1 when the song has a score.
+float hasScore() {
+  return step(0.001, uScoreRate);
+}

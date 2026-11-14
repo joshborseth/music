@@ -12,10 +12,17 @@
 // cover farther ones, so no depth buffer is needed. Points are worked out
 // from `gl_VertexID` alone, with no vertex buffers.
 
+// With the song's score, the land is the music still to come instead:
+// each row of points holds one row of the score, the horizon six seconds
+// ahead, and the rows ride toward you as the song plays, so a mountain
+// reaches the near hills (`NOW_Z`) just as its music is heard.
+
 // Columns past the last band, out to the edge of the view.
 const int FAR_COLUMNS = 5;
 // The nearest the land is drawn: as close as the old ray started.
 const float NEAR = 0.2;
+// Where the music playing now stands, with the score.
+const float NOW_Z = 1.2;
 
 out highp vec2 vCell;
 out vec3 vBase;
@@ -58,11 +65,23 @@ void main() {
   float side = abs(x);
   float road = smoothstep(0.25, 0.9, side);
   float band = clamp((side - 0.35) / 3.2, 0.0, 1.0);
-  float level = history(band, (float(data) + 0.5) / rows);
-  float far = smoothstep(DEPTH + 2.0, DEPTH * 0.7, z);
-  float h = level * sqrt(level) * 1.6 * lift() * road * far;
+  float level;
   // The land scrolls this far a second, with the history.
   highp float scroll = DEPTH / HISTORY_SECONDS * uTime;
+  if (uScoreRate > 0.0) {
+    // Score row `i` is (i - behind - shift) / rate seconds ahead; the far
+    // edge is the last row, and the rows before now pass under you.
+    highp float i = max(SCORE_ROWS - 1.0 - float(data), 0.0);
+    highp float span = (SCORE_ROWS - 1.0 - uScoreBehind) / uScoreRate;
+    highp float ahead = (i - uScoreBehind - uScoreShift) / uScoreRate;
+    if (row > 0) z = NOW_Z + (DEPTH - NOW_Z) * ahead / span;
+    level = texture(uScore, vec2((0.5 + band * 23.0) / SCORE_COLUMNS, (i + 0.5) / SCORE_ROWS)).r;
+    scroll = (DEPTH - NOW_Z) / span * uTime;
+  } else {
+    level = history(band, (float(data) + 0.5) / rows);
+  }
+  float far = smoothstep(DEPTH + 2.0, DEPTH * 0.7, z);
+  float h = level * sqrt(level) * 1.6 * lift() * road * far;
   // Small bumps, fixed to the land as it comes, which bend the grid lines.
   // Deep in the haze nobody sees them, so the read is saved there. (The
   // noise repeats every 256 / 3 units, so the clock is kept short.)

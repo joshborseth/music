@@ -235,6 +235,49 @@ export const TvSection = Schema.Struct({
 })
 export type TvSection = typeof TvSection.Type
 
+/** A stretch of a song, in seconds: a stop, a riser, a drum fill. */
+export const TvSpan = Schema.Struct({
+  startSeconds: Schema.Number,
+  endSeconds: Schema.Number,
+})
+export type TvSpan = typeof TvSpan.Type
+
+/**
+ * A chord, from `startSeconds` until the next one: its root as a pitch
+ * class (0 = C, 11 = B), and whether it is minor. A null root is no clear
+ * chord (drums alone, silence, noise).
+ */
+export const TvChord = Schema.Struct({
+  startSeconds: Schema.Number,
+  root: Schema.NullOr(Schema.Number),
+  minor: Schema.Boolean,
+})
+export type TvChord = typeof TvChord.Type
+
+/** The song's key from `startSeconds` until the next one. */
+export const TvKey = Schema.Struct({
+  startSeconds: Schema.Number,
+  tonic: Schema.Number,
+  minor: Schema.Boolean,
+})
+export type TvKey = typeof TvKey.Type
+
+/**
+ * The whole song as a picture the TV's GPU reads ahead of what plays: a
+ * grayscale PNG (base64), one row every `1 / rate` seconds from the start,
+ * `columns` values a row, each 0 to 255. Columns 0 to 23 are the spectrum,
+ * low to high; then the drums, the kick, the snare, and the hi-hat (each a
+ * hit decaying over a few tenths of a second), the bass, how strongly a
+ * lead melody stands out, the melody's height across the song's own range
+ * (0 when none sings), and how bright the sound is.
+ */
+export const TvScore = Schema.Struct({
+  rate: Schema.Number,
+  columns: Schema.Number,
+  png: Schema.String,
+})
+export type TvScore = typeof TvScore.Type
+
 /**
  * What the TV's visuals know about a song before it plays, worked out once
  * from the cached audio. Times are seconds into the song.
@@ -247,6 +290,12 @@ export type TvSection = typeof TvSection.Type
  *   to the song's own loudest moment.
  * - `drive`: how driving the whole song is, 0 to 1, whatever its volume (its
  *   hits and its grit), so a ballad's loudest part still looks calm.
+ * - `kicks`, `snares`, `hats`: each drum hit, told apart from the rest of
+ *   the music (the beat is where hits would be; these are where they are).
+ * - `chords` and `keys`: the harmony, chord by chord, and the key, which
+ *   changes where the song modulates (a last chorus a step up).
+ * - `stops`: where the music cuts out mid-song. `risers`: sweeps and builds
+ *   that climb into what follows. `fills`: drum fills into a new section.
  */
 export const TvAnalysis = Schema.Struct({
   videoId: Schema.String,
@@ -260,6 +309,15 @@ export const TvAnalysis = Schema.Struct({
   energyStepSeconds: Schema.Number,
   energy: Schema.Array(Schema.Number),
   drive: Schema.Number,
+  kicks: Schema.Array(Schema.Number),
+  snares: Schema.Array(Schema.Number),
+  hats: Schema.Array(Schema.Number),
+  chords: Schema.Array(TvChord),
+  keys: Schema.Array(TvKey),
+  stops: Schema.Array(TvSpan),
+  risers: Schema.Array(TvSpan),
+  fills: Schema.Array(TvSpan),
+  score: TvScore,
 })
 export type TvAnalysis = typeof TvAnalysis.Type
 
