@@ -7,6 +7,7 @@
  *                                        dist/sheet.html  every scene, still, side by side
  *                                        dist/sheet-<moment>.html  one moment of the song
  *                                        dist/bench.html  times each scene
+ *                                        dist/moments.html  changes of scene, builds, glitch
  */
 
 import { readdir } from 'node:fs/promises'
@@ -67,6 +68,9 @@ await Bun.write(join(here, 'dist/sheet.html'), page('sheet'))
 await Bun.write(join(here, 'dist/bench.html'), page('bench'))
 // A real song, played through the TV's own listener: see `song` in lab.ts.
 await Bun.write(join(here, 'dist/song.html'), page('song'))
+// The moments: each change of scene, a build into its drop, the glitch,
+// and what a change costs (moments.ts).
+await Bun.write(join(here, 'dist/moments.html'), page('moments'))
 // One moment of the made-up song each, quicker to render.
 for (const moment of ['verse', 'build', 'drop']) {
   await Bun.write(

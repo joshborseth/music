@@ -8,9 +8,21 @@
  * blurred there in one pass (the glow), `final.glsl` puts it all together
  * at the scenes' size under the app's shade, and `present.glsl` stretches
  * that to the screen with a fine grain. While one scene dissolves into the
- * next, the two take turns, one a frame. The per-frame values in `motion`
- * and `screenLook` match `motion.rs`.
+ * next, only the one coming in draws, and `final.glsl` destroys the
+ * other's frozen last frame (moments.ts). The per-frame values in `motion`
+ * and `screenLook` (moments.ts) match `motion.rs`.
  */
+
+import {
+  type Cues,
+  type SceneChange,
+  buildAndLanding,
+  hit,
+  madeUpCues,
+  momentsPage,
+  screenLook,
+  transitionCode,
+} from './moments.ts'
 
 declare const SHADERS: Readonly<Record<string, string>>
 declare const MODE: string
@@ -128,6 +140,9 @@ interface Music {
    */
   rows?: number
   historyAge?: number
+  /** The song's ceiling and its choreography this frame (moments.ts). */
+  ceiling?: number
+  cue?: Cues
 }
 
 const fract = (x: number): number => x - Math.floor(x)
@@ -191,9 +206,12 @@ const motion = (music: Music, seed: number): Motion => {
   const spin = drive * 0.05 + 0.15 * Math.sin(music.beats * Math.PI * 0.25)
   const bob = 0.04 * music.beatPulse * music.energy - 0.12 * music.drop
   const roll = 0.04 * Math.sin(drive * 0.09)
+  const [build, land] = buildAndLanding(music)
   const shake =
     music.tension * music.tension * 0.006 +
-    music.parts.fill * 0.003 * (0.5 + music.parts.snare)
+    music.parts.fill * 0.003 * (0.5 + music.parts.snare) +
+    build * build * 0.012 +
+    land * land * 0.014
   return {
     pour,
     turn: [
@@ -211,61 +229,6 @@ const motion = (music: Music, seed: number): Motion => {
     shake: [
       (smoothNoise(music.time * 23) - 0.5) * shake,
       (smoothNoise(music.time * 27 + 57) - 0.5) * shake,
-    ],
-  }
-}
-
-interface ScreenLook {
-  readonly punch: number
-  readonly bulge: number
-  readonly lift: number
-  readonly split: number
-  readonly glow: number
-  readonly flash: Rgb
-  readonly vignette: Rgb
-}
-
-const smoothstep = (from: number, to: number, x: number): number => {
-  const t = clamp01((x - from) / (to - from))
-  return t * t * (3 - 2 * t)
-}
-
-/** How hard the beat hits the picture: the TV's `motion::hit`. */
-const hit = (music: Music): number =>
-  music.kick * (0.3 + 0.7 * smoothstep(0.3, 0.85, music.intensity))
-
-/**
- * The picture's values, the same at every pixel, once a frame: the TV's
- * `Screen::new` (motion.rs). Keep the two in step.
- */
-const screenLook = (music: Music, color: Rgb): ScreenLook => {
-  const { drop, tension } = music
-  const beat = hit(music)
-  const flash = drop ** 8 * 0.8
-  const parts = music.parts
-  const held = 1 - 0.8 * parts.stop
-  return {
-    punch: 1 - 0.05 * beat - 0.05 * drop,
-    bulge: 0.08 * beat + 0.08 * drop * drop,
-    lift: (1 + 0.4 * beat + 0.45 * drop) * held,
-    split: 0.006 * drop * drop * drop + 0.0015 * parts.snare * music.intensity,
-    glow:
-      (0.3 +
-        0.5 * music.energy +
-        0.8 * beat +
-        0.7 * drop +
-        0.15 * parts.chordChange) *
-      held *
-      (1 + 0.1 * Math.min(parts.repeat, 3)),
-    flash: [
-      (color[0] + 0.3 * (1 - color[0])) * flash,
-      (color[1] + 0.3 * (1 - color[1])) * flash,
-      (color[2] + 0.3 * (1 - color[2])) * flash,
-    ],
-    vignette: [
-      1.05 - 0.4 * tension,
-      0.25 - 0.1 * tension,
-      0.55 - 0.25 * tension,
     ],
   }
 }
@@ -397,7 +360,10 @@ const madeUpSong = (bpm: number) => {
       })
     }
     const melodyNow = 0.5 + 0.4 * Math.sin(beats * 0.7)
+    const { cue, fill } = madeUpCues(beats, beatSeconds)
     return {
+      ceiling: 1,
+      cue,
       time,
       beatSeconds,
       parts: {
@@ -412,6 +378,7 @@ const madeUpSong = (bpm: number) => {
         turn: barIndex >= 20 && barIndex < 28 ? 40 / 360 : 0,
         chordChange: Math.exp(-sinceBar * 4),
         riser: section === 'Build' ? tension : 0,
+        fill,
       },
       ahead: { rows, shift: fract(position), rate: SCORE_RATE },
       drive,
@@ -1025,6 +992,9 @@ const makeEngine = (
     f('uRiser', parts.riser)
     f('uFill', parts.fill)
     f('uRepeat', parts.repeat)
+    f('uCueIn', music.cue?.until ?? 99)
+    f('uCueBuild', music.cue?.build ?? 0)
+    f('uCueClimax', music.cue?.climax ?? 0)
     f('uScoreRate', scoreRate)
     f('uScoreShift', scoreShift)
     f('uScoreBehind', AHEAD_BEHIND)
@@ -1176,12 +1146,13 @@ const makeEngine = (
     }
   }
 
-  let frames = 0
   /**
-   * One frame: scene `a`, dissolving into `b` by `mix`. While both show,
-   * they take turns, one a frame, as on the TV. `only` draws one pass and
-   * skips the rest, for the bench: `scene` draws the scene (or scenes) of
-   * this frame, the others what the frames before left.
+   * One frame: scene `a`, or, while `b` takes over by `mix`, `b` drawing
+   * and `a`'s last frame frozen, destroyed the way `change` says (a wipe
+   * when it doesn't), as on the TV. A held frame (a stutter, a stop)
+   * draws no scene. `only` draws one pass and skips the rest, for the
+   * bench: `scene` draws the scene of this frame, the others what the
+   * frames before left.
    */
   const frame = (
     music: Music,
@@ -1191,18 +1162,19 @@ const makeEngine = (
     mix: number,
     screen: [number, number],
     only?: Pass,
+    change?: SceneChange,
   ) => {
     gl.bindVertexArray(vao)
     const runs = (pass: Pass) => only === undefined || only === pass
     if (runs('scene')) update(music, dt)
-    frames++
     const sceneA = scenes[a]
     const sceneB = mix > 0 && b !== a ? scenes[b] : undefined
     if (sceneA === undefined) return
-    if (runs('scene')) {
-      if (sceneB === undefined || frames % 2 === 0) drawScene(sceneA, music)
-      if (sceneB !== undefined && frames % 2 === 1) drawScene(sceneB, music)
-    }
+    const look = screenLook(music, colors[0] ?? [1, 1, 1])
+    const moving = sceneB ?? sceneA
+    if (runs('scene') && !look.hold) drawScene(moving, music)
+    const kind =
+      sceneB === undefined ? 0 : (change?.kind ?? transitionCode('Wipe'))
     const outA = sceneA.targets[0]
     const outB = (sceneB ?? sceneA).targets[0]
     if (runs('bloom') && bright !== null && blur !== null) {
@@ -1253,7 +1225,6 @@ const makeEngine = (
         const loc = final.uniforms.get(name)
         if (loc !== undefined) gl.uniform1i(loc, unit)
       })
-      const look = screenLook(music, colors[0] ?? [1, 1, 1])
       const f = (name: string, value: number) => {
         const at = final.uniforms.get(name)
         if (at !== undefined) gl.uniform1f(at, value)
@@ -1263,6 +1234,13 @@ const makeEngine = (
         if (at !== undefined) gl.uniform3f(at, ...value)
       }
       f('uMix', mix)
+      f('uTransKind', kind)
+      f('uTransSeed', change?.seed ?? 0.37)
+      f('uCueDrain', look.drain)
+      f('uCueInhale', look.inhale)
+      f('uGlitch', look.glitch)
+      f('uGlitchSeed', look.glitchSeed)
+      f('uGlitchPosterize', look.posterize)
       f('uPunch', look.punch)
       f('uBulge', look.bulge)
       f('uLift', look.lift)
@@ -1515,6 +1493,8 @@ const live = () => {
   let mix = 0
   let auto = true
   let lastSection = ''
+  let change: SceneChange = { kind: transitionCode('Wipe'), seed: 0.37 }
+  let changeBeats = 2
   const buttons = SCENES.map((def, index) => {
     const button = element('button')
     button.textContent = def.name
@@ -1599,13 +1579,24 @@ const live = () => {
       }
       const options = pool[music.section] ?? [0]
       const choice = options[Math.floor(music.beats / 32) % options.length] ?? 0
+      // The way the director would change: a drop shatters, the build
+      // rushes through, a quieter part melts, the rest wipe.
+      const ways: Record<string, [string, number]> = {
+        Drop: ['Shatter', 2],
+        Build: ['ZoomThrough', 2],
+        Breakdown: ['Melt', 4],
+        Verse: ['Datamosh', 4],
+      }
+      const [way, beats] = ways[music.section] ?? ['Wipe', 4]
       if (choice !== current) {
         next = choice
-        mix = music.section === 'Drop' ? 1 : 0.0001
+        mix = 0.0001
+        change = { kind: transitionCode(way), seed: Math.random() }
+        changeBeats = beats
       }
     }
     if (mix > 0) {
-      mix = Math.min(1, mix + dt / ((60 / bpm) * 2))
+      mix = Math.min(1, mix + dt / ((60 / bpm) * changeBeats))
       if (mix >= 1) {
         current = next
         mix = 0
@@ -1613,7 +1604,16 @@ const live = () => {
     }
     canvas.width = canvas.clientWidth * devicePixelRatio
     canvas.height = canvas.clientHeight * devicePixelRatio
-    engine.frame(music, dt, current, next, mix, [canvas.width, canvas.height])
+    engine.frame(
+      music,
+      dt,
+      current,
+      next,
+      mix,
+      [canvas.width, canvas.height],
+      undefined,
+      change,
+    )
     buttons.forEach((button, index) =>
       button.setAttribute('aria-pressed', String(index === current)),
     )
@@ -1658,6 +1658,8 @@ interface SongFrame {
     readonly section: string | null
     readonly beatSeconds: number
     readonly parts?: Partial<Parts>
+    readonly ceiling?: number
+    readonly cue?: Cues
   }
   /** The score around now, as hex, when the song has one. */
   readonly ahead?: string
@@ -1673,6 +1675,8 @@ interface SongFrame {
       readonly age: number
       readonly progress: number
     } | null
+    /** How the scene taking over destroys the frozen one. */
+    readonly kind?: string
   }
   readonly spectrum: string
   readonly wave: string
@@ -1753,6 +1757,8 @@ const songMusic = (frame: SongFrame): Music => {
     section: m.section ?? '',
     rows: frame.rows,
     historyAge: frame.historyAge,
+    ...(m.ceiling === undefined ? {} : { ceiling: m.ceiling }),
+    ...(m.cue === undefined ? {} : { cue: m.cue }),
   }
 }
 
@@ -1910,7 +1916,18 @@ const song = () => {
           sceneB.seed = next.seed
           sceneB.started = music.time - next.age
         }
-        engine.frame(music, frame.music.dt, a, b, mix, [width, height])
+        engine.frame(
+          music,
+          frame.music.dt,
+          a,
+          b,
+          mix,
+          [width, height],
+          undefined,
+          next === null
+            ? undefined
+            : { kind: transitionCode(shot.kind ?? 'Wipe'), seed: next.seed },
+        )
         const following = played.frames[index + 1]
         const wanted = options.picks.filter(
           pick =>
@@ -1928,7 +1945,7 @@ const song = () => {
           const into =
             next === null
               ? ''
-              : ` → ${SCENES[b]?.name ?? ''} ${Math.round(mix * 100)}%`
+              : ` ${shot.kind ?? '→'} ${SCENES[b]?.name ?? ''} ${Math.round(mix * 100)}%`
           tiles.push({
             image: tile,
             frame,
@@ -2075,6 +2092,13 @@ const song = () => {
 }
 
 if (MODE.startsWith('sheet')) sheet()
+else if (MODE === 'moments')
+  momentsPage({
+    scenes: SCENES.map(scene => scene.name),
+    makeEngine,
+    song: madeUpSong,
+    cover: madeUpCover,
+  })
 else if (MODE === 'bench') bench()
 else if (MODE === 'song') song()
 else live()

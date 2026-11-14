@@ -9,6 +9,7 @@
 //! Until the analysis arrives, or when the server could not make one, the
 //! beat is guessed from the kick drum.
 
+use super::cues::Cues;
 use crate::catalog::{Analysis, Score, SectionKind};
 use crate::visualizer::{Analyzer, BARS};
 
@@ -107,6 +108,9 @@ pub struct Parts {
     /// How many times this section's part has come before: a chorus sung
     /// the third time is 2.
     pub repeat: f32,
+    /// The song's choreography this frame: builds, landings, the climax,
+    /// the bars to strobe (`cues.rs`).
+    pub cue: Cues,
 }
 
 /// The music in one frame: what the shaders get as uniforms, and the
@@ -440,11 +444,15 @@ impl Listener {
         music.energy = self.energy;
         // The scenes' clock: slow for calm music, quick for wild, with a
         // nudge on each beat.
+        // Through a build it speeds up toward the landing.
+        let cue = &music.parts.cue;
+        let rush = cue.build * cue.build * cue.strength * smoothstep(0.35, 0.9, music.ceiling);
         self.drive += dt
             * (0.25
                 + 1.1 * music.intensity
                 + 0.4 * music.energy
-                + 0.3 * music.beat_pulse * music.intensity);
+                + 0.3 * music.beat_pulse * music.intensity
+                + 1.4 * rush);
         music.drive = self.drive;
         music
     }
@@ -712,7 +720,7 @@ impl Listener {
                 self.last_stop = Some(index);
             }
             if stop.end_seconds - stop.start_seconds >= 0.3 {
-                music.drop = music.drop.max((-back * 1.2).exp() * 0.8 * wild.max(0.4));
+                music.drop = music.drop.max((-back * 1.2).exp() * wild.max(0.5));
                 music.drop_landed |= parts.stop_ended;
             }
         }
@@ -735,6 +743,13 @@ impl Listener {
             0.0
         };
 
+        parts.cue = Cues::at(
+            &analysis.choreography,
+            t,
+            music
+                .section
+                .map(|section| analysis.sections[section.index].start_seconds),
+        );
         if let Some(section) = music.section {
             parts.repeat = analysis.sections[..section.index]
                 .iter()
@@ -944,6 +959,7 @@ mod tests {
             fills: vec![],
             score_image: None,
             score: None,
+            choreography: Default::default(),
         }
     }
 

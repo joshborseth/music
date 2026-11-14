@@ -82,5 +82,12 @@
     "rate": 4,
     "columns": 32,
     "png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAiCAAAAAAb2YQjAAAAPklEQVR42mM6cWDHhhULZkzoaKgoyEiICPBwsDDQUJAQYPjPAAQNDEwMuAAjhMKt4D8hBaMmjJowasIwNwEAf6Mb5VtObnUAAAAASUVORK5CYII="
+  },
+  "choreography": {
+    "climax": { "startSeconds": 4.5, "endSeconds": 8.5, "landSeconds": 4.5 },
+    "builds": [{ "startSeconds": 2.5, "landSeconds": 4.5, "strength": 1 }],
+    "breaths": [{ "startSeconds": 4.1, "endSeconds": 4.5 }],
+    "strobes": [{ "startSeconds": 4.5, "endSeconds": 6.5 }],
+    "transitions": [{ "atSeconds": 4.5, "kind": "Shatter", "beats": 2 }]
   }
 }

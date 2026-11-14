@@ -10,6 +10,7 @@ import {
   tempoOf,
   trackBeats,
 } from './beats.ts'
+import { planChoreography } from './choreography.ts'
 import {
   KICK,
   MIDS,
@@ -35,7 +36,7 @@ import { type Bar, analyzeStructure } from './structure.ts'
  */
 
 /** Bump when the analysis changes, so cached results are worked out again. */
-export const ANALYZER_VERSION = 3
+export const ANALYZER_VERSION = 4
 
 /** The sample rate the analysis expects (ffmpeg resamples to it). */
 export const SAMPLE_RATE = 22050
@@ -266,7 +267,7 @@ export const analyzeSamples = (
   const hitTimes = (hits: ReadonlyArray<{ readonly frame: number }>) =>
     hits.map(hit => round3(frameTime(hit.frame)))
 
-  return {
+  const found = {
     videoId,
     durationSeconds: round3(durationSeconds),
     tempo: round3(tempo),
@@ -315,4 +316,5 @@ export const analyzeSamples = (
       brightness,
     }),
   }
+  return { ...found, choreography: planChoreography(found) }
 }

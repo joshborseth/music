@@ -13,12 +13,14 @@
 //! Everything here runs on the UI thread, inside Slint's rendering
 //! notifier. While the visuals show, each frame asks for the next.
 
+mod cues;
 mod director;
 mod gpu;
 mod look;
 mod motion;
 mod music;
 mod sizing;
+mod transition;
 
 #[cfg(test)]
 mod lab;
@@ -381,8 +383,11 @@ impl State {
                 playing: stage.playing,
             });
         let music = self.listener.hear(dt, song);
+        self.director
+            .set_available(std::array::from_fn(|scene| renderer.can_draw(scene)));
         let mut shot: Shot = self.director.direct(&music, Some(stage.entry_id.as_str()));
-        // A scene whose shader did not compile on this GPU shows the one before.
+        // The director picks only scenes the renderer can draw, but one it
+        // picked may have stopped being drawable since: show another.
         if !renderer.can_draw(shot.current.scene) {
             shot.current.scene = (0..director::SCENES.len())
                 .find(|scene| renderer.can_draw(*scene))

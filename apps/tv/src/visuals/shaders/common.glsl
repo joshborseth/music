@@ -83,6 +83,13 @@ uniform float uStop;
 uniform float uRiser;
 uniform float uFill;
 uniform float uRepeat;
+// The song's choreography (cues.rs): seconds until the build under way
+// lands (99 when none is), how far into that build (0 to 1), and 1
+// through the climax. A landing's time is known ahead, so a scene can
+// build toward it exactly, not after the music.
+uniform float uCueIn;
+uniform float uCueBuild;
+uniform float uCueClimax;
 // The song's score around now (`score` in helpers.glsl): its rows a
 // second (0 without one), how far into the row playing, and the rows
 // before it.

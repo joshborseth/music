@@ -77,6 +77,16 @@ fn music_json(music: &Music) -> Value {
             "fill": music.parts.fill,
             "repeat": music.parts.repeat,
         },
+        "ceiling": music.ceiling,
+        "cue": {
+            "until": music.parts.cue.until,
+            "build": music.parts.cue.build,
+            "strength": music.parts.cue.strength,
+            "since": music.parts.cue.since,
+            "landed": music.parts.cue.landed,
+            "climax": music.parts.cue.climax,
+            "strobe": music.parts.cue.strobe,
+        },
     })
 }
 
@@ -91,6 +101,7 @@ fn shot_json(shot: &Shot) -> Value {
             "age": next.age,
             "progress": progress,
         })),
+        "kind": format!("{:?}", shot.kind),
     })
 }
 
@@ -160,6 +171,10 @@ fn play_a_song_for_the_lab() {
                 "t": t,
                 "scene": shot.current.scene,
                 "next": shot.next.map(|(next, progress)| (next.scene, progress)),
+                "kind": format!("{:?}", shot.kind),
+                "build": music.parts.cue.build,
+                "climax": music.parts.cue.climax,
+                "strobe": music.parts.cue.strobe,
                 "energy": music.energy,
                 "intensity": music.intensity,
                 "tension": music.tension,
@@ -211,6 +226,7 @@ fn play_a_song_for_the_lab() {
             "energy": section.energy,
         })).collect::<Vec<_>>(),
         "drops": analysis.drops,
+        "choreography": analysis.choreography,
         "timeline": timeline,
         "windows": out_windows,
     });
