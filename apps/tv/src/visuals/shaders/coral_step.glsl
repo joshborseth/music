@@ -11,6 +11,8 @@
 // drifts across it, eating coral that grows back behind it. The music
 // seeds new growth: a blob where each kick lands, a line where the lead
 // melody runs; a drop bleaches the reef and it regrows from the middle.
+// The word sung now (words.rs) seeds its letters as it comes, so the reef
+// grows the word, and the pattern slowly takes it back.
 
 out uvec4 stateOut;
 
@@ -93,6 +95,14 @@ void main() {
   if (uCoralInk.z > 0.0) {
     // A disc in the middle, so the reef grows back outward from it.
     seed = max(seed, seedAt(distance(here, vec2(side) * 0.5), uCoralInk.z));
+  }
+  // The word sung now, for its first third of a second: one read, and
+  // only inside its box.
+  vec4 word = uWordTime[WORD_NOW];
+  if (uWordAtlas.w > 0.0 && word.w > 0.0 && word.x < 0.35) {
+    highp vec2 p = (uv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
+    float letters = wordInk(wordField(WORD_NOW, p), 0.08);
+    seed = max(seed, letters * word.w * (0.7 + 0.3 * word.z));
   }
   v = mix(v, 0.25, seed);
   u = mix(u, 0.5, seed);

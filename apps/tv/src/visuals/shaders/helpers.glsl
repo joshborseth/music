@@ -151,3 +151,97 @@ float futureSpectrum(highp float x, highp float ahead) {
 float hasScore() {
   return step(0.001, uScoreRate);
 }
+
+// THE WORDS being sung (words.rs): three words, `WORD_NOW` the one sung
+// now, `WORD_NEXT` the next, `WORD_BEFORE` the one it replaced, each a
+// signed distance field in the atlas `uWords`. A word's rect is where it
+// lies in the atlas (texture units, y down); its box where it sits in
+// `centered()` units (middle, then half its width and height); its time:
+// seconds since it started (the one before: since the one now started;
+// the next: negative until it starts), how far through it is, how big a
+// hook it is (0, 0.6 for a hook line, 1 for the song's phrase), and how
+// much it shows. `uWordAtlas`: the atlas's size in pixels, its field's
+// spread, and 1 when any word shows. A scene draws its words between
+// `#ifdef WORDS` and `#endif`: each is compiled with and without them, and
+// the frames without a word showing use the one without, so the words
+// cost nothing then, whatever the GPU makes of a branch.
+const int WORD_NOW = 0;
+const int WORD_NEXT = 1;
+const int WORD_BEFORE = 2;
+// highp: the vertex shaders that take these helpers (Terrain's land,
+// Diorama's relief) declare them highp by default, and a uniform must be
+// declared alike in both stages.
+uniform highp vec4 uWordRect[3];
+uniform highp vec4 uWordBox[3];
+uniform highp vec4 uWordTime[3];
+uniform highp vec4 uWordAtlas;
+uniform sampler2D uWords;
+
+// Word i's field at `p` (centered units): 0.5 on the letters' edge, more
+// inside, falling to 0 a spread outside, and 0 outside its box. One read,
+// and only inside the box.
+float wordField(int i, highp vec2 p) {
+  vec4 box = uWordBox[i];
+  if (box.z <= 0.0) return 0.0;
+  highp vec2 q = (p - box.xy) / box.zw;
+  if (abs(q.x) >= 1.0 || abs(q.y) >= 1.0) return 0.0;
+  highp vec4 rect = uWordRect[i];
+  highp vec2 uv = rect.xy + vec2(0.5 + 0.5 * q.x, 0.5 - 0.5 * q.y) * rect.zw;
+  return textureLod(uWords, uv, 0.0).r;
+}
+
+// Word i's field at `p`, the word drawn `scale` times its size about its
+// middle.
+float wordFieldScaled(int i, highp vec2 p, float scale) {
+  highp vec2 middle = uWordBox[i].xy;
+  return wordField(i, middle + (p - middle) / scale);
+}
+
+// How much word i's field changes across one pixel of this picture, drawn
+// `scale` times its size: an edge this soft is crisp.
+float wordPixel(int i, float scale) {
+  return uWordRect[i].w * uWordAtlas.y / (2.0 * uWordBox[i].w * scale * uRes.y)
+    * 128.0 / (255.0 * uWordAtlas.z);
+}
+
+// The letters from a field: 1 inside, 0 outside, the edge `soft` wide in
+// the field's units (`wordPixel` is crisp).
+float wordInk(float field, float soft) {
+  return smoothstep(0.5 - soft, 0.5 + soft, field);
+}
+
+// Word i drawn `scale` times its size about its middle, at `p`: x is the
+// letters (1 inside, crisp, or `soft` wider at the edge), y a halo, 1 at
+// the letters' edge and fading to 0 a spread outside them.
+vec2 wordLetters(int i, highp vec2 p, float scale, float soft) {
+  float field = wordFieldScaled(i, p, scale);
+  return vec2(wordInk(field, wordPixel(i, scale) + soft), smoothstep(0.0, 0.5, field));
+}
+
+// Whether `p` is within `reach` of word i's box (its own units): to skip
+// all of a scene's word work far from the words.
+bool nearWord(int i, highp vec2 p, float reach) {
+  vec4 box = uWordBox[i];
+  return box.z > 0.0 && uWordTime[i].w > 0.0
+    && all(lessThan(abs(p - box.xy), box.zw * reach));
+}
+
+// The words as soft light, for the calm scenes (Silk, Aurora): the word
+// sung now comes up gently and is lit by `level`, the scene's own light
+// where it is, glowing faintly around; the one before fades away. Returns
+// the light the words add.
+float softWords(highp vec2 p, float level) {
+  float light = 0.0;
+  if (nearWord(WORD_NOW, p, 1.0)) {
+    vec4 now = uWordTime[WORD_NOW];
+    float come = smoothstep(0.0, 0.3, now.x);
+    vec2 letters = wordLetters(WORD_NOW, p, 1.0, 0.06 * (1.0 - come) + 0.015);
+    light = (letters.x * (0.75 + 0.2 * now.z + 0.4 * level) * come + 0.18 * letters.y) * now.w;
+  }
+  if (nearWord(WORD_BEFORE, p, 1.0)) {
+    vec4 before = uWordTime[WORD_BEFORE];
+    vec2 letters = wordLetters(WORD_BEFORE, p, 1.0, 0.04 + 0.1 * before.x);
+    light = max(light, letters.x * 0.6 * exp(-before.x * 20.0) * before.w);
+  }
+  return light;
+}

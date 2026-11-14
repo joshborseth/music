@@ -21,6 +21,13 @@ for (const name of await readdir(shaderDir)) {
   shaders[name] = await Bun.file(join(shaderDir, name)).text()
 }
 
+// The app's type, for the words the lab draws (words.ts).
+const font = Buffer.from(
+  await Bun.file(
+    join(here, '../ui/fonts/InterDisplay-ExtraBold.ttf'),
+  ).arrayBuffer(),
+).toString('base64')
+
 const bundle = await Bun.build({
   entrypoints: [join(here, 'lab.ts')],
   target: 'browser',
@@ -57,7 +64,7 @@ const page = (mode: string) => `<!doctype html>
 </style>
 </head>
 <body>
-<script>const SHADERS = ${JSON.stringify(shaders)}; const MODE = '${mode}';</script>
+<script>const SHADERS = ${JSON.stringify(shaders)}; const MODE = '${mode}'; const FONT = '${font}';</script>
 <script>${script}</script>
 </body>
 </html>
@@ -75,6 +82,8 @@ await Bun.write(join(here, 'dist/moments.html'), page('moments'))
 await Bun.write(join(here, 'dist/diorama.html'), page('diorama'))
 // The Montage scene with a real montage from the server: see montage.ts.
 await Bun.write(join(here, 'dist/montage.html'), page('montage'))
+// The sung words in every scene: see `wordsPage` in words.ts.
+await Bun.write(join(here, 'dist/words.html'), page('words'))
 // One moment of the made-up song each, quicker to render.
 for (const moment of ['verse', 'build', 'drop']) {
   await Bun.write(

@@ -24,7 +24,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::catalog::{
     self, AddToPlaylistRequest, Analysis, Card, CardKind, CollectionKind, LIKED_PLAYLIST_ID,
-    LikeRequest, SaveKind, SaveRequest,
+    LikeRequest, SaveKind, SaveRequest, Words,
 };
 use crate::controller::UiAction;
 use crate::images::Shape;
@@ -38,7 +38,7 @@ use crate::nav::{
 use crate::protocol::{Placement, RepeatMode};
 use crate::update::{self, UpdateStatus};
 use crate::view::{PlayClock, View, clock, playing_from_line};
-use crate::visuals::{Cover, Depth, MontageAtlas, Screenshot, Stage, Visuals};
+use crate::visuals::{Cover, Depth, MontageAtlas, Screenshot, Stage, Visuals, WordsRoom};
 use crate::voice::VoiceEvent;
 use crate::{
     App, ButtonData, CardData, HintData, KeyData, LyricRowData, MenuItemData, RowData, ShelfData,
@@ -259,6 +259,16 @@ struct CoverDepth {
     never: bool,
 }
 
+/// The sung words of one song, for the visuals: asked for, arrived, or
+/// failed for now.
+struct SongWords {
+    video_id: String,
+    words: Option<Arc<Words>>,
+    tries: u32,
+    next_try: Instant,
+    pending: bool,
+}
+
 /// The analysis of one song: asked for, arrived, or failed for now.
 struct SongAnalysis {
     video_id: String,
@@ -310,6 +320,8 @@ pub struct Ui {
     depth: Option<CoverDepth>,
     /// The montage of the song playing now, for the visuals.
     montage: Option<SongMontage>,
+    /// The sung words of the song playing now, for the visuals.
+    words: Option<SongWords>,
     capture_timer: Timer,
     ok_down: Option<Instant>,
     ok_held: bool,
@@ -378,6 +390,7 @@ impl Ui {
             analysis: None,
             depth: None,
             montage: None,
+            words: None,
             capture_timer: Timer::default(),
             ok_down: None,
             ok_held: false,
@@ -899,6 +912,22 @@ impl Ui {
             .as_deref()
             .and_then(|url| self.depth_for(url));
         let montage = self.montage_for(&entry.track.video_id);
+        // The words wait for the analysis, which times them, unless it
+        // never comes.
+        let analysis_over = analysis.is_some()
+            || self
+                .analysis
+                .as_ref()
+                .is_some_and(|song| song.tries >= ANALYSIS_TRIES && !song.pending);
+        let words = self.words_for(&entry.track.video_id, analysis_over);
+        // The words keep out of the controls' and the queue's way.
+        let words_room = if self.nav.controls_shown() || self.nav.panel != Panel::None {
+            WordsRoom::Hidden
+        } else if side {
+            WordsRoom::Side
+        } else {
+            WordsRoom::Centre
+        };
         Some(Stage {
             entry_id: entry.entry_id,
             cover: self.current_cover(),
@@ -907,7 +936,68 @@ impl Ui {
             montage,
             playing: self.nav.session.playing,
             side,
+            words,
+            words_room,
         })
+    }
+
+    /// The sung words of `video_id`, asking for them once `ready`.
+    fn words_for(&mut self, video_id: &str, ready: bool) -> Option<Arc<Words>> {
+        let now = Instant::now();
+        if self
+            .words
+            .as_ref()
+            .is_none_or(|song| song.video_id != video_id)
+        {
+            self.words = Some(SongWords {
+                video_id: video_id.to_owned(),
+                words: None,
+                tries: 0,
+                next_try: now,
+                pending: false,
+            });
+        }
+        let song = self.words.as_mut()?;
+        let ask = ready
+            && song.words.is_none()
+            && !song.pending
+            && song.tries < ANALYSIS_TRIES
+            && now >= song.next_try;
+        let words = song.words.clone();
+        if ask {
+            song.pending = true;
+            song.tries += 1;
+            let catalog = self.catalog.clone();
+            let wanted = video_id.to_owned();
+            let video_id = video_id.to_owned();
+            self.spawn(
+                async move { catalog.words(&wanted).await },
+                move |ui, result| ui.on_words(&video_id, result),
+            );
+        }
+        words
+    }
+
+    fn on_words(&mut self, video_id: &str, result: Result<Words, String>) {
+        let Some(song) = self.words.as_mut().filter(|song| song.video_id == video_id) else {
+            return;
+        };
+        song.pending = false;
+        match result {
+            Ok(words) => {
+                log::info!(
+                    "words of {video_id}: {} words, {} glyphs",
+                    words.words.len(),
+                    words.atlas.as_ref().map_or(0, |atlas| atlas.glyphs.len())
+                );
+                song.words = Some(Arc::new(words));
+            }
+            Err(message) => {
+                log::info!("no words of {video_id} yet: {message}");
+                song.next_try = Instant::now() + ANALYSIS_RETRY * song.tries;
+            }
+        }
+        self.update_visuals();
     }
 
     /// The server's analysis of `video_id`, asking for it when needed.

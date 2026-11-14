@@ -29,6 +29,7 @@ mod sims;
 mod sizing;
 mod swarm;
 mod transition;
+mod words;
 
 #[cfg(test)]
 mod lab;
@@ -45,11 +46,12 @@ pub use look::Cover;
 pub use montage::MontageAtlas;
 
 use crate::App;
-use crate::catalog::Analysis;
+use crate::catalog::{Analysis, Words};
 use crate::view::PlayClock;
 use director::{Director, Shot};
 use gpu::{Renderer, Shade};
 use music::{Listener, Song};
+pub use words::Room as WordsRoom;
 
 /// Seconds the visuals take to fade in.
 const FADE_IN: f32 = 1.2;
@@ -74,6 +76,9 @@ pub struct Stage {
     pub playing: bool,
     /// The lyrics show on the right, beside the song.
     pub side: bool,
+    /// The song's sung words, timed one by one, and where they may go.
+    pub words: Option<Arc<Words>>,
+    pub words_room: WordsRoom,
 }
 
 /// A frame read back from the screen: RGBA, top row first.
@@ -100,6 +105,7 @@ struct State {
     song: Option<String>,
     capture: Option<Capture>,
     shade: Shade,
+    reader: words::Reader,
     pace: Pace,
     shown_scene: Option<usize>,
     /// GL errors already sent to the server's log, so each goes once.
@@ -202,6 +208,7 @@ impl Visuals {
             song: None,
             capture: None,
             shade: Shade::default(),
+            reader: words::Reader::default(),
             pace: Pace::default(),
             shown_scene: None,
             errors_reported: Vec::new(),
@@ -426,6 +433,14 @@ impl State {
                 music.section.map(|section| section.kind)
             );
         }
+        let words = self.reader.frame(
+            stage.words.as_deref(),
+            seconds,
+            stage.words_room,
+            size.0 as f32 / size.1.max(1) as f32,
+            dt,
+        );
+        renderer.set_words(gl, stage.words.as_ref(), words);
         renderer.release_unused(&shot);
         let before = gl_errors(gl);
         renderer.draw(

@@ -51,6 +51,24 @@ void main() {
     light += exp(-snareFront * 140.0) * uSnare * 0.8;
   }
 
+  // THE WORDS are the ring's shock wave: as a word lands its outline races
+  // out from the letters, and again, fainter, on each beat, as the ring's
+  // own wave does; the echo carries each outline away, turning, so the
+  // words trail off into the vortex.
+#ifdef WORDS
+  if (nearWord(WORD_NOW, p, 1.0)) {
+    vec4 now = uWordTime[WORD_NOW];
+    float field = wordField(WORD_NOW, p);
+    float letters = wordInk(field, wordPixel(WORD_NOW, 1.0));
+    float outside = step(0.01, field) * (1.0 - letters);
+    float land = clamp(now.x / (0.3 + 0.15 * now.z), 0.0, 1.0);
+    float wave = exp(-abs(field - (0.5 - 0.48 * land)) * 70.0) * (1.0 - land);
+    float beat = fract(uBeats);
+    wave += exp(-abs(field - (0.5 - 0.45 * beat)) * 80.0) * (1.0 - beat) * (0.25 + 0.5 * uHit);
+    light = max(light, (letters * (0.9 + 0.08 * now.z) + wave * outside) * now.w);
+  }
+#endif
+
   // The echo holds what was brightest; it never piles up.
   float amount = min(max(echo, light), 1.0);
   float trail = clamp((echo - light) * 4.0, 0.0, 0.85);

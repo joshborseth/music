@@ -28,6 +28,13 @@ import {
 } from './moments.ts'
 import { type MontageMeta, makeMontage, montagePage } from './montage.ts'
 import { type Sim, makeSwarm } from './particles'
+import {
+  type WordsData,
+  madeUpWords,
+  makeWordsGl,
+  realWords,
+  wordsPage,
+} from './words.ts'
 
 declare const SHADERS: Readonly<Record<string, string>>
 declare const MODE: string
@@ -685,8 +692,12 @@ const program = (
 interface Scene {
   readonly def: SceneDef
   readonly main: Program | null
+  /** With the sung words (`#define WORDS`), used while one shows: gpu.rs's `worded`. */
+  readonly worded: Program | null
   readonly land: Program | null
   readonly relief: Program | null
+  /** The relief with the word sung in it: gpu.rs's `relief_worded`. */
+  readonly reliefWorded: Program | null
   targets: [Target, Target]
   seed: number
   started: number
@@ -847,6 +858,14 @@ const makeEngine = (
   const scenes: Array<Scene> = SCENES.map((def, index) => ({
     def,
     main: program(gl, def.file, VERTEX, fragmentSource(def.file)),
+    worded: shaderText(def.file).includes('#ifdef WORDS')
+      ? program(
+          gl,
+          `${def.file} with words`,
+          VERTEX,
+          fragmentSource(def.file, '#define WORDS\n'),
+        )
+      : null,
     land: def.land
       ? program(gl, 'terrain.vert', LAND_VERTEX, LAND_FRAGMENT)
       : null,
@@ -856,6 +875,16 @@ const makeEngine = (
             gl,
             'diorama.vert',
             ...reliefSources(shaderText, fragmentSource),
+          )
+        : null,
+    reliefWorded:
+      def.relief === true
+        ? program(
+            gl,
+            'diorama.vert with words',
+            ...reliefSources(shaderText, name =>
+              fragmentSource(name, '#define WORDS\n'),
+            ),
           )
         : null,
     targets: [makeTarget(gl, width, height), makeTarget(gl, width, height)],
@@ -927,6 +956,8 @@ const makeEngine = (
   const coverTexture = dataTexture(gl, COVER, COVER, 'rgba', false)
   // The song's own pictures, for Montage (montage.ts).
   const montage = makeMontage(gl)
+  // The sung words (words.ts), on their own unit.
+  const words = makeWordsGl(gl)
   const scoreTexture = dataTexture(gl, SCORE_COLUMNS, AHEAD_ROWS, 'r', false)
   let scoreRate = 0
   let scoreShift = 0
@@ -984,6 +1015,7 @@ const makeEngine = (
       gl.bindTexture(gl.TEXTURE_2D, texture)
       gl.uniform1i(at, unit)
     })
+    words.bind(p)
   }
 
   const setMusic = (
@@ -1057,6 +1089,7 @@ const makeEngine = (
     const shakeAt = at('uShake')
     if (shakeAt !== undefined) gl.uniform2f(shakeAt, ...moved.shake)
     diorama.setUniforms(p, music, scene?.seed ?? 0, res, hit(music))
+    words.uniforms(p)
   }
 
   const fullscreen = () => gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -1086,7 +1119,9 @@ const makeEngine = (
 
   const drawScene = (scene: Scene, music: Music) => {
     const [read, write] = scene.targets
-    const { main, relief } = scene
+    const { main } = scene
+    // The relief with the word sung in it while one shows.
+    const relief = (words.showing() ? scene.reliefWorded : null) ?? scene.relief
     if (main !== null && relief !== null) {
       const size: [number, number] = [write.width, write.height]
       diorama.draw(
@@ -1113,12 +1148,14 @@ const makeEngine = (
     }
     sim?.before(music, scene.seed, prepare)
     beginPass(write)
-    if (scene.main !== null) {
-      gl.useProgram(scene.main.program)
-      setMusic(scene.main, music, [write.width, write.height], scene)
-      bindTextures(scene.main, read)
-      sim?.bind(scene.main)
-      montage.bind(scene.main, music)
+    // With the words while one shows, as gpu.rs's `worded`.
+    const shown = (words.showing() ? scene.worded : null) ?? main
+    if (shown !== null) {
+      gl.useProgram(shown.program)
+      setMusic(shown, music, [write.width, write.height], scene)
+      bindTextures(shown, read)
+      sim?.bind(shown)
+      montage.bind(shown, music)
       fullscreen()
     }
     sim?.after(write, prepare)
@@ -1153,9 +1190,11 @@ const makeEngine = (
   let side = 0
   const setSide = (on: boolean) => {
     side = on ? 1 : 0
+    words.setRoom(on ? 'Side' : 'Centre')
   }
 
   const update = (music: Music, dt: number) => {
+    words.update(music.time, width / height)
     scoreRate = music.ahead?.rate ?? 0
     scoreShift = music.ahead?.shift ?? 0
     if (music.ahead !== undefined) {
@@ -1323,6 +1362,18 @@ const makeEngine = (
         const loc = finalPass.uniforms.get(name)
         if (loc !== undefined) gl.uniform1i(loc, unit)
       })
+      words.bind(finalPass)
+      // Only around letters the scene showing draws (gpu.rs's
+      // `draws_words`): Terrain draws none, Swarm only a hook's.
+      const shown = sceneB ?? sceneA
+      const drawsWords =
+        shown.worded !== null ||
+        shown.reliefWorded !== null ||
+        shown.def.name === 'Coral' ||
+        (shown.def.name === 'Swarm' && words.hook())
+      const wordAtlasAt = finalPass.uniforms.get('uWordAtlas')
+      if (!drawsWords && wordAtlasAt !== undefined)
+        gl.uniform4f(wordAtlasAt, 1, 1, 1, 0)
       const f = (name: string, value: number) => {
         const at = finalPass.uniforms.get(name)
         if (at !== undefined) gl.uniform1f(at, value)
@@ -1388,6 +1439,7 @@ const makeEngine = (
     setDepth: diorama.setDepth,
     setHistory,
     setSide,
+    setWords: words.load,
     clearScenes,
     scenes,
     montage,
@@ -1586,7 +1638,13 @@ const bench = () => {
         `bench ${width}x${height} ${sceneWidth}x${sceneHeight}\n${lines.join('\n')}`,
       )
   }
-  requestAnimationFrame(tick)
+  // `?words=1`: with the made-up song's words in flight.
+  if (params.get('words') === '1')
+    void madeUpWords(124).then(made => {
+      engine.setWords(made)
+      requestAnimationFrame(tick)
+    })
+  else requestAnimationFrame(tick)
 }
 
 const live = () => {
@@ -1991,14 +2049,18 @@ const song = () => {
   let depth: HTMLImageElement | null = null
   /** The song's montage (`/tv/montage` and its JPEG), for Montage. */
   let montage: { meta: MontageMeta; image: HTMLImageElement } | null = null
+  /** The song's sung words (`/tv/words`). */
+  let songWords: WordsData | null = null
 
-  /** The song's frames, cover, cover depth (`/tv/depth`), and montage. */
+  /** The song's frames, cover, cover depth, montage, and sung words. */
   const load = async (
     loaded: SongData,
     coverUrl?: string,
     depthUrl?: string,
     montageOf?: { readonly meta: MontageMeta; readonly atlasUrl: string },
+    wordsOf?: Parameters<typeof realWords>[0],
   ) => {
+    songWords = wordsOf === undefined ? null : await realWords(wordsOf)
     data = loaded
     cover = null
     depth = null
@@ -2045,6 +2107,7 @@ const song = () => {
     engine.setCover(cover ?? madeUpCover())
     if (depth !== null) engine.setDepth(depthOf(depth))
     if (montage !== null) engine.montage.setAtlas(montage.meta, montage.image)
+    if (songWords !== null) engine.setWords(songWords)
     engine.setSide(overlay)
     const tiles: Array<{
       image: HTMLCanvasElement
@@ -2280,4 +2343,6 @@ else if (MODE === 'montage')
     cover: madeUpCover,
     scene: SCENES.findIndex(def => def.name === 'Montage'),
   })
+else if (MODE === 'words')
+  wordsPage({ scenes: SCENES, makeEngine, madeUpSong, madeUpCover })
 else live()

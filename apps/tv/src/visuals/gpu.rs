@@ -49,9 +49,10 @@ use super::motion::{Motion, Screen, hash, hit, unit};
 use super::music::{
     AHEAD_BEHIND, AHEAD_ROWS, BANDS, HISTORY_ROWS, LEVELS, Listener, Music, SCORE_COLUMNS, WAVE,
 };
-use super::sims::Sims;
+use super::sims::{CORAL, SWARM, Sims};
 use super::sizing::{Change, Sizing};
 use super::transition::{SceneChange, TRANSITIONS};
+use super::words::{self, WordsTexture};
 
 pub(super) const COMMON: &str = include_str!("shaders/common.glsl");
 pub(super) const FRAGMENT: &str = include_str!("shaders/fragment.glsl");
@@ -88,6 +89,11 @@ const LAND_VERTICES: i32 = HISTORY_ROWS as i32 * (2 * LAND_COLUMNS + 2) - 2;
 /// The scene whose relief is drawn as a mesh, before its backdrop.
 const DIORAMA: usize = scene_index("Diorama");
 
+/// The unit the sung words' atlas is bound to (`uWords`).
+const WORDS_UNIT: u32 = 10;
+/// The same in `final.glsl`, whose units 0 to 7 are the picture's own.
+const FINAL_WORDS_UNIT: u32 = 8;
+
 /// The scenes' height at full size; the screen's own if it is smaller.
 const BASE_HEIGHT: u32 = 720;
 /// The glow is this many times smaller than the scenes, each way.
@@ -97,7 +103,7 @@ const BLOOM_DIVISOR: i32 = 8;
 const STEADY_AFTER: u32 = 3;
 /// Texture units the scenes may use, all saved and put back: the eight
 /// every scene reads, and those of the scenes' own inputs and state
-/// (`uDepth` on 8, `uMontage` on 9, `particles::STATE_UNIT` and
+/// (`uDepth` on 8, `uMontage` on 9, `uWords` on 10, `particles::STATE_UNIT` and
 /// `STATE2_UNIT`).
 const UNITS: usize = 13;
 
@@ -150,6 +156,10 @@ pub struct Report {
 pub struct Renderer {
     vao: glow::VertexArray,
     scenes: Vec<Option<Program>>,
+    /// Each scene that draws the sung words, compiled with them
+    /// (`#define WORDS`): used only while a word shows, so the frames
+    /// without one cost what they did before the words.
+    worded: Vec<Option<Program>>,
     land: Option<Program>,
     bright: Program,
     blur: Program,
@@ -174,12 +184,18 @@ pub struct Renderer {
     /// The song's score around now (`Listener::ahead`).
     score: glow::Texture,
     cover: glow::Texture,
+    /// The sung words' atlas, and where the words show this frame.
+    words: WordsTexture,
+    words_frame: words::Frame,
     /// The cover uploaded, held so its identity can't be reused.
     cover_shown: Option<Arc<Cover>>,
     /// Diorama: its relief (`diorama.vert`), the cover's depth and the
     /// depth uploaded, its depth buffer and that buffer's size, and the
     /// shatter on a drop.
     relief: Option<Program>,
+    /// The relief with the word sung floating in it (`#define WORDS`), as
+    /// `worded` is for the other scenes.
+    relief_worded: Option<Program>,
     depth: glow::Texture,
     depth_shown: Option<Arc<Depth>>,
     depth_buffer: Option<(glow::Renderbuffer, i32, i32)>,
@@ -233,9 +249,12 @@ impl Renderer {
 
     unsafe fn build(gl: &Gl, errors: &mut Vec<String>) -> Option<Self> {
         unsafe {
-            let fragment = |body: &str| {
-                format!("#version 300 es\n{COMMON}\n{FRAGMENT}\n{HELPERS}\n#line 1\n{body}")
+            let with = |defines: &str, body: &str| {
+                format!(
+                    "#version 300 es\n{defines}{COMMON}\n{FRAGMENT}\n{HELPERS}\n#line 1\n{body}"
+                )
             };
+            let fragment = |body: &str| with("", body);
             let vertex = format!("#version 300 es\n{FULLSCREEN}");
             let mut compile = |name: &str, vertex: &str, fragment: &str| {
                 program(gl, vertex, fragment)
@@ -245,6 +264,20 @@ impl Renderer {
             let scenes = SCENE_SHADERS
                 .iter()
                 .map(|(name, body)| compile(name, &vertex, &fragment(body)))
+                .collect();
+            let worded = SCENE_SHADERS
+                .iter()
+                .map(|(name, body)| {
+                    body.contains("#ifdef WORDS")
+                        .then(|| {
+                            compile(
+                                &format!("{name} with words"),
+                                &vertex,
+                                &with("#define WORDS\n", body),
+                            )
+                        })
+                        .flatten()
+                })
                 .collect();
             let terrain = SCENE_SHADERS[TERRAIN].1;
             let land = compile(
@@ -259,13 +292,19 @@ impl Renderer {
                 ),
             );
             let diorama = SCENE_SHADERS[DIORAMA].1;
+            let relief_vertex = format!(
+                "#version 300 es\n#define DIORAMA_MESH\n{COMMON}\n{HELPERS}\n#line 1\n{diorama}\n#line 1\n{}",
+                include_str!("shaders/diorama.vert")
+            );
             let relief = compile(
                 "diorama.vert",
-                &format!(
-                    "#version 300 es\n#define DIORAMA_MESH\n{COMMON}\n{HELPERS}\n#line 1\n{diorama}\n#line 1\n{}",
-                    include_str!("shaders/diorama.vert")
-                ),
+                &relief_vertex,
                 &fragment(include_str!("shaders/diorama.frag")),
+            );
+            let relief_worded = compile(
+                "diorama.vert with words",
+                &relief_vertex,
+                &with("#define WORDS\n", include_str!("shaders/diorama.frag")),
             );
             let bright = compile(
                 "bright.glsl",
@@ -332,6 +371,7 @@ impl Renderer {
             );
             gl.generate_mipmap(glow::TEXTURE_2D);
             let montage = data_texture(gl, 1, 1, glow::R8, false)?;
+            let words = WordsTexture::new(gl)?;
             let (width, height) = (16, 16);
             let slot = || -> Option<Slot> {
                 Some(Slot {
@@ -348,6 +388,7 @@ impl Renderer {
             Some(Self {
                 vao,
                 scenes,
+                worded,
                 land,
                 bright,
                 blur,
@@ -365,8 +406,11 @@ impl Renderer {
                 fbm,
                 score,
                 cover,
+                words,
+                words_frame: words::Frame::default(),
                 cover_shown: None,
                 relief,
+                relief_worded,
                 depth,
                 depth_shown: None,
                 depth_buffer: None,
@@ -400,6 +444,21 @@ impl Renderer {
             self.has_cover && self.depth_shown.is_some(),
         ) && self.sims.ready(scene)
             && (scene != MONTAGE || self.montage_fits)
+    }
+
+    /// Whether `scene` draws the word sung now this frame, where
+    /// `final.glsl` lifts the shade around its letters: the scenes with a
+    /// worded build, Diorama's relief, Coral (which grows it), and Swarm
+    /// for a hook word (`swarm_targets.glsl`). Terrain doesn't.
+    fn draws_words(&self, scene: usize) -> bool {
+        let hook = self.words_frame.times[words::NOW][2] > 0.5;
+        self.words_frame.atlas[3] > 0.0
+            && match scene {
+                DIORAMA => self.relief_worded.is_some(),
+                SWARM => hook,
+                CORAL => true,
+                _ => self.worded.get(scene).is_some_and(Option::is_some),
+            }
     }
 
     /// Whether a slot holds a frame `scene` drew, which a change of scene
@@ -564,6 +623,24 @@ impl Renderer {
             }
             saved.restore(gl);
         }
+    }
+
+    /// The song's words (or none) from now on, and where they show this
+    /// frame (`words::Reader`).
+    pub fn set_words(
+        &mut self,
+        gl: &Gl,
+        words: Option<&Arc<crate::catalog::Words>>,
+        frame: words::Frame,
+    ) {
+        self.words_frame = frame;
+        // Once a song: reading back GL's state costs, every frame.
+        if self.words.shows(words) {
+            return;
+        }
+        let saved = Saved::save(gl);
+        unsafe { self.words.set(gl, words) };
+        saved.restore(gl);
     }
 
     /// The last frame took `dt` seconds: keep the size of the scene it drew
@@ -852,6 +929,22 @@ impl Renderer {
             bind_texture(gl, program, "uNoise", 3, self.noise);
             // The changes of scene read the fractal noise too.
             bind_texture(gl, program, "uFbm", 4, self.fbm);
+            // Where a word is sung, the shade lifts (`final.glsl`).
+            bind_texture(
+                gl,
+                program,
+                "uWords",
+                FINAL_WORDS_UNIT,
+                self.words.texture(),
+            );
+            // Only around letters the scene showing draws: a scene that
+            // shows no word this frame leaves the shade as it is.
+            let shown = b.map_or(self.slots[a].scene, |b| self.slots[b].scene);
+            if !shown.is_some_and(|scene| self.draws_words(scene))
+                && let Some(at) = program.uniforms.get("uWordAtlas")
+            {
+                gl.uniform_4_f32(Some(at), 1.0, 1.0, 1.0, 0.0);
+            }
             set_f32(gl, program, "uMix", mix);
             // The change of scene (`transition.rs`) and the moments
             // (`Screen`): the build, the inhale, the glitch.
@@ -991,7 +1084,16 @@ impl Renderer {
             };
             sims.before(gl, scene, music, showing.seed, fresh, &prepare);
             begin_pass(gl, write);
-            if let Some(Some(program)) = self.scenes.get(scene) {
+            // With the words while one shows, if that compiled.
+            let words_show = self.words_frame.atlas[3] > 0.0;
+            let worded = self
+                .worded
+                .get(scene)
+                .and_then(Option::as_ref)
+                .filter(|_| words_show);
+            if let Some(program) =
+                worded.or_else(|| self.scenes.get(scene).and_then(Option::as_ref))
+            {
                 gl.use_program(Some(program.program));
                 self.set_music(
                     gl,
@@ -1088,6 +1190,12 @@ impl Renderer {
             gl.depth_func(glow::LESS);
             let size = (write.width, write.height);
 
+            // With the word sung floating in it while one shows.
+            let relief = self
+                .relief_worded
+                .as_ref()
+                .filter(|_| self.words_frame.atlas[3] > 0.0)
+                .unwrap_or(relief);
             gl.use_program(Some(relief.program));
             self.set_music(gl, relief, music, size, Some(showing), listener);
             self.bind_inputs(gl, relief, None);
@@ -1148,6 +1256,7 @@ impl Renderer {
                     }
                 }
             }
+            bind_texture(gl, program, "uWords", WORDS_UNIT, self.words.texture());
         }
     }
 
@@ -1252,6 +1361,22 @@ impl Renderer {
             }
             let [through, strength] = self.shatter.now(music);
             set_vec2(gl, program, "uDioramaShatter", through, strength);
+
+            // The sung words (`words.rs`).
+            let words = &self.words_frame;
+            for (name, values) in [
+                ("uWordRect", &words.rects),
+                ("uWordBox", &words.boxes),
+                ("uWordTime", &words.times),
+            ] {
+                if let Some(at) = program.uniforms.get(name) {
+                    gl.uniform_4_f32_slice(Some(at), values.as_flattened());
+                }
+            }
+            if let Some(at) = program.uniforms.get("uWordAtlas") {
+                let [width, height, spread, on] = words.atlas;
+                gl.uniform_4_f32(Some(at), width, height, spread, on);
+            }
         }
     }
 
@@ -1294,8 +1419,10 @@ impl Renderer {
                 .scenes
                 .into_iter()
                 .flatten()
+                .chain(self.worded.into_iter().flatten())
                 .chain(self.land)
                 .chain(self.relief)
+                .chain(self.relief_worded)
                 .chain([self.bright, self.blur, self.final_pass, self.present]);
             let programs = programs.chain(self.changes.into_iter().flatten());
             for program in programs {
@@ -1324,6 +1451,7 @@ impl Renderer {
             ] {
                 gl.delete_texture(texture);
             }
+            self.words.delete(gl);
             gl.delete_vertex_array(self.vao);
         }
     }

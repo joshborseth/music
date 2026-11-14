@@ -38,7 +38,7 @@ const toSamples = (
 }
 
 /** Runs ffmpeg with `args`: the bytes it wrote to stdout, and its log. */
-const runFfmpeg = (
+export const runFfmpeg = (
   ffmpeg: string,
   args: ReadonlyArray<string>,
 ): Effect.Effect<

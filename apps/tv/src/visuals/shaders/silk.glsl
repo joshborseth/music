@@ -42,5 +42,9 @@ void main() {
   level *= 0.8 + 0.35 * uEnergy + 0.6 * uHit;
   // A faint haze where the ribbons run.
   level += 0.05 * exp(-p.y * p.y * 5.0);
+  // THE WORDS appear softly in the light (`softWords`).
+#ifdef WORDS
+  level = max(level, softWords(p, level));
+#endif
   fragColor = vec4(glowIn(clamp(level, 0.0, 1.0), mix(uColorA, uColorD, share)), 1.0);
 }
