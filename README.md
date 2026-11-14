@@ -165,9 +165,20 @@ HA_TOKEN=<a long-lived access token from your Home Assistant profile>
 TV_HA_ENTITY=remote.joshies_gamer_tv
 ```
 
-Without those two values, the TV only shows up in the device list while its app is open. Tailscale Serve publishes it to the tailnet only (no Funnel) on port 7443 of this machine's Tailscale name: `https://<machine>.<tailnet>.ts.net:7443`. Run `tailscale serve status` to see the exact address.
+Without those two values, the TV only shows up in the device list while its app is open.
 
-On the iPhone, open that address in Safari, tap Share, then **Add to Home Screen**.
+The phone uses `https://192.168.1.67:4311`: the same server over HTTPS (`apps/server/src/lanHttps.ts`), on every interface beside plain HTTP on 4310, sharing one session with it. A Home Screen app keeps the address it was added from, and needs HTTPS for its service worker, its downloads, and its song cache. A Tailscale name only reaches this machine while Tailscale is on, so the address is the machine's own on the home Wi-Fi. It works there without Tailscale, and away from home through Tailscale, whose subnet route for `192.168.1.67/32` this machine advertises (in the Tailscale app, turn on Use Tailscale Subnets, and VPN On Demand to connect by itself).
+
+The certificate comes from a certificate authority of this machine's own, which `scripts/lan-cert.sh` makes on first run in `~/.local/share/music/tls`. The authority can only vouch for `192.168.1.67` (an X.509 name constraint), so its key can't pass off any other site to the phone. `music.service` runs the script before it starts, which makes the server's certificate (397 days) or renews it once fewer than 60 remain; when it can't, the server serves plain HTTP alone and logs why. With no release staged, `music-release.timer` renews it too, and restarts the server to load it once nothing has played for 10 minutes. If the machine's address changes, set `LAN_IP` for the script, which then makes a new authority for the phone to install.
+
+To set up the iPhone once:
+
+1. In Safari, open `http://192.168.1.67:4310/certificate` and allow the download.
+2. In Settings, tap **Profile Downloaded**, then **Install**.
+3. In Settings → General → About → Certificate Trust Settings, turn on **Joshify on the home network**.
+4. Open `https://192.168.1.67:4311` in Safari, tap Share, then **Add to Home Screen**.
+
+The TV, and guests who scan its QR code, keep plain HTTP on 4310, which needs no certificate. Tailscale Serve also still publishes the app to the tailnet only (no Funnel) on port 7443 of this machine's Tailscale name (`tailscale serve status` shows it), the address the phone used before.
 
 - Logs: `journalctl --user -u music.service -f`
 - Stop publishing it: `sudo tailscale serve --https=7443 off`

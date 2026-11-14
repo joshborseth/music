@@ -14,8 +14,16 @@ Environment=PORT=4310
 Environment=WEB_DIST_DIR=%h/.local/share/music/current/apps/web/dist
 Environment=YTDLP_PATH=%h/.local/bin/yt-dlp
 Environment=TV_APK_PATH=%h/.local/share/music/current/dist/music-tv.apk
+# HTTPS on the home network, for the phone (apps/server/src/lanHttps.ts).
+# scripts/lan-cert.sh makes the certificate before each start, or renews it;
+# when it can't, the server still serves plain HTTP.
+Environment=TLS_PORT=4311
+Environment=TLS_CERT_PATH=%h/.local/share/music/tls/server.crt
+Environment=TLS_KEY_PATH=%h/.local/share/music/tls/server.key
+Environment=TLS_CA_PATH=%h/.local/share/music/tls/ca.crt
 # HA_TOKEN and TV_HA_ENTITY, for waking the TV.
 EnvironmentFile=-%h/.config/music/server.env
+ExecStartPre=-%h/.local/share/music/current/scripts/lan-cert.sh
 ExecStart=/usr/local/bin/bun src/main.ts
 Restart=on-failure
 RestartSec=5

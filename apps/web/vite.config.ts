@@ -82,7 +82,12 @@ export default defineConfig({
         // NOTE: every route, /album/… too, opens offline from the precached
         // app shell, and a downloaded album then shows from its copy.
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/rpc/, /^\/audio\//, /^\/session/],
+        navigateFallbackDenylist: [
+          /^\/rpc/,
+          /^\/audio\//,
+          /^\/session/,
+          /^\/certificate$/,
+        ],
         runtimeCaching: [
           {
             urlPattern: LARGE_IMAGE,
