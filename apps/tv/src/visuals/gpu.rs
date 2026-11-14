@@ -74,6 +74,9 @@ const SCENE_SHADERS: [(&str, &str); SCENES.len()] = [
 ];
 /// The montage's atlas (`montage.rs`).
 const MONTAGE_UNIT: u32 = 9;
+/// Rows of the montage's atlas uploaded a frame: a 1080-row atlas goes up
+/// over eight frames, about 1.4 MB each.
+const MONTAGE_STRIP_ROWS: u32 = 136;
 /// The scene whose land is drawn as a mesh on top of its sky.
 const TERRAIN: usize = 2;
 /// Terrain's mesh (`terrain.vert`, which works out the same): a column on
@@ -196,8 +199,11 @@ pub struct Renderer {
     /// of its pictures shows this frame.
     montage: glow::Texture,
     montage_shown: Option<Arc<MontageAtlas>>,
-    /// False until a montage that fits this GPU is uploaded.
+    /// False until a montage that fits this GPU is uploaded, all of it.
     montage_fits: bool,
+    /// The rows of `montage_shown` uploaded so far: it goes up a strip a
+    /// frame (`MONTAGE_STRIP_ROWS`), not all at once.
+    montage_rows: u32,
     cutter: Cutter,
     montage_shot: MontageShot,
 }
@@ -375,6 +381,7 @@ impl Renderer {
                 montage,
                 montage_shown: None,
                 montage_fits: false,
+                montage_rows: 0,
                 cutter: Cutter::new(),
                 montage_shot: MontageShot::default(),
             })
@@ -404,42 +411,79 @@ impl Renderer {
     }
 
     /// Show `atlas` (the song playing's montage) from now on, or none.
+    /// Called every frame: a new atlas is uploaded a strip a frame, and
+    /// Montage can draw once all of it is up.
     pub fn set_montage(&mut self, gl: &Gl, atlas: Option<&Arc<MontageAtlas>>) {
         let same = match (atlas, &self.montage_shown) {
             (Some(new), Some(old)) => Arc::ptr_eq(new, old),
             (None, None) => true,
             _ => false,
         };
-        if same {
+        let done = self
+            .montage_shown
+            .as_ref()
+            .is_none_or(|shown| self.montage_rows >= shown.height);
+        if same && done {
             return;
         }
         let saved = Saved::save(gl);
         unsafe {
-            let largest = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE);
-            let (width, height, pixels) = match atlas {
-                Some(atlas) if atlas.width as i32 <= largest && atlas.height as i32 <= largest => (
-                    atlas.width as i32,
-                    atlas.height as i32,
-                    Some(atlas.rgba.as_slice()),
-                ),
-                // None, or too large for this GPU: a pixel, so the memory goes.
-                _ => (1, 1, None),
-            };
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.montage));
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA8 as i32,
-                width,
-                height,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(pixels),
-            );
-            self.montage_shown = atlas.cloned();
-            self.montage_fits = pixels.is_some();
+            if !same {
+                let largest = gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE);
+                let fits = atlas.filter(|atlas| {
+                    atlas.width as i32 <= largest && atlas.height as i32 <= largest
+                });
+                // Room for the new one (or a pixel, so the memory goes), its
+                // rows to come.
+                let (width, height) =
+                    fits.map_or((1, 1), |atlas| (atlas.width as i32, atlas.height as i32));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    width,
+                    height,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                self.montage_shown = atlas.cloned();
+                self.montage_fits = false;
+                // One too large for this GPU never shows: none of it to upload.
+                self.montage_rows = match (atlas, fits) {
+                    (Some(atlas), None) => atlas.height,
+                    _ => 0,
+                };
+            }
+            // The next strip: a whole atlas in one call held up the frame it
+            // came in (2560 × 1080 × 4 bytes on the UI thread).
+            if let Some(atlas) = &self.montage_shown
+                && self.montage_rows < atlas.height
+            {
+                let from = self.montage_rows;
+                let rows = MONTAGE_STRIP_ROWS.min(atlas.height - from);
+                let row_bytes = atlas.width as usize * 4;
+                let bytes =
+                    &atlas.rgba[from as usize * row_bytes..(from + rows) as usize * row_bytes];
+                gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    0,
+                    from as i32,
+                    atlas.width as i32,
+                    rows as i32,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(bytes)),
+                );
+                self.montage_rows = from + rows;
+                self.montage_fits = self.montage_rows >= atlas.height;
+            }
         }
         saved.restore(gl);
     }
