@@ -483,9 +483,11 @@ impl Renderer {
     /// Whether `scene` draws the word sung now this frame, where
     /// `final.glsl` lifts the shade around its letters: the scenes with a
     /// worded build, Diorama's relief, Coral (which grows it), and Swarm
-    /// for a hook word (`swarm_targets.glsl`). Terrain doesn't.
+    /// when it spells the word sung now (`swarm_targets.glsl`). Terrain
+    /// doesn't.
     fn draws_words(&self, scene: usize) -> bool {
-        let hook = self.words_frame.times[words::NOW][2] > 0.5;
+        let [slot, share, _, _] = self.words_frame.spell;
+        let hook = share > 0.0 && slot == words::NOW as f32;
         self.words_frame.atlas[3] > 0.0
             && match scene {
                 DIORAMA => self.relief_worded.is_some(),
@@ -1486,6 +1488,10 @@ impl Renderer {
             if let Some(at) = program.uniforms.get("uWordAtlas") {
                 let [width, height, spread, on] = words.atlas;
                 gl.uniform_4_f32(Some(at), width, height, spread, on);
+            }
+            if let Some(at) = program.uniforms.get("uWordSpell") {
+                let [slot, share, _, _] = words.spell;
+                gl.uniform_4_f32(Some(at), slot, share, 0.0, 0.0);
             }
         }
     }

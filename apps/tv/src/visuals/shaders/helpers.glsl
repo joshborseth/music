@@ -198,6 +198,9 @@ uniform highp vec4 uWordRect[3];
 uniform highp vec4 uWordBox[3];
 uniform highp vec4 uWordTime[3];
 uniform highp vec4 uWordAtlas;
+// The word Swarm spells (words.rs, `spell`): its slot (-1 for none), and
+// how much, 0 to 1.
+uniform highp vec4 uWordSpell;
 uniform sampler2D uWords;
 
 // Word i's field at `p` (centered units): 0.5 on the letters' edge, more

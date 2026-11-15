@@ -215,24 +215,18 @@ void main() {
 
   // A hook word: up to three quarters of the swarm spells it while it is
   // sung, pulled hard so it forms within a word's time, and lets it go as
-  // the word fades. A hook word coming in under half a second gathers
-  // them first, so the next word of a chorus line forms from the last.
-  if (uWordAtlas.w > 0.0) {
-    vec4 now = uWordTime[WORD_NOW];
-    vec4 next = uWordTime[WORD_NEXT];
-    int w = -1;
-    float share = 0.0;
-    if (now.z > 0.5 && now.w > 0.0) {
-      w = WORD_NOW;
-      share = 0.75 * now.w;
-    } else if (next.z > 0.5 && next.w > 0.0 && next.x > -0.45) {
-      w = WORD_NEXT;
-      share = 0.75 * smoothstep(-0.45, -0.1, next.x);
-    }
+  // the word fades. Which word, and how much, words.rs picks
+  // (`uWordSpell`): only a word that shows long enough to form, held a
+  // moment into a quicker one after it, so fast rap reads as a few crisp
+  // words rather than a blur; and the next it spells gathers them first,
+  // so a chorus line's words form from the last.
+  if (uWordAtlas.w > 0.0 && uWordSpell.y > 0.0) {
+    int w = int(uWordSpell.x + 0.5);
+    float share = 0.75 * uWordSpell.y;
     Spot letter;
-    if (w >= 0 && unitU(id * 17u + 3u) < share && wordSpot(w, id, letter)) {
+    if (unitU(id * 17u + 3u) < share && wordSpot(w, id, letter)) {
       spot = letter;
-      pull = 6.0;
+      pull = 12.0;
     }
   }
 

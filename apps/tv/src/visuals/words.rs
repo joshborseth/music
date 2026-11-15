@@ -37,6 +37,15 @@ const FADE_OUT: f32 = 0.5;
 const AHEAD: f64 = 1.5;
 /// Seconds the words take to make way, or to come back.
 const ROOM_FADE: f32 = 0.35;
+/// Swarm spells a hook word only if it shows at least this long (until
+/// the next word starts): its particles take about that long to gather,
+/// so a faster word would only smear them into a blur.
+const SPELL_HOLD: f64 = 0.4;
+/// A word Swarm spelled holds into the next word, one too quick to spell,
+/// this long, so the swarm keeps a formed word rather than none.
+const SPELL_KEEP: f32 = 0.5;
+/// Swarm gathers for the next word it spells this far ahead of it.
+const SPELL_GATHER: f32 = 0.45;
 
 /// Where the words may go, beside the app's own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -73,6 +82,9 @@ pub struct Frame {
     /// The atlas's width and height in pixels, its field's spread, and 1
     /// when any word shows.
     pub atlas: [f32; 4],
+    /// The word Swarm spells (`uWordSpell`): its slot (`NOW`, `NEXT`, or
+    /// `BEFORE`; -1 for none), and how much, 0 to 1.
+    pub spell: [f32; 4],
 }
 
 /// Picks and places the words each frame, and fades them when they make way.
@@ -139,6 +151,7 @@ pub fn frame_at(words: &Words, seconds: f64, room: Room, aspect: f32, shown: f32
 
     let mut frame = Frame {
         atlas: [atlas.width as f32, atlas.height as f32, atlas.spread, 0.0],
+        spell: NO_SPELL,
         ..Frame::default()
     };
     let size = (atlas.width as f32, atlas.height as f32);
@@ -206,7 +219,59 @@ pub fn frame_at(words: &Words, seconds: f64, room: Room, aspect: f32, shown: f32
     } else {
         0.0
     };
+    frame.spell = spell(&words.words, &frame, now, next, before);
     frame
+}
+
+const NO_SPELL: [f32; 4] = [-1.0, 0.0, 0.0, 0.0];
+
+/// Whether Swarm can spell the word at `index`: a hook word that shows
+/// long enough for its particles to gather.
+fn spellable(words: &[Word], index: usize) -> bool {
+    let word = &words[index];
+    let until = words
+        .get(index + 1)
+        .map_or(word.end_seconds + LINGER, |next| next.start_seconds);
+    hook_level(word) > 0.0 && until - word.start_seconds >= SPELL_HOLD
+}
+
+/// Which word Swarm spells, and how much: the word sung now if it can;
+/// else the one before, for a moment into a word too quick to spell; else
+/// the next, gathering just before it.
+fn spell(
+    words: &[Word],
+    frame: &Frame,
+    now: Option<(usize, &Glyph)>,
+    next: Option<(usize, &Glyph)>,
+    before: Option<(usize, &Glyph)>,
+) -> [f32; 4] {
+    let at = |slot: usize, share: f32| {
+        if share > 0.0 {
+            [slot as f32, share.min(1.0), 0.0, 0.0]
+        } else {
+            NO_SPELL
+        }
+    };
+    let can =
+        |word: Option<(usize, &Glyph)>| word.is_some_and(|(index, _)| spellable(words, index));
+    if can(now) && frame.times[NOW][3] > 0.0 {
+        return at(NOW, frame.times[NOW][3]);
+    }
+    let age = frame.times[NOW][0];
+    if can(before) && frame.times[BEFORE][3] > 0.0 && age < SPELL_KEEP {
+        let keep = 1.0 - smoothstep(0.6 * SPELL_KEEP, SPELL_KEEP, age);
+        return at(BEFORE, frame.times[BEFORE][3] * keep);
+    }
+    if can(next) && frame.times[NEXT][3] > 0.0 {
+        let coming = frame.times[NEXT][0];
+        return at(NEXT, smoothstep(-SPELL_GATHER, -0.1, coming));
+    }
+    NO_SPELL
+}
+
+fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
+    let t = ((x - from) / (to - from)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// How big a hook `word` is: 1 for the song's phrase, 0.6 for a hook line.
@@ -509,6 +574,48 @@ mod tests {
             let cap_middle = top - (glyph.baseline - 16.0) * scale;
             assert!((cap_middle - (0.5 - 0.88)).abs() < 1e-5, "{cap_middle}");
         }
+    }
+
+    #[test]
+    fn swarm_spells_only_hook_words_that_show_long_enough() {
+        // Not a hook: nothing to spell.
+        assert_eq!(at(1.2, Room::Centre).spell[1], 0.0);
+        // A held hook word: spelled while it is sung.
+        let held = at(5.2, Room::Centre).spell;
+        assert_eq!(held[0], NOW as f32);
+        assert!(held[1] > 0.99, "{held:?}");
+        // Gathered for just before it comes.
+        let coming = at(4.8, Room::Centre).spell;
+        assert_eq!(coming[0], NEXT as f32);
+        assert!(coming[1] > 0.0 && coming[1] < 1.0, "{coming:?}");
+
+        // Fast rap: a hook line of quick words, one held among them.
+        let mut song = song();
+        let quick = [
+            (5.0, 0.2),
+            (5.2, 0.2),
+            (5.4, 0.5),
+            (5.9, 0.15),
+            (6.05, 0.15),
+            (6.2, 0.6),
+        ];
+        song.words = quick
+            .iter()
+            .map(|&(start, length)| word(start, start + length, Some(0), 1))
+            .collect();
+        let spell = |seconds: f64| frame_at(&song, seconds, Room::Centre, 16.0 / 9.0, 1.0).spell;
+        // The quick ones are never spelled: the swarm gathers for the held
+        // one instead...
+        assert_eq!(spell(5.1)[1], 0.0, "{:?}", spell(5.1));
+        assert_eq!(spell(5.25)[0], NEXT as f32);
+        // ...spells it...
+        assert_eq!(spell(5.6)[0], NOW as f32);
+        // ...and holds it into the quick word after it.
+        let kept = spell(5.95);
+        assert_eq!(kept[0], BEFORE as f32);
+        assert!(kept[1] > 0.9, "{kept:?}");
+        // Two quick words on, it gathers for the next held one.
+        assert_eq!(spell(6.15)[0], NEXT as f32);
     }
 
     #[test]

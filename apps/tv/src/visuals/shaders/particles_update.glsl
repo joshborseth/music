@@ -58,8 +58,10 @@ void main() {
   // and it settles without swinging past.
   float lettered = step(4.0, pullAndSize.x);
 
-  // The spring toward the target.
-  highp vec2 accel = (goal - at) * uSwarmForce.x * pullAndSize.x * (0.55 + 0.9 * own);
+  // The spring toward the target, never so stiff that a long step (a slow
+  // frame) would swing it past further than it started.
+  float stiff = min(uSwarmForce.x * pullAndSize.x * (0.55 + 0.9 * own), 1.5 / (dt * dt));
+  highp vec2 accel = (goal - at) * stiff;
 
   // Curl noise: the slope of the fractal noise turned a quarter, which
   // swirls without bunching particles up or spreading them out.
@@ -86,7 +88,7 @@ void main() {
     * (1.0 - 0.85 * lettered);
 
   velocity += accel * dt;
-  velocity *= exp(-(uSwarmForce.z + 8.0 * lettered) * dt);
+  velocity *= exp(-(uSwarmForce.z + 20.0 * lettered) * dt);
   // Never so fast a half can't hold it, or a step can't follow it.
   float speed = length(velocity);
   if (speed > 6.0) velocity *= 6.0 / speed;
