@@ -10,18 +10,28 @@
 //! the first 16-bar phrase past 45 seconds (32 bars at most tempos), and
 //! every 8 bars (or at a section's start) once it has shown for two
 //! minutes. Never in a section's last 8 bars, where its own end is coming,
-//! and never back to the scene just before. A new pick prefers scenes the
-//! song hasn't shown yet, while any suit the music, so a song of a few
-//! sections doesn't show two scenes twice each. Calm parts get calm
-//! scenes: how wild a part looks is its intensity, which the song's drive
-//! caps (`music.rs`), so a ballad never gets the tunnel.
+//! and never back to the scene just before. When the music stops dead and
+//! comes back, it cuts as on a drop (`music.rs` lands one there), moving
+//! on within a section only from a scene that has shown 8 bars, and never
+//! in its last 8: a song that breathes every few bars keeps its scene. A
+//! new pick prefers scenes the song hasn't shown yet, while any suit the
+//! music, so a song of a few sections doesn't show two scenes twice each.
+//! Calm parts get calm scenes: how wild a part looks is its intensity,
+//! which the song's drive caps (`music.rs`), so a ballad never gets the
+//! tunnel.
 //!
 //! Each song seeds the picks, so a song shows the same scenes, in the same
-//! looks, every time it plays. When the music stops dead and comes back,
-//! it cuts as on a drop (`music.rs` lands one there).
+//! looks, every time it plays.
 //!
 //! Without an analysis, scenes change when the music surges, or after a
-//! while on a kick.
+//! while on a kick. An analysis that arrives after the song started keeps
+//! the scene showing if it suits the section, or if the section is nearly
+//! over (the next section's start brings the change); otherwise the scene
+//! changes once, on the next bar. A song's clock that jumps back across
+//! the start of the section just changed for (the TV's engine reporting
+//! its own position after the session's ran ahead) doesn't flip the scene
+//! back: within 4 bars of the change, going back waits for a later bar,
+//! and the clock coming on again drops it.
 //!
 //! Each change destroys the old scene's last frame, frozen, while the new
 //! scene shows through (`final.glsl`), in the way the moment asks for, over
@@ -35,7 +45,11 @@
 //! of the wildest scenes the song may show (the song's seed picks which,
 //! among those near the wildest), and keeps it to its end. Only scenes
 //! the renderer can draw now are picked (`set_available`): some need
-//! content that loads with each song.
+//! content that loads with each song. One that stops being drawable while
+//! it shows gives way to another at once.
+//!
+//! Each change says why it came (`Reason`, `take_change`), for the
+//! server's log.
 
 use std::collections::HashMap;
 
@@ -141,6 +155,17 @@ const LIVE_MIN: f32 = 14.0;
 const LIVE_MAX: f32 = 40.0;
 /// How long a new song's scene takes to melt in over the last song's.
 const NEW_SONG_SECONDS: f32 = 1.6;
+/// The song's clock going back to the section before changes the scene
+/// only this many bars after the last change...
+const SHORTEST_BARS: f32 = 4.0;
+/// ...and this many seconds, however fast or slow the beat.
+const SHORTEST_SECONDS: (f32, f32) = (3.0, 8.0);
+/// The music coming back after a stop moves on only from a scene that has
+/// shown this many bars.
+const STOP_HOLD_BARS: f32 = 8.0;
+/// An analysis arriving within this many seconds of the song's start may
+/// change the scene at once: the song's first scene was only a guess.
+const EARLY_ANALYSIS: f32 = 3.0;
 /// The shortest and longest a change of scene lasts, however fast or slow
 /// the beat.
 const SHORTEST_CHANGE: f32 = 0.35;
@@ -174,6 +199,56 @@ pub struct Shot {
     pub kind: TransitionKind,
 }
 
+/// Why the scene changed, for the server's log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    /// A new song started.
+    NewSong,
+    /// The song's analysis arrived after it started.
+    Analysis,
+    /// A section started.
+    Section,
+    /// The scene had shown a phrase, or minutes.
+    Phrase,
+    /// A drop landed.
+    Landing,
+    /// The music came back after a stop.
+    Stop,
+    /// The climax landed.
+    Climax,
+    /// The scene showing can't be drawn any more.
+    Unavailable,
+    /// Without an analysis: the music surged.
+    Surge,
+    /// Without an analysis: the scene had shown a while.
+    Kick,
+}
+
+impl Reason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NewSong => "new song",
+            Self::Analysis => "analysis arrived",
+            Self::Section => "section",
+            Self::Phrase => "phrase",
+            Self::Landing => "landing",
+            Self::Stop => "back after a stop",
+            Self::Climax => "climax",
+            Self::Unavailable => "unavailable",
+            Self::Surge => "surge, no analysis",
+            Self::Kick => "kick, no analysis",
+        }
+    }
+}
+
+/// A change of scene the director made.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Change {
+    pub scene: usize,
+    pub kind: TransitionKind,
+    pub reason: Reason,
+}
+
 /// The beats each kind of change takes when nothing says otherwise.
 fn usual_beats(kind: TransitionKind) -> f32 {
     match kind {
@@ -204,6 +279,17 @@ pub struct Director {
     section: Option<usize>,
     /// Bars since the latest scene came on.
     bars_on_scene: u32,
+    /// Seconds since the latest change of scene, and since the song started.
+    since_change: f32,
+    song_age: f32,
+    /// A change the music asked for that waits for the next bar: one for a
+    /// section the song's clock went back to soon after the last change,
+    /// or for an analysis that arrived mid-section.
+    owed: Option<Reason>,
+    /// The song has been in a section of its analysis.
+    sectioned: bool,
+    /// The latest change, until `take_change`.
+    changed: Option<Change>,
     random: u32,
     song: Option<String>,
 }
@@ -226,6 +312,11 @@ impl Director {
             shown: Vec::new(),
             section: None,
             bars_on_scene: 0,
+            since_change: 0.0,
+            song_age: 0.0,
+            owed: None,
+            sectioned: false,
+            changed: None,
             random: seed | 1,
             song: None,
         };
@@ -308,28 +399,50 @@ impl Director {
     }
 
     /// Move to `scene` the way `kind` does, over `beats` beats of
-    /// `beat_seconds`.
+    /// `beat_seconds`, for `reason`.
     fn change_by(
         &mut self,
-        scene: usize,
-        seed: f32,
+        (scene, seed): (usize, f32),
         kind: TransitionKind,
         beats: f32,
         beat_seconds: f32,
+        reason: Reason,
     ) {
         let seconds = if kind == TransitionKind::Cut {
             0.0
         } else {
-            (beats * beat_seconds).clamp(SHORTEST_CHANGE, LONGEST_CHANGE)
+            // A beat that is no number would leave the change running
+            // for ever.
+            let seconds = beats * beat_seconds;
+            if seconds.is_finite() {
+                seconds.clamp(SHORTEST_CHANGE, LONGEST_CHANGE)
+            } else {
+                LONGEST_CHANGE
+            }
         };
-        self.change(scene, seed, seconds, kind);
+        self.change(scene, seed, seconds, kind, reason);
     }
 
-    /// Move to `scene` over `seconds` (0 cuts at once), the way `kind` does.
-    fn change(&mut self, scene: usize, seed: f32, seconds: f32, kind: TransitionKind) {
+    /// Move to `scene` over `seconds` (0 cuts at once), the way `kind` does,
+    /// for `reason`.
+    fn change(
+        &mut self,
+        scene: usize,
+        seed: f32,
+        seconds: f32,
+        kind: TransitionKind,
+        reason: Reason,
+    ) {
         if scene == self.latest() {
             return;
         }
+        self.changed = Some(Change {
+            scene,
+            kind,
+            reason,
+        });
+        self.since_change = 0.0;
+        self.owed = None;
         self.kind = kind;
         if let Some((next, _, _)) = self.next.take() {
             // A change during a change: the one coming in is now current.
@@ -348,7 +461,7 @@ impl Director {
             seed,
             age: 0.0,
         };
-        if seconds <= 0.0 {
+        if seconds.is_nan() || seconds <= 0.0 {
             self.current = showing;
         } else {
             self.next = Some((showing, 0.0, seconds));
@@ -358,12 +471,37 @@ impl Director {
     /// Move on from a scene that has shown a while, within a section of
     /// `group`, to a new one that is not the one before it either. The
     /// rest of the section, and any after it in its group, keep it.
-    fn move_on(&mut self, group: u32, target: f32, kind: TransitionKind, music: &Music) {
+    fn move_on(
+        &mut self,
+        group: u32,
+        target: f32,
+        kind: TransitionKind,
+        music: &Music,
+        reason: Reason,
+    ) {
         let before = self.recent.last().copied();
         let scene = self.pick_avoiding(target, before);
         let seed = self.unit();
         self.by_group.insert(group, (scene, seed));
-        self.change_by(scene, seed, kind, usual_beats(kind), music.beat_seconds);
+        self.change_by(
+            (scene, seed),
+            kind,
+            usual_beats(kind),
+            music.beat_seconds,
+            reason,
+        );
+    }
+
+    /// The latest change, once: what the server's log hears of.
+    pub fn take_change(&mut self) -> Option<Change> {
+        self.changed.take()
+    }
+
+    /// The fewest seconds after a change before going back a section
+    /// changes the scene again.
+    fn shortest(beat_seconds: f32) -> f32 {
+        let (least, most) = SHORTEST_SECONDS;
+        (beat_seconds * 4.0 * SHORTEST_BARS).clamp(least, most)
     }
 
     /// How a scene that has shown a while moves on: a slow wipe in calm
@@ -436,6 +574,8 @@ impl Director {
     pub fn direct(&mut self, music: &Music, song: Option<&str>) -> Shot {
         let dt = music.dt;
         self.current.age += dt;
+        self.since_change += dt;
+        self.song_age += dt;
         if let Some((next, progress, seconds)) = &mut self.next {
             next.age += dt;
             *progress += dt / *seconds;
@@ -457,6 +597,7 @@ impl Director {
         }
 
         let beat = music.beat_seconds;
+        let bar_seconds = beat * 4.0;
         let section_now = music.section.map(|section| section.index);
         if song != self.song.as_deref() {
             // A new song: its first section's scene, or one for what is
@@ -467,6 +608,9 @@ impl Director {
             self.by_group.clear();
             self.shown.clear();
             self.in_climax = false;
+            self.owed = None;
+            self.song_age = 0.0;
+            self.sectioned = false;
             // The song picks its own scenes and looks: the same each time
             // it plays, its own beside every other song.
             if let Some(id) = song {
@@ -491,8 +635,20 @@ impl Director {
                     };
                     self.next = None;
                     self.bars_on_scene = 0;
+                    self.since_change = 0.0;
+                    self.changed = Some(Change {
+                        scene,
+                        kind: TransitionKind::Cut,
+                        reason: Reason::NewSong,
+                    });
                 } else {
-                    self.change(scene, seed, NEW_SONG_SECONDS, TransitionKind::Melt);
+                    self.change(
+                        scene,
+                        seed,
+                        NEW_SONG_SECONDS,
+                        TransitionKind::Melt,
+                        Reason::NewSong,
+                    );
                 }
             } else {
                 self.song = None;
@@ -507,44 +663,54 @@ impl Director {
             let climax_lands = music.parts.cue.climax > 0.0 && !self.in_climax;
             match music.section {
                 // The music came back after a stop, within a section that
-                // already has its scene: move on, as if it were new.
+                // already has its scene: move on, as if it were new, once
+                // the scene has shown a while and the section's end isn't
+                // near. A song that breathes every few bars keeps it.
                 Some(section)
-                    if music.parts.stop_ended
-                        && !climax_lands
-                        && !self.in_climax
-                        && section_now == self.section
-                        && section.left > beat * 4.0 * 4.0 =>
+                    if music.parts.stop_ended && !climax_lands && section_now == self.section =>
                 {
-                    self.move_on(section.group, wild, shatter, music);
+                    if !self.in_climax
+                        && self.since_change >= bar_seconds * STOP_HOLD_BARS
+                        && section.left > bar_seconds * LAST_BARS
+                    {
+                        self.move_on(section.group, wild, shatter, music, Reason::Stop);
+                    }
                 }
                 Some(section) => {
-                    let (scene, seed) = self.for_moment(music, section, wild);
-                    self.change_by(scene, seed, shatter, usual_beats(shatter), beat);
+                    let chosen = self.for_moment(music, section, wild);
+                    let reason = if climax_lands && self.in_climax {
+                        Reason::Climax
+                    } else if music.parts.stop_ended {
+                        Reason::Stop
+                    } else {
+                        Reason::Landing
+                    };
+                    self.change_by(chosen, shatter, usual_beats(shatter), beat, reason);
                 }
                 None => {
-                    let (scene, seed) = (self.pick(wild), self.unit());
-                    self.change_by(scene, seed, shatter, usual_beats(shatter), beat);
+                    let chosen = (self.pick(wild), self.unit());
+                    self.change_by(chosen, shatter, usual_beats(shatter), beat, Reason::Landing);
                 }
             }
             self.section = section_now;
             self.aim = aim;
         } else if section_now != self.section {
-            let first = self.section.is_none();
+            // Back to an earlier section: a seek, or the song's clock
+            // jumping back (the TV's engine reporting its own position
+            // after the session's ran ahead).
+            let back = section_now < self.section;
             self.section = section_now;
             if let Some(section) = music.section {
-                // The analysis arrived after the song started: keep the
-                // scene showing if it suits this section.
-                if first
-                    && self.current.age < 8.0
-                    && (SCENES[self.latest()].energy - aim).abs() < 0.2
-                    && !self.by_group.contains_key(&section.group)
-                {
-                    let seed = self.current.seed;
-                    self.by_group.insert(section.group, (self.latest(), seed));
+                let latest = self.latest();
+                if !self.sectioned && !self.by_group.contains_key(&section.group) {
+                    // The analysis arrived after the song started.
+                    self.analysis_arrived(music, section, aim);
                 } else {
                     let (kind, beats) = self.section_change(music, section, aim);
-                    let (scene, seed) = self.for_moment(music, section, aim);
-                    if scene == self.latest()
+                    let was_climax = self.in_climax;
+                    let chosen = self.for_moment(music, section, aim);
+                    let climax = self.in_climax && !was_climax;
+                    if chosen.0 == latest
                         && self.next.is_none()
                         && self.current.age >= LONGEST_SECONDS
                         && !self.in_climax
@@ -552,13 +718,40 @@ impl Director {
                         // Held for minutes through sections that share it,
                         // none with a phrase far enough from its end: a
                         // section's start is a phrase too.
-                        self.move_on(section.group, aim, kind, music);
+                        self.move_on(section.group, aim, kind, music, Reason::Phrase);
+                    } else if chosen.0 == latest {
+                        // Back in the section showing (a clock jumping
+                        // back and then on again): nothing is owed.
+                        self.owed = None;
+                    } else if back && !climax && self.since_change < Self::shortest(beat) {
+                        // Back across the start of the section just
+                        // changed for: it changes on a later bar, unless
+                        // the clock comes on again first.
+                        self.owed = Some(Reason::Section);
                     } else {
-                        self.change_by(scene, seed, kind, beats, beat);
+                        let reason = if climax {
+                            Reason::Climax
+                        } else {
+                            Reason::Section
+                        };
+                        self.change_by(chosen, kind, beats, beat, reason);
                     }
                 }
             }
             self.aim = aim;
+        } else if let (Some(reason), Some(section)) = (self.owed, music.section)
+            && music.on_downbeat
+            && self.next.is_none()
+            && self.since_change >= Self::shortest(beat)
+        {
+            // A change the music asked for, on the first bar it may come.
+            // Not with the section's end near: that brings its own.
+            self.owed = None;
+            if section.left > bar_seconds * SHORTEST_BARS {
+                let chosen = self.for_moment(music, section, aim);
+                let kind = Self::moving_on(aim);
+                self.change_by(chosen, kind, usual_beats(kind), beat, reason);
+            }
         } else if let Some(section) = music.section
             && music.on_downbeat
             && self.next.is_none()
@@ -573,26 +766,42 @@ impl Director {
                 PHRASE_BARS
             };
             let due = aim >= 0.4 || shown >= CALM_SECONDS;
-            let bar_seconds = beat * 4.0;
             if due
                 && self.bars_on_scene > 0
                 && self.bars_on_scene.is_multiple_of(phrase)
                 && section.left > bar_seconds * LAST_BARS
             {
-                self.move_on(section.group, aim, Self::moving_on(aim), music);
+                let kind = Self::moving_on(aim);
+                self.move_on(section.group, aim, kind, music, Reason::Phrase);
             }
-        } else if music.section.is_none() {
+        } else if music.section.is_none() && !self.sectioned {
+            // Without an analysis (one that went for a moment changes
+            // nothing).
             let age = self.current.age;
             if (music.surge && age > LIVE_MIN) || (music.on_downbeat && age > LIVE_MAX) {
-                let scene = self.pick(music.intensity);
-                let seed = self.unit();
-                let kind = if music.surge {
-                    TransitionKind::ZoomThrough
+                let chosen = (self.pick(music.intensity), self.unit());
+                let (kind, reason) = if music.surge {
+                    (TransitionKind::ZoomThrough, Reason::Surge)
                 } else {
-                    TransitionKind::Wipe
+                    (TransitionKind::Wipe, Reason::Kick)
                 };
-                self.change_by(scene, seed, kind, usual_beats(kind), beat);
+                self.change_by(chosen, kind, usual_beats(kind), beat, reason);
             }
+        }
+
+        self.sectioned |= music.section.is_some();
+
+        // The scene showing, or the one coming in, can't be drawn any more
+        // (its content went): another takes over at once, if any can.
+        let latest = self.latest();
+        if self.song.is_some()
+            && !self.available[latest]
+            && self.available.iter().any(|available| *available)
+        {
+            let target = music.section.map_or(SCENES[latest].energy, |_| aim);
+            let chosen = (self.pick(target), self.unit());
+            let kind = TransitionKind::Melt;
+            self.change_by(chosen, kind, usual_beats(kind), beat, Reason::Unavailable);
         }
 
         Shot {
@@ -608,12 +817,37 @@ impl Director {
         }
     }
 
+    /// The song's analysis arrived after it started, in `section`, a group
+    /// with no scene yet. The scene showing stays if it suits the section,
+    /// and becomes its group's; it stays for now if the section is nearly
+    /// over, since the next one's start changes it. Otherwise it changes
+    /// once: at once early in the song, where the first scene was a guess
+    /// moments ago, and later on the next bar.
+    fn analysis_arrived(&mut self, music: &Music, section: SectionNow, aim: f32) {
+        let latest = self.latest();
+        let bar_seconds = music.beat_seconds * 4.0;
+        if (SCENES[latest].energy - aim).abs() < 0.2 && self.available[latest] {
+            let seed = self
+                .next
+                .map_or(self.current.seed, |(next, _, _)| next.seed);
+            self.by_group.insert(section.group, (latest, seed));
+        } else if section.left <= bar_seconds * LAST_BARS {
+            // Nearly over: the next section's start brings the change.
+        } else if self.song_age < EARLY_ANALYSIS {
+            let (kind, beats) = self.section_change(music, section, aim);
+            let chosen = self.for_moment(music, section, aim);
+            self.change_by(chosen, kind, beats, music.beat_seconds, Reason::Analysis);
+        } else {
+            self.owed = Some(Reason::Analysis);
+        }
+    }
+
     /// Move on to the next scene now, whatever the music: for screenshots.
     #[cfg(feature = "screenshots")]
     pub fn skip(&mut self) {
         let scene = (self.latest() + 1) % SCENES.len();
         let seed = self.unit();
-        self.change(scene, seed, 0.0, TransitionKind::Cut);
+        self.change(scene, seed, 0.0, TransitionKind::Cut, Reason::Phrase);
     }
 }
 
@@ -907,9 +1141,128 @@ mod tests {
         let mut back = verse.clone();
         back.drop_landed = true;
         back.parts.stop_ended = true;
+        // Five seconds in, under 8 bars of half-second beats: a breath, and
+        // the scene stays.
+        let shot = director.direct(&back, Some("song"));
+        assert!(shot.next.is_none());
+        assert_eq!(shot.current.scene, before);
+        // Once it has shown 8 bars, it shatters into a new one...
+        for _ in 0..4 {
+            settle(&mut director, &verse);
+        }
         let shot = director.direct(&back, Some("song"));
         assert_eq!(shot.kind, TransitionKind::Shatter);
         assert_ne!(shot.next.expect("a change").0.scene, before);
+        assert_eq!(
+            director.take_change().map(|change| change.reason),
+            Some(Reason::Stop)
+        );
+        // ...but not within a section's last 8 bars.
+        for _ in 0..5 {
+            settle(&mut director, &verse);
+        }
+        let mut near_end = back.clone();
+        near_end.section = near_end.section.map(|section| SectionNow {
+            left: 10.0,
+            ..section
+        });
+        assert!(director.direct(&near_end, Some("song")).next.is_none());
+    }
+
+    #[test]
+    fn the_songs_clock_jumping_back_across_a_section_start_keeps_the_scene() {
+        // The session's position ran ahead into the chorus, then the TV's
+        // engine reported its own, back in the verse, and then the chorus
+        // came again: one change, not three.
+        let mut director = Director::new(5);
+        let verse = music(section(0, SectionKind::Verse, 0, 0.4));
+        settle(&mut director, &verse);
+        let chorus = music(section(1, SectionKind::Chorus, 1, 0.9));
+        let chorus_scene = latest(&director.direct(&chorus, Some("song")));
+        assert_eq!(
+            director.take_change().map(|change| change.reason),
+            Some(Reason::Section)
+        );
+        for frame in [&verse, &verse, &chorus, &chorus] {
+            for _ in 0..30 {
+                assert_eq!(latest(&director.direct(frame, Some("song"))), chorus_scene);
+            }
+        }
+        assert_eq!(director.take_change(), None);
+        // A seek back long after the change goes back to the verse's scene.
+        for _ in 0..4 {
+            settle(&mut director, &chorus);
+        }
+        assert_ne!(latest(&director.direct(&verse, Some("song"))), chorus_scene);
+    }
+
+    #[test]
+    fn an_analysis_that_arrives_mid_section_changes_the_scene_once_on_a_bar() {
+        // Twenty seconds in, a calm guess showing, a wild section with half
+        // a minute left: one change, on its next bar, not before.
+        let mut director = Director::new(3);
+        let mut heard = music(None);
+        heard.intensity = 0.1;
+        for _ in 0..1200 {
+            director.direct(&heard, Some("song"));
+        }
+        let guess = latest(&director.direct(&heard, Some("song")));
+        director.take_change();
+        let mut verse = music(section(0, SectionKind::Verse, 0, 0.9));
+        verse.section = verse.section.map(|section| SectionNow {
+            left: 30.0,
+            ..section
+        });
+        for _ in 0..20 {
+            assert_eq!(latest(&director.direct(&verse, Some("song"))), guess);
+        }
+        let mut downbeat = verse.clone();
+        downbeat.on_downbeat = true;
+        let moved = latest(&director.direct(&downbeat, Some("song")));
+        assert_ne!(moved, guess);
+        assert_eq!(
+            director.take_change().map(|change| change.reason),
+            Some(Reason::Analysis)
+        );
+        // Nearly over instead: the next section's start changes it.
+        let mut director = Director::new(3);
+        for _ in 0..1200 {
+            director.direct(&heard, Some("song"));
+        }
+        let mut ending = verse.clone();
+        ending.section = ending.section.map(|section| SectionNow {
+            left: 2.0,
+            ..section
+        });
+        ending.on_downbeat = true;
+        for _ in 0..20 {
+            assert_eq!(latest(&director.direct(&ending, Some("song"))), guess);
+        }
+        let next = music(section(1, SectionKind::Verse, 0, 0.9));
+        assert_ne!(latest(&director.direct(&next, Some("song"))), guess);
+        assert_eq!(
+            director.take_change().map(|change| change.reason),
+            Some(Reason::Section)
+        );
+    }
+
+    #[test]
+    fn a_scene_that_can_no_longer_draw_gives_way_at_once() {
+        let mut director = Director::new(4);
+        let verse = music(section(0, SectionKind::Verse, 0, 0.6));
+        let showing = settle(&mut director, &verse).current.scene;
+        director.take_change();
+        let mut available = [true; SCENES.len()];
+        available[showing] = false;
+        director.set_available(available);
+        let shot = director.direct(&verse, Some("song"));
+        let next = shot.next.expect("a change").0.scene;
+        assert_ne!(next, showing);
+        assert!(available[next]);
+        assert_eq!(
+            director.take_change().map(|change| change.reason),
+            Some(Reason::Unavailable)
+        );
     }
 
     #[test]

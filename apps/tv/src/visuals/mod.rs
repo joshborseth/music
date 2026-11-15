@@ -35,6 +35,7 @@ mod words;
 mod lab;
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -62,6 +63,10 @@ const SHADE_MOVE: f32 = 0.7;
 const PACE_REPORT_EVERY: Duration = Duration::from_secs(300);
 /// The first report comes this soon, once the scenes have settled on a size.
 const FIRST_PACE_REPORT: Duration = Duration::from_secs(20);
+/// The server hears of changes of scene at most this often...
+const SCENE_REPORT_EVERY: Duration = Duration::from_secs(1);
+/// ...and this many wait their turn at most.
+const SCENE_REPORTS_WAITING: usize = 8;
 
 /// What the now-playing screen shows, for the visuals.
 #[derive(Clone)]
@@ -107,6 +112,7 @@ struct State {
     shade: Shade,
     reader: words::Reader,
     pace: Pace,
+    scene_reports: SceneReports,
     shown_scene: Option<usize>,
     /// GL errors already sent to the server's log, so each goes once.
     errors_reported: Vec<(&'static str, u32)>,
@@ -174,6 +180,64 @@ impl Pace {
     }
 }
 
+/// Each change of scene, for the server's log, so a TV's visuals can be
+/// followed from afar: a line a change, at most a line a second. Changes
+/// that come quicker wait their turn (each line says the song's seconds),
+/// a few at most; the line after any left out says how many were.
+#[derive(Default)]
+struct SceneReports {
+    last: Option<Instant>,
+    waiting: VecDeque<String>,
+    left_out: u32,
+}
+
+impl SceneReports {
+    /// The director changed the scene: `line` says how. Returns the line
+    /// to send now, if one may go.
+    fn change(&mut self, line: String, now: Instant) -> Option<String> {
+        if self.waiting.len() < SCENE_REPORTS_WAITING {
+            self.waiting.push_back(line);
+        } else {
+            self.left_out += 1;
+        }
+        self.due(now)
+    }
+
+    /// The next line waiting, once a second has passed since the last.
+    fn due(&mut self, now: Instant) -> Option<String> {
+        if self
+            .last
+            .is_some_and(|last| now.duration_since(last) < SCENE_REPORT_EVERY)
+        {
+            return None;
+        }
+        let mut line = self.waiting.pop_front()?;
+        if self.left_out > 0 && self.waiting.is_empty() {
+            line.push_str(&format!(
+                " ({} more change{} left out)",
+                self.left_out,
+                if self.left_out == 1 { "" } else { "s" }
+            ));
+            self.left_out = 0;
+        }
+        self.last = Some(now);
+        Some(line)
+    }
+}
+
+/// The line the server's log gets for a change of scene.
+fn scene_line(change: director::Change, seconds: Option<f64>) -> String {
+    let at = seconds.map_or("before the song's clock".to_owned(), |seconds| {
+        format!("at {seconds:.1} s")
+    });
+    format!(
+        "visuals: scene {} by {:?} ({}) {at}",
+        director::SCENES[change.scene].name,
+        change.kind,
+        change.reason.label(),
+    )
+}
+
 /// The running visuals. Cheap to clone.
 #[derive(Clone)]
 pub struct Visuals {
@@ -210,6 +274,7 @@ impl Visuals {
             shade: Shade::default(),
             reader: words::Reader::default(),
             pace: Pace::default(),
+            scene_reports: SceneReports::default(),
             shown_scene: None,
             errors_reported: Vec::new(),
         }));
@@ -409,10 +474,19 @@ impl State {
         self.director
             .set_available(std::array::from_fn(|scene| renderer.can_draw(scene)));
         let mut shot: Shot = self.director.direct(&music, Some(stage.entry_id.as_str()));
-        // The director picks only scenes the renderer can draw, but one it
-        // picked may have stopped being drawable since: show another. One
-        // leaving keeps its frozen last frame, which needs nothing (Diorama
-        // loses its depth the moment a new song starts, as it melts away).
+        let scene_report = match self.director.take_change() {
+            Some(change) => self.scene_reports.change(scene_line(change, seconds), now),
+            None => self.scene_reports.due(now),
+        };
+        if let Some(line) = scene_report {
+            log::info!("{line}");
+            (self.report)(log::Level::Info, line);
+        }
+        // The director picks only scenes the renderer can draw, and moves
+        // on from one that stops being drawable, but the one leaving may
+        // not be drawable either: it keeps its frozen last frame, which
+        // needs nothing (Diorama loses its depth the moment a new song
+        // starts, as it melts away). One never drawn shows another.
         let frozen = shot.next.is_some() && renderer.holds_frame(shot.current.scene);
         if !renderer.can_draw(shot.current.scene) && !frozen {
             shot.current.scene = (0..director::SCENES.len())
@@ -487,4 +561,52 @@ fn gl_errors(gl: &glow::Context) -> Vec<u32> {
         codes.push(code);
     }
     codes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_changes_reach_the_server_at_most_once_a_second() {
+        let start = Instant::now();
+        let at = |seconds: f32| start + Duration::from_secs_f32(seconds);
+        let mut reports = SceneReports::default();
+        assert_eq!(reports.change("Halo".into(), at(0.0)), Some("Halo".into()));
+        // Two more within the second: each goes a second after the last.
+        assert_eq!(reports.change("Swarm".into(), at(0.3)), None);
+        assert_eq!(reports.change("Coral".into(), at(0.6)), None);
+        assert_eq!(reports.due(at(0.9)), None);
+        assert_eq!(reports.due(at(1.0)), Some("Swarm".into()));
+        assert_eq!(reports.due(at(1.5)), None);
+        assert_eq!(reports.due(at(2.0)), Some("Coral".into()));
+        assert_eq!(reports.due(at(5.0)), None);
+        // A scene changing every frame: a few wait, the rest are counted.
+        for frame in 0..20 {
+            reports.change(format!("{frame}"), at(5.0 + frame as f32 / 60.0));
+        }
+        let sent: Vec<String> = (0..12)
+            .filter_map(|second| reports.due(at(6.0 + second as f32)))
+            .collect();
+        assert_eq!(sent.len(), SCENE_REPORTS_WAITING);
+        assert_eq!(sent[0], "1");
+        assert_eq!(sent[7], "8 (11 more changes left out)");
+        assert_eq!(
+            reports.change("Tunnel".into(), at(30.0)),
+            Some("Tunnel".into())
+        );
+    }
+
+    #[test]
+    fn a_scene_change_line_says_what_why_and_when() {
+        let change = director::Change {
+            scene: director::scene_index("Tunnel"),
+            kind: crate::catalog::TransitionKind::Wipe,
+            reason: director::Reason::Section,
+        };
+        assert_eq!(
+            scene_line(change, Some(21.96)),
+            "visuals: scene Tunnel by Wipe (section) at 22.0 s"
+        );
+    }
 }
