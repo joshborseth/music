@@ -25,9 +25,9 @@ import {
 type Vec4 = [number, number, number, number]
 
 const GRID_HEIGHT = 144
-const CALM_STEPS = 2
-const WILD_STEPS = 6
-const MOST_STEPS = 6
+const CALM_STEPS = 1.5
+const WILD_STEPS = 4
+const MOST_STEPS = 4
 const KICK_RISE = 0.2
 const DROP_RISE = 0.3
 const FLASH = 0.75

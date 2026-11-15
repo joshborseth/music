@@ -12,8 +12,8 @@
 // bursts rings of new growth across it in a flash.
 //
 // One read of the reef a pixel, already turned into a filtered texture
-// (`coral_field.glsl`), and two of the fractal noise (each two noises in
-// one).
+// (`coral_field.glsl`), and one of the fractal noise (two noises in one).
+// The light on the sea floor is waves worked out here, not a second read.
 
 // The reef: red how much coral, green the food left, blue and alpha its
 // slope across and up (0.5 is flat).
@@ -42,11 +42,13 @@ void main() {
   vec3 hue = mix(uColorA, uColorD, smoothstep(0.35, 0.65, colony.x));
   hue = mix(hue, uColorB, 0.5 * smoothstep(0.55, 0.75, colony.y));
 
-  // The sea floor: dark, light rippling down onto it, and a soft halo of
-  // the colony's color where the coral has eaten the food around it.
-  vec2 water = fbm2(p * 3.0 + vec2(uDrive * 0.03, uTime * 0.02));
-  float shimmer = water.x;
-  float ripples = smoothstep(0.6, 0.8, water.y);
+  // The sea floor: dark, light rippling down onto it (two slow waves
+  // crossing, bent by the colonies), and a soft halo of the colony's
+  // color where the coral has eaten the food around it.
+  highp float drift = uDrive * 0.4 + uTime * 0.25;
+  float shimmer = 0.5 + 0.25 * (sin(dot(p, vec2(8.0, 5.0)) + 5.0 * colony.x + drift)
+    + sin(dot(p, vec2(-4.0, 9.0)) + 5.0 * colony.y - 0.7 * drift));
+  float ripples = smoothstep(0.6, 0.8, shimmer);
   vec3 floor_ = uColorC * (0.03 + 0.05 * shimmer * shimmer + 0.05 * ripples)
     + hue * 0.07 * (1.0 - food) * (1.0 - height);
 

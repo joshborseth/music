@@ -26,10 +26,11 @@ use super::particles::{self, Prepare, STATE_UNIT, STATE2_UNIT, State};
 /// The grid's height in texels; its width follows the screen's shape.
 const GRID_HEIGHT: i32 = 144;
 /// Steps a frame at 60 frames a second, calm to wild, and the most any
-/// frame takes.
-const CALM_STEPS: f32 = 2.0;
-const WILD_STEPS: f32 = 6.0;
-const MOST_STEPS: u32 = 6;
+/// frame takes. Each step reads the whole grid five times: with four at
+/// the most, the scene costs about what Terrain does (the lab's bench).
+const CALM_STEPS: f32 = 1.5;
+const WILD_STEPS: f32 = 4.0;
+const MOST_STEPS: u32 = 4;
 /// The kick and drop envelopes jump this much on a new hit, a new drop.
 const KICK_RISE: f32 = 0.2;
 const DROP_RISE: f32 = 0.3;

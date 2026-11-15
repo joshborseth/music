@@ -12,8 +12,9 @@
 // - at times a halftone print (dots sized by the light) or a posterized
 //   one (five steps of light), or the screen split into strips of
 //   different pictures;
-// - a punch in on each kick and on each cut, the colors split on the
-//   snare, the picture before echoing through the last frame (`uPrev`),
+// - a punch in on each kick and on each cut (the colors split on the
+//   snare in `final.glsl`, as in every scene), the picture before
+//   echoing through the last frame (`uPrev`),
 //   smearing outward through a drum fill;
 // - the live spectrum cut into the bottom as bars of negative, when the
 //   music is intense.
@@ -144,16 +145,12 @@ void main() {
     color = mix(uColorC * 0.06, tone(0.4 + 0.6 * l, 0.0), ink);
   } else {
     // DUOTONE or TRITONE, some of the picture's own hues kept (its color
-    // at the graded light, so hues the cover lacks come through), the red
-    // split off to one side on the snare (one more read).
+    // at the graded light, so hues the cover lacks come through). One
+    // read: a second for a red split on the snare made it the heaviest
+    // scene; `final.glsl` splits the colors on the snare already.
     vec3 raw = texture(uMontage, atlasUv(picture, uv)).rgb;
     float l = crushed(raw, gain);
     color = tone(l, look);
-    if (uSnare > 0.04) {
-      highp vec2 shift = vec2(0.022 * uSnare / camera.z, 0.0);
-      float red = crushed(texture(uMontage, atlasUv(picture, uv + shift)).rgb, gain);
-      color.r = tone(red, look).r;
-    }
     float rawLight = max(lightOf(raw), 0.04);
     color = mix(color, min(raw / rawLight, vec3(2.5)) * l, uMontageMix.w);
   }
