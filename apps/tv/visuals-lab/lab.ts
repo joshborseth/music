@@ -919,7 +919,12 @@ const makeEngine = (
   const picture = makeTarget(gl, width, height)
   // The shatter's shards, once a change, at half the picture's size
   // (gpu.rs's `SHARDS_DIVISOR`), and the change's seed they are for.
-  const shards = program(gl, 'shards.glsl', VERTEX, fragmentSource('shards.glsl'))
+  const shards = program(
+    gl,
+    'shards.glsl',
+    VERTEX,
+    fragmentSource('shards.glsl'),
+  )
   const shardField = makeTarget(
     gl,
     Math.max(1, Math.floor(width / 2)),

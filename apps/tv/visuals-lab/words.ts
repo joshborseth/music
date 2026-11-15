@@ -218,8 +218,7 @@ export const wordsFrame = (
   const spellable = (index: number): boolean => {
     const word = words[index]
     if (word === undefined || hookLevel(word) <= 0) return false
-    const until =
-      words[index + 1]?.startSeconds ?? word.endSeconds + LINGER
+    const until = words[index + 1]?.startSeconds ?? word.endSeconds + LINGER
     return until - word.startSeconds >= SPELL_HOLD
   }
   const time = (slot: number, i: number) => frame.times[slot * 4 + i] ?? 0
