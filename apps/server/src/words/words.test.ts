@@ -1,13 +1,24 @@
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
-import { Effect, Option } from 'effect'
+import { Effect, Exit, Option } from 'effect'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
+import { BunServices } from '@effect/platform-bun'
 import type { LyricLine, Tv } from '@music/shared'
 
 import { grayPng } from '../analysis/score.ts'
 import { buildAtlas, capFor, glyphText, pack, planAtlas } from './atlas.ts'
 import { fieldBytes, signedDistance } from './sdf.ts'
-import { makeSongWords, makeWords, makeWordsCache } from './service.ts'
+import {
+  WordsError,
+  glyphTexts,
+  makeDrawAtlas,
+  makeSongWords,
+  makeWords,
+  makeWordsCache,
+} from './service.ts'
 import { syllables } from './syllables.ts'
 import {
   type SungTrack,
@@ -421,5 +432,67 @@ describe('a song’s words', () => {
     await ask('oh', Option.none())
     await ask('oh', Option.none())
     expect(draws).toBe(4)
+  })
+
+  test('a dense song draws only its most sung words', () => {
+    const sung = ['b', 'a', 'c', 'a', 'd', 'c', 'a', '愛']
+    expect(glyphTexts(sung)).toEqual(['B', 'A', 'C', 'D'])
+    // The two most sung, kept in the order first sung.
+    expect(glyphTexts(sung, 2)).toEqual(['A', 'C'])
+  })
+
+  test('words that failed are not drawn again at once', async () => {
+    let draws = 0
+    const service = await Effect.runPromise(
+      makeSongWords(
+        makeWordsCache(new Database(':memory:', { strict: true })),
+        videoId => () =>
+          Effect.suspend(() => {
+            draws++
+            return Effect.fail(new WordsError({ videoId, message: 'no' }))
+          }),
+        () => 0,
+      ),
+    )
+    const ask = () =>
+      Effect.runPromise(
+        Effect.exit(service.words('abc', [line(1, 'la')], Option.none())),
+      )
+    expect(Exit.isFailure(await ask())).toBe(true)
+    expect(Exit.isFailure(await ask())).toBe(true)
+    expect(draws).toBe(1)
+  })
+
+  test('an ffmpeg that hangs is killed at the deadline', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'words-ffmpeg-'))
+    try {
+      const pidFile = join(dir, 'pid')
+      const ffmpeg = join(dir, 'ffmpeg')
+      await writeFile(
+        ffmpeg,
+        `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 30\n`,
+      )
+      await chmod(ffmpeg, 0o755)
+      const started = Date.now()
+      const exit = await Effect.runPromise(
+        Effect.exit(
+          makeDrawAtlas(ffmpeg, 'unused.ttf', 'abc', '300 millis')(['LA']),
+        ).pipe(Effect.provide(BunServices.layer)),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(Date.now() - started).toBeLessThan(5000)
+      const pid = Number((await readFile(pidFile, 'utf8')).trim())
+      const isAlive = () => {
+        try {
+          process.kill(pid, 0)
+          return true
+        } catch {
+          return false
+        }
+      }
+      expect(isAlive()).toBe(false)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

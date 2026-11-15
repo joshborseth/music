@@ -1,5 +1,6 @@
 import {
   Array,
+  Cause,
   Context,
   Duration,
   Effect,
@@ -205,7 +206,17 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
         return
       }
       running.add(maybeJob.value.videoId)
-      yield* run(maybeJob.value)
+      const job = maybeJob.value
+      // One job's bug is logged; the worker goes on to the next.
+      yield* run(job).pipe(
+        Effect.catchCause(cause =>
+          Effect.logError(
+            'Prefetching a song failed',
+            job.videoId,
+            Cause.pretty(cause),
+          ),
+        ),
+      )
     }).pipe(Effect.forever)
 
     yield* Effect.forEach(

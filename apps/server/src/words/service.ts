@@ -3,10 +3,12 @@ import {
   Array,
   Config,
   Context,
+  Duration,
   Effect,
   FileSystem,
   Layer,
   Option,
+  Order,
   Path,
   Schema,
   Semaphore,
@@ -18,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import { type LyricLine, Tv } from '@music/shared'
 
 import { runFfmpeg } from '../analysis/decode.ts'
+import { makeFailureMemory, tryCache } from '../background.ts'
 import {
   type AtlasPlan,
   buildAtlas,
@@ -42,6 +45,22 @@ import { sungTrack } from './track.ts'
 export const WORDS_VERSION = 1
 /** Songs whose words are kept. */
 const KEPT_SONGS = 200
+/**
+ * Distinct words drawn into the atlas, at most: the most sung first. Past
+ * about 400, capitals are at their smallest and ffmpeg's canvas (some
+ * 45 million pixels, 370 MB of ffmpeg's memory) grows with every word; a
+ * dense rap song of 1000 distinct words took 800 MB and still didn't fit.
+ * The words left out are timed as usual, without a glyph.
+ */
+export const MOST_GLYPHS = 400
+/** The longest one drawing by ffmpeg may take (about 4 s for most songs). */
+const DRAW_TIMEOUT = Duration.seconds(30)
+/** Drawings, each smaller, before giving up on fitting the words. */
+const MOST_DRAWS = 3
+/** A song whose words failed is not made again for this long. */
+const FAILURE_RETRY_MS = 30 * 60 * 1000
+/** Songs whose failure is remembered, at most. */
+const FAILURES_KEPT = 200
 
 export class WordsError extends Schema.TaggedError<WordsError>()('WordsError', {
   videoId: Schema.String,
@@ -142,6 +161,36 @@ export const emptyWords = (videoId: string): Tv.TvWords => ({
   atlas: null,
 })
 
+/**
+ * The texts to draw for `words`: each distinct word once, in the order
+ * first sung; past `most`, only the most sung of them.
+ */
+export const glyphTexts = (
+  words: ReadonlyArray<string>,
+  most: number = MOST_GLYPHS,
+): ReadonlyArray<string> => {
+  const sung = new Map<string, number>()
+  for (const word of words) {
+    const text = glyphText(word)
+    if (text !== null) sung.set(text, (sung.get(text) ?? 0) + 1)
+  }
+  const texts = [...sung.keys()]
+  if (texts.length <= most) return texts
+  // A stable sort: words sung as often keep the order first sung.
+  const kept = new Set(
+    Array.take(
+      Array.sort(
+        texts,
+        Order.flip(
+          Order.mapInput(Order.Number, (text: string) => sung.get(text) ?? 0),
+        ),
+      ),
+      most,
+    ),
+  )
+  return texts.filter(text => kept.has(text))
+}
+
 /** A song's words from its timed lines and analysis, drawn by `draw`. */
 export const makeWords = (
   videoId: string,
@@ -159,15 +208,9 @@ export const makeWords = (
       analysis?.durationSeconds ?? 0,
     )
     if (timed.words.length === 0) return emptyWords(videoId)
-    // Each distinct word once, in the order first sung.
-    const texts = Array.dedupe(
-      Array.getSomes(
-        Array.map(timed.words, word =>
-          Option.fromNullishOr(glyphText(word.text)),
-        ),
-      ),
+    const maybeAtlas = yield* draw(
+      glyphTexts(timed.words.map(word => word.text)),
     )
-    const maybeAtlas = yield* draw(texts)
     const atlas = Option.getOrNull(maybeAtlas)
     const glyphOf = new Map(
       atlas?.glyphs.map((glyph, index) => [glyph.text, index]),
@@ -197,7 +240,12 @@ export const makeWords = (
 // DRAWING
 
 /** The words drawn by ffmpeg with the font at `fontPath`, as `atlas.ts` plans. */
-const drawWithFfmpeg = (ffmpeg: string, fontPath: string, plan: AtlasPlan) =>
+const drawWithFfmpeg = (
+  ffmpeg: string,
+  fontPath: string,
+  plan: AtlasPlan,
+  timeout: Duration.Input,
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -211,6 +259,8 @@ const drawWithFfmpeg = (ffmpeg: string, fontPath: string, plan: AtlasPlan) =>
     )
     const script = path.join(dir, 'draw.txt')
     yield* fs.writeFileString(script, drawFilter(plan, fontPath, files))
+    // Interrupted (by the timeout, or a TV that hangs up), ffmpeg is killed
+    // with the scope it runs in.
     const { chunks } = yield* runFfmpeg(ffmpeg, [
       '-nostdin',
       '-hide_banner',
@@ -229,7 +279,13 @@ const drawWithFfmpeg = (ffmpeg: string, fontPath: string, plan: AtlasPlan) =>
       '-f',
       'rawvideo',
       '-',
-    ])
+    ]).pipe(
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () =>
+          Effect.fail({ message: 'ffmpeg took too long to draw the words' }),
+      }),
+    )
     const pixels = new Uint8Array(plan.canvasWidth * plan.canvasHeight)
     let at = 0
     for (const chunk of chunks) {
@@ -245,6 +301,7 @@ export const makeDrawAtlas =
     ffmpeg: string,
     fontPath: string,
     videoId: string,
+    timeout: Duration.Input = DRAW_TIMEOUT,
   ): ((
     texts: ReadonlyArray<string>,
   ) => Effect.Effect<
@@ -256,15 +313,16 @@ export const makeDrawAtlas =
     Effect.gen(function* () {
       if (texts.length === 0) return Option.none()
       let cap = capFor(texts)
-      for (;;) {
+      for (let draws = 0; draws < MOST_DRAWS; draws++) {
         const plan = planAtlas(texts, cap)
-        const pixels = yield* drawWithFfmpeg(ffmpeg, fontPath, plan)
+        const pixels = yield* drawWithFfmpeg(ffmpeg, fontPath, plan, timeout)
         const atlas = buildAtlas(plan, pixels)
         if (atlas !== null) return Option.some(atlas)
         const smaller = capFor(texts, cap)
-        if (smaller >= cap) return Option.none()
+        if (smaller >= cap) break
         cap = smaller
       }
+      return Option.none()
     }).pipe(
       Effect.mapError(
         error =>
@@ -302,30 +360,57 @@ export const makeSongWords = Effect.fnUntraced(function* (
   // Drawing holds a tall canvas in memory: one song at a time, so a second
   // ask for the same song finds the first one's words in the cache.
   const drawing = yield* Semaphore.make(1)
+  const failures = makeFailureMemory<WordsError>({
+    retryMs: () => FAILURE_RETRY_MS,
+    now,
+    capacity: FAILURES_KEPT,
+  })
+  // The cache is SQLite, which throws: words it can't read are made
+  // again, and words it can't keep are still answered with.
+  const cached = (videoId: string, key: string) =>
+    tryCache(
+      'Reading cached words failed',
+      videoId,
+      () => cache.get(videoId, key),
+      () => Option.none<Tv.TvWords>(),
+    )
+  const keep = (words: Tv.TvWords, key: string) =>
+    tryCache(
+      'Keeping the words failed',
+      words.videoId,
+      () => cache.put(words, key, now()),
+      () => undefined,
+    )
+
   return SongWords.of({
-    words: (videoId, lines, maybeAnalysis) => {
-      const key = madeFrom(lines, maybeAnalysis)
-      return Option.match(cache.get(videoId, key), {
-        onSome: Effect.succeed,
-        onNone: () =>
-          Effect.gen(function* () {
-            const cached = cache.get(videoId, key)
-            if (Option.isSome(cached)) return cached.value
-            const words = yield* makeWords(
-              videoId,
-              lines,
-              maybeAnalysis,
-              draw(videoId),
-            )
-            // Without an analysis they are a guess: made again once it comes.
-            if (Option.isSome(maybeAnalysis)) cache.put(words, key, now())
-            return words
-          }).pipe(
-            drawing.withPermits(1),
-            Effect.withSpan('SongWords.make', { attributes: { videoId } }),
-          ),
-      })
-    },
+    words: (videoId, lines, maybeAnalysis) =>
+      Effect.gen(function* () {
+        const key = madeFrom(lines, maybeAnalysis)
+        const known = yield* cached(videoId, key)
+        if (Option.isSome(known)) return known.value
+        const failed = failures.recent(`${videoId}:${key}`)
+        if (Option.isSome(failed)) return yield* failed.value
+        return yield* Effect.gen(function* () {
+          const again = yield* cached(videoId, key)
+          if (Option.isSome(again)) return again.value
+          const words = yield* makeWords(
+            videoId,
+            lines,
+            maybeAnalysis,
+            draw(videoId),
+          ).pipe(
+            Effect.tapError(error =>
+              Effect.sync(() => failures.remember(`${videoId}:${key}`, error)),
+            ),
+          )
+          // Without an analysis they are a guess: made again once it comes.
+          if (Option.isSome(maybeAnalysis)) yield* keep(words, key)
+          return words
+        }).pipe(
+          drawing.withPermits(1),
+          Effect.withSpan('SongWords.make', { attributes: { videoId } }),
+        )
+      }),
   })
 })
 

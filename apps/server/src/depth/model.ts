@@ -1,5 +1,5 @@
-import { Effect, Schema } from 'effect'
-import { rename } from 'node:fs/promises'
+import { Duration, Effect, Exit, Schema } from 'effect'
+import { rename, rm } from 'node:fs/promises'
 
 /*
  * The depth model's weights: Depth Anything V2 Small (Apache-2.0; the
@@ -23,6 +23,9 @@ export const MODEL = {
   bytes: 49_642_442,
 } as const
 
+/** The longest the model's download may take: 50 MB at well under 1 Mbit/s. */
+export const DOWNLOAD_TIMEOUT = Duration.minutes(10)
+
 export class ModelError extends Schema.TaggedError<ModelError>()('ModelError', {
   message: Schema.String,
 }) {}
@@ -40,17 +43,25 @@ export const fileSha256 = (path: string): Effect.Effect<string, ModelError> =>
 
 const exists = (path: string) => Effect.promise(() => Bun.file(path).exists())
 
+const remove = (path: string) =>
+  Effect.tryPromise({
+    try: () => rm(path, { force: true }),
+    catch: error => new ModelError({ message: `Removing ${path}: ${error}` }),
+  })
+
 /**
  * Downloads `url` to `path`, through a `.part` file that only becomes
- * `path` once its hash is `sha256`.
+ * `path` once its hash is `sha256`. One that fails, takes longer than
+ * `timeout`, or is interrupted leaves no `.part` file behind.
  */
 export const download = (
   url: string,
   path: string,
   sha256: string,
-): Effect.Effect<void, ModelError> =>
-  Effect.gen(function* () {
-    const part = `${path}.part`
+  timeout: Duration.Input = DOWNLOAD_TIMEOUT,
+): Effect.Effect<void, ModelError> => {
+  const part = `${path}.part`
+  return Effect.gen(function* () {
     yield* Effect.tryPromise({
       try: async signal => {
         const response = await fetch(url, { signal })
@@ -59,10 +70,19 @@ export const download = (
       },
       catch: error =>
         new ModelError({ message: `Downloading the depth model: ${error}` }),
-    })
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () =>
+          Effect.fail(
+            new ModelError({
+              message: `Downloading the depth model took over ${Duration.format(Duration.fromInputUnsafe(timeout))}`,
+            }),
+          ),
+      }),
+    )
     const hash = yield* fileSha256(part)
     if (hash !== sha256) {
-      yield* Effect.promise(() => Bun.file(part).delete())
       return yield* new ModelError({
         message: `The downloaded depth model's hash is ${hash}, not ${sha256}`,
       })
@@ -72,31 +92,46 @@ export const download = (
       catch: error =>
         new ModelError({ message: `Keeping the model: ${error}` }),
     })
-  })
+  }).pipe(
+    Effect.onExit(exit =>
+      Exit.isFailure(exit) ? Effect.ignore(remove(part)) : Effect.void,
+    ),
+  )
+}
 
 /**
  * The model at `path`, checked: downloaded first when it is missing and
- * `mayDownload`. Fails when it can't be had or its hash is wrong.
+ * `mayDownload`, and downloaded again when its hash is wrong (a file cut
+ * off or changed). Fails when it can't be had. The caller decides how
+ * often to ask, so a model that keeps failing is not downloaded over and
+ * over.
  */
 export const ensureModel = (
   path: string,
   mayDownload: boolean,
-  model: { readonly url: string; readonly sha256: string } = MODEL,
+  model: {
+    readonly url: string
+    readonly sha256: string
+    readonly downloadTimeout?: Duration.Input
+  } = MODEL,
 ): Effect.Effect<string, ModelError> =>
   Effect.gen(function* () {
+    const fetchModel = Effect.gen(function* () {
+      yield* Effect.logInfo('Downloading the depth model', model.url)
+      yield* download(model.url, path, model.sha256, model.downloadTimeout)
+      return path
+    })
     if (!(yield* exists(path))) {
       if (!mayDownload) {
         return yield* new ModelError({ message: `No depth model at ${path}` })
       }
-      yield* Effect.logInfo('Downloading the depth model', model.url)
-      yield* download(model.url, path, model.sha256)
-      return path
+      return yield* fetchModel
     }
     const hash = yield* fileSha256(path)
-    if (hash !== model.sha256) {
-      return yield* new ModelError({
-        message: `The depth model at ${path} has hash ${hash}, not ${model.sha256}`,
-      })
-    }
-    return path
+    if (hash === model.sha256) return path
+    const wrong = `The depth model at ${path} has hash ${hash}, not ${model.sha256}`
+    if (!mayDownload) return yield* new ModelError({ message: wrong })
+    yield* Effect.logWarning(`${wrong}: downloading it again`)
+    yield* remove(path)
+    return yield* fetchModel
   })
