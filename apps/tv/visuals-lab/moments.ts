@@ -199,7 +199,12 @@ export const screenLook = (music: MomentMusic, color: Rgb): ScreenLook => {
 
   const held = 1 - 0.8 * parts.stop
   const big = 1 + 0.25 * climax
-  const flash = Math.max(drop ** 8 * 0.8, land ** 3 * 0.95) * big + strobeFlash
+  const flash = Math.max(drop ** 16 * 0.8, land ** 3 * 0.95) * big + strobeFlash
+  // `ease_over`: past the knee, only some of the rest.
+  const easeOver = (x: number, knee: number, rate: number) =>
+    Math.min(x, knee) + rate * Math.max(0, x - knee)
+  const lifted = easeOver(0.4 * beatHit + 0.45 * drop + 0.5 * land, 0.8, 0.4)
+  const glowed = easeOver(0.8 * beatHit + 0.7 * drop + 0.6 * land, 1, 0.3)
   return {
     punch:
       1 -
@@ -211,12 +216,7 @@ export const screenLook = (music: MomentMusic, color: Rgb): ScreenLook => {
         big,
     bulge: (0.08 * beatHit + 0.08 * drop * drop + 0.3 * land * land) * big,
     lift:
-      (1 +
-        0.4 * beatHit +
-        0.45 * drop +
-        0.5 * land +
-        0.35 * build +
-        0.3 * quicken) *
+      (1 + lifted + 0.35 * build + 0.3 * quicken) *
       held *
       big *
       (1 - strobeDim),
@@ -226,12 +226,7 @@ export const screenLook = (music: MomentMusic, color: Rgb): ScreenLook => {
         0.01 * land * land) *
       big,
     glow:
-      (0.3 +
-        0.5 * music.energy +
-        0.8 * beatHit +
-        0.7 * drop +
-        0.15 * parts.chordChange +
-        0.6 * land) *
+      (0.3 + 0.5 * music.energy + glowed + 0.15 * parts.chordChange) *
       held *
       big *
       (1 + 0.1 * Math.min(parts.repeat, 3)),

@@ -5,8 +5,9 @@
 //! [`Choreography`] decides, once a frame, what the swarm does: which
 //! shape it holds and which comes next, how far along the change is, the
 //! blast of each kick, the swirl of each snare, the stream behind the
-//! lead melody, and the drop, which blows the shape apart until the next
-//! downbeat, when the particles snap into the next one. It works only from
+//! lead melody, and the drop, which blows the shape up past the edges of
+//! the picture, a burst of streaks filling it, until the second beat
+//! after, when the particles snap into the next shape. It works only from
 //! the music's values (the beat count, the kick and drop envelopes), so
 //! the lab (`apps/tv/visuals-lab/particles.ts`, `choreography`) makes the
 //! same moves from the same frames; keep the two in step.
@@ -34,6 +35,11 @@ const NO_BEAT_BARS_SECONDS: f32 = 4.0;
 const KICK_RISE: f32 = 0.2;
 /// The drop envelope jumps this much the frame a drop lands.
 const DROP_RISE: f32 = 0.3;
+/// Beats a drop holds the swarm blown apart, at the least: it snaps back
+/// on the first beat after (the second beat after the drop's).
+const APART_BEATS: f32 = 1.5;
+/// Without a beat to count, seconds a drop holds it apart.
+const APART_SECONDS: f32 = 1.2;
 /// The longest step the simulation takes; a longer frame is cut to it.
 const LONGEST_STEP: f32 = 1.0 / 20.0;
 
@@ -41,7 +47,8 @@ const LONGEST_STEP: f32 = 1.0 / 20.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cues {
     /// The shape before and after, how far each particle has moved on,
-    /// and 1 while a drop holds the shape apart (`uSwarmForm`).
+    /// and, while a drop holds the shape apart, 1 and the seconds since
+    /// it landed; 0 otherwise (`uSwarmForm`).
     pub form: [f32; 4],
     pub forces: Forces,
     /// How much of the last frame's light stays (`uSwarmTrail`).
@@ -59,6 +66,8 @@ pub struct Choreography {
     morph: f32,
     /// The bar counted last, and how many have passed on this shape.
     bar: Option<i64>,
+    /// The beat counted last.
+    beat: Option<i64>,
     bars_on: i64,
     /// When the bar count last moved.
     bar_changed: f32,
@@ -87,6 +96,7 @@ impl Choreography {
             changed: 0.0,
             morph: MORPH_SECONDS,
             bar: None,
+            beat: None,
             bars_on: 0,
             bar_changed: 0.0,
             section: None,
@@ -142,25 +152,30 @@ impl Choreography {
             self.bar = Some(bar);
             self.bar_changed = time;
         }
+        let beat = music.beats.floor() as i64;
+        let new_beat = self.beat.is_some_and(|last| beat > last);
+        self.beat = Some(beat);
 
-        // The drop: blown apart now, back together on a later downbeat.
+        // The drop: blown apart now, back together a beat or two later.
         let dropped = music.drop - self.last_drop > DROP_RISE;
         self.last_drop = music.drop;
         let mut blast = 0.0;
         let mut heat = 0.0;
         if dropped {
             self.scattered = Some(time);
-            blast += 2.6;
-            heat = 0.5;
+            blast += 2.2;
+            heat = 0.1;
         }
         // Without a beat (none counted for a while), the clock stands in
         // for the downbeats.
         let beatless = time - self.bar_changed > NO_BEAT_BARS_SECONDS;
         if let Some(at) = self.scattered {
-            // Apart at least a beat, so the explosion shows, then together
-            // again on the downbeat.
+            // Apart a beat and a half at least, so the explosion shows,
+            // then together again on the next beat.
             let apart = time - at;
-            if (downbeat && apart >= music.beat_seconds * 0.9) || (beatless && apart > 3.0) {
+            if (new_beat && apart >= music.beat_seconds * APART_BEATS)
+                || (beatless && apart > APART_SECONDS)
+            {
                 self.scattered = None;
                 self.reformed = time;
                 self.section_changed = false;
@@ -188,13 +203,25 @@ impl Choreography {
         let snap = (-(time - self.reformed).max(0.0) * 2.5).exp();
         let morph = ((time - self.changed) / self.morph).clamp(0.0, 1.0);
         let parts = &music.parts;
-        let pull = 20.0 * (1.0 - scatter) * (1.0 + 5.0 * snap);
-        let swirl = 0.05 + 0.5 * parts.snare + 0.25 * parts.fill + 0.15 * scatter;
-        let drag = if scatter > 0.0 { 1.6 } else { 4.2 + 8.0 * snap };
+        // Apart, a soft spring holds each particle on its place in the
+        // burst (`swarm_targets.glsl`), loose enough that the blast carries
+        // it past and it swings back: the picture full of streaks.
+        let pull = if scatter > 0.0 {
+            30.0
+        } else {
+            20.0 * (1.0 + 5.0 * snap)
+        };
+        let swirl = 0.05 + 0.5 * parts.snare + 0.25 * parts.fill + 0.3 * scatter;
+        let drag = if scatter > 0.0 { 1.8 } else { 4.2 + 8.0 * snap };
         self.stream_clock += dt * (0.5 + 0.7 * music.energy);
-        let keep = 0.8 + 0.12 * scatter;
+        let keep = 0.8 + 0.08 * scatter;
         Cues {
-            form: [self.from as f32, self.to as f32, morph, scatter],
+            form: [
+                self.from as f32,
+                self.to as f32,
+                morph,
+                self.scattered.map_or(0.0, |at| 1.0 + (time - at)),
+            ],
             forces: Forces {
                 force: [pull, swirl, drag, dt],
                 blast: [0.0, 0.0, blast, heat],
@@ -429,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_blows_the_shape_apart_until_the_next_downbeat() {
+    fn a_drop_blows_the_shape_apart_for_two_beats() {
         let mut choreography = Choreography::new(0.7);
         // Land a drop on a downbeat, at 10 s (bar 5).
         let frames = play(&mut choreography, 0.0, 14.0, |frame| {
@@ -449,16 +476,20 @@ mod tests {
         let landed = at(10.0);
         assert!(landed.forces.blast[2] > 2.0, "{landed:?}");
         assert_eq!(landed.form[3], 1.0);
-        assert_eq!(landed.forces.force[0], 0.0, "nothing pulls while apart");
-        // Still apart through the bar...
-        assert_eq!(at(11.9).form[3], 1.0);
-        // ...and back together on the next downbeat, pulling hard, into a
-        // new shape, all at once.
-        let back = at(12.0);
+        assert!(
+            landed.forces.force[0] < 40.0,
+            "only a soft spring while apart"
+        );
+        // Still apart through the next beat, the seconds counting...
+        let apart = at(10.9);
+        assert!((apart.form[3] - 1.9).abs() < 0.02, "{apart:?}");
+        // ...and back together on the second beat after, pulling hard,
+        // into a new shape, all at once.
+        let back = at(11.0);
         assert_eq!(back.form[3], 0.0);
         assert_ne!(back.form[1], landed.form[1]);
         assert!(back.forces.force[0] > 40.0, "{back:?}");
-        assert!(at(12.3).form[2] >= 1.0);
+        assert!(at(11.3).form[2] >= 1.0);
     }
 
     #[test]

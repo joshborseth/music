@@ -251,20 +251,22 @@ impl Screen {
         let held = 1.0 - 0.8 * parts.stop;
         // The climax is the biggest version of everything.
         let big = 1.0 + 0.25 * climax;
-        // The flash is over in about a beat; the drop's light stays up
+        // The flash is over in half a beat; the drop's light stays up
         // through its two bars, falling away. A landing flashes too, as
         // big as it is.
-        let flash = (drop.powi(8) * 0.8).max(land.powi(3) * 0.95) * big + strobe_flash;
+        let flash = (drop.powi(16) * 0.8).max(land.powi(3) * 0.95) * big + strobe_flash;
+        // The kick, the drop, and the landing each lift the light and the
+        // glow; together, as when a drop lands, they add up less, so the
+        // picture keeps its colors instead of burning white for a beat.
+        let lifted = ease_over(0.4 * hit + 0.45 * drop + 0.5 * land, 0.8, 0.4);
+        let glowed = ease_over(0.8 * hit + 0.7 * drop + 0.6 * land, 1.0, 0.3);
         Self {
             // Through a build the camera pushes in, pulsing faster; the
             // landing snaps it back and punches.
             punch: 1.0
                 - (0.05 * hit + 0.05 * drop + 0.16 * build + 0.025 * quicken + 0.07 * land) * big,
             bulge: (0.08 * hit + 0.08 * drop * drop + 0.3 * land * land) * big,
-            lift: (1.0 + 0.4 * hit + 0.45 * drop + 0.5 * land + 0.35 * build + 0.3 * quicken)
-                * held
-                * big
-                * (1.0 - strobe_dim),
+            lift: (1.0 + lifted + 0.35 * build + 0.3 * quicken) * held * big * (1.0 - strobe_dim),
             // Each snare splits the colors a hair, in wild music.
             split: (0.006 * drop * drop * drop
                 + 0.0015 * parts.snare * music.intensity
@@ -272,12 +274,7 @@ impl Screen {
                 * big,
             // The glow swells a little on each new chord, and more each
             // time a part of the song comes back.
-            glow: (0.3
-                + 0.5 * music.energy
-                + 0.8 * hit
-                + 0.7 * drop
-                + 0.15 * parts.chord_change
-                + 0.6 * land)
+            glow: (0.3 + 0.5 * music.energy + glowed + 0.15 * parts.chord_change)
                 * held
                 * big
                 * (1.0 + 0.1 * parts.repeat.min(3.0)),
@@ -297,6 +294,11 @@ impl Screen {
             hold,
         }
     }
+}
+
+/// `x` as it is up to `knee`, and only `rate` of what goes past it.
+fn ease_over(x: f32, knee: f32, rate: f32) -> f32 {
+    x.min(knee) + rate * (x - knee).max(0.0)
 }
 
 fn smoothstep(from: f32, to: f32, x: f32) -> f32 {

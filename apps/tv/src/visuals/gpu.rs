@@ -22,7 +22,9 @@
 //!    through, datamoshes, or wipes it) to show the next, and adds the
 //!    glow, the camera tricks, the build-ups and landings, the glitch
 //!    layer, the tone, the vignette, and the shade the app's words need,
-//!    into a picture the scenes' size.
+//!    into a picture the scenes' size. A shatter first works out its
+//!    shards once (`shards.glsl`); a datamosh also writes the frozen frame
+//!    back, dragged a step on, as a second output, so its smears build up.
 //! 4. `present.glsl` stretches the picture to the screen, with a fine
 //!    grain. It is the only pass at the screen's size, and reads one pixel
 //!    for each it draws: a full-size pass costs as much as a whole scene on
@@ -98,6 +100,11 @@ const FINAL_WORDS_UNIT: u32 = 8;
 const BASE_HEIGHT: u32 = 720;
 /// The glow is this many times smaller than the scenes, each way.
 const BLOOM_DIVISOR: i32 = 8;
+/// The shatter's shards (`shards.glsl`) are worked out at this many
+/// times smaller than the picture, each way, once a change.
+const SHARDS_DIVISOR: i32 = 2;
+/// The unit `final` reads the shards from (the moments' units are 4 to 7).
+const SHARDS_UNIT: u32 = 5;
 /// Frames a scene must show alone before its frames are counted: the
 /// first ones after a change of scene still carry the change's cost.
 const STEADY_AFTER: u32 = 3;
@@ -167,6 +174,16 @@ pub struct Renderer {
     /// `final` for each change of scene, by its code (`transition.rs`);
     /// none for code 0, which is `final_pass`.
     changes: [Option<Program>; TRANSITIONS],
+    /// The shatter's shards (`shards.glsl`): the program, the texture they
+    /// are drawn into, and the change's seed and the picture's size they
+    /// were drawn for.
+    shards: Option<Program>,
+    shard_field: Target,
+    shards_drawn: Option<(u32, i32, i32)>,
+    /// The framebuffer a datamosh's `final` draws into: the picture, and
+    /// the frozen frame dragged a step on (`final.glsl`, `moshOut`).
+    /// Which buffers it draws is its own state, not Skia's.
+    mosh: glow::Framebuffer,
     present: Program,
     slots: [Slot; 2],
     /// The finished picture, the scenes' size, before `present` stretches it.
@@ -342,6 +359,17 @@ impl Renderer {
                 &vertex,
                 &fragment(include_str!("shaders/present.glsl")),
             );
+            // The shatter reads its shards from a texture this works out;
+            // without it, a shatter cuts.
+            let shards = compile(
+                "shards.glsl",
+                &vertex,
+                &fragment(include_str!("shaders/shards.glsl")),
+            );
+            let mut changes = changes;
+            if shards.is_none() {
+                changes[1] = None;
+            }
             let (Some(bright), Some(blur), Some(final_pass), Some(present)) =
                 (bright, blur, final_pass, present)
             else {
@@ -385,6 +413,8 @@ impl Renderer {
             let slots = [slot()?, slot()?];
             let bloom = [target(gl, 4, 4)?, target(gl, 4, 4)?];
             let picture = target(gl, width, height)?;
+            let shard_field = target(gl, 4, 4)?;
+            let mosh = gl.create_framebuffer().ok()?;
             Some(Self {
                 vao,
                 scenes,
@@ -396,6 +426,10 @@ impl Renderer {
                 slots,
                 final_pass,
                 changes,
+                shards,
+                shard_field,
+                shards_drawn: None,
+                mosh,
                 picture,
                 picture_drawn: false,
                 bloom,
@@ -449,9 +483,11 @@ impl Renderer {
     /// Whether `scene` draws the word sung now this frame, where
     /// `final.glsl` lifts the shade around its letters: the scenes with a
     /// worded build, Diorama's relief, Coral (which grows it), and Swarm
-    /// for a hook word (`swarm_targets.glsl`). Terrain doesn't.
+    /// when it spells the word sung now (`swarm_targets.glsl`). Terrain
+    /// doesn't.
     fn draws_words(&self, scene: usize) -> bool {
-        let hook = self.words_frame.times[words::NOW][2] > 0.5;
+        let [slot, share, _, _] = self.words_frame.spell;
+        let hook = share > 0.0 && slot == words::NOW as f32;
         self.words_frame.atlas[3] > 0.0
             && match scene {
                 DIORAMA => self.relief_worded.is_some(),
@@ -900,13 +936,71 @@ impl Renderer {
             );
             fullscreen(gl);
 
+            // A shatter's shards, once a change, at half the picture's
+            // size: which shard each place belongs to (`shards.glsl`).
+            let shattering = b.is_some() && change.code() == 1;
+            if shattering && let Some(shards) = &self.shards {
+                let (wide, tall) = (
+                    (wide / SHARDS_DIVISOR).max(1),
+                    (tall / SHARDS_DIVISOR).max(1),
+                );
+                let drawn = Some((change.seed.to_bits(), wide, tall));
+                if self.shards_drawn != drawn {
+                    if (self.shard_field.width, self.shard_field.height) != (wide, tall) {
+                        resize(gl, &mut self.shard_field, wide, tall);
+                    }
+                    begin_pass(gl, &self.shard_field);
+                    gl.use_program(Some(shards.program));
+                    set_vec2(gl, shards, "uRes", wide as f32, tall as f32);
+                    set_f32(gl, shards, "uTransSeed", change.seed);
+                    bind_texture(gl, shards, "uNoise", 0, self.noise);
+                    fullscreen(gl);
+                    self.shards_drawn = drawn;
+                }
+            }
+
+            // A datamosh's `final` also drags the frozen frame (slot `a`)
+            // a step on, into the other of its pair, the picture's size.
+            let moshing = b.is_some() && change.code() == 4 && self.changes[4].is_some();
+            if moshing {
+                let (wide, tall) = (self.picture.width, self.picture.height);
+                let spare = &mut self.slots[a].targets[1];
+                if (spare.width, spare.height) != (wide, tall) {
+                    resize(gl, spare, wide, tall);
+                }
+            }
+            let out_a = &self.slots[a].targets[0];
+            let out_b = &self.slots[b.unwrap_or(a)].targets[0];
+
             // ...and the picture, the scenes' size.
             let picture = &self.picture;
             // The change's own program, while one runs.
             let program = b
                 .and_then(|_| self.changes[change.code()].as_ref())
                 .unwrap_or(&self.final_pass);
-            begin_pass(gl, picture);
+            if moshing {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.mosh));
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(picture.texture),
+                    0,
+                );
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT1,
+                    glow::TEXTURE_2D,
+                    Some(self.slots[a].targets[1].texture),
+                    0,
+                );
+                let both = [glow::COLOR_ATTACHMENT0, glow::COLOR_ATTACHMENT1];
+                gl.draw_buffers(&both);
+                gl.viewport(0, 0, picture.width, picture.height);
+                gl.invalidate_framebuffer(glow::FRAMEBUFFER, &both);
+            } else {
+                begin_pass(gl, picture);
+            }
             gl.use_program(Some(program.program));
             self.set_music(
                 gl,
@@ -927,8 +1021,18 @@ impl Renderer {
             bind_texture(gl, program, "uSceneB", 1, frozen.texture);
             bind_texture(gl, program, "uBloom", 2, soft.texture);
             bind_texture(gl, program, "uNoise", 3, self.noise);
-            // The changes of scene read the fractal noise too.
+            // The changes of scene read the fractal noise too, and the
+            // shatter its shards.
             bind_texture(gl, program, "uFbm", 4, self.fbm);
+            if shattering {
+                bind_texture(
+                    gl,
+                    program,
+                    "uShards",
+                    SHARDS_UNIT,
+                    self.shard_field.texture,
+                );
+            }
             // Where a word is sung, the shade lifts (`final.glsl`).
             bind_texture(
                 gl,
@@ -946,6 +1050,7 @@ impl Renderer {
                 gl.uniform_4_f32(Some(at), 1.0, 1.0, 1.0, 0.0);
             }
             set_f32(gl, program, "uMix", mix);
+            set_f32(gl, program, "uTransStep", (music.dt * 60.0).clamp(0.0, 3.0));
             // The change of scene (`transition.rs`) and the moments
             // (`Screen`): the build, the inhale, the glitch.
             set_f32(gl, program, "uTransSeed", change.seed);
@@ -972,6 +1077,9 @@ impl Renderer {
             set_vec2(gl, program, "uPool", wide / reach, tall / reach);
             fullscreen(gl);
             self.picture_drawn = true;
+            if moshing {
+                self.slots[a].targets.swap(0, 1);
+            }
         }
     }
 
@@ -1014,7 +1122,11 @@ impl Renderer {
             });
             let slot = &mut self.slots[index];
             slot.seed = showing.seed;
-            let sized = slot.targets[0].width == wide && slot.targets[0].height == tall;
+            // Both of the pair: a datamosh leaves them different sizes.
+            let sized = slot
+                .targets
+                .iter()
+                .all(|target| target.width == wide && target.height == tall);
             if held.is_some() && sized {
                 return index;
             }
@@ -1377,6 +1489,10 @@ impl Renderer {
                 let [width, height, spread, on] = words.atlas;
                 gl.uniform_4_f32(Some(at), width, height, spread, on);
             }
+            if let Some(at) = program.uniforms.get("uWordSpell") {
+                let [slot, share, _, _] = words.spell;
+                gl.uniform_4_f32(Some(at), slot, share, 0.0, 0.0);
+            }
         }
     }
 
@@ -1424,7 +1540,9 @@ impl Renderer {
                 .chain(self.relief)
                 .chain(self.relief_worded)
                 .chain([self.bright, self.blur, self.final_pass, self.present]);
-            let programs = programs.chain(self.changes.into_iter().flatten());
+            let programs = programs
+                .chain(self.changes.into_iter().flatten())
+                .chain(self.shards);
             for program in programs {
                 gl.delete_program(program.program);
             }
@@ -1433,7 +1551,7 @@ impl Renderer {
                 .into_iter()
                 .flat_map(|slot| slot.targets)
                 .chain(self.bloom)
-                .chain([self.picture])
+                .chain([self.picture, self.shard_field])
             {
                 gl.delete_framebuffer(target.framebuffer);
                 gl.delete_texture(target.texture);
@@ -1452,6 +1570,7 @@ impl Renderer {
                 gl.delete_texture(texture);
             }
             self.words.delete(gl);
+            gl.delete_framebuffer(self.mosh);
             gl.delete_vertex_array(self.vao);
         }
     }

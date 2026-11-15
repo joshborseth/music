@@ -58,6 +58,8 @@ export interface WordsFrame {
   readonly boxes: Float32Array
   readonly times: Float32Array
   readonly atlas: [number, number, number, number]
+  /** The word Swarm spells: its slot (-1 none), how much (`words::spell`). */
+  spell: [number, number, number, number]
 }
 
 const NOW = 0
@@ -70,6 +72,15 @@ const FADE_OUT = 0.5
 const AHEAD = 1.5
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x))
+const smoothstep = (from: number, to: number, x: number) => {
+  const t = clamp01((x - from) / (to - from))
+  return t * t * (3 - 2 * t)
+}
+// `words.rs`'s SPELL_HOLD, SPELL_KEEP, SPELL_GATHER.
+const SPELL_HOLD = 0.4
+const SPELL_KEEP = 0.5
+const SPELL_GATHER = 0.45
+const NO_SPELL: [number, number, number, number] = [-1, 0, 0, 0]
 
 const hookLevel = (word: Word) => (word.phrase ? 1 : word.hook ? 0.6 : 0)
 
@@ -118,6 +129,7 @@ export const wordsFrame = (
     boxes: new Float32Array(12),
     times: new Float32Array(12),
     atlas: [data.atlas.width, data.atlas.height, data.atlas.spread, 0],
+    spell: NO_SPELL,
   }
   if (room === 'Hidden') return frame
   const words = data.words
@@ -202,6 +214,31 @@ export const wordsFrame = (
   frame.atlas[3] = [0, 1, 2].some(slot => (frame.times[slot * 4 + 3] ?? 0) > 0)
     ? 1
     : 0
+  // `words::spell`: which word Swarm spells, and how much.
+  const spellable = (index: number): boolean => {
+    const word = words[index]
+    if (word === undefined || hookLevel(word) <= 0) return false
+    const until = words[index + 1]?.startSeconds ?? word.endSeconds + LINGER
+    return until - word.startSeconds >= SPELL_HOLD
+  }
+  const time = (slot: number, i: number) => frame.times[slot * 4 + i] ?? 0
+  const at = (slot: number, share: number): [number, number, number, number] =>
+    share > 0 ? [slot, Math.min(1, share), 0, 0] : NO_SPELL
+  if (now >= 0 && spellable(now) && time(NOW, 3) > 0)
+    frame.spell = at(NOW, time(NOW, 3))
+  else if (
+    before >= 0 &&
+    spellable(before) &&
+    time(BEFORE, 3) > 0 &&
+    time(NOW, 0) < SPELL_KEEP
+  )
+    frame.spell = at(
+      BEFORE,
+      time(BEFORE, 3) *
+        (1 - smoothstep(0.6 * SPELL_KEEP, SPELL_KEEP, time(NOW, 0))),
+    )
+  else if (next >= 0 && spellable(next) && time(NEXT, 3) > 0)
+    frame.spell = at(NEXT, smoothstep(-SPELL_GATHER, -0.1, time(NEXT, 0)))
   return frame
 }
 
@@ -459,8 +496,8 @@ export const makeWordsGl = (gl: WebGL2RenderingContext) => {
     },
     /** Whether a word shows this frame: the scenes draw with their words then. */
     showing: () => (frame?.atlas[3] ?? 0) > 0,
-    /** Whether the word sung now is a hook's (Swarm spells those). */
-    hook: () => (frame?.times[2] ?? 0) > 0.5,
+    /** Whether Swarm spells the word sung now (`words::spell`). */
+    hook: () => (frame?.spell[1] ?? 0) > 0 && frame?.spell[0] === NOW,
     bind: (p: ProgramLike) => {
       const at = p.uniforms.get('uWords')
       if (at === undefined) return
@@ -479,6 +516,9 @@ export const makeWordsGl = (gl: WebGL2RenderingContext) => {
       const atlasAt = p.uniforms.get('uWordAtlas')
       if (atlasAt !== undefined)
         gl.uniform4f(atlasAt, ...(frame?.atlas ?? [1, 1, 1, 0]))
+      const spellAt = p.uniforms.get('uWordSpell')
+      if (spellAt !== undefined)
+        gl.uniform4f(spellAt, ...(frame?.spell ?? NO_SPELL))
     },
   }
 }

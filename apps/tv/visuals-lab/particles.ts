@@ -281,6 +281,8 @@ const NO_BEAT_SECONDS = 20
 const NO_BEAT_BARS_SECONDS = 4
 const KICK_RISE = 0.2
 const DROP_RISE = 0.3
+const APART_BEATS = 1.5
+const APART_SECONDS = 1.2
 const LONGEST_STEP = 1 / 20
 
 export interface Cues {
@@ -309,6 +311,7 @@ export const choreography = (seed: number) => {
   let changed = 0
   let morphSeconds = MORPH_SECONDS
   let bar: number | null = null
+  let beat: number | null = null
   let barsOn = 0
   let barChanged = 0
   let section: string | null = null
@@ -348,6 +351,9 @@ export const choreography = (seed: number) => {
       bar = thisBar
       barChanged = time
     }
+    const thisBeat = Math.floor(music.beats)
+    const newBeat = beat !== null && thisBeat > beat
+    beat = thisBeat
 
     const dropped = music.drop - lastDrop > DROP_RISE
     lastDrop = music.drop
@@ -355,15 +361,15 @@ export const choreography = (seed: number) => {
     let heat = 0
     if (dropped) {
       scattered = time
-      blast += 2.6
-      heat = 0.5
+      blast += 2.2
+      heat = 0.1
     }
     const beatless = time - barChanged > NO_BEAT_BARS_SECONDS
     if (scattered !== null) {
       const apart = time - scattered
       if (
-        (downbeat && apart >= music.beatSeconds * 0.9) ||
-        (beatless && apart > 3)
+        (newBeat && apart >= music.beatSeconds * APART_BEATS) ||
+        (beatless && apart > APART_SECONDS)
       ) {
         scattered = null
         reformed = time
@@ -391,13 +397,13 @@ export const choreography = (seed: number) => {
     const snap = Math.exp(-Math.max(0, time - reformed) * 2.5)
     const morph = Math.min(1, Math.max(0, (time - changed) / morphSeconds))
     const parts = music.parts
-    const pull = 20 * (1 - scatter) * (1 + 5 * snap)
-    const swirl = 0.05 + 0.5 * parts.snare + 0.25 * parts.fill + 0.15 * scatter
-    const drag = scatter > 0 ? 1.6 : 4.2 + 8 * snap
+    const pull = scatter > 0 ? 30 : 20 * (1 + 5 * snap)
+    const swirl = 0.05 + 0.5 * parts.snare + 0.25 * parts.fill + 0.3 * scatter
+    const drag = scatter > 0 ? 1.8 : 4.2 + 8 * snap
     streamClock += dt * (0.5 + 0.7 * music.energy)
-    const keep = 0.8 + 0.12 * scatter
+    const keep = 0.8 + 0.08 * scatter
     return {
-      form: [from, to, morph, scatter],
+      form: [from, to, morph, scattered === null ? 0 : 1 + (time - scattered)],
       forces: {
         force: [pull, swirl, drag, dt],
         blast: [0, 0, blast, heat],

@@ -18,7 +18,7 @@
 // frame to show it (over `uMix`, transition.rs): it shatters
 // into shards flying at the camera, melts away in drips, rushes past the
 // camera through a hole that opens in it, is dragged along the new scene's
-// shapes in blocks (a datamosh), or is swept away by an edge in the
+// shapes until it smears (a datamosh), or is swept away by an edge in the
 // cover's color. Through a build the colors drain toward the cover's deep
 // shade (`uCueDrain`), the half beat before its landing all but goes dark
 // (`uCueInhale`), and fills, a build's last bar, and the climax tear the
@@ -139,58 +139,41 @@ highp vec2 torn(highp vec2 uv) {
 // lit along its edges in the cover's color, and drops away, the middle
 // first, showing the new scene behind through the widening cracks. Most of
 // it happens at once, on the beat, then slows.
-const float SHARDS = 3.0;
-// Shards are smaller toward the middle: the sheet is read at the square
-// root of the distance from it (no `pow`, which a TV's GPU and the lab's
-// software renderer both pay for), and back.
-highp vec2 toShards(highp vec2 p) {
-  return p * sqrt(inversesqrt(max(dot(p, p), 1e-6))) * SHARDS;
-}
-highp vec2 fromShards(highp vec2 g) {
-  return g * length(g) / (SHARDS * SHARDS);
-}
-// The noise texture's values for shard `n`: its point, its tilt.
-vec4 shard(highp vec2 n, ivec2 shift) {
-  return texelFetch(uNoise, (ivec2(n) + shift) & 255, 0);
-}
+//
+// The two shards nearest each place were worked out once for the change
+// (`shards.glsl`, `uShards`), so each pixel here reads them instead of
+// searching four: the sheet coming closer only reads them nearer the
+// middle. Which of the two is nearer, and the edge between them, are
+// worked out here, so the cracks stay sharp.
+uniform sampler2D uShards;
 vec3 shatter(vec3 fresh, highp vec2 uv, float t) {
   highp vec2 aspect = vec2(uRes.x / uRes.y, 1.0);
   float fast = 1.0 - (1.0 - t) * (1.0 - t);
   // The whole sheet flies at the camera; the shards spread with it.
   float zoom = 1.0 + 2.4 * fast * fast;
-  highp vec2 g = toShards((uv - 0.5) * aspect / zoom);
-  // The four cells nearest: each shard's point stays well inside its
-  // cell, so the nearest point is all but always among theirs (under half
-  // the work of the usual nine). Kept: the two nearest distances, and
-  // which cell is nearest, worked out again after.
-  highp vec2 cell = floor(g - 0.5);
-  vec2 inside = vec2(g - cell);
+  highp vec2 at = 0.5 + (uv - 0.5) / zoom;
+  highp vec2 g = toShards((at - 0.5) * aspect);
+  ivec2 size = textureSize(uShards, 0);
+  ivec2 texel = clamp(ivec2(at * vec2(size)), ivec2(0), size - 1);
+  highp vec4 cells = floor(texelFetch(uShards, texel, 0) * 255.0 + 0.5) - SHARD_CELL_BIAS;
+  ivec2 shift = shardShift(uTransSeed);
+  vec4 first = shard(cells.xy, shift);
+  vec4 other = shard(cells.zw, shift);
+  // Each shard's point drifts its own way as it goes.
   float drift = 0.24 * fast;
-  ivec2 shift = ivec2(128.0 + uTransSeed * 61.0);
-  float near = 99.0;
-  float second = 99.0;
-  vec2 nearest = vec2(0.0);
-  for (int y = 0; y <= 1; y++) {
-    for (int x = 0; x <= 1; x++) {
-      vec2 n = vec2(float(x), float(y));
-      vec2 r = shard(cell + n, shift).rg;
-      // Each shard drifts its own way as it goes.
-      vec2 to = inside - n - 0.2 - 0.6 * r - (r.yx - 0.5) * drift;
-      float d = dot(to, to);
-      // Without branches: neighbouring pixels would take different ones,
-      // and a GPU then runs both.
-      float closer = step(d, near);
-      second = mix(min(second, d), near, closer);
-      near = min(near, d);
-      nearest = mix(nearest, n, closer);
-    }
-  }
-  vec4 chosen = shard(cell + nearest, shift);
-  highp vec2 point = cell + nearest + 0.2 + 0.6 * chosen.rg;
-  highp vec2 moved = point + (chosen.gr - 0.5) * drift;
-  near = sqrt(near);
-  second = sqrt(second);
-  float edge = second - near;
+  highp vec2 firstAt = cells.xy + 0.2 + 0.6 * first.rg + (first.gr - 0.5) * drift;
+  highp vec2 otherAt = cells.zw + 0.2 + 0.6 * other.rg + (other.gr - 0.5) * drift;
+  float toFirst = length(vec2(g - firstAt));
+  float toOther = length(vec2(g - otherAt));
+  // The nearer of the two is this place's shard (picked without a
+  // branch: neighbouring pixels pick differently, and a GPU would then
+  // run both).
+  float second = step(toOther, toFirst);
+  vec4 chosen = mix(first, other, second);
+  highp vec2 cell = mix(cells.xy, cells.zw, second);
+  highp vec2 moved = mix(firstAt, otherAt, second);
+  float edge = abs(toOther - toFirst);
+  highp vec2 point = cell + 0.2 + 0.6 * chosen.rg;
   // Each shard turns and grows (comes nearer) at its own pace.
   float spin = (fract(chosen.r * 31.7) - 0.5) * 1.6 * fast;
   float nearer = 1.0 + 1.5 * fract(chosen.g * 23.1) * fast;
@@ -265,30 +248,58 @@ vec3 zoomThrough(highp vec2 uv, float t) {
 
 #elif TRANSITION == 4
 // DATAMOSH: as a broken video stream does, the frozen frame's pixels are
-// dragged along the new scene's shapes, in blocks (each 16 pixels moved
-// by the new scene's slope there), while blocks of the new scene break
-// through, more and more, its sharpest edges first.
-vec3 datamosh(vec3 fresh, highp vec2 uv, float t, float here) {
-  highp vec2 size = 16.0 / uRes;
-  highp vec2 block = floor(uv / size);
-  highp vec2 middle = (block + 0.5) * size;
-  // The new scene's slope there, from its glow's brightness (`uBloom`'s
-  // alpha: blurred already, and an eighth of the size, so its reads are
-  // cheap), against the glow here, two blocks across.
-  vec2 slope = vec2(
-    texture(uBloom, middle + vec2(2.0 * size.x, 0.0)).a - here,
-    texture(uBloom, middle + vec2(0.0, 2.0 * size.y)).a - here
-  );
+// dragged along the new scene's shapes, further each frame, and smear,
+// keeping a stale tint in blocks, as a stream missing its keyframe; then
+// the new scene breaks through, its brightest shapes first, and last in
+// blocks.
+//
+// The drag is kept: this pass also writes the frozen frame, dragged one
+// step on, into the other of its pair (`moshOut`, gpu.rs), which the next
+// frame reads, so what was dragged stays dragged and smears build up, as
+// in a stream whose every frame moves the last one's pixels on. It
+// follows the incoming scene's slope (the glow's alpha, how bright the
+// incoming scene is around each place: `bright.glsl`), turned a quarter
+// so pixels run along its shapes' outlines rather than piling onto them,
+// with a little down the slope; flat parts sway in slow waves. Whole
+// pixels at a time, as a stream's motion does: the copied pixels stay
+// sharp, however far they go. The frozen frame shows as dragged here,
+// where it is, so the camera's punch and shake leave it be: it is read
+// once, for both.
+layout(location = 1) out vec4 moshOut;
+// Sixtieths of a second since the last frame.
+uniform float uTransStep;
+
+// The frozen frame at `uv` (its own place, not the camera's), dragged one
+// step on, `here` the incoming scene's brightness there.
+vec4 moshStep(highp vec2 uv, float here) {
+  // The incoming scene's slope, across two pixels of the glow.
+  highp vec2 d = 2.0 / vec2(textureSize(uBloom, 0));
+  vec2 slope = vec2(texture(uBloom, uv + vec2(d.x, 0.0)).a - here, texture(uBloom, uv + vec2(0.0, d.y)).a - here);
+  float steep = length(slope);
+  vec2 way = slope / max(steep, 1e-4);
+  // The way it turns flips with the change's seed.
+  float turn = uTransSeed < 0.5 ? 1.0 : -1.0;
+  vec2 flow = (vec2(-way.y, way.x) * turn + 0.5 * way) * smoothstep(0.004, 0.08, steep);
+  // Flat parts sway too, in slow waves across the picture (triangle
+  // waves: a sine costs more).
+  highp vec2 wave = uv * vec2(5.0, 4.0) + uTransSeed * 13.0 + uMix * 1.5;
+  flow += (abs(fract(wave.yx * 0.16) - 0.5) - 0.25) * 1.4;
+  // Pixels a step: faster as the change goes on, then whole pixels.
+  float pixels = (2.0 + 5.0 * uMix) * uTransStep;
+  ivec2 size = textureSize(uSceneB, 0);
+  ivec2 at = ivec2(uv * vec2(size)) - ivec2(floor(flow * pixels + 0.5));
+  return texelFetch(uSceneB, clamp(at, ivec2(0), size - 1), 0);
+}
+
+vec3 datamosh(vec3 fresh, vec3 old, highp vec2 uv, float t, float incoming) {
+  highp vec2 block = floor(uv * uRes / 16.0);
   float jitter = hash12(block + uTransSeed * 17.0);
-  // The slope steers the drag; a little of each block's own sway keeps
-  // flat parts moving too.
-  vec2 steer = slope * 9.0 + (vec2(jitter, fract(jitter * 7.0)) - 0.5) * 0.4;
-  highp vec2 drag = steer / max(1.0, length(steer)) * 0.16 * (t + 1.5 * t * t);
-  vec3 old = frozen(uv - drag);
-  // Smeared blocks keep a stale tint, as a stream missing its keyframe.
-  old = mix(old, old.gbr, 0.15 * t * step(0.7, fract(jitter * 13.0)));
-  float through = step(fract(jitter * 31.0 + 0.37), t * 1.3 - 0.25);
-  through = max(through, smoothstep(0.06, 0.2, length(slope)) * smoothstep(0.1, 0.6, t));
+  old = mix(old, old.gbr, 0.2 * t * step(0.7, fract(jitter * 13.0)));
+  // The new scene's bright shapes come through as it goes on, the
+  // brightest first...
+  float through = smoothstep(0.5, 0.8, 1.4 * incoming + 0.6 * t - 0.1) * smoothstep(0.0, 0.3, t);
+  // ...and the rest a block at a time, at the end.
+  through = max(through, step(fract(jitter * 31.0 + 0.37), t * 3.0 - 2.0));
   return mix(old, fresh, through);
 }
 
@@ -357,7 +368,8 @@ void main() {
 #elif TRANSITION == 3
   color = zoomThrough(uv, clamp(uMix, 0.0, 1.0));
 #elif TRANSITION == 4
-  color = datamosh(color, uv, clamp(uMix, 0.0, 1.0), bloom.a);
+  moshOut = moshStep(vUv, bloom.a);
+  color = datamosh(color, moshOut.rgb, uv, clamp(uMix, 0.0, 1.0), bloom.a);
 #elif TRANSITION == 5
   color = wipe(color, uv, clamp(uMix, 0.0, 1.0));
 #endif
@@ -407,11 +419,12 @@ void main() {
     color = mix(color, color * 0.04 + mix(uColorA, vec3(1.0), 0.2) * shape * shape * 0.45, uCueInhale);
   }
 
-  // When a drop lands, a flash in the cover's color, everywhere alike but
-  // behind the lyrics, where it would wash out their dim lines. It is over
-  // in a beat; the rest of the drop lives in the lift, the glow, and the
-  // scenes.
-  color += uFlash * (1.0 - 0.75 * calm);
+  // When a drop lands, a flash in the cover's color, everywhere but
+  // behind the lyrics, where it would wash out their dim lines, and less
+  // on what is bright already, which it would only burn white. It is over
+  // in half a beat; the rest of the drop lives in the lift, the glow, and
+  // the scenes.
+  color += uFlash * (1.0 - 0.75 * calm) * (1.0 - 0.6 * smoothstep(0.4, 1.4, luma(color)));
 
   // A soft curve so bright light rolls off instead of clipping, worked on
   // the brightest channel and applied to all three: a channel clipping on

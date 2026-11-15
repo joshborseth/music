@@ -9,17 +9,17 @@
 //
 // The kicks seed new growth where each lands, the lead melody draws a line
 // of it, the bass changes what grows, a chord brightens it, and a drop
-// bleaches the reef white before it grows back from the middle.
+// bursts rings of new growth across it in a flash.
 //
 // One read of the reef a pixel, already turned into a filtered texture
-// (`coral_field.glsl`), and two of the fractal noise (each two noises in
-// one).
+// (`coral_field.glsl`), and one of the fractal noise (two noises in one).
+// The light on the sea floor is waves worked out here, not a second read.
 
 // The reef: red how much coral, green the food left, blue and alpha its
 // slope across and up (0.5 is flat).
 uniform sampler2D uState2;
-// How bright the growing edge glows, how white a drop has left the reef,
-// and the reef's grid in texels.
+// How bright the growing edge glows, how bright a drop's flash lights the
+// reef, and the reef's grid in texels.
 uniform vec4 uCoralLook;
 
 void main() {
@@ -42,11 +42,13 @@ void main() {
   vec3 hue = mix(uColorA, uColorD, smoothstep(0.35, 0.65, colony.x));
   hue = mix(hue, uColorB, 0.5 * smoothstep(0.55, 0.75, colony.y));
 
-  // The sea floor: dark, light rippling down onto it, and a soft halo of
-  // the colony's color where the coral has eaten the food around it.
-  vec2 water = fbm2(p * 3.0 + vec2(uDrive * 0.03, uTime * 0.02));
-  float shimmer = water.x;
-  float ripples = smoothstep(0.6, 0.8, water.y);
+  // The sea floor: dark, light rippling down onto it (two slow waves
+  // crossing, bent by the colonies), and a soft halo of the colony's
+  // color where the coral has eaten the food around it.
+  highp float drift = uDrive * 0.4 + uTime * 0.25;
+  float shimmer = 0.5 + 0.25 * (sin(dot(p, vec2(8.0, 5.0)) + 5.0 * colony.x + drift)
+    + sin(dot(p, vec2(-4.0, 9.0)) + 5.0 * colony.y - 0.7 * drift));
+  float ripples = smoothstep(0.6, 0.8, shimmer);
   vec3 floor_ = uColorC * (0.03 + 0.05 * shimmer * shimmer + 0.05 * ripples)
     + hue * 0.07 * (1.0 - food) * (1.0 - height);
 
@@ -63,9 +65,11 @@ void main() {
   vec3 glowing = mix(uColorA, vec3(1.0), 0.2) * edge * uCoralLook.x * 0.6;
 
   vec3 color = mix(floor_, flesh, height) + glowing;
-  // Bleached: pale and lit, the color gone, fading back as it regrows.
-  vec3 bleached = vec3(0.82, 0.84, 0.86) * (0.2 + 0.8 * diffuse) * height + shine * 0.3;
-  color = mix(color, bleached + uColorC * 0.04, uCoralLook.y);
+  // A drop's flash: the coral lit pale and hot in its colors, over the
+  // floor lit in the cover's strong color, fading within a beat.
+  vec3 flashed = mix(hue, vec3(1.0), 0.45) * (0.35 + 0.9 * diffuse) * height + shine * 0.3
+    + uColorA * 0.12 * (1.0 - height);
+  color = mix(color, flashed, uCoralLook.y);
   // Darker toward the edges of the picture, as if seen through water.
   color *= 1.0 - 0.4 * dot(p, p);
   fragColor = vec4(color, 1.0);

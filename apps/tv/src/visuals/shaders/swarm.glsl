@@ -4,7 +4,8 @@
 // them). The cover made of light, a galaxy, the spectrum as rings, a
 // rippling grid. Kicks blow the shape outward, snares swirl it, hi-hats
 // make it sparkle, the lead melody drags a stream across the picture, and
-// a drop blows it all apart until the next downbeat, when it snaps back.
+// a drop blows it up into streaks filling the picture, and two beats
+// later it snaps back.
 //
 // This pass draws what is under the particles: their trails (the last
 // frame, fading) and a faint haze in the cover's deep color. The

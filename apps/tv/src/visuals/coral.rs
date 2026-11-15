@@ -12,8 +12,9 @@
 //! steps (busy music grows faster, a stop nearly freezes it), the feed and
 //! kill rates (the bass moves them from spots through coral to a maze), a
 //! blob seeded where each kick lands, a line drawn by the lead melody, and
-//! the drop, which bleaches the reef white, clears it, and seeds it again
-//! from the middle. The lab (`apps/tv/visuals-lab/coral.ts`) makes the same
+//! the drop, which bursts rings of new growth out across the whole reef
+//! in a flash, which the reaction turns into its own pattern over the
+//! next second or two. The lab (`apps/tv/visuals-lab/coral.ts`) makes the same
 //! moves; keep the two in step.
 
 use glow::HasContext;
@@ -25,20 +26,20 @@ use super::particles::{self, Prepare, STATE_UNIT, STATE2_UNIT, State};
 /// The grid's height in texels; its width follows the screen's shape.
 const GRID_HEIGHT: i32 = 144;
 /// Steps a frame at 60 frames a second, calm to wild, and the most any
-/// frame takes.
-const CALM_STEPS: f32 = 2.0;
-const WILD_STEPS: f32 = 6.0;
-const MOST_STEPS: u32 = 6;
+/// frame takes. Each step reads the whole grid five times: with four at
+/// the most, the scene costs about what Terrain does (the lab's bench).
+const CALM_STEPS: f32 = 1.5;
+const WILD_STEPS: f32 = 4.0;
+const MOST_STEPS: u32 = 4;
 /// The kick and drop envelopes jump this much on a new hit, a new drop.
 const KICK_RISE: f32 = 0.2;
 const DROP_RISE: f32 = 0.3;
-/// A drop: seconds the reef shows white before it is cleared, when the
-/// clearing ends and the middle is seeded, and how long the white takes to
-/// fade, and how much faster it regrows at first.
-const BLEACH_FROM: f32 = 0.25;
-const BLEACH_TO: f32 = 0.6;
-const WHITE_FADE: f32 = 2.5;
-const REGROW: f32 = 0.5;
+/// A drop: how bright its flash lights the reef, the seconds it takes to
+/// fade by two thirds, and how much faster the reef runs at first, so
+/// the burst reorganizes while the drop is still hitting.
+const FLASH: f32 = 0.75;
+const FLASH_FADE: f32 = 0.35;
+const REGROW: f32 = 1.0;
 /// How fast the reaction runs against the spreading (`uCoralFeed.z`).
 const RATE: f32 = 2.5;
 
@@ -69,19 +70,18 @@ pub fn feed_kill(pattern: f32) -> (f32, f32) {
 pub struct Cues {
     /// Steps to run this frame.
     pub steps: u32,
-    /// Feed, kill, how fast the reaction runs, and how much to bleach each
-    /// step (`uCoralFeed`).
+    /// Feed, kill, how fast the reaction runs, and nothing (`uCoralFeed`).
     pub feed: [f32; 4],
     /// A blob to seed in the first step: x, y, radius in texels, how much
     /// (`uCoralBlob`).
     pub blob: [f32; 4],
     /// A line to seed in the first step, in texels (`uCoralLine`).
     pub line: [f32; 4],
-    /// The line's strength and radius, a disc to seed in the middle (its
-    /// radius), and 1 to start over (`uCoralInk`).
+    /// The line's strength and radius, 1 for a drop's burst of rings
+    /// across the whole reef, and 1 to start over (`uCoralInk`).
     pub ink: [f32; 4],
-    /// The growing edge's glow, how white a drop left the reef, and the
-    /// grid's size (`uCoralLook`).
+    /// The growing edge's glow, how bright a drop's flash lights the
+    /// reef, and the grid's size (`uCoralLook`).
     pub look: [f32; 4],
 }
 
@@ -98,7 +98,6 @@ pub struct Rhythm {
     energy: f32,
     kicks: u32,
     dropped: Option<f32>,
-    centre_seeded: bool,
     /// Where the melody's line was last frame.
     pen: Option<[f32; 2]>,
     /// Steps owed: a fraction carried to the next frame.
@@ -118,7 +117,6 @@ impl Rhythm {
             energy: 0.4,
             kicks: 0,
             dropped: None,
-            centre_seeded: true,
             pen: None,
             owed: 0.0,
             fresh: true,
@@ -145,9 +143,9 @@ impl Rhythm {
         self.energy = ease(self.energy, music.energy, 1.0);
 
         // Busy music grows faster; a dead stop nearly freezes it; after a
-        // drop, it grows back fast.
+        // drop, it runs fast.
         let since = self.dropped.map_or(f32::INFINITY, |at| time - at);
-        let regrow = 1.0 + REGROW * (-(since - BLEACH_TO).max(0.0) / 2.0).exp();
+        let regrow = 1.0 + REGROW * (-since / 2.0).exp();
         let rate = (CALM_STEPS + (WILD_STEPS - CALM_STEPS) * self.energy)
             * (1.0 - 0.85 * parts.stop)
             * regrow;
@@ -187,38 +185,25 @@ impl Rhythm {
         self.pen = Some(pen);
         let drawing = smoothstep(0.25, 0.6, parts.lead);
 
-        // A drop: white, then cleared, then seeded in the middle.
+        // A drop: a burst of rings across the whole reef, in a flash.
+        let mut burst = 0.0;
         if music.drop - self.last_drop > DROP_RISE {
             self.dropped = Some(time);
-            self.centre_seeded = false;
+            burst = 1.0;
         }
         self.last_drop = music.drop;
         let since = self.dropped.map_or(f32::INFINITY, |at| time - at);
-        let bleach = if (BLEACH_FROM..BLEACH_TO).contains(&since) {
-            0.2
-        } else {
-            0.0
-        };
-        let mut centre = 0.0;
-        if since >= BLEACH_TO && !self.centre_seeded {
-            self.centre_seeded = true;
-            centre = 7.0;
-        }
-        let white = if since < BLEACH_TO {
-            smoothstep(0.0, BLEACH_FROM, since)
-        } else {
-            (-(since - BLEACH_TO) / WHITE_FADE).exp()
-        };
+        let white = FLASH * (-since / FLASH_FADE).exp();
 
-        let reset = if self.fresh { 1.0 } else { 0.0 };
+        let reset: f32 = if self.fresh { 1.0 } else { 0.0 };
         self.fresh = false;
         Cues {
-            // Starting over takes a step of its own.
-            steps: steps.max(reset as u32),
-            feed: [feed, kill, RATE, bleach],
+            // Starting over, and a burst, take a step of their own.
+            steps: steps.max(reset.max(burst) as u32),
+            feed: [feed, kill, RATE, 0.0],
             blob,
             line: [from[0], from[1], pen[0], pen[1]],
-            ink: [drawing, 1.3, centre, reset],
+            ink: [drawing, 1.3, burst, reset],
             look: [
                 0.5 + 1.6 * music.kick * (0.4 + 0.6 * music.energy) + 0.6 * music.drop,
                 white,
@@ -485,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_bleaches_then_regrows_from_the_middle() {
+    fn a_drop_bursts_once_in_a_flash_that_fades_within_a_beat() {
         let mut rhythm = Rhythm::new(0.1, grid(16.0 / 9.0));
         let mut frames = Vec::new();
         for frame in 0..300 {
@@ -498,18 +483,28 @@ mod tests {
             };
             frames.push((time, rhythm.step(&beat)));
         }
-        let white_at = |t: f32| frames.iter().find(|(time, _)| *time >= t).unwrap().1;
-        assert!(white_at(0.9).look[1] < 0.01);
-        assert!(white_at(1.25).look[1] > 0.99, "white before it clears");
-        assert_eq!(white_at(1.1).feed[3], 0.0);
-        assert!(white_at(1.4).feed[3] > 0.0, "cleared");
-        let seeded: Vec<f32> = frames
+        let at = |t: f32| frames.iter().find(|(time, _)| *time >= t).unwrap().1;
+        assert!(at(0.9).look[1] < 0.01);
+        let bursts: Vec<f32> = frames
             .iter()
             .filter(|(_, cues)| cues.ink[2] > 0.0)
             .map(|(time, _)| *time)
             .collect();
-        assert_eq!(seeded.len(), 1, "seeded once");
-        assert!((seeded[0] - 1.6).abs() < 0.02, "{seeded:?}");
-        assert!(white_at(4.9).look[1] < 0.35, "the white fades");
+        assert_eq!(bursts.len(), 1, "burst once");
+        assert!((bursts[0] - 1.0).abs() < 0.02, "{bursts:?}");
+        assert!(at(1.0).steps >= 1);
+        // Lit at once, never cleared, and the flash gone in half a second.
+        assert!(at(1.0).look[1] > 0.7);
+        assert!(at(1.5).look[1] < 0.2);
+        assert!(frames.iter().all(|(_, cues)| cues.feed[3] == 0.0));
+        // It runs fast after the drop, then settles.
+        let steps = |from: f32, to: f32| -> u32 {
+            frames
+                .iter()
+                .filter(|(time, _)| (from..to).contains(time))
+                .map(|(_, cues)| cues.steps)
+                .sum()
+        };
+        assert!(steps(1.0, 1.5) > steps(0.4, 0.9), "faster after the drop");
     }
 }

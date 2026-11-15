@@ -26,7 +26,8 @@
 out uvec4 stateOut;
 
 // The shape before and after (as numbers above), how far each particle
-// has moved on (0 to 1), and 1 while a drop has blown the shape apart.
+// has moved on (0 to 1), and, while a drop has blown the shape apart, 1
+// and the seconds since it landed (0 otherwise).
 uniform vec4 uSwarmForm;
 // The stream (particles_update.glsl).
 uniform vec4 uSwarmStream;
@@ -214,24 +215,18 @@ void main() {
 
   // A hook word: up to three quarters of the swarm spells it while it is
   // sung, pulled hard so it forms within a word's time, and lets it go as
-  // the word fades. A hook word coming in under half a second gathers
-  // them first, so the next word of a chorus line forms from the last.
-  if (uWordAtlas.w > 0.0) {
-    vec4 now = uWordTime[WORD_NOW];
-    vec4 next = uWordTime[WORD_NEXT];
-    int w = -1;
-    float share = 0.0;
-    if (now.z > 0.5 && now.w > 0.0) {
-      w = WORD_NOW;
-      share = 0.75 * now.w;
-    } else if (next.z > 0.5 && next.w > 0.0 && next.x > -0.45) {
-      w = WORD_NEXT;
-      share = 0.75 * smoothstep(-0.45, -0.1, next.x);
-    }
+  // the word fades. Which word, and how much, words.rs picks
+  // (`uWordSpell`): only a word that shows long enough to form, held a
+  // moment into a quicker one after it, so fast rap reads as a few crisp
+  // words rather than a blur; and the next it spells gathers them first,
+  // so a chorus line's words form from the last.
+  if (uWordAtlas.w > 0.0 && uWordSpell.y > 0.0) {
+    int w = int(uWordSpell.x + 0.5);
+    float share = 0.75 * uWordSpell.y;
     Spot letter;
-    if (w >= 0 && unitU(id * 17u + 3u) < share && wordSpot(w, id, letter)) {
+    if (unitU(id * 17u + 3u) < share && wordSpot(w, id, letter)) {
       spot = letter;
-      pull = 6.0;
+      pull = 12.0;
     }
   }
 
@@ -246,6 +241,25 @@ void main() {
     spot.bright = 0.06 + 0.22 * (1.0 - behind);
     spot.size = 1.2 - 0.4 * behind;
     pull = 2.0;
+  }
+
+  // A drop blows the shape up past the edges: each particle is thrown
+  // straight out from the middle, through where it was, to a place of its
+  // own in a burst that fills the whole picture, evenly (the square root
+  // spreads them by area), and the blast carries it past that place and
+  // back (`swarm.rs`). The burst turns, the middle fastest, and swells, so
+  // every particle keeps chasing its place: the picture full of streaks.
+  // Paler toward the cover's strong color. The letters of a hook word hold.
+  if (uSwarmForm.w > 0.5 && pull < 4.0) {
+    float since = uSwarmForm.w - 1.0;
+    highp vec2 out_ = spot.at + (vec2(unitU(id * 23u + 1u), unitU(id * 23u + 2u)) - 0.5) * 0.04;
+    out_ /= max(length(out_), 1e-3);
+    // How far the picture reaches that way, a little past its edge.
+    float reach = 1.08 * min(0.5 * aspect / max(abs(out_.x), 1e-3), 0.5 / max(abs(out_.y), 1e-3));
+    float far = mix(0.03, 1.0, sqrt(unitU(id * 23u + 3u)));
+    spot.at = rot(since * (2.4 - 1.6 * far)) * out_ * reach * far * (0.85 + 0.2 * since);
+    spot.color = mix(spot.color, mix(uColorA, vec3(1.0), 0.35), 0.3);
+    pull = 1.0;
   }
 
   stateOut = uvec4(

@@ -25,15 +25,14 @@ import {
 type Vec4 = [number, number, number, number]
 
 const GRID_HEIGHT = 144
-const CALM_STEPS = 2
-const WILD_STEPS = 6
-const MOST_STEPS = 6
+const CALM_STEPS = 1.5
+const WILD_STEPS = 4
+const MOST_STEPS = 4
 const KICK_RISE = 0.2
 const DROP_RISE = 0.3
-const BLEACH_FROM = 0.25
-const BLEACH_TO = 0.6
-const WHITE_FADE = 2.5
-const REGROW = 0.5
+const FLASH = 0.75
+const FLASH_FADE = 0.35
+const REGROW = 1
 const RATE = 2.5
 
 /** The grid for a screen `aspect` times as wide as tall (`coral::grid`). */
@@ -77,7 +76,6 @@ export const rhythm = (seed: number, [wide, tall]: [number, number]) => {
   let energy = 0.4
   let kicks = 0
   let dropped: number | null = null
-  let centreSeeded = true
   let pen: [number, number] | null = null
   let owed = 0
   let fresh = true
@@ -93,8 +91,7 @@ export const rhythm = (seed: number, [wide, tall]: [number, number]) => {
     energy = ease(energy, music.energy, 1)
 
     const sinceDrop = dropped === null ? Infinity : time - dropped
-    const regrow =
-      1 + REGROW * Math.exp(-Math.max(0, sinceDrop - BLEACH_TO) / 2)
+    const regrow = 1 + REGROW * Math.exp(-sinceDrop / 2)
     const rate =
       (CALM_STEPS + (WILD_STEPS - CALM_STEPS) * energy) *
       (1 - 0.85 * parts.stop) *
@@ -132,31 +129,23 @@ export const rhythm = (seed: number, [wide, tall]: [number, number]) => {
     pen = nextPen
     const drawing = smoothstep(0.25, 0.6, parts.lead)
 
+    let burst = 0
     if (music.drop - lastDrop > DROP_RISE) {
       dropped = time
-      centreSeeded = false
+      burst = 1
     }
     lastDrop = music.drop
     const since = dropped === null ? Infinity : time - dropped
-    const bleach = since >= BLEACH_FROM && since < BLEACH_TO ? 0.2 : 0
-    let centre = 0
-    if (since >= BLEACH_TO && !centreSeeded) {
-      centreSeeded = true
-      centre = 7
-    }
-    const white =
-      since < BLEACH_TO
-        ? smoothstep(0, BLEACH_FROM, since)
-        : Math.exp(-(since - BLEACH_TO) / WHITE_FADE)
+    const white = FLASH * Math.exp(-since / FLASH_FADE)
 
     const reset = fresh ? 1 : 0
     fresh = false
     return {
-      steps: Math.max(steps, reset),
-      feed: [feed, kill, RATE, bleach],
+      steps: Math.max(steps, reset, burst),
+      feed: [feed, kill, RATE, 0],
       blob,
       line: [from[0], from[1], nextPen[0], nextPen[1]],
-      ink: [drawing, 1.3, centre, reset],
+      ink: [drawing, 1.3, burst, reset],
       look: [
         0.5 + 1.6 * music.kick * (0.4 + 0.6 * music.energy) + 0.6 * music.drop,
         white,

@@ -12,8 +12,9 @@
 // - at times a halftone print (dots sized by the light) or a posterized
 //   one (five steps of light), or the screen split into strips of
 //   different pictures;
-// - a punch in on each kick and on each cut, the colors split on the
-//   snare, the picture before echoing through the last frame (`uPrev`),
+// - a punch in on each kick and on each cut (the colors split on the
+//   snare in `final.glsl`, as in every scene), the picture before
+//   echoing through the last frame (`uPrev`),
 //   smearing outward through a drum fill;
 // - the live spectrum cut into the bottom as bars of negative, when the
 //   music is intense.
@@ -42,9 +43,13 @@ uniform vec4 uMontageTone;
 
 // Where `uv` (0 to 1 across the picture, y up, mirrored past its edges)
 // of picture `picture` is in the atlas, kept half a texel inside its cell.
+// Its column and row are counted in whole numbers: in mediump a `mod` of
+// floats can land on the count itself, a cell past the atlas.
 highp vec2 atlasUv(float picture, highp vec2 uv) {
-  float column = mod(picture, uMontageGrid.x);
-  float row = floor((picture + 0.5) / uMontageGrid.x);
+  int index = int(picture + 0.5);
+  int columns = max(int(uMontageGrid.x + 0.5), 1);
+  float column = float(index % columns);
+  float row = float(index / columns);
   highp vec2 inset = uMontageTone.zw;
   highp vec2 m = mirrored(uv);
   highp vec2 inCell = clamp(vec2(m.x, 1.0 - m.y), inset, 1.0 - inset);
@@ -64,13 +69,21 @@ float lightOf(vec3 c) {
   return dot(c, vec3(0.299, 0.587, 0.114));
 }
 
+// A cover color as bright to the eye as a middling one: a deep blue at
+// full strength is a fifth as bright as a yellow, so it is paled toward
+// white until it reads, or a dark blue cover grades every picture dim.
+vec3 lit(vec3 c) {
+  return mix(c, vec3(1.0), clamp(0.5 - lightOf(c), 0.0, 0.3));
+}
+
 // The picture's light graded into the look: duotone or tritone.
 vec3 tone(float l, float look) {
+  vec3 strong = lit(uColorA);
   if (look > 0.5 && look < 1.5) {
-    vec3 tri = mix(uColorC * 0.1, uColorD * 0.85, smoothstep(0.02, 0.5, l));
-    return mix(tri, mix(uColorA, vec3(1.0), 0.2), smoothstep(0.5, 1.0, l));
+    vec3 tri = mix(uColorC * 0.1, lit(uColorD) * 0.85, smoothstep(0.02, 0.5, l));
+    return mix(tri, mix(strong, vec3(1.0), 0.2), smoothstep(0.5, 1.0, l));
   }
-  return glowIn(l, uColorA);
+  return glowIn(l, strong);
 }
 
 // How bright a read pixel is once its light is evened out (`gain`), its
@@ -95,7 +108,9 @@ void main() {
   if (strips > 1.5) {
     highp float across = vUv.x * strips;
     float strip = floor(across);
-    picture = mod(picture + strip * 7.0, count);
+    // In whole numbers: see `atlasUv`.
+    int pictures = max(int(count + 0.5), 1);
+    picture = float((int(picture + 0.5) + int(strip) * 7) % pictures);
     p.x = (fract(across) - 0.5) * (uRes.x / uRes.y) / strips;
     p.y += (strip - 1.0) * 0.04;
     // A dark seam between strips.
@@ -122,23 +137,22 @@ void main() {
     highp vec2 cell = floor(grid) + 0.5;
     highp vec2 middle = mat2(0.7071, -0.7071, 0.7071, 0.7071) * cell / (34.0 + 12.0 * uIntensity);
     float l = crushed(texture(uMontage, atlasUv(picture, onPicture(middle, camera))).rgb, gain);
-    float radius = 0.62 * sqrt(l);
+    // Its light stretched, so a dark picture still prints: in strips, the
+    // others are not evened out with the one showing.
+    float radius = 0.64 * sqrt(min(l * 1.6, 1.0));
     float d = length(grid - cell);
     float ink = smoothstep(radius + 0.08, radius - 0.08, d);
-    color = mix(uColorC * 0.06, tone(0.35 + 0.65 * l, 0.0), ink);
+    color = mix(uColorC * 0.06, tone(0.4 + 0.6 * l, 0.0), ink);
   } else {
-    // DUOTONE or TRITONE, a hint of the picture's own hues kept, the red
-    // split off to one side on the snare (one more read).
+    // DUOTONE or TRITONE, some of the picture's own hues kept (its color
+    // at the graded light, so hues the cover lacks come through). One
+    // read: a second for a red split on the snare made it the heaviest
+    // scene; `final.glsl` splits the colors on the snare already.
     vec3 raw = texture(uMontage, atlasUv(picture, uv)).rgb;
     float l = crushed(raw, gain);
     color = tone(l, look);
-    if (uSnare > 0.04) {
-      highp vec2 shift = vec2(0.022 * uSnare / camera.z, 0.0);
-      float red = crushed(texture(uMontage, atlasUv(picture, uv + shift)).rgb, gain);
-      color.r = tone(red, look).r;
-    }
     float rawLight = max(lightOf(raw), 0.04);
-    color = mix(color, min(color * raw / rawLight, vec3(1.4)), uMontageMix.w);
+    color = mix(color, min(raw / rawLight, vec3(2.5)) * l, uMontageMix.w);
   }
 
   // The cut lands bright, then settles.
@@ -160,8 +174,11 @@ void main() {
   // The frames before echo through, a little larger each time: the
   // picture before a cut lingers as a ghost, and trails smear outward
   // through a fill.
+  // A print (halftone, posterized) keeps little of it: a ghost filling
+  // the paper between its dots turns it to mud.
   highp vec2 back = 0.5 + (vUv - 0.5) * (0.988 - 0.025 * uFill);
   float echo = uMontageMix.x + 0.45 * exp(-age * 14.0) * step(0.5, abs(uMontageB.x - uMontageA.x));
+  echo *= look > 1.5 ? 0.25 : 1.0;
   color = max(color, texture(uPrev, back).rgb * min(echo, 0.85));
 
   // THE WORDS (words.rs) cut into the picture: a word is knocked out of
