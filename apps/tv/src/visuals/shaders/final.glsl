@@ -297,7 +297,7 @@ vec3 datamosh(vec3 fresh, vec3 old, highp vec2 uv, float t, float incoming) {
   old = mix(old, old.gbr, 0.2 * t * step(0.7, fract(jitter * 13.0)));
   // The new scene's bright shapes come through as it goes on, the
   // brightest first...
-  float through = smoothstep(0.75, 0.95, incoming + 0.9 * t - 0.25);
+  float through = smoothstep(0.5, 0.8, 1.4 * incoming + 0.6 * t - 0.1) * smoothstep(0.0, 0.3, t);
   // ...and the rest a block at a time, at the end.
   through = max(through, step(fract(jitter * 31.0 + 0.37), t * 3.0 - 2.0));
   return mix(old, fresh, through);
