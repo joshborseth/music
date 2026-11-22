@@ -21,6 +21,10 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 export ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT:-$ANDROID_HOME/ndk/27.2.12479018}"
 # Building Skia from source (32-bit ARM) reads this name.
 export ANDROID_NDK="$ANDROID_NDK_ROOT"
+# cargo-apk looks for the build scripts' output under target/, so a
+# build-dir set elsewhere (this box's ~/.cargo/config.toml) breaks it
+# with "No such file or directory" once the Rust build has finished.
+export CARGO_BUILD_BUILD_DIR="$root/target"
 
 # Updates only install over an APK signed with the same key, so keep it.
 keystore="${MUSIC_TV_KEYSTORE:-$HOME/.config/music/tv-release.keystore}"
