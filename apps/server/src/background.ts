@@ -2,7 +2,7 @@ import { Cause, Effect, Option, Queue, Schema, Scope } from 'effect'
 
 /*
  * What the services that work songs out ahead share (the analysis, cover
- * depths, montages, sung words): a queue of keys one background fiber
+ * depths, montages): a queue of keys one background fiber
  * works through, a memory of recent failures, so a key that just failed is
  * not tried again at once, and a guard for their SQLite caches, which
  * throw. The queue and the memory are bounded, so a server that runs for

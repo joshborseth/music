@@ -67,44 +67,5 @@ void main() {
   // The lead melody glows down there too, in the second color, brighter
   // as it climbs.
   color += uColorD * exp(-r * 14.0) * uLead * (0.2 + 0.4 * uMelody);
-
-  // THE WORDS fly at you out of the tunnel: each comes from far off,
-  // small and dim, lands full size as it is sung, and rushes past you as
-  // the next one comes, leaving a streak (the last frame's words, kept in
-  // the alpha, read a little nearer the word's middle). The letters burn
-  // in the rings' light over a dark halo, so they read over the lines.
-  float word = 0.0;
-#ifdef WORDS
-  {
-    highp vec2 q = centered();
-    highp vec2 uv = gl_FragCoord.xy / uRes;
-    float halo = 0.0;
-    vec4 now = uWordTime[WORD_NOW];
-    float hook = now.z;
-    if (nearWord(WORD_NOW, q, 1.15)) {
-      float arrive = smoothstep(-0.04, 0.16 + 0.08 * hook, now.x);
-      float scale = mix(0.25, 1.0, arrive) + 0.03 * clamp(now.x, 0.0, 2.0);
-      vec2 letters = wordLetters(WORD_NOW, q, scale, 0.03 * (1.0 - arrive));
-      word = letters.x * (0.45 + 0.5 * arrive + 0.15 * uHit) * now.w;
-      halo = letters.y * now.w;
-    }
-    vec4 before = uWordTime[WORD_BEFORE];
-    float past = before.x;
-    float scale = 1.03 + 3.0 * past + 8.0 * past * past;
-    if (before.w > 0.0 && past < 0.3 && nearWord(WORD_BEFORE, q, scale)) {
-      vec2 letters = wordLetters(WORD_BEFORE, q, scale, 0.02);
-      word = max(word, letters.x * exp(-past * 12.0) * before.w);
-    }
-    // The streak, behind the letters.
-    vec4 box = uWordBox[WORD_NOW];
-    if (nearWord(WORD_NOW, q, 2.0) || nearWord(WORD_BEFORE, q, 2.0)) {
-      highp vec2 middle = (box.xy * vec2(uRes.y / uRes.x, 1.0)) + 0.5;
-      highp vec2 back = middle + (uv - middle) * 0.94;
-      word = max(word, texture(uPrev, back).a * 0.72);
-    }
-    color *= 1.0 - 0.8 * halo;
-    color += glowIn(min(word, 1.0) * 0.97, mix(uColorA, uColorD, 0.35 - 0.35 * hook)) * (1.0 + 0.4 * hook);
-  }
-#endif
-  fragColor = vec4(color, word);
+  fragColor = vec4(color, 1.0);
 }

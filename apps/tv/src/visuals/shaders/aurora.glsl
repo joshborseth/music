@@ -52,10 +52,6 @@ void main() {
   level += 0.22 * curtain(p.y, far, 0.15, 1.0 - 0.5 * fine, height * 1.5);
 
   level *= 0.75 + 0.3 * uEnergy + 0.3 * uHit + 0.25 * uHat;
-  // THE WORDS appear softly in the light (`softWords`).
-#ifdef WORDS
-  level = max(level, softWords(p, level));
-#endif
   // The rays turn to the second color as they rise.
   float rise = clamp((p.y - hem) / (height * 2.5), 0.0, 0.85);
   fragColor = vec4(glowIn(clamp(level, 0.0, 1.0), mix(uColorA, uColorD, rise)), 1.0);
