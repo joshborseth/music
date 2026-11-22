@@ -506,6 +506,30 @@ const streamSwipePointer = Stream.merge(
   ),
 )
 
+type PageVisibilityMessage =
+  | typeof Message.HidPage.Type
+  | typeof Message.ShowedPage.Type
+
+/**
+ * The page leaving and coming back on screen: switching apps, locking the
+ * phone, or opening the Home Screen app again. Read with the wall clock,
+ * since a suspended page's own timers stop.
+ */
+const streamPageVisibility = Stream.fromEventListener(
+  document,
+  'visibilitychange',
+).pipe(
+  Stream.mapEffect(() =>
+    Clock.currentTimeMillis.pipe(
+      Effect.map((at): PageVisibilityMessage =>
+        document.visibilityState === 'hidden'
+          ? Message.HidPage({ at })
+          : Message.ShowedPage({ at }),
+      ),
+    ),
+  ),
+)
+
 export const subscriptions = Subscription.make<
   Model,
   Message,
@@ -529,6 +553,14 @@ export const subscriptions = Subscription.make<
           ),
           Effect.sync(() => isConnected),
         ),
+    },
+  ),
+
+  pageVisibility: entry(
+    {},
+    {
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () => streamPageVisibility,
     },
   ),
 

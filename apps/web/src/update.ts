@@ -2037,9 +2037,11 @@ const updateMessage = (model: Model, message: Message) =>
     AcquiredSessionSocket: () => Playback.acquireSessionSocket(model),
     ReleasedSessionSocket: () => ({ model }),
     FailedConnectSessionSocket: () => Playback.loseSessionSocket(model),
-    ClosedSessionSocket: () => Playback.loseSessionSocket(model),
+    ClosedSessionSocket: () => Playback.closeSessionSocket(model),
     CompletedWaitBeforeReconnect: () =>
       Playback.completeWaitBeforeReconnect(model),
+    HidPage: ({ at }) => Playback.hidePage(model, at),
+    ShowedPage: ({ at }) => Playback.returnToPage(model, at),
     ReceivedSessionState: ({ state, serverNow, ack, receivedAt }) =>
       followingCurrentSong(stepModel =>
         Playback.receiveSessionState(

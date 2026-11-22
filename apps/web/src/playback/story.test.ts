@@ -2281,3 +2281,87 @@ describe('playing with no server', () => {
     )
   })
 })
+
+describe('coming back to the app', () => {
+  const tvPlaying: Model = modifyFields(connectedModel, {
+    maybeSession: () =>
+      Option.some({ state: sessionState('tv', 1), clockOffsetMs: 0 }),
+  })
+
+  test('opens a fresh socket after the page slept, so the song is current at once', () => {
+    story(
+      update,
+      given(tvPlaying),
+      message(Message.HidPage({ at: 10_000 })),
+      message(Message.ShowedPage({ at: 70_000 })),
+      model(model => {
+        expect(model.connection._tag).toBe('Connecting')
+        expect(model.sessionSocketGeneration).toBe(1)
+        expect(model.maybePageHiddenAt).toEqual(Option.none())
+      }),
+      message(Message.ClosedSessionSocket()),
+      model(model => {
+        expect(model.connection._tag).toBe('Connecting')
+      }),
+      message(Message.AcquiredSessionSocket()),
+      Command.expectExact(
+        SendToSession({
+          message: {
+            _tag: 'Hello',
+            deviceId: PHONE_ID,
+            name: 'iPhone',
+            kind: 'Web',
+            player: null,
+          },
+        }),
+      ),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      model(model => {
+        expect(model.connection._tag).toBe('Connected')
+      }),
+    )
+  })
+
+  test('keeps the socket after a glance away', () => {
+    story(
+      update,
+      given(tvPlaying),
+      message(Message.HidPage({ at: 10_000 })),
+      message(Message.ShowedPage({ at: 11_000 })),
+      model(model => {
+        expect(model.connection._tag).toBe('Connected')
+        expect(model.sessionSocketGeneration).toBe(0)
+      }),
+    )
+  })
+
+  test('keeps the socket of a phone playing out loud, which never slept', () => {
+    story(
+      update,
+      given(playingHere(1)),
+      message(Message.HidPage({ at: 10_000 })),
+      message(Message.ShowedPage({ at: 600_000 })),
+      model(model => {
+        expect(model.connection._tag).toBe('Connected')
+        expect(model.sessionSocketGeneration).toBe(0)
+      }),
+    )
+  })
+
+  test('reconnects at once instead of waiting out the retry delay', () => {
+    story(
+      update,
+      given(
+        modifyFields(tvPlaying, {
+          connection: () => Connection.Disconnected(),
+          maybePageHiddenAt: () => Option.some(10_000),
+        }),
+      ),
+      message(Message.ShowedPage({ at: 70_000 })),
+      model(model => {
+        expect(model.connection._tag).toBe('Connecting')
+        expect(model.sessionSocketGeneration).toBe(0)
+      }),
+    )
+  })
+})
