@@ -445,6 +445,13 @@ export const loseSessionSocket = (model: Model): PlaybackReturn => ({
   commands: [WaitBeforeReconnect()],
 })
 
+/**
+ * A socket closed. One this phone already let go of, for a fresh one
+ * (`returnToPage`), closes after the phone moved on, and changes nothing.
+ */
+export const closeSessionSocket = (model: Model): PlaybackReturn =>
+  model.connection._tag === 'Connected' ? loseSessionSocket(model) : { model }
+
 export const completeWaitBeforeReconnect = (model: Model): PlaybackReturn =>
   model.connection._tag === 'Disconnected'
     ? {
@@ -453,6 +460,56 @@ export const completeWaitBeforeReconnect = (model: Model): PlaybackReturn =>
         }),
       }
     : { model }
+
+/**
+ * How long the page can be out of sight before its socket is no longer
+ * trusted. iOS suspends a Home Screen app soon after it leaves the screen,
+ * unless it plays audio, and its sockets die while it sleeps. Coming back,
+ * WebKit can take seconds to say so, or still call a dead socket open, and
+ * the phone would show the song it last heard of until then.
+ */
+const TRUST_SOCKET_HIDDEN_MS = 2_000
+
+export const hidePage = (model: Model, at: number): PlaybackReturn => ({
+  model: modifyFields(model, { maybePageHiddenAt: () => Option.some(at) }),
+})
+
+/**
+ * The page is back on screen. What it shows must be current at once, so a
+ * phone waiting to reconnect reconnects now, and one whose socket may have
+ * died while the page slept opens a fresh one: the server answers its Hello
+ * with the session as it is, in one round trip. A phone that plays out loud
+ * was never suspended, and its socket is kept.
+ */
+export const returnToPage = (model: Model, at: number): PlaybackReturn => {
+  const shown = modifyFields(model, {
+    maybePageHiddenAt: () => Option.none(),
+  })
+  const wasAsleep = Option.exists(
+    model.maybePageHiddenAt,
+    hiddenAt => at - hiddenAt >= TRUST_SOCKET_HIDDEN_MS,
+  )
+  const isPlayingHere = isThisDevicePlaying(model) && isPlaying(model)
+
+  return Connection.match(model.connection, {
+    WaitingForIdentity: () => ({ model: shown }),
+    Connecting: () => ({ model: shown }),
+    Disconnected: () => ({
+      model: modifyFields(shown, {
+        connection: () => Connection.Connecting(),
+      }),
+    }),
+    Connected: () =>
+      wasAsleep && !isPlayingHere
+        ? {
+            model: modifyFields(shown, {
+              connection: () => Connection.Connecting(),
+              sessionSocketGeneration: generation => generation + 1,
+            }),
+          }
+        : { model: shown },
+  })
+}
 
 /**
  * Keep what this phone changed by itself while a server state predates it.

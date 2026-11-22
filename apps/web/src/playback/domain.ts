@@ -506,6 +506,8 @@ export const deviceNameFromUserAgent = (userAgent: string): string => {
 export const initialPlaybackModel = {
   maybeIdentity: Option.none<DeviceIdentity>(),
   connection: Connection.WaitingForIdentity(),
+  sessionSocketGeneration: 0,
+  maybePageHiddenAt: Option.none<number>(),
   maybeSession: Option.none<SessionSnapshot>(),
   phoneAudio: PhoneAudio.Unavailable(),
   phoneAudioSeconds: 0,

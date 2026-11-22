@@ -58,6 +58,13 @@ const openSocket = Effect.callback<WebSocket, Error>(resume => {
   ),
 )
 
+/** A new key opens a new socket. */
+const socketKey = (model: Model): Option.Option<string> =>
+  Option.map(
+    model.maybeIdentity,
+    ({ deviceId }) => `${deviceId}#${model.sessionSocketGeneration}`,
+  )
+
 export const managedResources = ManagedResource.make<Model, Message>()(
   entry => ({
     sessionSocket: entry(Schema.Option(Schema.String), {
@@ -65,10 +72,8 @@ export const managedResources = ManagedResource.make<Model, Message>()(
       modelToMaybeRequirements: model =>
         Connection.match(model.connection, {
           WaitingForIdentity: () => Option.none(),
-          Connecting: () =>
-            Option.map(model.maybeIdentity, ({ deviceId }) => deviceId),
-          Connected: () =>
-            Option.map(model.maybeIdentity, ({ deviceId }) => deviceId),
+          Connecting: () => socketKey(model),
+          Connected: () => socketKey(model),
           Disconnected: () => Option.none(),
         }),
       acquire: () => openSocket,

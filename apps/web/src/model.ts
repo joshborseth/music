@@ -100,6 +100,13 @@ export const Model = Schema.Struct({
   maybeLyricsRetriedVideoId: Schema.Option(Schema.String),
   maybeIdentity: Schema.Option(DeviceIdentity),
   connection: Connection,
+  /**
+   * Counts the fresh sockets opened in place of one that may have died
+   * unnoticed (`returnToPage`). A new count opens a new socket.
+   */
+  sessionSocketGeneration: Schema.Number,
+  /** When the page went out of sight, while it is out of sight. */
+  maybePageHiddenAt: Schema.Option(Schema.Number),
   maybeSession: Schema.Option(SessionSnapshot),
   phoneAudio: PhoneAudio,
   phoneAudioSeconds: Schema.Number,

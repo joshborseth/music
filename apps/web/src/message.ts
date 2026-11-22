@@ -249,6 +249,8 @@ export const Message = defineMessageUnion({
   FailedConnectSessionSocket: { error: Schema.String },
   ClosedSessionSocket: {},
   CompletedWaitBeforeReconnect: {},
+  HidPage: { at: Schema.Number },
+  ShowedPage: { at: Schema.Number },
   ReceivedSessionState: {
     state: Session.SessionState,
     serverNow: Schema.Number,
