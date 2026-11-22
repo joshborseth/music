@@ -14,7 +14,6 @@ import { AnalysisError, SongAnalysis } from '../analysis/service.ts'
 import { TimedLyrics, withLines } from '../lyrics/service.ts'
 import { PlaylistStore, makePlaylistStore } from '../playlists/store.ts'
 import { type PrefetchJob, Prefetcher } from '../prefetch.ts'
-import { SongWords, makeSongWords, makeWordsCache } from '../words/service.ts'
 import { YouTubeMusic } from '../youtubeMusic/service.ts'
 import { TvCatalogRoutes } from './routes.ts'
 
@@ -186,15 +185,6 @@ const playlistStore = makePlaylistStore(
 const { handler, dispose } = HttpRouter.toWebHandler(
   TvCatalogRoutes.pipe(
     Layer.provide(Layer.succeed(SongAnalysis)(songAnalysis)),
-    Layer.provide(
-      Layer.effect(SongWords)(
-        makeSongWords(
-          makeWordsCache(new Database(':memory:', { strict: true })),
-          () => () => Effect.succeed(Option.none()),
-          () => 1,
-        ),
-      ),
-    ),
     Layer.provide(Layer.succeed(YouTubeMusic)(youTubeMusic)),
     Layer.provide(
       Layer.succeed(TimedLyrics)(
@@ -203,8 +193,7 @@ const { handler, dispose } = HttpRouter.toWebHandler(
             Effect.succeed(
               withLines(
                 details,
-                details.song.videoId === 'timed' ||
-                  details.song.videoId === 'timedSong01'
+                details.song.videoId === 'timed'
                   ? Option.some([
                       { startSeconds: 1.5, text: 'La la', words: [] },
                     ])
@@ -353,23 +342,6 @@ describe('TV catalog routes', () => {
       lines: [{ startSeconds: 1.5, text: 'La la', words: [] }],
     })
     expect((await get('/tv/lyrics?videoId=missing')).status).toBe(404)
-  })
-
-  test("a song's words, timed from its lyrics, and none without", async () => {
-    const response = await get('/tv/words?videoId=timedSong01')
-    expect(response.status).toBe(200)
-    const words = Schema.decodeUnknownSync(Tv.TvWords)(await response.json())
-    expect(words.words.map(word => word.text)).toEqual(['La', 'la'])
-    expect(words.words[0]?.startSeconds).toBeGreaterThanOrEqual(1.25)
-    expect(words.lines).toHaveLength(1)
-    expect(await (await get('/tv/words?videoId=dQw4w9WgXcQ')).json()).toEqual({
-      videoId: 'dQw4w9WgXcQ',
-      phrase: null,
-      lines: [],
-      words: [],
-      atlas: null,
-    })
-    expect((await get('/tv/words?videoId=x')).status).toBe(400)
   })
 
   test("a song's analysis, and why it is missing", async () => {

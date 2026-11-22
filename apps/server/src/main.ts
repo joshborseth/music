@@ -29,7 +29,6 @@ import { TvWakerLive } from './session/wake.ts'
 import { TvAppRoutes, TvUpdatingRoute } from './tvApp.ts'
 import { TvCatalogRoutes } from './tvCatalog/routes.ts'
 import { WebAppRoutes } from './webApp.ts'
-import { SongWordsLive } from './words/service.ts'
 import { YouTubeMusicLive } from './youtubeMusic/service.ts'
 
 const DEFAULT_PORT = 3001
@@ -77,7 +76,6 @@ const CatalogRoutes = Layer.mergeAll(
   MontageRoutes,
 ).pipe(
   Layer.provide(YouTubeMusicLive),
-  Layer.provide(SongWordsLive.pipe(Layer.provide(BunServices.layer))),
   Layer.provide(ArtworkPaletteLive),
   Layer.provide(LyricsLive),
   Layer.provide(PlaylistsLive),

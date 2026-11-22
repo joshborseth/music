@@ -384,17 +384,9 @@ void main() {
   // Where the lyrics run, the light is calmed, and out of the words' way
   // nothing changes. (Every pixel takes the same side of a branch on a
   // uniform, so the pixels without lyrics on screen skip it for free.)
-  // Around the letters of the word being sung (words.rs), the light is
-  // neither calmed nor shaded: the words sit where no line of the app's
-  // runs, and under the shade they would be dim.
-  float sung = 0.0;
-  if (uWordAtlas.w > 0.0) {
-    highp vec2 q = (uv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
-    sung = smoothstep(0.0, 0.5, wordField(WORD_NOW, q)) * uWordTime[WORD_NOW].w;
-  }
   float calm = 0.0;
   if (uSide > 0.0) {
-    calm = uSide * wordsZone(vUv) * (1.0 - sung);
+    calm = uSide * wordsZone(vUv);
     float lit = max(color.r, max(color.g, color.b));
     // A thin bright line is far brighter than its neighborhood on average
     // (the glow's alpha, the picture's brightness blurred), so it loses
@@ -445,8 +437,8 @@ void main() {
   // app's words; each covers what is under it, as the UI's layers did.
   float vignette = smoothstep(uVignette.x, uVignette.y, length(vec2(c) * vec2(1.0, 0.8)));
   float keep = mix(uVignette.z, 1.0, vignette) * uKeep;
-  if (uSide > 0.0) keep *= 1.0 - uSide * sideShade(vUv.x) * (1.0 - 0.8 * sung);
+  if (uSide > 0.0) keep *= 1.0 - uSide * sideShade(vUv.x);
   // Slint's radial gradient reaches half the diagonal.
-  if (uCentre > 0.0) keep *= 1.0 - uCentre * 0.50 * max(0.0, 1.0 - length((vUv - 0.5) * uPool)) * (1.0 - 0.8 * sung);
+  if (uCentre > 0.0) keep *= 1.0 - uCentre * 0.50 * max(0.0, 1.0 - length((vUv - 0.5) * uPool));
   fragColor = vec4(color * keep, 1.0);
 }

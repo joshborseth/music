@@ -53,10 +53,6 @@ void main() {
   // Each particle its own: some lag, some lead, so a shape forms like a
   // flock settling rather than all at once.
   float own = unitU(id * 3u + 7u);
-  // A particle spelling a word (pulled this hard: swarm_targets.glsl)
-  // holds still on its letter: no swirl, the kicks' blasts barely move it,
-  // and it settles without swinging past.
-  float lettered = step(4.0, pullAndSize.x);
 
   // The spring toward the target, never so stiff that a long step (a slow
   // frame) would swing it past further than it started.
@@ -66,7 +62,7 @@ void main() {
   // Curl noise: the slope of the fractal noise turned a quarter, which
   // swirls without bunching particles up or spreading them out.
   vec2 slope = fbmSlope(at * 1.6 + vec2(uSeed * 7.0, uTime * 0.07));
-  accel += vec2(slope.y, -slope.x) * uSwarmForce.y * (1.0 - lettered);
+  accel += vec2(slope.y, -slope.x) * uSwarmForce.y;
 
   // The stream drags what it passes along with it, and pulls it in a
   // little.
@@ -84,11 +80,10 @@ void main() {
   // little differently.
   highp vec2 away = at - uSwarmBlast.xy;
   float distance_ = length(away) + 0.03;
-  velocity += away / distance_ * uSwarmBlast.z * (0.5 + own) * (0.4 + 0.6 * exp(-distance_ * 2.0))
-    * (1.0 - 0.85 * lettered);
+  velocity += away / distance_ * uSwarmBlast.z * (0.5 + own) * (0.4 + 0.6 * exp(-distance_ * 2.0));
 
   velocity += accel * dt;
-  velocity *= exp(-(uSwarmForce.z + 20.0 * lettered) * dt);
+  velocity *= exp(-uSwarmForce.z * dt);
   // Never so fast a half can't hold it, or a step can't follow it.
   float speed = length(velocity);
   if (speed > 6.0) velocity *= 6.0 / speed;

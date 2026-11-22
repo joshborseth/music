@@ -38,33 +38,7 @@ void main() {
     float ring = abs(length(p) - (0.04 + 0.45 * fract(uBeats)));
     ink += uHit * 0.3 * exp(-ring * 45.0);
   }
-  // THE WORDS pour in as ink: each word's letters fill from its first
-  // letter to its last as it is sung, thin ink first, then thick, and from
-  // then on the water carries it like any other ink, so a word bleeds
-  // away as the next one pours in over it. The old ink around the new
-  // word is all but cleared, a dark rim the letters stand out against,
-  // and the letters pour thick, to the light's pale core, so the word
-  // reads over any ink. While it is sung, its letters also burn near
-  // white on top (not kept in the ink, so only the ink bleeds away).
-  float sung = 0.0;
-#ifdef WORDS
-  if (nearWord(WORD_NOW, p, 1.0)) {
-    vec4 now = uWordTime[WORD_NOW];
-    vec4 box = uWordBox[WORD_NOW];
-    vec2 letters = wordLetters(WORD_NOW, p, 1.0, 0.04);
-    // The pour runs across the word over its first few tenths of a second.
-    float across = (p.x - box.x) / box.z * 0.5 + 0.5;
-    float poured = smoothstep(across - 0.15, across, now.x / (0.2 + 0.15 * now.z));
-    float fresh = letters.x * poured * now.w;
-    ink = mix(ink, ink * 0.15, letters.y * now.w);
-    ink = max(ink, fresh * (1.0 + 0.05 * uHit));
-    sung = fresh;
-  }
-#endif
-
   // Keep the thin ink from banding in 8 bits.
   ink = clamp(ink + (hash12(gl_FragCoord.xy + uTime) - 0.5) / 255.0, 0.0, 1.0);
-  vec3 color = glowIn(ink * 0.95, mix(uColorD, uColorA, smoothstep(0.15, 0.6, ink)));
-  color = mix(color, mix(uColorA, vec3(1.0), 0.7), 0.8 * sung);
-  fragColor = vec4(color, ink);
+  fragColor = vec4(glowIn(ink * 0.95, mix(uColorD, uColorA, smoothstep(0.15, 0.6, ink))), ink);
 }

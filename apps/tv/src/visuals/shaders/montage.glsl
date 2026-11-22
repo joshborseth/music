@@ -181,26 +181,5 @@ void main() {
   echo *= look > 1.5 ? 0.25 : 1.0;
   color = max(color, texture(uPrev, back).rgb * min(echo, 0.85));
 
-  // THE WORDS (words.rs) cut into the picture: a word is knocked out of
-  // it, its letters a flat negative of what is under them; a hook word
-  // masks it instead, the picture showing only through its letters, and
-  // the rest comes back as the word goes on.
-#ifdef WORDS
-  {
-    vec4 now = uWordTime[WORD_NOW];
-    // Where the word sits on the screen (the strips move `p`).
-    highp vec2 q = centered();
-    if (now.w > 0.0) {
-      vec2 letters = nearWord(WORD_NOW, q, 1.0) ? wordLetters(WORD_NOW, q, 1.0, 0.0) : vec2(0.0);
-      if (now.z > 0.5) {
-        float mask = now.w * (1.0 - smoothstep(0.3, 1.0, now.x));
-        color = mix(color, color * mix(0.1, 1.3, letters.x) + uColorA * 0.12 * letters.y * (1.0 - letters.x), mask);
-      } else {
-        color = mix(color, abs(uColorD * 0.95 - color), letters.x * now.w);
-      }
-    }
-  }
-#endif
-
   fragColor = vec4(color, 1.0);
 }

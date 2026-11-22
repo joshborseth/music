@@ -10,20 +10,6 @@
 // last frame, spread out a little and fading, adds an afterglow: one read
 // a pixel.
 
-// The stars that make up word i drawn `scale` times its size: one on a
-// grid fixed to the word, three pixels apart at its own size, in a share
-// `density` of the cells, each its own place in its cell, so they move
-// with the word as it gathers or scatters.
-float wordStars(int i, highp vec2 p, float scale, float density) {
-  vec4 box = uWordBox[i];
-  highp vec2 local = (p - box.xy) / scale * (uRes.y / 3.0);
-  highp vec2 cell = floor(local);
-  highp float random = hash12(cell + uWordRect[i].xy * 997.0);
-  vec2 at = vec2(fract(random * 13.7), fract(random * 71.3)) * 0.6 + 0.2;
-  vec2 d = vec2(local - cell) - at;
-  return exp(-dot(d, d) * 12.0) * step(1.0 - density, fract(random * 37.1));
-}
-
 void main() {
   vec2 p = centered();
   // Kept highp: where to read the last frame, which must land on its
@@ -70,31 +56,6 @@ void main() {
   light *= smoothstep(0.04, 0.3, r) * (1.0 + 0.8 * uHit + 0.6 * uDrop + 0.7 * uHat);
   // A faint haze ahead, where the stars come from.
   light += 0.1 * (0.4 + uEnergy) * exp(-r * r * 9.0);
-
-  // THE WORDS form out of the starfield: each is stars on a grid fixed to
-  // the word, a few pixels apart, that rush in from around it as it is
-  // sung, fill in, and burn; when the next word comes they fly apart
-  // from its middle and their afterglow streaks away.
-#ifdef WORDS
-  {
-    vec4 now = uWordTime[WORD_NOW];
-    float form = smoothstep(-0.06, 0.28, now.x);
-    float gather = mix(1.5, 1.0, form);
-    if (nearWord(WORD_NOW, p, gather)) {
-      float stars = wordStars(WORD_NOW, p, gather, 0.35 + 0.55 * form);
-      vec2 letters = wordLetters(WORD_NOW, p, gather, 0.0);
-      float fill = letters.x * (0.55 + 0.25 * now.z) * form;
-      light = max(light, (max(stars * letters.x, fill) + 0.25 * letters.y * form) * now.w * (1.0 + 0.4 * uHit));
-    }
-    vec4 before = uWordTime[WORD_BEFORE];
-    float apart = 1.0 + 2.2 * before.x;
-    if (before.w > 0.0 && before.x < 0.5 && nearWord(WORD_BEFORE, p, apart)) {
-      float stars = wordStars(WORD_BEFORE, p, apart, 0.5);
-      float letters = wordLetters(WORD_BEFORE, p, apart, 0.15).x;
-      light = max(light, stars * letters * exp(-before.x * 6.0) * before.w * 1.4);
-    }
-  }
-#endif
 
   // The afterglow holds what was brightest; it never piles up.
   float amount = min(max(trail, light), 1.0);

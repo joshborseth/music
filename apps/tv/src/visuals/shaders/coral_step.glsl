@@ -12,8 +12,6 @@
 // seeds new growth: a blob where each kick lands, a line where the lead
 // melody runs; a drop bursts rings of it out across the whole reef, which
 // the reaction breaks into its own pattern over the next second or two.
-// The word sung now (words.rs) seeds its letters as it comes, so the reef
-// grows the word, and the pattern slowly takes it back.
 
 out uvec4 stateOut;
 
@@ -98,14 +96,6 @@ void main() {
     v *= 0.35;
     u = mix(u, 1.0, 0.5);
     seed = max(seed, 1.0 - smoothstep(0.1, 0.18, ring));
-  }
-  // The word sung now, for its first third of a second: one read, and
-  // only inside its box.
-  vec4 word = uWordTime[WORD_NOW];
-  if (uWordAtlas.w > 0.0 && word.w > 0.0 && word.x < 0.35) {
-    highp vec2 p = (uv - 0.5) * vec2(uRes.x / uRes.y, 1.0);
-    float letters = wordInk(wordField(WORD_NOW, p), 0.08);
-    seed = max(seed, letters * word.w * (0.7 + 0.3 * word.z));
   }
   v = mix(v, 0.25, seed);
   u = mix(u, 0.5, seed);
