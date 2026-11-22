@@ -185,6 +185,31 @@ The TV, and guests who scan its QR code, keep plain HTTP on 4310, which needs no
 
 The unit file is `scripts/systemd/music.service`, installed to `~/.config/systemd/user/` by each switch to a new release.
 
+### Public address
+
+Anyone you invite can use the app at `https://joshify.tail76a394.ts.net`, from anywhere, with no Tailscale or certificate of their own. Tailscale Funnel publishes it: `music-funnel.service` runs a Tailscale node of its own, `joshify`, as this user in userspace networking (apart from the machine's own `tailscaled`), and forwards the address to a third listener of the server, `127.0.0.1:4312` (`PUBLIC_PORT`). Everything on that listener goes through a sign-in gate (`apps/server/src/access/gate.ts`); the home network's ports don't.
+
+Each person gets an invite code. Opening the link fills in the code, and tapping Sign in keeps that device signed in for good: a 400-day cookie that's renewed each day it's used. A device that isn't signed in gets the sign-in page, and its requests get a 401. Ten wrong codes from one address, or a hundred from everyone, in 15 minutes lock sign-in for a while. Codes and device tokens are kept only as hashes, in `~/.local/share/music/access.sqlite` (`ACCESS_DB_PATH`). Run these from `~/.local/share/music/current/apps/server`:
+
+```sh
+bun run access invite Sam    # a code and a link; again for a new code (devices stay signed in)
+bun run access revoke Sam    # signs every device of theirs out at once
+bun run access list          # who is invited, how many devices, last seen
+```
+
+On an iPhone, open the link in Safari, sign in, then Share → **Add to Home Screen**. If the Home Screen app opens to the sign-in page, enter the code there too.
+
+Everyone shares one queue and one library for now, yours included, so only invite yourself until each person has their own.
+
+Setting up the node, once:
+
+1. `systemctl --user enable --now music-funnel.service` (`scripts/activate-release.sh` installs the unit).
+2. `tailscale --socket=$XDG_RUNTIME_DIR/music-tailscaled.sock up --hostname=joshify --accept-dns=false --auth-key=file:<key file>`, with a one-off auth key from the Tailscale admin console's Keys page.
+3. `tailscale --socket=$XDG_RUNTIME_DIR/music-tailscaled.sock funnel --bg 4312`.
+4. In the admin console's Machines page, turn off key expiry for `joshify`, or the address stops working in 180 days.
+
+Turn it off with `tailscale --socket=$XDG_RUNTIME_DIR/music-tailscaled.sock funnel --https=443 off`.
+
 ### Deploying
 
 A deploy never restarts the server while music plays.

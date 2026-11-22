@@ -1,0 +1,20 @@
+# The app's public address: a Tailscale node of its own, named joshify, whose
+# Funnel forwards https://joshify.tail76a394.ts.net to the server's sign-in
+# gate on 127.0.0.1:4312 (PUBLIC_PORT in music.service; apps/server/src/
+# access/gate.ts). It is its own node so the address names the app, not this
+# machine, and it runs as this user in userspace networking, apart from the
+# machine's own tailscaled. Installed by scripts/activate-release.sh; README
+# "Public address" has the one-time sign-in and Funnel setup.
+[Unit]
+Description=Music: Tailscale Funnel for the app's public address
+After=network-online.target
+
+[Service]
+# NOTE: unprivileged, it can't touch the machine's DNS or network: on start
+# it logs that it couldn't restore /etc/resolv.conf, which is expected.
+ExecStart=/usr/sbin/tailscaled --tun=userspace-networking --statedir=%h/.local/share/music/tailscale --socket=%t/music-tailscaled.sock --port=0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

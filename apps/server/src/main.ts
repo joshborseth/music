@@ -10,6 +10,12 @@ import { RpcSerialization, RpcServer } from 'effect/rpc'
 import { BunHttpServer, BunRuntime, BunServices } from '@effect/platform-bun'
 import { MusicRpcs } from '@music/shared'
 
+import { gated } from './access/gate.ts'
+import {
+  PublicAccessConfig,
+  openAccessStore,
+  publicServer,
+} from './access/public.ts'
 import { SongAnalysisLive } from './analysis/service.ts'
 import { ArtworkRoutes } from './artwork.ts'
 import { AudioRoutes, AudioSourceLive } from './audio.ts'
@@ -110,10 +116,11 @@ const Hostname = Config.String('HOST').pipe(
 )
 
 /**
- * One router, served on plain HTTP (`PORT`, for the TV and guests) and, when
- * there is a certificate, on HTTPS (`TLS_PORT`, for the phone: `lanHttps.ts`).
- * Both listeners share every service, so a phone on HTTPS and the TV on HTTP
- * are in the same session.
+ * One router, served on plain HTTP (`PORT`, for the TV and guests), when
+ * there is a certificate on HTTPS (`TLS_PORT`, for the phone: `lanHttps.ts`),
+ * and when `PUBLIC_PORT` is set behind sign-in for Tailscale Funnel to
+ * forward the internet to (`access/gate.ts`). Every listener shares every
+ * service, so a phone on HTTPS and the TV on HTTP are in the same session.
  */
 const ServerLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -136,17 +143,38 @@ const ServerLive = Layer.unwrap(
       }).pipe(HttpServer.withLogAddress),
     )
     const maybeTls = yield* LanTlsConfig
-    return Option.match(maybeTls, {
-      onNone: () => http,
-      onSome: tls =>
-        Layer.mergeAll(
-          http,
-          serveOn(lanHttpsServer(hostname, tls)),
-          Layer.effectDiscard(
-            Effect.logInfo(`Listening on https://${hostname}:${tls.port}`),
-          ),
+    const https = Option.map(maybeTls, tls =>
+      Layer.mergeAll(
+        serveOn(lanHttpsServer(hostname, tls)),
+        Layer.effectDiscard(
+          Effect.logInfo(`Listening on https://${hostname}:${tls.port}`),
         ),
-    })
+      ),
+    )
+    const maybePublic = yield* PublicAccessConfig
+    const publicAddress = Option.map(maybePublic, settings =>
+      Layer.unwrap(
+        Effect.gen(function* () {
+          const store = yield* openAccessStore
+          return Layer.mergeAll(
+            HttpServer.serve(
+              gated(store, { origin: settings.origin })(handler),
+              HttpMiddleware.logger,
+            ).pipe(Layer.provide(publicServer(settings.port))),
+            Layer.effectDiscard(
+              Effect.logInfo(
+                `Serving ${settings.origin} behind sign-in on 127.0.0.1:${settings.port}`,
+              ),
+            ),
+          )
+        }),
+      ),
+    )
+    return Layer.mergeAll(
+      http,
+      ...Option.toArray(https),
+      ...Option.toArray(publicAddress),
+    )
   }),
 ).pipe(Layer.provide(BunHttpServer.layerHttpServices))
 

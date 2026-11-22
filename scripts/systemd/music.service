@@ -21,6 +21,10 @@ Environment=TLS_PORT=4311
 Environment=TLS_CERT_PATH=%h/.local/share/music/tls/server.crt
 Environment=TLS_KEY_PATH=%h/.local/share/music/tls/server.key
 Environment=TLS_CA_PATH=%h/.local/share/music/tls/ca.crt
+# The public address, behind sign-in (apps/server/src/access/gate.ts), on
+# loopback for music-funnel.service to forward the internet to.
+Environment=PUBLIC_PORT=4312
+Environment=PUBLIC_ORIGIN=https://joshify.tail76a394.ts.net
 # HA_TOKEN and TV_HA_ENTITY, for waking the TV.
 EnvironmentFile=-%h/.config/music/server.env
 ExecStartPre=-%h/.local/share/music/current/scripts/lan-cert.sh

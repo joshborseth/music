@@ -5,6 +5,7 @@ import { Model } from './model'
 import { managedResources } from './playback/resource'
 import { subscriptions } from './playback/subscription'
 import { MusicClientLive } from './rpc'
+import { leaveWhenSignedOut } from './signIn'
 import { init, update } from './update'
 import { view } from './view'
 import { viewTransition } from './viewTransition'
@@ -32,3 +33,4 @@ const application = Runtime.makeApplication({
 // a cold start is two shorter tasks the browser can breathe between rather
 // than one long one. The page has nothing to show before then anyway.
 setTimeout(() => Runtime.run(application), 0)
+leaveWhenSignedOut()

@@ -95,6 +95,15 @@ switch_to() {
     cp "$1/scripts/systemd/music.service" "$unit_dir/music.service"
     systemctl --user daemon-reload
   fi
+  # The public address's Tailscale node; restarted only when its unit changes.
+  funnel="$1/scripts/systemd/music-funnel.service"
+  if [ -f "$funnel" ] && ! cmp -s "$funnel" "$unit_dir/music-funnel.service"; then
+    mkdir -p "$unit_dir"
+    cp "$funnel" "$unit_dir/music-funnel.service"
+    systemctl --user daemon-reload
+    systemctl --user enable music-funnel.service
+    systemctl --user restart music-funnel.service
+  fi
   systemctl --user restart music.service
   curl --fail --silent --retry 30 --retry-connrefused --retry-delay 1 \
     "$server/" | cmp -s - "$1/apps/web/dist/index.html"
