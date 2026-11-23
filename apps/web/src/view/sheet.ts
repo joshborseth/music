@@ -6,10 +6,12 @@ import {
   Check,
   CircleArrowDown,
   CircleX,
+  Copy,
   Disc3,
   FileText,
   Heart,
   KeyRound,
+  Link,
   ListEnd,
   ListMinus,
   ListMusic,
@@ -33,8 +35,11 @@ import {
 import { icon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
+  type AccountRole,
   type AlbumDetails,
   type Artwork,
+  type Invite,
+  MAX_INVITE_NAME_LENGTH,
   MAX_PASSWORD_LENGTH,
   MAX_PLAYLIST_TITLE_LENGTH,
   type MyPlaylistSummary,
@@ -44,7 +49,11 @@ import {
   type Song,
 } from '@music/shared'
 
-import { RESET_PASSWORD_INPUT_ID, makeSecret } from '../account/domain'
+import {
+  NEW_INVITE_NAME_INPUT_ID,
+  RESET_PASSWORD_INPUT_ID,
+  makeSecret,
+} from '../account/domain'
 import { PLAYLIST_TITLE_INPUT_ID } from '../constant'
 import {
   type DownloadKind,
@@ -69,11 +78,13 @@ import {
   albumQuery,
   myLibraryQuery,
   myPlaylistQuery,
+  peopleQuery,
   playlistQuery,
 } from '../query'
 import { AppRoute } from '../route'
 import { ActionSheet, type CollectionKind, SheetContent } from '../sheet'
 import { likedVideoIds } from '../update'
+import { formatShortDate, inviteTitle } from './account'
 import {
   type DownloadRequest,
   albumDownload,
@@ -1373,6 +1384,338 @@ const confirmRemovePerson = (
     ],
   )
 
+// INVITES
+
+const INVITE_ROLES: ReadonlyArray<
+  Readonly<{ role: AccountRole; title: string; description: string }>
+> = [
+  {
+    role: 'Member',
+    title: 'Member',
+    description: 'Their own library and queue.',
+  },
+  {
+    role: 'Admin',
+    title: 'Admin',
+    description: 'Also invites people and manages accounts.',
+  },
+]
+
+const fieldLabelClass = 'text-muted-foreground px-1 text-[13px] font-medium'
+
+const roleChoice = (
+  choice: (typeof INVITE_ROLES)[number],
+  selected: AccountRole,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const isSelected = choice.role === selected
+  return h.button(
+    [
+      h.Type('button'),
+      h.Role('radio'),
+      h.AriaChecked(isSelected),
+      h.OnClick(Message.SelectedInviteRole({ role: choice.role })),
+      h.Class('flex w-full items-center gap-3 px-4 py-3 text-left'),
+    ],
+    [
+      h.span(
+        [h.Class('flex min-w-0 flex-1 flex-col')],
+        [
+          h.span([h.Class('text-[17px] font-medium')], [choice.title]),
+          h.span(
+            [h.Class('text-muted-foreground text-[13px]')],
+            [choice.description],
+          ),
+        ],
+      ),
+      h.span(
+        [
+          h.AriaHidden(true),
+          h.Class(
+            cn(
+              'flex size-6 shrink-0 items-center justify-center rounded-full',
+              isSelected
+                ? 'bg-primary text-primary-foreground'
+                : 'border-muted-foreground/40 border-2',
+            ),
+          ),
+        ],
+        isSelected ? [icon(h, Check, 'size-4 stroke-[3]')] : [],
+      ),
+    ],
+  )
+}
+
+/** Who the link is for and what they may do, then Create Invite Link. */
+const newInviteSheet = (model: Model, h: HtmlBuilder<Message>): Html => {
+  const form = model.account.newInvite
+  const isCreating = form.status._tag === 'Creating'
+  return h.form(
+    [
+      h.OnSubmit(Message.SubmittedNewInvite()),
+      h.AriaLabel('Invite Someone'),
+      h.Class('flex flex-col gap-5 px-5 pb-2'),
+    ],
+    [
+      h.div(
+        [h.Class('-mx-5 -mb-2')],
+        [
+          sheetHeading(
+            'Invite Someone',
+            Option.some(
+              'You’ll get a link to send them. Opening it makes their account.',
+            ),
+            h,
+          ),
+        ],
+      ),
+      h.div(
+        [h.Class('flex flex-col gap-1.5')],
+        [
+          h.label(
+            [h.For(NEW_INVITE_NAME_INPUT_ID), h.Class(fieldLabelClass)],
+            ['Who’s it for?'],
+          ),
+          h.input([
+            h.Id(NEW_INVITE_NAME_INPUT_ID),
+            h.Type('text'),
+            h.Value(form.name),
+            h.Placeholder('Their name (optional)'),
+            h.Maxlength(MAX_INVITE_NAME_LENGTH),
+            h.Autocomplete('off'),
+            h.Attribute('autocapitalize', 'words'),
+            h.Spellcheck(false),
+            h.Attribute('enterkeyhint', 'done'),
+            h.DataAttribute('no-drag', ''),
+            h.OnInput(name => Message.UpdatedInviteName({ name })),
+            h.Class(
+              'bg-muted placeholder:text-muted-foreground h-12 w-full rounded-xl px-4 text-[17px] outline-none',
+            ),
+          ]),
+        ],
+      ),
+      h.div(
+        [h.Class('flex flex-col gap-1.5')],
+        [
+          h.span(
+            [h.Id('new-invite-role-label'), h.Class(fieldLabelClass)],
+            ['What can they do?'],
+          ),
+          h.div(
+            [
+              h.Role('radiogroup'),
+              h.AriaLabelledBy('new-invite-role-label'),
+              h.Class(
+                'bg-muted divide-border flex flex-col divide-y overflow-hidden rounded-xl',
+              ),
+            ],
+            Array.map(INVITE_ROLES, choice => roleChoice(choice, form.role, h)),
+          ),
+        ],
+      ),
+      form.status._tag === 'Failed'
+        ? h.p(
+            [h.Role('alert'), h.Class('text-destructive text-[15px]')],
+            [form.status.message],
+          )
+        : h.empty,
+      h.div(
+        [h.Class('flex gap-3')],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ClickedCloseSheet()),
+              h.Class(cn(sheetButtonClass, 'bg-secondary text-primary')),
+            ],
+            ['Cancel'],
+          ),
+          h.button(
+            [
+              h.Type('submit'),
+              h.Disabled(isCreating),
+              h.Class(
+                cn(
+                  sheetButtonClass,
+                  'bg-primary text-primary-foreground disabled:opacity-60',
+                ),
+              ),
+            ],
+            [isCreating ? 'Creating…' : 'Create Link'],
+          ),
+        ],
+      ),
+    ],
+  )
+}
+
+const roleWord = (role: AccountRole): string =>
+  role === 'Admin' ? 'admin' : 'member'
+
+/** The invite this sheet is about, as the people list now has it. */
+const pendingInvite = (model: Model, inviteId: string): Option.Option<Invite> =>
+  pipe(
+    AsyncData.getData(peopleQuery.read(model.people)),
+    Option.flatMap(({ invites }) =>
+      Array.findFirst(invites, invite => invite.id === inviteId),
+    ),
+  )
+
+const inviteLinkHeading = (
+  invite: Invite,
+  isNew: boolean,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const expires = formatShortDate(invite.expiresAt)
+  return isNew
+    ? sheetHeading(
+        invite.name === ''
+          ? 'Your invite link is ready'
+          : `Invite for ${invite.name} is ready`,
+        Option.some(
+          `Send it to ${invite.name === '' ? 'them' : invite.name}. It makes one ${roleWord(invite.role)} account and works until ${expires}.`,
+        ),
+        h,
+      )
+    : sheetHeading(
+        inviteTitle(invite),
+        Option.some(
+          `Invited as ${roleWord(invite.role) === 'admin' ? 'an admin' : 'a member'} · Link works until ${expires}`,
+        ),
+        h,
+      )
+}
+
+/** The link itself, without `https://`, which nobody needs to read. */
+const shownLink = (link: string): string => link.replace(/^https?:\/\//, '')
+
+const inviteLinkActions = (
+  invite: Invite,
+  link: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex flex-col gap-3 px-5 pb-4')],
+    [
+      h.div(
+        [
+          h.Class(
+            'bg-muted flex h-12 min-w-0 items-center gap-3 rounded-xl px-4',
+          ),
+        ],
+        [
+          icon(h, Link, 'text-muted-foreground size-[18px] shrink-0'),
+          h.span(
+            [
+              h.AriaLabel('Invite link'),
+              h.Class(
+                'min-w-0 flex-1 truncate font-mono text-[14px] select-all',
+              ),
+            ],
+            [shownLink(link)],
+          ),
+        ],
+      ),
+      h.div(
+        [h.Class('flex gap-3')],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ClickedCopyInviteLink({ link })),
+              h.Class(cn(sheetButtonClass, 'bg-secondary text-primary gap-2')),
+            ],
+            [icon(h, Copy, 'size-5'), 'Copy Link'],
+          ),
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(
+                Message.ClickedShare({
+                  title:
+                    invite.name === ''
+                      ? 'Join me on Joshify'
+                      : `${invite.name}, join me on Joshify`,
+                  href: link,
+                }),
+              ),
+              h.Class(
+                cn(
+                  sheetButtonClass,
+                  'bg-primary text-primary-foreground gap-2',
+                ),
+              ),
+            ],
+            [icon(h, Share, 'size-5'), 'Share'],
+          ),
+        ],
+      ),
+    ],
+  )
+
+/** One pending invite: send its link, again if need be, or revoke it. */
+const inviteLinkSheet = (
+  model: Model,
+  inviteId: string,
+  isNew: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
+  Option.match(pendingInvite(model, inviteId), {
+    onNone: () =>
+      h.div(
+        [h.Class('flex flex-col gap-4 pb-2')],
+        [
+          sheetHeading(
+            'This invite is gone',
+            Option.some(
+              'Someone used it to make an account, or it was revoked.',
+            ),
+            h,
+          ),
+          h.div(
+            [h.Class('flex px-5')],
+            [
+              h.button(
+                [
+                  h.Type('button'),
+                  h.OnClick(Message.ClickedCloseSheet()),
+                  h.Class(cn(sheetButtonClass, 'bg-secondary text-primary')),
+                ],
+                ['Close'],
+              ),
+            ],
+          ),
+        ],
+      ),
+    onSome: invite =>
+      h.div(
+        [h.Class('flex flex-col')],
+        [
+          inviteLinkHeading(invite, isNew, h),
+          invite.link === null
+            ? h.p(
+                [h.Class('text-muted-foreground px-5 pb-4 text-[15px]')],
+                [
+                  'This invite was made before links were kept, so its link can’t be shown again. Revoke it and make a new one.',
+                ],
+              )
+            : inviteLinkActions(invite, invite.link, h),
+          h.div(
+            [h.Class('flex flex-col border-t py-2')],
+            [
+              actionButton(
+                Message.ClickedRevokeInvite({ inviteId: invite.id }),
+                CircleX,
+                'Revoke Invite',
+                h,
+                true,
+              ),
+            ],
+          ),
+        ],
+      ),
+  })
+
 const sheetContent = (
   model: Model,
   content: SheetContent,
@@ -1423,6 +1766,9 @@ const sheetContent = (
       resetPasswordForm(model, userId, username, h),
     ConfirmRemovePerson: ({ userId, username }) =>
       confirmRemovePerson(userId, username, h),
+    NewInvite: () => newInviteSheet(model, h),
+    InviteLink: ({ inviteId, isNew }) =>
+      inviteLinkSheet(model, inviteId, isNew, h),
   })
 
 const sheetLabel = (content: SheetContent): string =>
@@ -1445,6 +1791,8 @@ const sheetLabel = (content: SheetContent): string =>
     PersonActions: ({ person }) => person.username,
     ResetPassword: () => 'Reset Password',
     ConfirmRemovePerson: () => 'Remove Person',
+    NewInvite: () => 'Invite Someone',
+    InviteLink: ({ isNew }) => (isNew ? 'Invite Link Ready' : 'Invite Link'),
   })
 
 const sheetFrame = (

@@ -89,7 +89,9 @@ const sam: Person = {
 
 const memberInvite: Invite = {
   id: 'inv-member',
+  name: 'Riley',
   role: 'Member',
+  link: 'https://joshify.example/join?code=riley1',
   createdBy: josh.id,
   createdAt: NOON,
   expiresAt: NOON + 7 * 24 * 60 * 60 * 1000,
@@ -151,7 +153,7 @@ describe('account page', () => {
       expect(role('heading', { name: 'Change Password' })).toExist(),
       expect(role('button', { name: 'Sign Out' })).toHaveAttr('type', 'submit'),
       expect(role('heading', { name: 'People' })).toBeAbsent(),
-      expect(role('heading', { name: 'Invite Someone' })).toBeAbsent(),
+      expect(role('button', { name: 'Invite Someone' })).toBeAbsent(),
     )
   })
 
@@ -239,8 +241,10 @@ describe('people, for admins', () => {
       expect(role('button', { name: 'Options for alex' })).toExist(),
       expect(role('button', { name: 'Options for sam' })).toExist(),
       inside(
-        role('list', { name: 'Pending Invites' }),
-        expect(nth(peopleRows, 0)).toHaveText(/Member invite.*Expires/),
+        role('list', { name: 'People' }),
+        expect(nth(peopleRows, 3)).toHaveText(/Riley.*Invited.*Link expires/),
+        expect(nth(peopleRows, 3)).not.toHaveText(/Admin/),
+        expect(nth(peopleRows, 4)).toHaveText('Invite Someone'),
       ),
     )
   })
@@ -355,46 +359,59 @@ describe('people, for admins', () => {
 })
 
 describe('inviting someone', () => {
-  const adminInvite: Invite = {
-    id: 'inv-admin',
+  const link = 'https://joshify.example/join?code=abc123'
+  const morganInvite: Invite = {
+    id: 'inv-morgan',
+    name: 'Morgan',
     role: 'Admin',
+    link,
     createdBy: josh.id,
     createdAt: NOON,
     expiresAt: NOON + 7 * 24 * 60 * 60 * 1000,
   }
-  const link = 'https://joshify.example/join?code=abc123'
   const created: CreatedInvite = {
-    invite: adminInvite,
-    link,
-    people: { ...everyone, invites: [memberInvite, adminInvite] },
+    invite: morganInvite,
+    people: { ...everyone, invites: [memberInvite, morganInvite] },
   }
 
-  test('makes a link, keeps showing it with Copy and Share until Done', () => {
+  const openInviteSomeone = [
+    click(role('button', { name: 'Invite Someone' })),
+    Command.resolve(LockScroll, Message.CompletedLockScroll()),
+    sheetFollowsDrags,
+  ] as const
+
+  test('names who it’s for, picks a role, and hands over the link to share', () => {
     scene(
       { update, view },
       given(accountModel(joshViewer, everyone)),
       ...pageShown,
-      expect(role('button', { name: 'Member' })).toHaveAttr(
-        'aria-pressed',
+      ...openInviteSomeone,
+      expect(role('dialog', { name: 'Invite Someone' })).toExist(),
+      expect(role('radio', { name: /^Member/ })).toHaveAttr(
+        'aria-checked',
         'true',
       ),
-      click(role('button', { name: 'Admin' })),
-      expect(role('button', { name: 'Admin' })).toHaveAttr(
-        'aria-pressed',
+      type(label('Who’s it for?'), 'Morgan'),
+      click(role('radio', { name: /^Admin/ })),
+      expect(role('radio', { name: /^Admin/ })).toHaveAttr(
+        'aria-checked',
         'true',
       ),
-      click(role('button', { name: 'Create Invite Link' })),
-      Command.expectExact(CreateInvite({ role: 'Admin' })),
+      click(role('button', { name: 'Create Link' })),
+      Command.expectExact(CreateInvite({ name: 'Morgan', role: 'Admin' })),
       expect(role('button', { name: 'Creating…' })).toExist(),
       Command.resolve(CreateInvite, Message.SucceededCreateInvite({ created })),
-      expect(text('Invite link for a new admin')).toExist(),
-      expect(label('Invite link')).toHaveText(link),
-      expect(text(/works once and expires in a week/)).toExist(),
-      inside(
-        role('list', { name: 'Pending Invites' }),
-        expect(nth(peopleRows, 1)).toHaveText(/Admin invite/),
+      expect(role('dialog', { name: 'Invite Link Ready' })).toExist(),
+      expect(text('Invite for Morgan is ready')).toExist(),
+      expect(text(/one admin account/)).toExist(),
+      expect(label('Invite link')).toHaveText(
+        'joshify.example/join?code=abc123',
       ),
-      click(role('button', { name: 'Copy' })),
+      inside(
+        role('list', { name: 'People' }),
+        expect(nth(peopleRows, 4)).toHaveText(/Morgan.*Admin.*Invited/),
+      ),
+      click(role('button', { name: 'Copy Link' })),
       Command.expectExact(CopyInviteLink({ link })),
       Command.resolve(
         CopyInviteLink,
@@ -405,15 +422,36 @@ describe('inviting someone', () => {
         Message.CompletedWaitBeforeHideNotice({ message: 'Link copied' }),
       ),
       click(role('button', { name: 'Share' })),
-      Command.expectExact(ShareLink({ title: 'Join Joshify', href: link })),
+      Command.expectExact(
+        UnlockScroll(),
+        ShareLink({ title: 'Morgan, join me on Joshify', href: link }),
+      ),
+      Command.resolve(UnlockScroll, Message.CompletedUnlockScroll()),
       Command.resolve(
         ShareLink,
         Message.CompletedShareLink({ isCopied: false }),
       ),
-      expect(label('Invite link')).toHaveText(link),
-      click(role('button', { name: 'Done' })),
-      expect(label('Invite link')).toBeAbsent(),
-      expect(role('button', { name: 'Create Invite Link' })).toExist(),
+    )
+  })
+
+  test('starts each invite from a blank form', () => {
+    scene(
+      { update, view },
+      given(accountModel(joshViewer, everyone)),
+      ...pageShown,
+      ...openInviteSomeone,
+      type(label('Who’s it for?'), 'Morgan'),
+      click(role('radio', { name: /^Admin/ })),
+      click(role('button', { name: 'Cancel' })),
+      Command.resolve(UnlockScroll, Message.CompletedUnlockScroll()),
+      // NOTE: the sheet stays in the page, so it doesn't mount again.
+      click(role('button', { name: 'Invite Someone' })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      expect(label('Who’s it for?')).toHaveValue(''),
+      expect(role('radio', { name: /^Member/ })).toHaveAttr(
+        'aria-checked',
+        'true',
+      ),
     )
   })
 
@@ -422,7 +460,9 @@ describe('inviting someone', () => {
       { update, view },
       given(accountModel(joshViewer, everyone)),
       ...pageShown,
-      click(role('button', { name: 'Create Invite Link' })),
+      ...openInviteSomeone,
+      click(role('button', { name: 'Create Link' })),
+      Command.expectExact(CreateInvite({ name: '', role: 'Member' })),
       Command.resolve(
         CreateInvite,
         Message.FailedCreateInvite({
@@ -430,21 +470,31 @@ describe('inviting someone', () => {
         }),
       ),
       expect(role('alert')).toHaveText('Only admins can invite.'),
-      expect(role('button', { name: 'Create Invite Link' })).toExist(),
+      expect(role('button', { name: 'Create Link' })).toExist(),
     )
   })
 
-  test('revokes a pending invite', () => {
+  test('sends a pending invite’s link again, or revokes it', () => {
     scene(
       { update, view },
       given(accountModel(joshViewer, everyone)),
       ...pageShown,
-      click(role('button', { name: /^Revoke Member invite/ })),
+      click(role('button', { name: 'Invite for Riley, not used yet' })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      expect(role('dialog', { name: 'Invite Link' })).toExist(),
+      expect(text(/Invited as a member/)).toExist(),
+      expect(label('Invite link')).toHaveText(
+        'joshify.example/join?code=riley1',
+      ),
+      click(role('button', { name: 'Revoke Invite' })),
       Command.expectExact(
+        UnlockScroll(),
         ChangePeople({
           change: { _tag: 'RevokeInvite', inviteId: memberInvite.id },
         }),
       ),
+      Command.resolve(UnlockScroll, Message.CompletedUnlockScroll()),
       Command.resolve(
         ChangePeople,
         Message.CompletedChangePeople({
@@ -452,7 +502,27 @@ describe('inviting someone', () => {
           result: Result.succeed({ ...everyone, invites: [] }),
         }),
       ),
-      expect(role('heading', { name: 'Pending Invites' })).toBeAbsent(),
+      expect(text('Riley')).toBeAbsent(),
+    )
+  })
+
+  test('an invite from before links were kept can only be revoked', () => {
+    const oldInvite: Invite = {
+      ...memberInvite,
+      id: 'inv-old',
+      name: '',
+      link: null,
+    }
+    scene(
+      { update, view },
+      given(accountModel(joshViewer, { ...everyone, invites: [oldInvite] })),
+      ...pageShown,
+      click(role('button', { name: 'Unnamed invite, not used yet' })),
+      Command.resolve(LockScroll, Message.CompletedLockScroll()),
+      sheetFollowsDrags,
+      expect(text(/can’t be shown again/)).toExist(),
+      expect(label('Invite link')).toBeAbsent(),
+      expect(role('button', { name: 'Revoke Invite' })).toExist(),
     )
   })
 })

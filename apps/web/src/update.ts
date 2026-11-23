@@ -2230,20 +2230,43 @@ const updateMessage = (model: Model, message: Message) =>
     SucceededChangePassword: () => AccountUpdate.succeedChangePassword(model),
     FailedChangePassword: ({ failure }) =>
       AccountUpdate.failChangePassword(model, failure),
+    ClickedInviteSomeone: () =>
+      Update.combine([
+        showSheet({ _tag: 'NewInvite' }),
+        AccountUpdate.startNewInvite,
+      ])(model),
+    UpdatedInviteName: ({ name }) =>
+      AccountUpdate.updateInviteName(model, name),
     SelectedInviteRole: ({ role }) =>
       AccountUpdate.selectInviteRole(model, role),
-    ClickedCreateInvite: () => AccountUpdate.createInvite(model),
+    SubmittedNewInvite: () => AccountUpdate.createInvite(model),
     SucceededCreateInvite: ({ created }) =>
-      AccountUpdate.succeedCreateInvite(model, created),
+      Update.combine([
+        (stepModel: Model) =>
+          AccountUpdate.succeedCreateInvite(stepModel, created),
+        showSheet({
+          _tag: 'InviteLink',
+          inviteId: created.invite.id,
+          isNew: true,
+        }),
+      ])(model),
     FailedCreateInvite: ({ failure }) =>
       AccountUpdate.failCreateInvite(model, failure),
+    ClickedPendingInvite: ({ inviteId }) =>
+      showSheet({ _tag: 'InviteLink', inviteId, isNew: false })(model),
     ClickedCopyInviteLink: ({ link }) =>
       AccountUpdate.copyInviteLink(model, link),
     CompletedCopyInviteLink: ({ isCopied }) =>
       AccountUpdate.completeCopyInviteLink(model, isCopied),
-    ClickedDismissInvite: () => AccountUpdate.dismissInvite(model),
     ClickedRevokeInvite: ({ inviteId }) =>
-      AccountUpdate.changePeople(model, { _tag: 'RevokeInvite', inviteId }),
+      Update.combine([
+        dismissSheet,
+        stepModel =>
+          AccountUpdate.changePeople(stepModel, {
+            _tag: 'RevokeInvite',
+            inviteId,
+          }),
+      ])(model),
     ClickedPersonActions: ({ person }) =>
       showSheet({ _tag: 'PersonActions', person })(model),
     ClickedSetRole: ({ userId, role }) =>

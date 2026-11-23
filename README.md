@@ -193,13 +193,13 @@ Anyone with an account can use the app at `https://joshify.tail76a394.ts.net`, f
 
 Each person has an account: a username and a password ([Better Auth](https://better-auth.com), in `~/.local/share/music/auth.sqlite`, `AUTH_DB_PATH`), and their own library and queue. Every listener goes through the gate (`apps/server/src/access/gate.ts`). On the public address, a device that isn't signed in gets the sign-in page, and its requests get a 401. On the home network, it is a guest of the owner's session (the TV's), so the TV and its QR code work as before. A signed-in device stays signed in for 400 days, renewed each day it's used. Ten wrong passwords from one address, or a hundred from everyone, in 15 minutes lock sign-in for a while.
 
-Nobody signs up alone. An admin makes an invite link on the app's Account page; it makes one account and works for a week. The first account ever made is the owner: an admin whom nobody can demote or remove, whose library is the one from before accounts (`playlists.sqlite`) and whose session the TV plays. Everyone else's library is `libraries/<id>.sqlite`, and their saved queue `sessions/<id>.json`. Admins can make others admins, reset a forgotten password (the app sends no email), and remove an account with its library and queue.
+Nobody signs up alone. An admin taps Invite Someone under People on the app's Account page, says who it's for and whether they'll be an admin, and shares the link it makes; it makes one account and works for a week. The invite waits in People until it's used, and its link can be shared again or revoked from there (invites keep their code for that; ones made before they did can only be revoked). The page the link opens greets the person by name, says who invited them, and suggests a username from the name. The first account ever made is the owner: an admin whom nobody can demote or remove, whose library is the one from before accounts (`playlists.sqlite`) and whose session the TV plays. Everyone else's library is `libraries/<id>.sqlite`, and their saved queue `sessions/<id>.json`. Admins can make others admins, reset a forgotten password (the app sends no email), and remove an account with its library and queue.
 
 From this machine, for the first account or when the Account page is out of reach (run from `~/.local/share/music/current/apps/server`):
 
 ```sh
-bun run access invite           # a link for one new member's account
-bun run access invite --admin   # a link for one new admin's account
+bun run access invite [name]           # a link for one new member's account
+bun run access invite [name] --admin   # a link for one new admin's account
 bun run access list             # who has an account, and open invites
 ```
 

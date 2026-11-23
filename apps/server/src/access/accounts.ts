@@ -9,6 +9,8 @@ import {
   AccountError,
   type AccountRole,
   type Invite,
+  JOIN_PATH,
+  MAX_INVITE_NAME_LENGTH,
   MAX_PASSWORD_LENGTH,
   MIN_PASSWORD_LENGTH,
   type People,
@@ -37,6 +39,9 @@ const EMAIL_DOMAIN = 'users.joshify.invalid'
 const SESSION_DAYS = 400
 const DAY_SECONDS = 24 * 60 * 60
 
+/** Who made the invites made from this machine's command line. */
+export const MACHINE_INVITER = 'this machine'
+
 /** How long an invite link works. */
 export const INVITE_DAYS = 7
 const DAY_MS = DAY_SECONDS * 1000
@@ -45,6 +50,12 @@ const DAY_MS = DAY_SECONDS * 1000
 const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 const CODE_LENGTH = 16
 
+/**
+ * Our own tables beside Better Auth's. Each step runs once, counted in
+ * `joshify_meta` under `migrations`; add a change as a new step, and never
+ * edit a shipped one. The first step predates the count, so it stays safe to
+ * run again.
+ */
 const OUR_MIGRATIONS: ReadonlyArray<string> = [
   `
   CREATE TABLE IF NOT EXISTS joshify_meta (
@@ -61,7 +72,15 @@ const OUR_MIGRATIONS: ReadonlyArray<string> = [
     expires_at INTEGER NOT NULL
   ) STRICT;
   `,
+  // NOTE: invites keep their code from here on, so an admin can send the
+  // link again; older invites have none and can only be revoked.
+  `
+  ALTER TABLE joshify_invites ADD COLUMN name TEXT NOT NULL DEFAULT '';
+  ALTER TABLE joshify_invites ADD COLUMN code TEXT;
+  `,
 ]
+
+const MIGRATIONS_KEY = 'migrations'
 
 /** Someone signed in, as a request's cookie says. */
 export interface SignedIn {
@@ -122,6 +141,10 @@ const fromRole = (role: AccountRole): 'admin' | 'user' =>
 
 const isUsername = (text: string): boolean => USERNAME_PATTERN.test(text)
 
+/** Who an invite is for, tidied: one line, trimmed, and not too long. */
+export const cleanInviteName = (name: string): string =>
+  name.replace(/\s+/g, ' ').trim().slice(0, MAX_INVITE_NAME_LENGTH).trim()
+
 const isPassword = (text: string): boolean =>
   text.length >= MIN_PASSWORD_LENGTH && text.length <= MAX_PASSWORD_LENGTH
 
@@ -137,12 +160,17 @@ const LastActiveRow = Schema.Struct({
 })
 const InviteRow = Schema.Struct({
   id: Schema.String,
+  name: Schema.String,
+  code: Schema.NullOr(Schema.String),
   role: Schema.String,
   created_by: Schema.String,
   created_at: Schema.Number,
   expires_at: Schema.Number,
 })
 const ValueRow = Schema.Struct({ value: Schema.String })
+
+const INVITE_COLUMNS =
+  'id, name, code, role, created_by, created_at, expires_at'
 
 const decodeRows =
   <S extends Schema.Top & { readonly DecodingServices: never }>(schema: S) =>
@@ -210,6 +238,26 @@ type Auth = ReturnType<typeof makeBetterAuth>
 
 const setCookiesOf = (headers: Headers): SetCookies => headers.getSetCookie()
 
+const runOurMigrations = (db: Database): void => {
+  db.run(OUR_MIGRATIONS[0] ?? '')
+  const done = Number(
+    decodeRows(ValueRow)(
+      db
+        .query('SELECT value FROM joshify_meta WHERE key = ?')
+        .all(MIGRATIONS_KEY),
+    )[0]?.value ?? '1',
+  )
+  Array.forEach(OUR_MIGRATIONS, (step, index) => {
+    if (index < done) return
+    db.transaction(() => {
+      db.run(step)
+      db.query(
+        'INSERT OR REPLACE INTO joshify_meta (key, value) VALUES (?, ?)',
+      ).run(MIGRATIONS_KEY, String(index + 1))
+    })()
+  })
+}
+
 /**
  * Opens the accounts in `db`, making their tables on first use. The
  * database stays open for as long as the accounts are used.
@@ -222,7 +270,7 @@ export const makeAccounts = (db: Database, config: AccountsConfig) =>
       try: async () => (await getMigrations(auth.options)).runMigrations(),
       catch: error => failed(`Could not set up accounts: ${messageOf(error)}`),
     })
-    Array.forEach(OUR_MIGRATIONS, step => db.run(step))
+    runOurMigrations(db)
 
     const call = <A>(run: () => Promise<A>) =>
       Effect.tryPromise({
@@ -306,7 +354,7 @@ export const makeAccounts = (db: Database, config: AccountsConfig) =>
           decodeRows(InviteRow)(
             db
               .query(
-                `SELECT id, role, created_by, created_at, expires_at
+                `SELECT ${INVITE_COLUMNS}
                  FROM joshify_invites WHERE code_hash = ? AND expires_at > ?`,
               )
               .all(sha256(normalizeCode(code)), now()),
@@ -380,8 +428,14 @@ export const makeAccounts = (db: Database, config: AccountsConfig) =>
         )
       })
 
+    /** The link that opens an invite: what an admin sends. */
+    const linkOf = (code: string): string =>
+      `${config.origin}${JOIN_PATH}?code=${code}`
+
     const toInvite = (row: typeof InviteRow.Type): Invite => ({
       id: row.id,
+      name: row.name,
+      link: row.code === null ? null : linkOf(row.code),
       role: row.role === 'Admin' ? 'Admin' : 'Member',
       createdBy: row.created_by,
       createdAt: row.created_at,
@@ -416,7 +470,7 @@ export const makeAccounts = (db: Database, config: AccountsConfig) =>
       const invites = decodeRows(InviteRow)(
         db
           .query(
-            `SELECT id, role, created_by, created_at, expires_at
+            `SELECT ${INVITE_COLUMNS}
              FROM joshify_invites WHERE expires_at > ? ORDER BY created_at`,
           )
           .all(now()),
@@ -454,12 +508,14 @@ export const makeAccounts = (db: Database, config: AccountsConfig) =>
 
     const toAccountError = (error: AuthCallError) => failed(error.message)
 
-    /** A new invite and its code (shown once). */
-    const createInvite = (createdBy: string, role: AccountRole) =>
+    /** A new invite, for whoever `name` says, and its code. */
+    const createInvite = (createdBy: string, role: AccountRole, name = '') =>
       Effect.sync(() => {
         const code = newCode()
         const row = {
           id: crypto.randomUUID(),
+          name: cleanInviteName(name),
+          code,
           role: role === 'Admin' ? 'Admin' : 'Member',
           created_by: createdBy,
           created_at: now(),
@@ -467,11 +523,13 @@ export const makeAccounts = (db: Database, config: AccountsConfig) =>
         }
         db.query(
           `INSERT INTO joshify_invites
-             (id, code_hash, role, created_by, created_at, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+             (id, code_hash, code, name, role, created_by, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           row.id,
           sha256(code),
+          row.code,
+          row.name,
           row.role,
           row.created_by,
           row.created_at,
@@ -499,10 +557,15 @@ export const makeAccounts = (db: Database, config: AccountsConfig) =>
       /** Everyone, for this machine's own command line. */
       listAll: readPeople,
       people: (headers: Headers) => Effect.map(adminOf(headers), readPeople),
-      inviteAs: (headers: Headers, role: AccountRole) =>
+      inviteAs: (headers: Headers, role: AccountRole, name: string) =>
         Effect.flatMap(adminOf(headers), account =>
-          createInvite(account.username, role),
-        ).pipe(Effect.map(created => ({ ...created, people: readPeople() }))),
+          createInvite(account.username, role, name),
+        ).pipe(
+          Effect.map(created => ({
+            invite: created.invite,
+            people: readPeople(),
+          })),
+        ),
       revokeInvite: (headers: Headers, inviteId: string) =>
         Effect.map(adminOf(headers), () => {
           db.query('DELETE FROM joshify_invites WHERE id = ?').run(inviteId)

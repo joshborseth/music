@@ -26,12 +26,14 @@ import {
 import {
   type AccountFailure,
   type AccountPage,
-  InviteState,
+  type NewInviteForm,
+  NewInviteStatus,
   type PasswordField,
   type PasswordForm,
   PasswordFormStatus,
   type PeopleChange,
   type Secret,
+  emptyNewInviteForm,
   emptyPasswordForm,
   emptyResetPasswordForm,
   isAdmin,
@@ -182,48 +184,68 @@ export const failChangePassword = (
 
 // INVITES
 
-export const selectInviteRole = (
+const mapNewInvite = (
   model: Model,
-  role: AccountRole,
-): AccountReturn => ({
-  model: mapAccount(model, page =>
-    modifyFields(page, { inviteRole: () => role }),
+  change: (form: NewInviteForm) => NewInviteForm,
+): Model => mapAccount(model, page => modifyFields(page, { newInvite: change }))
+
+/** Invite Someone starts from a blank form, unless a link is being made. */
+export const startNewInvite = (model: Model): AccountReturn => ({
+  model: mapNewInvite(model, form =>
+    form.status._tag === 'Creating' ? form : emptyNewInviteForm(),
   ),
 })
 
-const withInvite = (model: Model, invite: InviteState): Model =>
-  mapAccount(model, page => modifyFields(page, { invite: () => invite }))
+/** Changing the form puts away what the last attempt said. */
+const editNewInvite = (
+  model: Model,
+  change: (form: NewInviteForm) => NewInviteForm,
+): AccountReturn => ({
+  model: mapNewInvite(model, form =>
+    form.status._tag === 'Creating'
+      ? form
+      : modifyFields(change(form), { status: () => NewInviteStatus.Editing() }),
+  ),
+})
 
-export const createInvite = (model: Model): AccountReturn =>
-  model.account.invite._tag === 'Creating'
+export const updateInviteName = (model: Model, name: string): AccountReturn =>
+  editNewInvite(model, form => modifyFields(form, { name: () => name }))
+
+export const selectInviteRole = (
+  model: Model,
+  role: AccountRole,
+): AccountReturn =>
+  editNewInvite(model, form => modifyFields(form, { role: () => role }))
+
+export const createInvite = (model: Model): AccountReturn => {
+  const form = model.account.newInvite
+  return form.status._tag === 'Creating'
     ? { model }
     : {
-        model: withInvite(model, InviteState.Creating()),
-        commands: [CreateInvite({ role: model.account.inviteRole })],
+        model: mapNewInvite(model, current =>
+          modifyFields(current, { status: () => NewInviteStatus.Creating() }),
+        ),
+        commands: [CreateInvite({ name: form.name.trim(), role: form.role })],
       }
+}
 
+/** The new invite joins the list, and the form is ready for the next one. */
 export const succeedCreateInvite = (
   model: Model,
   created: CreatedInvite,
 ): AccountReturn => ({
-  model: withPeople(
-    withInvite(
-      model,
-      InviteState.Created({ invite: created.invite, link: created.link }),
-    ),
-    created.people,
-  ),
+  model: withPeople(mapNewInvite(model, emptyNewInviteForm), created.people),
 })
 
 export const failCreateInvite = (
   model: Model,
   failure: AccountFailure,
 ): AccountReturn => ({
-  model: withInvite(model, InviteState.Failed({ message: failure.message })),
-})
-
-export const dismissInvite = (model: Model): AccountReturn => ({
-  model: withInvite(model, InviteState.Idle()),
+  model: mapNewInvite(model, form =>
+    modifyFields(form, {
+      status: () => NewInviteStatus.Failed({ message: failure.message }),
+    }),
+  ),
 })
 
 export const copyInviteLink = (model: Model, link: string): AccountReturn => ({

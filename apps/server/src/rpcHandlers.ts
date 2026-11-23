@@ -1,13 +1,7 @@
 import { Array, Effect, Option } from 'effect'
 import type { Headers } from 'effect/http'
 
-import {
-  AccountError,
-  JOIN_PATH,
-  MusicRpcs,
-  type Song,
-  type Viewer,
-} from '@music/shared'
+import { AccountError, MusicRpcs, type Song, type Viewer } from '@music/shared'
 
 import { ownerOf, userOf } from './access/owner.ts'
 import { AccountsService } from './access/public.ts'
@@ -144,14 +138,8 @@ export const MusicRpcsLive = MusicRpcs.toLayer(
 
       getViewer: (_, call) => viewerOf(call),
       getPeople: (_, call) => accounts.people(webHeaders(call.headers)),
-      createInvite: ({ role }, call) =>
-        accounts.inviteAs(webHeaders(call.headers), role).pipe(
-          Effect.map(created => ({
-            invite: created.invite,
-            link: `${accounts.origin}${JOIN_PATH}?code=${created.code}`,
-            people: created.people,
-          })),
-        ),
+      createInvite: ({ name, role }, call) =>
+        accounts.inviteAs(webHeaders(call.headers), role, name),
       revokeInvite: ({ inviteId }, call) =>
         accounts.revokeInvite(webHeaders(call.headers), inviteId),
       setRole: ({ userId, role }, call) =>

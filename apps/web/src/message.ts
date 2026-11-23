@@ -373,14 +373,17 @@ export const Message = defineMessageUnion({
   SubmittedChangePassword: {},
   SucceededChangePassword: {},
   FailedChangePassword: { failure: AccountFailure },
+  /** Invite Someone, at the end of People: opens the sheet. */
+  ClickedInviteSomeone: {},
+  UpdatedInviteName: { name: Schema.String },
   SelectedInviteRole: { role: AccountRole },
-  ClickedCreateInvite: {},
+  SubmittedNewInvite: {},
   SucceededCreateInvite: { created: CreatedInvite },
   FailedCreateInvite: { failure: AccountFailure },
+  /** A pending invite in People: opens its link. */
+  ClickedPendingInvite: { inviteId: Schema.String },
   ClickedCopyInviteLink: { link: Schema.String },
   CompletedCopyInviteLink: { isCopied: Schema.Boolean },
-  /** Done under a new invite link: its code is not shown again. */
-  ClickedDismissInvite: {},
   ClickedRevokeInvite: { inviteId: Schema.String },
   /** ⋯ beside someone in People. */
   ClickedPersonActions: { person: Person },
