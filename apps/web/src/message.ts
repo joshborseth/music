@@ -4,8 +4,12 @@ import { defineMessageUnion } from 'foldkit/message'
 import { UrlRequest } from 'foldkit/navigation'
 
 import {
+  AccountRole,
   AlbumSummary,
   ArtistSummary,
+  CreatedInvite,
+  People,
+  Person,
   PlaylistEdit,
   PlaylistEditResult,
   RadioStation,
@@ -13,6 +17,12 @@ import {
   Song,
 } from '@music/shared'
 
+import {
+  AccountFailure,
+  PasswordField,
+  PeopleChange,
+  Secret,
+} from './account/domain'
 import {
   DownloadFailure,
   DownloadKind,
@@ -44,6 +54,7 @@ import {
   myLibraryQuery,
   myPlaylistQuery,
   newReleasesQuery,
+  peopleQuery,
   playlistQuery,
   playlistSearchQuery,
   searchSuggestionsQuery,
@@ -51,6 +62,7 @@ import {
   songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
+  viewerQuery,
 } from './query'
 import { SearchKind, Tab } from './route'
 import { CollectionKind, PlayerPanel } from './sheet'
@@ -352,6 +364,39 @@ export const Message = defineMessageUnion({
   ClickedClosePlayer: {},
   ClickedStartBlockedAudio: {},
   ClickedDismissNotice: {},
+
+  GotViewerMessage: { message: viewerQuery.Message },
+  GotPeopleMessage: { message: peopleQuery.Message },
+  /** Sign In on the Account page, for a guest: the server's own page. */
+  ClickedSignIn: {},
+  UpdatedPasswordField: { field: PasswordField, value: Secret },
+  SubmittedChangePassword: {},
+  SucceededChangePassword: {},
+  FailedChangePassword: { failure: AccountFailure },
+  SelectedInviteRole: { role: AccountRole },
+  ClickedCreateInvite: {},
+  SucceededCreateInvite: { created: CreatedInvite },
+  FailedCreateInvite: { failure: AccountFailure },
+  ClickedCopyInviteLink: { link: Schema.String },
+  CompletedCopyInviteLink: { isCopied: Schema.Boolean },
+  /** Done under a new invite link: its code is not shown again. */
+  ClickedDismissInvite: {},
+  ClickedRevokeInvite: { inviteId: Schema.String },
+  /** ⋯ beside someone in People. */
+  ClickedPersonActions: { person: Person },
+  ClickedSetRole: { userId: Schema.String, role: AccountRole },
+  ClickedResetPassword: { userId: Schema.String, username: Schema.String },
+  UpdatedResetPasswordInput: { value: Secret },
+  SubmittedResetPassword: { userId: Schema.String, username: Schema.String },
+  CompletedFocusResetPasswordInput: {},
+  SucceededResetPassword: { username: Schema.String },
+  FailedResetPassword: { failure: AccountFailure },
+  ClickedRemovePerson: { userId: Schema.String, username: Schema.String },
+  ConfirmedRemovePerson: { userId: Schema.String },
+  CompletedChangePeople: {
+    change: PeopleChange,
+    result: Schema.Result(People, AccountFailure),
+  },
 
   PressedSwipeable: {
     target: SwipeTarget,

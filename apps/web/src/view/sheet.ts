@@ -1,4 +1,4 @@
-import { Array, Option, pipe } from 'effect'
+import { Array, Option, Redacted, pipe } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
@@ -9,6 +9,7 @@ import {
   Disc3,
   FileText,
   Heart,
+  KeyRound,
   ListEnd,
   ListMinus,
   ListMusic,
@@ -21,9 +22,12 @@ import {
   Power,
   Radio,
   Share,
+  ShieldCheck,
+  ShieldOff,
   SquareArrowUpRightExit,
   TimerOff,
   Trash2,
+  UserMinus,
 } from 'lucide'
 
 import { icon } from '@/lib/icons'
@@ -31,13 +35,16 @@ import { cn } from '@/lib/utils'
 import {
   type AlbumDetails,
   type Artwork,
+  MAX_PASSWORD_LENGTH,
   MAX_PLAYLIST_TITLE_LENGTH,
   type MyPlaylistSummary,
+  type Person,
   type PlaylistDetails,
   type Session,
   type Song,
 } from '@music/shared'
 
+import { RESET_PASSWORD_INPUT_ID, makeSecret } from '../account/domain'
 import { PLAYLIST_TITLE_INPUT_ID } from '../constant'
 import {
   type DownloadKind,
@@ -1193,6 +1200,179 @@ const confirmRemoveDownload = (
     ],
   )
 
+// PEOPLE
+
+const personActions = (person: Person, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.Class('flex flex-col')],
+    [
+      sheetHeading(
+        person.username,
+        Option.some(person.role === 'Admin' ? 'Admin' : 'Member'),
+        h,
+      ),
+      h.div(
+        [h.Class('flex flex-col border-t py-2')],
+        [
+          person.role === 'Admin'
+            ? actionButton(
+                Message.ClickedSetRole({ userId: person.id, role: 'Member' }),
+                ShieldOff,
+                'Make Member',
+                h,
+              )
+            : actionButton(
+                Message.ClickedSetRole({ userId: person.id, role: 'Admin' }),
+                ShieldCheck,
+                'Make Admin',
+                h,
+              ),
+          actionButton(
+            Message.ClickedResetPassword({
+              userId: person.id,
+              username: person.username,
+            }),
+            KeyRound,
+            'Reset Password',
+            h,
+          ),
+          actionButton(
+            Message.ClickedRemovePerson({
+              userId: person.id,
+              username: person.username,
+            }),
+            UserMinus,
+            'Remove',
+            h,
+            true,
+          ),
+        ],
+      ),
+    ],
+  )
+
+/** An admin types a new password for someone who forgot theirs. */
+const resetPasswordForm = (
+  model: Model,
+  userId: string,
+  username: string,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const { input, maybeProblem } = model.account.resetPassword
+  return h.form(
+    [
+      h.OnSubmit(Message.SubmittedResetPassword({ userId, username })),
+      h.Class('flex flex-col gap-4 px-5 pb-2'),
+    ],
+    [
+      h.div(
+        [h.Class('-mx-5')],
+        [
+          sheetHeading(
+            `New Password for ${username}`,
+            Option.some(
+              'They’re signed out on every device, and sign in again with this password. Tell them what it is.',
+            ),
+            h,
+          ),
+        ],
+      ),
+      h.label(
+        [h.For(RESET_PASSWORD_INPUT_ID), h.Class('sr-only')],
+        [`New password for ${username}`],
+      ),
+      h.input([
+        h.Id(RESET_PASSWORD_INPUT_ID),
+        h.Type('text'),
+        h.Value(Redacted.value(input)),
+        h.Placeholder('New password'),
+        h.Maxlength(MAX_PASSWORD_LENGTH),
+        h.Autocomplete('off'),
+        h.Attribute('autocapitalize', 'off'),
+        h.Spellcheck(false),
+        h.Attribute('enterkeyhint', 'done'),
+        h.DataAttribute('no-drag', ''),
+        h.AriaInvalid(Option.isSome(maybeProblem)),
+        h.OnInput(value =>
+          Message.UpdatedResetPasswordInput({ value: makeSecret(value) }),
+        ),
+        h.Class(
+          'bg-muted placeholder:text-muted-foreground h-12 w-full rounded-xl px-4 text-[17px] outline-none',
+        ),
+      ]),
+      Option.match(maybeProblem, {
+        onNone: () => h.empty,
+        onSome: problem =>
+          h.p(
+            [h.Role('alert'), h.Class('text-destructive text-[15px]')],
+            [problem],
+          ),
+      }),
+      h.div(
+        [h.Class('flex gap-3')],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ClickedCloseSheet()),
+              h.Class(cn(sheetButtonClass, 'bg-secondary text-primary')),
+            ],
+            ['Cancel'],
+          ),
+          h.button(
+            [
+              h.Type('submit'),
+              h.Class(
+                cn(sheetButtonClass, 'bg-primary text-primary-foreground'),
+              ),
+            ],
+            ['Set Password'],
+          ),
+        ],
+      ),
+    ],
+  )
+}
+
+const confirmRemovePerson = (
+  userId: string,
+  username: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.div(
+    [h.Class('flex flex-col gap-4 pb-2')],
+    [
+      sheetHeading(
+        `Remove ${username}?`,
+        Option.some(
+          'Their account, library, and queue are deleted, and they’re signed out everywhere. This can’t be undone.',
+        ),
+        h,
+      ),
+      h.div(
+        [h.Class('flex gap-3 px-5')],
+        [
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ClickedCloseSheet()),
+              h.Class(cn(sheetButtonClass, 'bg-secondary text-primary')),
+            ],
+            ['Cancel'],
+          ),
+          h.button(
+            [
+              h.Type('button'),
+              h.OnClick(Message.ConfirmedRemovePerson({ userId })),
+              h.Class(cn(sheetButtonClass, 'bg-destructive text-white')),
+            ],
+            ['Remove'],
+          ),
+        ],
+      ),
+    ],
+  )
+
 const sheetContent = (
   model: Model,
   content: SheetContent,
@@ -1238,6 +1418,11 @@ const sheetContent = (
     AddSongs: ({ playlistId }) => addSongsSheet(model, playlistId, h),
     ChoosePlaylistCover: ({ playlistId }) =>
       chooseCoverSheet(model, playlistId, h),
+    PersonActions: ({ person }) => personActions(person, h),
+    ResetPassword: ({ userId, username }) =>
+      resetPasswordForm(model, userId, username, h),
+    ConfirmRemovePerson: ({ userId, username }) =>
+      confirmRemovePerson(userId, username, h),
   })
 
 const sheetLabel = (content: SheetContent): string =>
@@ -1257,6 +1442,9 @@ const sheetLabel = (content: SheetContent): string =>
     LibrarySort: ({ kind }) => `Sort ${kind} By`,
     AddSongs: () => 'Add Songs',
     ChoosePlaylistCover: () => 'Choose a Cover',
+    PersonActions: ({ person }) => person.username,
+    ResetPassword: () => 'Reset Password',
+    ConfirmRemovePerson: () => 'Remove Person',
   })
 
 const sheetFrame = (

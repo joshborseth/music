@@ -2,6 +2,16 @@ import { Schema } from 'effect'
 import { Rpc, RpcGroup } from 'effect/rpc'
 
 import {
+  changePasswordRpc,
+  createInviteRpc,
+  getPeopleRpc,
+  getViewerRpc,
+  removePersonRpc,
+  resetPasswordRpc,
+  revokeInviteRpc,
+  setRoleRpc,
+} from './account.ts'
+import {
   AlbumDetails,
   AlbumSummary,
   ArtistDetails,
@@ -178,7 +188,7 @@ export const getArtworkBackdropRpc = Rpc.make('getArtworkBackdrop', {
 
 /**
  * Every call the web app makes to the music server: the YouTube Music
- * catalog, the library kept in the app, and the play history.
+ * catalog, the library kept in the app, the play history, and accounts.
  */
 export const MusicRpcs = RpcGroup.make(
   searchSongsRpc,
@@ -202,5 +212,13 @@ export const MusicRpcs = RpcGroup.make(
   getSongRadioRpc,
   getRadioRpc,
   getArtworkBackdropRpc,
+  getViewerRpc,
+  getPeopleRpc,
+  createInviteRpc,
+  revokeInviteRpc,
+  setRoleRpc,
+  resetPasswordRpc,
+  removePersonRpc,
+  changePasswordRpc,
 )
 export type MusicRpcs = typeof MusicRpcs

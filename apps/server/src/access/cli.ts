@@ -1,74 +1,84 @@
-import { Option } from 'effect'
+import { Database } from 'bun:sqlite'
+import { Effect, Option } from 'effect'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { formatCode, makeAccessStore, openAccessDatabase } from './store.ts'
+import { JOIN_PATH } from '@music/shared'
+
+import { INVITE_DAYS, makeAccounts } from './accounts.ts'
 
 /*
- * Invites for the app's public address (`gate.ts`):
+ * Invites from this machine, for when nobody can sign in yet (the first
+ * account) or the admin page is out of reach:
  *
- *   bun run access invite <name>   a code and a link for someone (a new code
- *                                  for a name already invited replaces it;
- *                                  devices already signed in stay signed in)
- *   bun run access revoke <name>   signs every device of theirs out
- *   bun run access list            who is invited, their devices, last seen
+ *   bun run access invite           a link for one new member's account
+ *   bun run access invite --admin   a link for one new admin's account
+ *   bun run access list             who has an account, and open invites
  *
- * Run it from apps/server. It opens the same file as the server
- * (`ACCESS_DB_PATH`) and builds links on `PUBLIC_ORIGIN`.
+ * The first account ever made becomes the owner, an admin, whatever its
+ * invite said. Run it from apps/server. It opens the same file as the
+ * server (`AUTH_DB_PATH`) and builds links on `PUBLIC_ORIGIN`.
  */
 
 const DEFAULT_ORIGIN = 'https://joshify.tail76a394.ts.net'
 
-const file =
-  process.env['ACCESS_DB_PATH'] ??
-  join(homedir(), '.local', 'share', 'music', 'access.sqlite')
+const dataDir = join(homedir(), '.local', 'share', 'music')
+const file = process.env['AUTH_DB_PATH'] ?? join(dataDir, 'auth.sqlite')
 const origin = process.env['PUBLIC_ORIGIN'] ?? DEFAULT_ORIGIN
 
 const usage = (): never => {
-  console.error('Usage: bun run access invite|revoke <name> | list')
+  console.error('Usage: bun run access invite [--admin] | list')
   process.exit(2)
 }
 
-const [command, ...rest] = process.argv.slice(2)
-const name = rest.join(' ').trim()
-const db = openAccessDatabase(file)
-const store = makeAccessStore(db, Date.now)
-
 const date = (time: number) => new Date(time).toISOString().slice(0, 16)
 
-switch (command) {
-  case 'invite': {
-    if (name === '') usage()
-    const code = formatCode(store.invite(name))
-    console.log(`Invited ${name}.`)
-    console.log(`  Code: ${code}`)
-    console.log(`  Link: ${origin}/sign-in?code=${code}`)
-    break
-  }
-  case 'revoke': {
-    if (name === '') usage()
-    console.log(
-      store.revoke(name)
-        ? `Revoked ${name}; their devices are signed out.`
-        : `Nobody named ${name} is invited.`,
-    )
-    break
-  }
-  case 'list': {
-    const invites = store.invites()
-    if (invites.length === 0) console.log('Nobody is invited yet.')
-    for (const invite of invites) {
-      const seen = Option.match(invite.maybeLastSeen, {
-        onNone: () => 'never signed in',
-        onSome: time => `last seen ${date(time)}`,
-      })
+const [command, ...flags] = process.argv.slice(2)
+const db = new Database(file, { create: true })
+db.run('PRAGMA journal_mode = WAL')
+
+const program = Effect.gen(function* () {
+  // NOTE: invites and the account list need no session secret.
+  const accounts = yield* makeAccounts(db, {
+    secret: 'unused-by-this-command-unused-by-this-command',
+    origin,
+  })
+  switch (command) {
+    case 'invite': {
+      const role = flags.includes('--admin') ? 'Admin' : 'Member'
+      const isFirst = Option.isNone(accounts.ownerId())
+      const { code } = yield* accounts.createInvite('this machine', role)
       console.log(
-        `${invite.name}: ${invite.devices} device(s), ${seen}, invited ${date(invite.createdAt)}`,
+        isFirst
+          ? 'An invite for the first account, which becomes the owner (an admin):'
+          : `An invite for one ${role === 'Admin' ? 'admin' : 'member'}:`,
       )
+      console.log(`  ${origin}${JOIN_PATH}?code=${code}`)
+      console.log(`It works once, for ${INVITE_DAYS} days.`)
+      break
     }
-    break
+    case 'list': {
+      const people = accounts.listAll()
+      if (people.people.length === 0) console.log('Nobody has an account yet.')
+      for (const person of people.people) {
+        const seen =
+          person.lastActiveAt === null
+            ? 'never signed in'
+            : `last active ${date(person.lastActiveAt)}`
+        console.log(
+          `${person.username}: ${person.role}${person.isOwner ? ' (owner)' : ''}, ${seen}`,
+        )
+      }
+      for (const invite of people.invites) {
+        console.log(
+          `Open invite (${invite.role}) by ${invite.createdBy}, expires ${date(invite.expiresAt)}`,
+        )
+      }
+      break
+    }
+    default:
+      usage()
   }
-  default:
-    usage()
-}
-db.close()
+})
+
+await Effect.runPromise(program).finally(() => db.close())

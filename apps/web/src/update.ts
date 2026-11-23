@@ -19,11 +19,14 @@ import {
   type MyPlaylistDetails,
   type PlaylistEdit,
   type PlaylistEditResult,
+  SIGN_IN_PATH,
   type Session,
   type Song,
   mosaicCovers,
 } from '@music/shared'
 
+import { initialAccountPage } from './account/domain'
+import * as AccountUpdate from './account/update'
 import {
   BlurSearchInput,
   EditPlaylists,
@@ -103,6 +106,7 @@ import {
   myLibraryQuery,
   myPlaylistQuery,
   newReleasesQuery,
+  peopleQuery,
   playlistQuery,
   playlistSearchQuery,
   searchSuggestionsQuery,
@@ -110,6 +114,7 @@ import {
   songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
+  viewerQuery,
 } from './query'
 import {
   AppRoute,
@@ -1383,6 +1388,7 @@ const loadRoute = (route: AppRoute): UpdateStep =>
       ({ params }) =>
       model =>
         moods.loadIfMissing(model, { params }),
+    Account: () => AccountUpdate.loadAccount,
     NotFound: () => model => ({ model }),
   })
 
@@ -1427,6 +1433,7 @@ const retryRoute = (route: AppRoute): UpdateStep =>
       ({ params }) =>
       model =>
         moods.revalidateOrLoad(model, { params }),
+    Account: () => AccountUpdate.loadAccount,
     NotFound: () => model => ({ model }),
   })
 
@@ -1476,6 +1483,9 @@ export const initialModel = (route: AppRoute, path: string): Model => {
     playerPanel: 'Artwork',
     maybeLyricsRetriedVideoId: Option.none(),
     downloads: Downloads.Loading(),
+    viewer: viewerQuery.init(),
+    people: peopleQuery.init(),
+    account: initialAccountPage(),
     ...initialPlaybackModel,
   })
 }
@@ -2205,6 +2215,82 @@ const updateMessage = (model: Model, message: Message) =>
     ClickedOpenPlayer: () => Playback.openPlayer(model),
     ClickedClosePlayer: () => closePlayer(model),
     ClickedStartBlockedAudio: () => Playback.startBlockedAudio(model),
+
+    GotViewerMessage: ({ message }) =>
+      AccountUpdate.gotViewerMessage(message)(model),
+    GotPeopleMessage: ({ message }) =>
+      AccountUpdate.people.fold(model, message),
+    ClickedSignIn: () => ({
+      model,
+      commands: [LoadExternal({ href: SIGN_IN_PATH })],
+    }),
+    UpdatedPasswordField: ({ field, value }) =>
+      AccountUpdate.updatePasswordField(model, field, value),
+    SubmittedChangePassword: () => AccountUpdate.submitChangePassword(model),
+    SucceededChangePassword: () => AccountUpdate.succeedChangePassword(model),
+    FailedChangePassword: ({ failure }) =>
+      AccountUpdate.failChangePassword(model, failure),
+    SelectedInviteRole: ({ role }) =>
+      AccountUpdate.selectInviteRole(model, role),
+    ClickedCreateInvite: () => AccountUpdate.createInvite(model),
+    SucceededCreateInvite: ({ created }) =>
+      AccountUpdate.succeedCreateInvite(model, created),
+    FailedCreateInvite: ({ failure }) =>
+      AccountUpdate.failCreateInvite(model, failure),
+    ClickedCopyInviteLink: ({ link }) =>
+      AccountUpdate.copyInviteLink(model, link),
+    CompletedCopyInviteLink: ({ isCopied }) =>
+      AccountUpdate.completeCopyInviteLink(model, isCopied),
+    ClickedDismissInvite: () => AccountUpdate.dismissInvite(model),
+    ClickedRevokeInvite: ({ inviteId }) =>
+      AccountUpdate.changePeople(model, { _tag: 'RevokeInvite', inviteId }),
+    ClickedPersonActions: ({ person }) =>
+      showSheet({ _tag: 'PersonActions', person })(model),
+    ClickedSetRole: ({ userId, role }) =>
+      Update.combine([
+        dismissSheet,
+        stepModel =>
+          AccountUpdate.changePeople(stepModel, {
+            _tag: 'SetRole',
+            userId,
+            role,
+          }),
+      ])(model),
+    ClickedResetPassword: ({ userId, username }) =>
+      Update.combine([
+        showSheet({ _tag: 'ResetPassword', userId, username }),
+        AccountUpdate.startResetPassword,
+      ])(model),
+    UpdatedResetPasswordInput: ({ value }) =>
+      AccountUpdate.updateResetPasswordInput(model, value),
+    SubmittedResetPassword: ({ userId, username }) =>
+      Option.match(AccountUpdate.resetPasswordProblem(model), {
+        onSome: problem => AccountUpdate.rejectResetPassword(model, problem),
+        onNone: () =>
+          Update.combine([
+            stepModel =>
+              AccountUpdate.resetPassword(stepModel, userId, username),
+            dismissSheet,
+          ])(model),
+      }),
+    CompletedFocusResetPasswordInput: () => ({ model }),
+    SucceededResetPassword: ({ username }) =>
+      AccountUpdate.succeedResetPassword(model, username),
+    FailedResetPassword: ({ failure }) =>
+      AccountUpdate.failResetPassword(model, failure),
+    ClickedRemovePerson: ({ userId, username }) =>
+      showSheet({ _tag: 'ConfirmRemovePerson', userId, username })(model),
+    ConfirmedRemovePerson: ({ userId }) =>
+      Update.combine([
+        dismissSheet,
+        stepModel =>
+          AccountUpdate.changePeople(stepModel, {
+            _tag: 'RemovePerson',
+            userId,
+          }),
+      ])(model),
+    CompletedChangePeople: ({ result }) =>
+      AccountUpdate.completeChangePeople(model, result),
 
     PressedSwipeable: ({ target, pointerId, clientX, clientY, timeStamp }) =>
       Playback.pressSwipeable(

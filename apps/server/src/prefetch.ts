@@ -36,7 +36,11 @@ import { SongMontage } from './montage/service.ts'
  * video's key frames, for the visuals), one at a time, after their audio.
  */
 
-export type PlanSource = 'Queue' | 'Page'
+/**
+ * Whose plan: each person's queue (`Queue:<owner>`) and the page they last
+ * opened (`Page:<owner>`), so one person's browsing never drops another's.
+ */
+export type PlanSource = `${'Queue' | 'Page'}:${string}`
 
 export interface PrefetchJob {
   readonly videoId: string
@@ -114,8 +118,14 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
     const coverDepth = yield* CoverDepth
     const songMontage = yield* SongMontage
     const plans = new Map<PlanSource, Array<PrefetchJob>>()
-    /** The songs up next in the queue whose montage is made early. */
-    let montageSongs: ReadonlySet<string> = new Set()
+    /** Each queue's songs up next whose montage is made early. */
+    const montagePlans = new Map<PlanSource, ReadonlySet<string>>()
+    const isMontageSong = (videoId: string) => {
+      for (const songs of montagePlans.values()) {
+        if (songs.has(videoId)) return true
+      }
+      return false
+    }
     const running = new Set<string>()
     const wake = yield* Queue.sliding<void>(WORKERS)
     let runs: Array<number> = []
@@ -162,7 +172,7 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
       job.kind === 'Download'
         ? Effect.andThen(
             analysis.warm(job.videoId),
-            montageSongs.has(job.videoId)
+            isMontageSong(job.videoId)
               ? songMontage.warm(job.videoId)
               : Effect.void,
           )
@@ -230,15 +240,18 @@ export const PrefetcherLive = Layer.effect(Prefetcher)(
         Effect.andThen(
           Effect.sync(() => {
             plans.set(source, [...jobs])
-            if (source === 'Queue') {
-              montageSongs = new Set(
-                Array.take(
-                  Array.filter(
-                    jobs,
-                    job => job.kind === 'Download' && job.montage === true,
-                  ),
-                  QUEUE_MONTAGES,
-                ).map(job => job.videoId),
+            if (source.startsWith('Queue:')) {
+              montagePlans.set(
+                source,
+                new Set(
+                  Array.take(
+                    Array.filter(
+                      jobs,
+                      job => job.kind === 'Download' && job.montage === true,
+                    ),
+                    QUEUE_MONTAGES,
+                  ).map(job => job.videoId),
+                ),
               )
             }
           }),

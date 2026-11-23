@@ -1,3 +1,4 @@
+export * from './account.ts'
 export * from './domain.ts'
 export * from './rpc.ts'
 export * as Session from './session.ts'

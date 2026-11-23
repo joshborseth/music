@@ -3,6 +3,7 @@ import {
   Context,
   Duration,
   Effect,
+  Exit,
   FiberMap,
   FileSystem,
   Layer,
@@ -18,13 +19,16 @@ import {
   SubscriptionRef,
 } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
+import type { ChildProcessSpawner } from 'effect/process'
 import type { Socket } from 'effect/socket'
 
 import { Session } from '@music/shared'
 
+import { HOME_OWNER, ownerOf } from '../access/owner.ts'
 import { AudioStore } from '../audioStore.ts'
 import { TimedLyrics } from '../lyrics/service.ts'
-import { PlaylistStore } from '../playlists/store.ts'
+import { Libraries } from '../playlists/libraries.ts'
+import type { PlaylistStoreShape } from '../playlists/store.ts'
 import { Prefetcher } from '../prefetch.ts'
 import { songFromQueueTrack, toQueueTrack } from '../tvCatalog/mapping.ts'
 import { type MusicVideo } from '../youtubeMusic/mapping.ts'
@@ -109,18 +113,47 @@ interface Connection {
 export class SessionHub extends Context.Service<
   SessionHub,
   {
+    /** Serve one device's socket, in the session of `owner` (`access/owner.ts`). */
     readonly handle: (
       socket: Socket.Socket,
+      owner: string,
     ) => Effect.Effect<void, never, Scope.Scope>
-    /** The session as every device last saw it, then each change. */
+    /** The owner's session (the TV's) as every device last saw it, then each change. */
     readonly states: Stream.Stream<Session.SessionState>
     /**
-     * When the music last stopped (epoch ms), or `null` while it plays on
-     * any device. A deploy waits for this to restart the server.
+     * When the music last stopped (epoch ms) in every session, or `null`
+     * while it plays in any. A deploy waits for this to restart the server.
      */
     readonly quietSince: Effect.Effect<number | null>
+    /** Drop an account's session and its saved file, once the account is gone. */
+    readonly forget: (owner: string) => Effect.Effect<void>
   }
 >()('music/SessionHub') {}
+
+/** One person's session: their queue, their devices, their playback. */
+interface Room {
+  readonly handle: (
+    socket: Socket.Socket,
+  ) => Effect.Effect<void, never, Scope.Scope>
+  readonly states: Stream.Stream<Session.SessionState>
+  readonly quietSince: Effect.Effect<number | null>
+}
+
+interface RoomSettings {
+  /** `home` for the owner's session, or an account's id. */
+  readonly owner: string
+  readonly savedFile: string
+  readonly playlistStore: PlaylistStoreShape
+  /** The TVs Home Assistant can wake: only the owner's session has any. */
+  readonly waker: TvWaker['Service']
+}
+
+/** A waker for a session without TVs to wake. */
+const noWaker: TvWaker['Service'] = {
+  devices: [],
+  wake: () => Effect.void,
+  isPoweredOn: () => Effect.succeed(Option.none()),
+}
 
 const encodeServerMessage = Schema.encodeSync(Session.ServerMessageJson)
 const decodeClientMessage = Schema.decodeUnknownOption(
@@ -128,25 +161,18 @@ const decodeClientMessage = Schema.decodeUnknownOption(
 )
 const textDecoder = new TextDecoder()
 
-export const SessionHubLive = Layer.effect(SessionHub)(
+const makeRoom = (settings: RoomSettings) =>
   Effect.gen(function* () {
-    const waker = yield* TvWaker
+    const { waker, playlistStore, savedFile, owner } = settings
     const audioStore = yield* AudioStore
     const prefetcher = yield* Prefetcher
     const youTubeMusic = yield* YouTubeMusic
     const timedLyrics = yield* TimedLyrics
-    const playlistStore = yield* PlaylistStore
     const lock = yield* Semaphore.make(1)
     const timers = yield* FiberMap.make<string>()
     const hubScope = yield* Scope.Scope
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
-    const home = yield* Config.String('HOME').pipe(Config.withDefault('/tmp'))
-    const savedFile = yield* Config.String('SESSION_STATE_PATH').pipe(
-      Config.withDefault(
-        path.join(home, '.local', 'share', 'music', 'session.json'),
-      ),
-    )
 
     // Start from the session saved before the last restart, if any.
     let model: Model = yield* fs.readFileString(savedFile).pipe(
@@ -510,8 +536,8 @@ export const SessionHubLive = Layer.effect(SessionHub)(
         [
           fillMissingDurations(ahead.download),
           warmLyrics(ahead.download),
-          audioStore.protect(ahead.download),
-          prefetcher.plan('Queue', [
+          audioStore.protect(owner, ahead.download),
+          prefetcher.plan(`Queue:${owner}`, [
             ...ahead.download.map((videoId, index) => ({
               videoId,
               kind: 'Download' as const,
@@ -892,10 +918,103 @@ export const SessionHubLive = Layer.effect(SessionHub)(
       Effect.forkIn(hubScope),
     )
 
-    return SessionHub.of({
+    const room: Room = {
       handle,
       states: SubscriptionRef.changes(latestState),
       quietSince: Effect.sync(() => quietSince),
+    }
+    return room
+  })
+
+/**
+ * Every person's session, each a room of its own, made when one of their
+ * devices first connects (the owner's at once, since the TV and the
+ * deploy's quiet check read it) and saved to a file of its own.
+ */
+export const SessionHubLive = Layer.effect(SessionHub)(
+  Effect.gen(function* () {
+    const waker = yield* TvWaker
+    const libraries = yield* Libraries
+    const prefetcher = yield* Prefetcher
+    const audioStore = yield* AudioStore
+    const scope = yield* Scope.Scope
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const context = yield* Effect.context<
+      | AudioStore
+      | Prefetcher
+      | YouTubeMusic
+      | TimedLyrics
+      | FileSystem.FileSystem
+      | Path.Path
+      | ChildProcessSpawner.ChildProcessSpawner
+    >()
+    const home = yield* Config.String('HOME').pipe(Config.withDefault('/tmp'))
+    const homeFile = yield* Config.String('SESSION_STATE_PATH').pipe(
+      Config.withDefault(
+        path.join(home, '.local', 'share', 'music', 'session.json'),
+      ),
+    )
+    const savedFileOf = (owner: string) =>
+      owner === HOME_OWNER
+        ? homeFile
+        : path.join(path.dirname(homeFile), 'sessions', `${owner}.json`)
+    const rooms = new Map<
+      string,
+      { readonly room: Room; readonly scope: Scope.Closeable }
+    >()
+    const lock = yield* Semaphore.make(1)
+
+    const roomOf = (owner: string) =>
+      lock.withPermits(1)(
+        Effect.gen(function* () {
+          const existing = rooms.get(owner)
+          if (existing !== undefined) return existing.room
+          const roomScope = yield* Scope.fork(scope)
+          const playlistStore = yield* libraries.of(owner)
+          const room = yield* makeRoom({
+            owner,
+            savedFile: savedFileOf(owner),
+            playlistStore,
+            waker: owner === HOME_OWNER ? waker : noWaker,
+          }).pipe(Scope.provide(roomScope), Effect.provideContext(context))
+          rooms.set(owner, { room, scope: roomScope })
+          return room
+        }),
+      )
+
+    const homeRoom = yield* roomOf(HOME_OWNER)
+
+    return SessionHub.of({
+      handle: (socket, owner) =>
+        Effect.flatMap(roomOf(owner), room => room.handle(socket)),
+      states: homeRoom.states,
+      quietSince: Effect.suspend(() =>
+        Effect.forEach([...rooms.values()], entry => entry.room.quietSince),
+      ).pipe(
+        Effect.map(times =>
+          times.some(time => time === null)
+            ? null
+            : Math.max(...times.filter(time => time !== null)),
+        ),
+      ),
+      forget: owner =>
+        owner === HOME_OWNER
+          ? Effect.void
+          : lock.withPermits(1)(
+              Effect.gen(function* () {
+                const existing = rooms.get(owner)
+                rooms.delete(owner)
+                if (existing !== undefined) {
+                  yield* Scope.close(existing.scope, Exit.void)
+                }
+                yield* fs.remove(savedFileOf(owner)).pipe(Effect.ignore)
+                // Their songs no longer need getting ready, or keeping.
+                yield* prefetcher.plan(`Queue:${owner}`, [])
+                yield* prefetcher.plan(`Page:${owner}`, [])
+                yield* audioStore.protect(owner, [])
+              }),
+            ),
     })
   }),
 )
@@ -939,7 +1058,7 @@ export const SessionRoutes = HttpRouter.use(router =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
         const socket = yield* Effect.orDie(request.upgrade)
-        yield* hub.handle(socket)
+        yield* hub.handle(socket, ownerOf(request.headers))
         return HttpServerResponse.empty()
       }),
     )

@@ -22,14 +22,14 @@ describe('prefetch planning', () => {
   test('takes the most urgent job across sources, skipping songs in progress', () => {
     const plans = new Map<PlanSource, Array<PrefetchJob>>([
       [
-        'Queue',
+        'Queue:home',
         [
           { videoId: 'now', kind: 'Download', priority: 0 },
           { videoId: 'next', kind: 'Download', priority: 1 },
           { videoId: 'later', kind: 'Download', priority: 2 },
         ],
       ],
-      ['Page', [{ videoId: 'page', kind: 'Download', priority: 1.5 }]],
+      ['Page:home', [{ videoId: 'page', kind: 'Download', priority: 1.5 }]],
     ])
     const order: Array<string> = []
     for (;;) {
@@ -38,7 +38,7 @@ describe('prefetch planning', () => {
       order.push(maybeJob.value.videoId)
     }
     expect(order).toEqual(['next', 'page', 'later'])
-    expect(plans.get('Queue')).toEqual([
+    expect(plans.get('Queue:home')).toEqual([
       { videoId: 'now', kind: 'Download', priority: 0 },
     ])
   })

@@ -1,5 +1,6 @@
 import { Schema } from 'effect'
 
+import { AccountPage } from './account/domain'
 import { Downloads } from './downloads/domain'
 import { LibraryFilter, LibraryItem, LibraryPrefs } from './library'
 import { NavigationModel } from './navigation'
@@ -27,6 +28,7 @@ import {
   myLibraryQuery,
   myPlaylistQuery,
   newReleasesQuery,
+  peopleQuery,
   playlistQuery,
   playlistSearchQuery,
   searchSuggestionsQuery,
@@ -34,6 +36,7 @@ import {
   songRadioQuery,
   songSearchQuery,
   topResultSearchQuery,
+  viewerQuery,
 } from './query'
 import { AppRoute } from './route'
 import { ActionSheet, PlayerPanel } from './sheet'
@@ -128,5 +131,11 @@ export const Model = Schema.Struct({
   swipe: Swipe,
   /** Albums and playlists downloaded on this phone. */
   downloads: Downloads,
+  /** Who is using the app, for the Account page. */
+  viewer: viewerQuery.Model,
+  /** Everyone with an account and the open invites, for admins. */
+  people: peopleQuery.Model,
+  /** What is typed and pending on the Account page. */
+  account: AccountPage,
 })
 export type Model = typeof Model.Type
