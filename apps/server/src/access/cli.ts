@@ -3,16 +3,14 @@ import { Effect, Option } from 'effect'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { JOIN_PATH } from '@music/shared'
-
-import { INVITE_DAYS, makeAccounts } from './accounts.ts'
+import { INVITE_DAYS, MACHINE_INVITER, makeAccounts } from './accounts.ts'
 
 /*
  * Invites from this machine, for when nobody can sign in yet (the first
  * account) or the admin page is out of reach:
  *
- *   bun run access invite           a link for one new member's account
- *   bun run access invite --admin   a link for one new admin's account
+ *   bun run access invite [name]           a link for one new member's account
+ *   bun run access invite [name] --admin   a link for one new admin's account
  *   bun run access list             who has an account, and open invites
  *
  * The first account ever made becomes the owner, an admin, whatever its
@@ -27,7 +25,7 @@ const file = process.env['AUTH_DB_PATH'] ?? join(dataDir, 'auth.sqlite')
 const origin = process.env['PUBLIC_ORIGIN'] ?? DEFAULT_ORIGIN
 
 const usage = (): never => {
-  console.error('Usage: bun run access invite [--admin] | list')
+  console.error('Usage: bun run access invite [name] [--admin] | list')
   process.exit(2)
 }
 
@@ -47,13 +45,18 @@ const program = Effect.gen(function* () {
     case 'invite': {
       const role = flags.includes('--admin') ? 'Admin' : 'Member'
       const isFirst = Option.isNone(accounts.ownerId())
-      const { code } = yield* accounts.createInvite('this machine', role)
+      const name = flags.filter(flag => !flag.startsWith('--')).join(' ')
+      const { invite } = yield* accounts.createInvite(
+        MACHINE_INVITER,
+        role,
+        name,
+      )
       console.log(
         isFirst
           ? 'An invite for the first account, which becomes the owner (an admin):'
           : `An invite for one ${role === 'Admin' ? 'admin' : 'member'}:`,
       )
-      console.log(`  ${origin}${JOIN_PATH}?code=${code}`)
+      console.log(`  ${invite.link ?? ''}`)
       console.log(`It works once, for ${INVITE_DAYS} days.`)
       break
     }
@@ -71,7 +74,7 @@ const program = Effect.gen(function* () {
       }
       for (const invite of people.invites) {
         console.log(
-          `Open invite (${invite.role}) by ${invite.createdBy}, expires ${date(invite.expiresAt)}`,
+          `Open invite${invite.name === '' ? '' : ` for ${invite.name}`} (${invite.role}) by ${invite.createdBy}, expires ${date(invite.expiresAt)}`,
         )
       }
       break

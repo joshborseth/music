@@ -32,10 +32,10 @@ export const ChangePassword = Command.define('ChangePassword', {
 })
 
 export const CreateInvite = Command.define('CreateInvite', {
-  args: { role: AccountRole },
+  args: { name: Schema.String, role: AccountRole },
   messages: [Message.SucceededCreateInvite, Message.FailedCreateInvite],
-  execute: ({ role }) =>
-    MusicClient.use(client => client.createInvite({ role })).pipe(
+  execute: ({ name, role }) =>
+    MusicClient.use(client => client.createInvite({ name, role })).pipe(
       Effect.map(created => Message.SucceededCreateInvite({ created })),
       Effect.catch(failure =>
         Effect.succeed(

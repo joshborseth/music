@@ -2,11 +2,12 @@ import { Array, Match, Option, Redacted } from 'effect'
 import { AsyncData } from 'foldkit'
 import { Html, HtmlBuilder } from 'foldkit/html'
 import {
+  ChevronRight,
   CircleAlert,
   CircleUserRound,
-  Copy,
   Ellipsis,
-  Share,
+  Link,
+  UserPlus,
   Wifi,
 } from 'lucide'
 
@@ -24,8 +25,6 @@ import {
 
 import {
   type AccountFailure,
-  type AccountPage,
-  InviteState,
   type PasswordField,
   type PasswordForm,
   PasswordFormStatus,
@@ -49,6 +48,15 @@ const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
 
 /** Epoch ms → `Nov 22, 2026`, in the phone's own language. */
 const formatDate = (epochMs: number): string => DATE_FORMAT.format(epochMs)
+
+const SHORT_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+})
+
+/** Epoch ms → `Nov 29`: invites last a week, so the year goes without saying. */
+export const formatShortDate = (epochMs: number): string =>
+  SHORT_DATE_FORMAT.format(epochMs)
 
 const roleName = (role: AccountRole): string =>
   role === 'Admin' ? 'Admin' : 'Member'
@@ -82,9 +90,6 @@ const cardClass = 'bg-secondary mx-4 flex flex-col rounded-xl'
 
 const primaryButtonClass =
   'pressable bg-primary text-primary-foreground flex h-12 w-full items-center justify-center rounded-xl text-[17px] font-semibold disabled:opacity-60'
-
-const secondaryButtonClass =
-  'pressable bg-secondary text-primary flex h-12 flex-1 items-center justify-center gap-2 rounded-xl text-[17px] font-semibold'
 
 const inputClass =
   'bg-muted placeholder:text-muted-foreground h-12 w-full rounded-xl px-4 text-[17px] outline-none'
@@ -422,6 +427,106 @@ const personRow = (
   )
 }
 
+const inviteAvatar = (invite: Invite, h: HtmlBuilder<Message>): Html =>
+  h.span(
+    [
+      h.AriaHidden(true),
+      h.Class(
+        'border-primary/60 text-primary flex size-10 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed text-[17px] font-semibold',
+      ),
+    ],
+    [invite.name === '' ? icon(h, Link, 'size-[18px]') : initial(invite.name)],
+  )
+
+/** What a pending invite is called in the list: who it's for, if known. */
+export const inviteTitle = (invite: Invite): string =>
+  invite.name === '' ? 'Unnamed invite' : invite.name
+
+const inviteRow = (invite: Invite, h: HtmlBuilder<Message>): Html =>
+  h.keyed('li')(
+    invite.id,
+    [],
+    [
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedPendingInvite({ inviteId: invite.id })),
+          h.AriaLabel(
+            invite.name === ''
+              ? 'Unnamed invite, not used yet'
+              : `Invite for ${invite.name}, not used yet`,
+          ),
+          h.Class(
+            'flex w-full items-center gap-3 py-2.5 pr-3 pl-4 text-left active:bg-black/10',
+          ),
+        ],
+        [
+          inviteAvatar(invite, h),
+          h.div(
+            [h.Class('flex min-w-0 flex-1 flex-col')],
+            [
+              h.div(
+                [h.Class('flex min-w-0 items-center gap-1.5')],
+                [
+                  h.span(
+                    [
+                      h.Class(
+                        cn(
+                          'truncate text-[17px] font-medium',
+                          invite.name === '' && 'text-muted-foreground',
+                        ),
+                      ),
+                    ],
+                    [inviteTitle(invite)],
+                  ),
+                  invite.role === 'Admin' ? adminBadge(h) : h.empty,
+                ],
+              ),
+              h.span(
+                [h.Class('text-muted-foreground text-[13px]')],
+                [`Invited · Link expires ${formatShortDate(invite.expiresAt)}`],
+              ),
+            ],
+          ),
+          icon(h, ChevronRight, 'text-muted-foreground/70 size-5 shrink-0'),
+        ],
+      ),
+    ],
+  )
+
+const inviteSomeoneRow = (h: HtmlBuilder<Message>): Html =>
+  h.keyed('li')(
+    'invite-someone',
+    [],
+    [
+      h.button(
+        [
+          h.Type('button'),
+          h.OnClick(Message.ClickedInviteSomeone()),
+          h.Class(
+            'text-primary flex w-full items-center gap-3 py-2.5 pr-3 pl-4 text-left active:bg-black/10',
+          ),
+        ],
+        [
+          h.span(
+            [
+              h.AriaHidden(true),
+              h.Class(
+                'bg-primary text-primary-foreground flex size-10 shrink-0 items-center justify-center rounded-full',
+              ),
+            ],
+            [icon(h, UserPlus, 'size-5')],
+          ),
+          h.span([h.Class('text-[17px] font-medium')], ['Invite Someone']),
+        ],
+      ),
+    ],
+  )
+
+/**
+ * Everyone with an account, then the invites nobody has used yet, then
+ * Invite Someone: one list, so a pending invite sits where its person will.
+ */
 const peopleList = (
   people: People,
   viewerId: string,
@@ -433,216 +538,25 @@ const peopleList = (
       h.ul(
         [
           h.AriaLabel('People'),
-          h.Class(cn(cardClass, 'divide-border divide-y')),
+          h.Class(cn(cardClass, 'divide-border divide-y overflow-hidden')),
         ],
-        Array.map(people.people, person => personRow(person, viewerId, h)),
+        [
+          ...Array.map(people.people, person => personRow(person, viewerId, h)),
+          ...Array.map(people.invites, invite => inviteRow(invite, h)),
+          inviteSomeoneRow(h),
+        ],
+      ),
+      h.p(
+        [h.Class('text-muted-foreground px-8 text-[13px] leading-snug')],
+        [
+          'Everyone gets their own library and queue. An invite link makes one account and works for a week.',
+        ],
       ),
     ],
     h,
   )
 
-const inviteRow = (invite: Invite, h: HtmlBuilder<Message>): Html =>
-  h.keyed('li')(
-    invite.id,
-    [h.Class('flex items-center gap-3 py-2.5 pr-2 pl-4')],
-    [
-      h.div(
-        [h.Class('flex min-w-0 flex-1 flex-col')],
-        [
-          h.span(
-            [h.Class('text-[17px] font-medium')],
-            [`${roleName(invite.role)} invite`],
-          ),
-          h.span(
-            [h.Class('text-muted-foreground text-[13px]')],
-            [
-              `Made ${formatDate(invite.createdAt)} · Expires ${formatDate(invite.expiresAt)}`,
-            ],
-          ),
-        ],
-      ),
-      h.button(
-        [
-          h.Type('button'),
-          h.OnClick(Message.ClickedRevokeInvite({ inviteId: invite.id })),
-          h.AriaLabel(
-            `Revoke ${roleName(invite.role)} invite made ${formatDate(invite.createdAt)}`,
-          ),
-          h.Class(
-            'text-destructive h-10 shrink-0 rounded-full px-3 text-[15px] font-semibold active:opacity-50',
-          ),
-        ],
-        ['Revoke'],
-      ),
-    ],
-  )
-
-const pendingInvites = (
-  invites: ReadonlyArray<Invite>,
-  h: HtmlBuilder<Message>,
-): Html =>
-  Array.match(invites, {
-    onEmpty: () => h.empty,
-    onNonEmpty: nonEmpty =>
-      section(
-        'Pending Invites',
-        [
-          h.ul(
-            [
-              h.AriaLabel('Pending Invites'),
-              h.Class(cn(cardClass, 'divide-border divide-y')),
-            ],
-            Array.map(nonEmpty, invite => inviteRow(invite, h)),
-          ),
-        ],
-        h,
-      ),
-  })
-
-// INVITE SOMEONE
-
-const ROLE_HINTS: Readonly<Record<AccountRole, string>> = {
-  Member: 'Their own library and queue.',
-  Admin: 'Their own library and queue, and they can invite and manage people.',
-}
-
-const roleOption = (
-  role: AccountRole,
-  selected: AccountRole,
-  h: HtmlBuilder<Message>,
-): Html => {
-  const isSelected = role === selected
-  return h.button(
-    [
-      h.Type('button'),
-      h.AriaPressed(isSelected ? 'true' : 'false'),
-      h.OnClick(Message.SelectedInviteRole({ role })),
-      h.Class(
-        cn(
-          'h-9 flex-1 rounded-lg text-[15px] font-semibold transition-colors',
-          isSelected
-            ? 'bg-background text-foreground shadow-sm'
-            : 'text-muted-foreground',
-        ),
-      ),
-    ],
-    [roleName(role)],
-  )
-}
-
-const inviteForm = (account: AccountPage, h: HtmlBuilder<Message>): Html => {
-  const isCreating = account.invite._tag === 'Creating'
-  return h.div(
-    [h.Class('flex flex-col gap-3 px-4')],
-    [
-      h.div(
-        [
-          h.Role('group'),
-          h.AriaLabel('Role'),
-          h.Class('bg-muted flex gap-1 rounded-xl p-1'),
-        ],
-        [
-          roleOption('Member', account.inviteRole, h),
-          roleOption('Admin', account.inviteRole, h),
-        ],
-      ),
-      h.p(
-        [h.Class('text-muted-foreground text-[13px]')],
-        [ROLE_HINTS[account.inviteRole]],
-      ),
-      account.invite._tag === 'Failed'
-        ? errorText(account.invite.message, h)
-        : h.empty,
-      h.button(
-        [
-          h.Type('button'),
-          h.Disabled(isCreating),
-          h.OnClick(Message.ClickedCreateInvite()),
-          h.Class(primaryButtonClass),
-        ],
-        [isCreating ? 'Creating…' : 'Create Invite Link'],
-      ),
-    ],
-  )
-}
-
-/** The new link, shown until Done, since its code can't be shown again. */
-const createdInvite = (
-  invite: Invite,
-  link: string,
-  h: HtmlBuilder<Message>,
-): Html =>
-  h.div(
-    [h.Class(cn(cardClass, 'gap-3 p-4'))],
-    [
-      h.p(
-        [h.Class('text-[17px] font-semibold')],
-        [`Invite link for a new ${roleName(invite.role).toLowerCase()}`],
-      ),
-      h.p(
-        [
-          h.AriaLabel('Invite link'),
-          h.Class(
-            'bg-background font-mono rounded-lg px-3 py-2 text-[14px] break-all select-all',
-          ),
-        ],
-        [link],
-      ),
-      h.div(
-        [h.Class('flex gap-3')],
-        [
-          h.button(
-            [
-              h.Type('button'),
-              h.OnClick(Message.ClickedCopyInviteLink({ link })),
-              h.Class(cn(secondaryButtonClass, 'bg-background')),
-            ],
-            [icon(h, Copy, 'size-5'), 'Copy'],
-          ),
-          h.button(
-            [
-              h.Type('button'),
-              h.OnClick(
-                Message.ClickedShare({ title: 'Join Joshify', href: link }),
-              ),
-              h.Class(cn(secondaryButtonClass, 'bg-background')),
-            ],
-            [icon(h, Share, 'size-5'), 'Share'],
-          ),
-        ],
-      ),
-      h.p(
-        [h.Class('text-muted-foreground text-[13px]')],
-        [
-          'The link works once and expires in a week. It can’t be shown again, so send it now.',
-        ],
-      ),
-      h.button(
-        [
-          h.Type('button'),
-          h.OnClick(Message.ClickedDismissInvite()),
-          h.Class(primaryButtonClass),
-        ],
-        ['Done'],
-      ),
-    ],
-  )
-
-const inviteSection = (account: AccountPage, h: HtmlBuilder<Message>): Html =>
-  section(
-    'Invite Someone',
-    [
-      InviteState.match(account.invite, {
-        Idle: () => inviteForm(account, h),
-        Creating: () => inviteForm(account, h),
-        Failed: () => inviteForm(account, h),
-        Created: ({ invite, link }) => createdInvite(invite, link, h),
-      }),
-    ],
-    h,
-  )
-
-/** For admins: the people with accounts, inviting someone, and open invites. */
+/** For admins: the people with accounts, their invites, and inviting more. */
 const adminContent = (
   model: PageModel,
   viewerId: string,
@@ -657,11 +571,6 @@ const adminContent = (
         h,
       ),
     onData: people => peopleList(people, viewerId, h),
-  }),
-  inviteSection(model.account, h),
-  Option.match(AsyncData.getData(peopleQuery.read(model.people)), {
-    onNone: () => h.empty,
-    onSome: ({ invites }) => pendingInvites(invites, h),
   }),
 ]
 

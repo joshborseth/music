@@ -5,7 +5,6 @@ import { defineTaggedUnion } from 'foldkit/schema'
 import {
   type AccountError,
   AccountRole,
-  Invite,
   MAX_PASSWORD_LENGTH,
   MIN_PASSWORD_LENGTH,
   type Viewer,
@@ -144,17 +143,29 @@ export const RESET_PASSWORD_INPUT_ID = 'reset-password-input'
 
 // INVITES
 
-/**
- * The invite link being made. Its code is shown only once, so a made link
- * stays on screen until it is dismissed.
- */
-export const InviteState = defineTaggedUnion({
-  Idle: {},
+/** Where making an invite link stands, in the Invite Someone sheet. */
+export const NewInviteStatus = defineTaggedUnion({
+  Editing: {},
   Creating: {},
-  Created: { invite: Invite, link: Schema.String },
   Failed: { message: Schema.String },
 })
-export type InviteState = typeof InviteState.Type
+export type NewInviteStatus = typeof NewInviteStatus.Type
+
+/** The Invite Someone sheet: who the link is for, and what they may do. */
+export const NewInviteForm = Schema.Struct({
+  name: Schema.String,
+  role: AccountRole,
+  status: NewInviteStatus,
+})
+export type NewInviteForm = typeof NewInviteForm.Type
+
+export const emptyNewInviteForm = (): NewInviteForm => ({
+  name: '',
+  role: 'Member',
+  status: NewInviteStatus.Editing(),
+})
+
+export const NEW_INVITE_NAME_INPUT_ID = 'new-invite-name'
 
 // PEOPLE
 
@@ -170,9 +181,7 @@ export type PeopleChange = typeof PeopleChange.Type
 
 export const AccountPage = Schema.Struct({
   passwordForm: PasswordForm,
-  /** The role the next invite link gives. */
-  inviteRole: AccountRole,
-  invite: InviteState,
+  newInvite: NewInviteForm,
   resetPassword: ResetPasswordForm,
 })
 export type AccountPage = typeof AccountPage.Type
@@ -184,8 +193,7 @@ export const emptyResetPasswordForm = (): ResetPasswordForm => ({
 
 export const initialAccountPage = (): AccountPage => ({
   passwordForm: emptyPasswordForm(PasswordFormStatus.Editing()),
-  inviteRole: 'Member',
-  invite: InviteState.Idle(),
+  newInvite: emptyNewInviteForm(),
   resetPassword: emptyResetPasswordForm(),
 })
 

@@ -41,11 +41,21 @@ export const Person = Schema.Struct({
 })
 export type Person = typeof Person.Type
 
-/** An invite link not used yet. Its code is shown only once, when made. */
+/** The longest name an invite may carry. */
+export const MAX_INVITE_NAME_LENGTH = 40
+
+/** An invite link not used yet. */
 export const Invite = Schema.Struct({
   id: Schema.String,
+  /** Who it is for, as the admin typed it; empty when they left it out. */
+  name: Schema.String,
   /** The role the account made from it gets. */
   role: AccountRole,
+  /**
+   * The link to send: opening it is the only way to make an account. Null
+   * for invites made before links were kept, which can only be revoked.
+   */
+  link: Schema.NullOr(Schema.String),
   /** The admin who made it. */
   createdBy: Schema.String,
   /** Epoch ms. */
@@ -63,8 +73,6 @@ export type People = typeof People.Type
 
 export const CreatedInvite = Schema.Struct({
   invite: Invite,
-  /** The link to send: opening it is the only way to make an account. */
-  link: Schema.String,
   people: People,
 })
 export type CreatedInvite = typeof CreatedInvite.Type
@@ -108,7 +116,7 @@ export const getPeopleRpc = Rpc.make('getPeople', {
 
 /** A new invite link, good for one account for a week. Admins only. */
 export const createInviteRpc = Rpc.make('createInvite', {
-  payload: Schema.Struct({ role: AccountRole }),
+  payload: Schema.Struct({ name: Schema.String, role: AccountRole }),
   success: CreatedInvite,
   error: AccountError,
 })

@@ -47,6 +47,13 @@ export const SheetContent = defineTaggedUnion({
   /** An admin gives someone a new password. */
   ResetPassword: { userId: Schema.String, username: Schema.String },
   ConfirmRemovePerson: { userId: Schema.String, username: Schema.String },
+  /** Who an invite link is for, and whether they'll be an admin. */
+  NewInvite: {},
+  /**
+   * One pending invite: its link to send again, or revoke. Read from the
+   * people list, so it shows the invite as the server has it.
+   */
+  InviteLink: { inviteId: Schema.String, isNew: Schema.Boolean },
 })
 export type SheetContent = typeof SheetContent.Type
 

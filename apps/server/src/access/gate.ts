@@ -196,10 +196,10 @@ const joinGet = (
   accounts: Accounts,
 ) => {
   const code = urlOf(request.url).searchParams.get('code') ?? ''
-  const isUsable = Option.isSome(accounts.findInvite(code))
+  const maybeInvite = accounts.findInvite(code)
   return html(
-    joinPage(code, '', isUsable ? 'None' : 'InviteGone', isUsable),
-    isUsable ? 200 : 404,
+    joinPage(maybeInvite, code, '', 'None'),
+    Option.isSome(maybeInvite) ? 200 : 404,
   )
 }
 
@@ -214,15 +214,7 @@ const joinPost = (
     const code = field('code')
     const username = field('username').trim()
     const page = (notice: JoinNotice, status: number) =>
-      html(
-        joinPage(
-          code,
-          username,
-          notice,
-          notice !== 'InviteGone' && notice !== 'TooManyTries',
-        ),
-        status,
-      )
+      html(joinPage(accounts.findInvite(code), code, username, notice), status)
     if (failures.isLockedOut(address)) return page('TooManyTries', 429)
     return yield* accounts
       .join({

@@ -137,7 +137,7 @@ describe('the public address', () => {
       form({ code, username: 'sam', password: PASSWORD, confirm: PASSWORD }),
     )
     expect(again.status).toBe(400)
-    expect(await again.text()).toContain('has been used, has expired')
+    expect(await again.text()).toContain('This invite can’t be used')
     expect((await call(`/join?code=${code}`)).status).toBe(404)
   })
 
@@ -378,14 +378,46 @@ describe('admin', () => {
     const josh = headersFor(
       await join(call, await inviteCode(accounts), 'josh'),
     )
-    const created = await Effect.runPromise(accounts.inviteAs(josh, 'Admin'))
+    const created = await Effect.runPromise(
+      accounts.inviteAs(josh, 'Admin', '  Sam\n Lee '),
+    )
+    const link = created.invite.link ?? ''
+    expect(link).toStartWith(`${ORIGIN}/join?code=`)
     expect(created.people.invites).toEqual([
-      expect.objectContaining({ role: 'Admin', createdBy: 'josh' }),
+      expect.objectContaining({
+        name: 'Sam Lee',
+        role: 'Admin',
+        createdBy: 'josh',
+        link,
+      }),
     ])
+    // The link can be sent again: the list keeps it.
+    const listed = await Effect.runPromise(accounts.people(josh))
+    expect(listed.invites[0]?.link).toBe(link)
+    const page = await call(link.slice(ORIGIN.length))
+    expect(page.status).toBe(200)
+    const body = await page.text()
+    expect(body).toContain('Sam Lee, you’re invited')
+    expect(body).toContain('<b>josh</b> invited you')
+    expect(body).toContain('value="samlee"')
     const after = await Effect.runPromise(
       accounts.revokeInvite(josh, created.invite.id),
     )
     expect(after.invites).toEqual([])
-    expect((await call(`/join?code=${created.code}`)).status).toBe(404)
+    expect((await call(link.slice(ORIGIN.length))).status).toBe(404)
+  })
+
+  test('opening the accounts again keeps their invites', async () => {
+    const db = new Database(':memory:')
+    const config = {
+      secret: 'test-secret-test-secret-test-secret-42',
+      origin: ORIGIN,
+    }
+    const first = await Effect.runPromise(makeAccounts(db, config))
+    await Effect.runPromise(first.createInvite('test', 'Member', 'Ana'))
+    const again = await Effect.runPromise(makeAccounts(db, config))
+    expect(again.listAll().invites).toEqual([
+      expect.objectContaining({ name: 'Ana', role: 'Member' }),
+    ])
   })
 })
