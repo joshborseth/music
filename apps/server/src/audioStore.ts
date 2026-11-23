@@ -50,8 +50,14 @@ export class AudioStore extends Context.Service<
     readonly isStored: (videoId: string) => Effect.Effect<boolean>
     /** Count a play, so favorites stay cached longest. */
     readonly markPlayed: (videoId: string) => Effect.Effect<void>
-    /** The songs playing now and next: never evicted. */
-    readonly protect: (videoIds: ReadonlyArray<string>) => Effect.Effect<void>
+    /**
+     * The songs playing now and next in one person's queue (`owner`): never
+     * evicted. Each call replaces that queue's songs.
+     */
+    readonly protect: (
+      owner: string,
+      videoIds: ReadonlyArray<string>,
+    ) => Effect.Effect<void>
   }
 >()('music/AudioStore') {}
 
@@ -170,6 +176,7 @@ export const AudioStoreLive = Layer.effect(AudioStore)(
       )
     const indexLock = yield* Semaphore.make(1)
     let protectedIds: ReadonlySet<string> = new Set()
+    const protectedByOwner = new Map<string, ReadonlyArray<string>>()
     const active = new Map<string, SongDownload>()
 
     const songPath = (videoId: string) =>
@@ -327,9 +334,10 @@ export const AudioStoreLive = Layer.effect(AudioStore)(
           ),
           Effect.ignore,
         ),
-      protect: videoIds =>
+      protect: (owner, videoIds) =>
         Effect.sync(() => {
-          protectedIds = new Set(videoIds)
+          protectedByOwner.set(owner, videoIds)
+          protectedIds = new Set(Array.flatten([...protectedByOwner.values()]))
         }),
     })
   }),

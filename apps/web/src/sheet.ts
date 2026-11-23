@@ -1,7 +1,7 @@
 import { Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
-import { Song } from '@music/shared'
+import { Person, Song } from '@music/shared'
 
 import { DownloadKind } from './downloads/domain'
 import { SortableKind } from './library'
@@ -42,6 +42,11 @@ export const SheetContent = defineTaggedUnion({
     id: Schema.String,
     title: Schema.String,
   },
+  /** What an admin can do about someone with an account. */
+  PersonActions: { person: Person },
+  /** An admin gives someone a new password. */
+  ResetPassword: { userId: Schema.String, username: Schema.String },
+  ConfirmRemovePerson: { userId: Schema.String, username: Schema.String },
 })
 export type SheetContent = typeof SheetContent.Type
 

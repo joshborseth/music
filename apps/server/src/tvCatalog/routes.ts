@@ -13,6 +13,7 @@ import {
   type YouTubeMusicError,
 } from '@music/shared'
 
+import { HOME_OWNER } from '../access/owner.ts'
 import { gainFromYouTube, measuredLoudness } from '../analysis/loudness.ts'
 import { type AnalysisError, SongAnalysis } from '../analysis/service.ts'
 import { VIDEO_ID } from '../audio.ts'
@@ -169,7 +170,7 @@ export const TvCatalogRoutes = HttpRouter.use(router =>
       resolves: number,
     ) =>
       prefetcher.plan(
-        'Page',
+        `Page:${HOME_OWNER}`,
         pageJobs(
           Array.map(songs, song => song.videoId),
           downloads,

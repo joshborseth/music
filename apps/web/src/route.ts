@@ -52,6 +52,8 @@ export const AppRoute = defineRouteUnion({
   MyPlaylist: { playlistId: Schema.String },
   /** One of YouTube Music's moods or genres. */
   Mood: { params: Schema.String },
+  /** Who is signed in, their password, and for admins, people and invites. */
+  Account: {},
   NotFound: { path: Schema.String },
 })
 export type AppRoute = typeof AppRoute.Type
@@ -126,7 +128,13 @@ export const moodRouter = pipe(
   Route.mapTo(AppRoute.Mood),
 )
 
+export const accountRouter = pipe(
+  literal('account'),
+  Route.mapTo(AppRoute.Account),
+)
+
 const routeParser = Route.oneOf(
+  accountRouter,
   myPlaylistRouter,
   moodRouter,
   songRouter,
@@ -188,14 +196,15 @@ export const routeTab = (route: AppRoute): Option.Option<Tab> =>
     Playlist: () => Option.none(),
     MyPlaylist: () => Option.none(),
     Mood: () => Option.none(),
+    Account: () => Option.none(),
     NotFound: () => Option.none(),
   })
 
 /**
  * The tab a page opened straight from a link belongs under, since nothing
  * in the app led there: the top of a tab is its own, one of my playlists
- * is in the Library, and YouTube Music's songs, artists, albums,
- * playlists, and moods are what Search finds.
+ * and the Account page are in the Library, and YouTube Music's songs,
+ * artists, albums, playlists, and moods are what Search finds.
  */
 export const openingTab = (route: AppRoute): Tab =>
   AppRoute.match(route, {
@@ -210,6 +219,7 @@ export const openingTab = (route: AppRoute): Tab =>
     Playlist: (): Tab => 'Search',
     MyPlaylist: (): Tab => 'Library',
     Mood: (): Tab => 'Search',
+    Account: (): Tab => 'Library',
     NotFound: (): Tab => 'Home',
   })
 
@@ -230,5 +240,6 @@ export const pageKey = (route: AppRoute): string =>
     Playlist: ({ playlistId }) => `playlist/${playlistId}`,
     MyPlaylist: ({ playlistId }) => `my-playlist/${playlistId}`,
     Mood: ({ params }) => `mood/${params}`,
+    Account: () => 'account',
     NotFound: ({ path }) => `not-found/${path}`,
   })

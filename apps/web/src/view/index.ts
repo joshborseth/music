@@ -25,6 +25,7 @@ import { artistQuery, moodQuery, myLibraryQuery, songQuery } from '../query'
 import { AppRoute } from '../route'
 import { type CollectionKind } from '../sheet'
 import { routeQuery } from '../update'
+import { accountView } from './account'
 import { albumView } from './album'
 import { ARTIST_RELEASE_TITLES, artistReleasesView, artistView } from './artist'
 import { detailNavBar, navBarButton, page, tabBar } from './chrome'
@@ -67,6 +68,7 @@ const pageTitle = (model: Model): string =>
     Playlist: () => `Playlist · ${APP_NAME}`,
     MyPlaylist: () => `Playlist · ${APP_NAME}`,
     Mood: () => `Browse · ${APP_NAME}`,
+    Account: () => `Account · ${APP_NAME}`,
     NotFound: () => `Not found · ${APP_NAME}`,
   })
 
@@ -403,6 +405,7 @@ const routeParts = (
         moodView(model, params, h),
         h,
       ),
+    Account: () => detailPage(Option.some('Account'), accountView(model, h), h),
     NotFound: () =>
       detailPage(
         Option.none(),

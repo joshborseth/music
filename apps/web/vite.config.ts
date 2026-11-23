@@ -87,8 +87,10 @@ export default defineConfig({
           /^\/audio\//,
           /^\/session/,
           /^\/certificate$/,
-          // The public address's sign-in page, from the server's gate.
+          // The sign-in and invite pages and sign-out, from the server's gate.
           /^\/sign-in/,
+          /^\/join/,
+          /^\/sign-out/,
         ],
         runtimeCaching: [
           {

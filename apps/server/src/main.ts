@@ -12,8 +12,9 @@ import { MusicRpcs } from '@music/shared'
 
 import { gated } from './access/gate.ts'
 import {
+  AccountsLive,
+  AccountsService,
   PublicAccessConfig,
-  openAccessStore,
   publicServer,
 } from './access/public.ts'
 import { SongAnalysisLive } from './analysis/service.ts'
@@ -27,6 +28,7 @@ import { TimedLyricsLive } from './lyrics/service.ts'
 import { MontageRoutes } from './montage/routes.ts'
 import { SongMontageLive } from './montage/service.ts'
 import { ArtworkPaletteLive } from './palette/service.ts'
+import { LibrariesLive } from './playlists/libraries.ts'
 import { PlaylistStoreLive } from './playlists/store.ts'
 import { PrefetcherLive } from './prefetch.ts'
 import { MusicRpcsLive } from './rpcHandlers.ts'
@@ -49,6 +51,12 @@ const LyricsLive = TimedLyricsLive.pipe(Layer.provide(BunServices.layer))
  */
 const PlaylistsLive = PlaylistStoreLive.pipe(Layer.provide(BunServices.layer))
 
+/** Each account's own library; the owner's is `PlaylistsLive`. */
+const LibrariesShared = LibrariesLive.pipe(
+  Layer.provideMerge(PlaylistsLive),
+  Layer.provide(BunServices.layer),
+)
+
 /**
  * Songs on disk, downloaded through yt-dlp, the prefetcher that gets them
  * ready early, and each song's analysis, its cover's depth, and its montage
@@ -60,6 +68,16 @@ const AudioLive = PrefetcherLive.pipe(
   Layer.provideMerge(CoverDepthLive),
   Layer.provideMerge(AudioStoreLive),
   Layer.provideMerge(AudioSourceLive),
+  Layer.provide(BunServices.layer),
+)
+
+/** Every person's session, shared by the session socket and the RPCs. */
+const HubLive = SessionHubLive.pipe(
+  Layer.provide(LibrariesShared),
+  Layer.provide(YouTubeMusicLive),
+  Layer.provide(LyricsLive),
+  Layer.provide(TvWakerLive),
+  Layer.provide(AudioLive),
   Layer.provide(BunServices.layer),
 )
 
@@ -84,7 +102,8 @@ const CatalogRoutes = Layer.mergeAll(
   Layer.provide(YouTubeMusicLive),
   Layer.provide(ArtworkPaletteLive),
   Layer.provide(LyricsLive),
-  Layer.provide(PlaylistsLive),
+  Layer.provide(LibrariesShared),
+  Layer.provide(HubLive),
   Layer.provide(AudioLive),
 )
 
@@ -94,10 +113,7 @@ const PlaybackRoutes = Layer.mergeAll(
   TvUpdatingRoute,
   DepthRoutes,
 ).pipe(
-  Layer.provide(SessionHubLive.pipe(Layer.provide(BunServices.layer))),
-  Layer.provide(YouTubeMusicLive),
-  Layer.provide(LyricsLive),
-  Layer.provide(PlaylistsLive),
+  Layer.provide(HubLive),
   Layer.provide(TvWakerLive),
   Layer.provideMerge(AudioLive),
 )
@@ -118,56 +134,60 @@ const Hostname = Config.String('HOST').pipe(
 /**
  * One router, served on plain HTTP (`PORT`, for the TV and guests), when
  * there is a certificate on HTTPS (`TLS_PORT`, for the phone: `lanHttps.ts`),
- * and when `PUBLIC_PORT` is set behind sign-in for Tailscale Funnel to
- * forward the internet to (`access/gate.ts`). Every listener shares every
- * service, so a phone on HTTPS and the TV on HTTP are in the same session.
+ * and when `PUBLIC_PORT` is set for Tailscale Funnel to forward the internet
+ * to. Every listener goes through the accounts gate (`access/gate.ts`): the
+ * public one only lets accounts in, the home network's also let guests use
+ * the owner's session. Every listener shares every service, so a phone on
+ * HTTPS and the TV on HTTP are in the same session.
  */
 const ServerLive = Layer.unwrap(
   Effect.gen(function* () {
+    const accounts = yield* AccountsService
     const handler = yield* HttpRouter.toHttpEffect(AppRoutes)
+    const maybePublic = yield* PublicAccessConfig
     const serveOn = <E, R>(
       server: Layer.Layer<
         HttpServer.HttpServer | HttpPlatform.HttpPlatform,
         E,
         R
       >,
+      requireSignIn: boolean,
     ) =>
-      HttpServer.serve(handler, HttpMiddleware.logger).pipe(
-        Layer.provide(server),
-      )
+      HttpServer.serve(
+        gated(accounts, {
+          origin: Option.match(maybePublic, {
+            onNone: () => accounts.origin,
+            onSome: settings => settings.origin,
+          }),
+          requireSignIn,
+        })(handler),
+        HttpMiddleware.logger,
+      ).pipe(Layer.provide(server))
     const hostname = yield* Hostname
     const http = serveOn(
       BunHttpServer.layerConfig({
         port: Config.Port('PORT').pipe(Config.withDefault(DEFAULT_PORT)),
         hostname: Config.succeed(hostname),
       }).pipe(HttpServer.withLogAddress),
+      false,
     )
     const maybeTls = yield* LanTlsConfig
     const https = Option.map(maybeTls, tls =>
       Layer.mergeAll(
-        serveOn(lanHttpsServer(hostname, tls)),
+        serveOn(lanHttpsServer(hostname, tls), false),
         Layer.effectDiscard(
           Effect.logInfo(`Listening on https://${hostname}:${tls.port}`),
         ),
       ),
     )
-    const maybePublic = yield* PublicAccessConfig
     const publicAddress = Option.map(maybePublic, settings =>
-      Layer.unwrap(
-        Effect.gen(function* () {
-          const store = yield* openAccessStore
-          return Layer.mergeAll(
-            HttpServer.serve(
-              gated(store, { origin: settings.origin })(handler),
-              HttpMiddleware.logger,
-            ).pipe(Layer.provide(publicServer(settings.port))),
-            Layer.effectDiscard(
-              Effect.logInfo(
-                `Serving ${settings.origin} behind sign-in on 127.0.0.1:${settings.port}`,
-              ),
-            ),
-          )
-        }),
+      Layer.mergeAll(
+        serveOn(publicServer(settings.port), true),
+        Layer.effectDiscard(
+          Effect.logInfo(
+            `Serving ${settings.origin} behind sign-in on 127.0.0.1:${settings.port}`,
+          ),
+        ),
       ),
     )
     return Layer.mergeAll(
@@ -176,6 +196,9 @@ const ServerLive = Layer.unwrap(
       ...Option.toArray(publicAddress),
     )
   }),
-).pipe(Layer.provide(BunHttpServer.layerHttpServices))
+).pipe(
+  Layer.provide(AccountsLive.pipe(Layer.provide(BunServices.layer))),
+  Layer.provide(BunHttpServer.layerHttpServices),
+)
 
 BunRuntime.runMain(Layer.launch(ServerLive))

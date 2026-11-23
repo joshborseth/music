@@ -56,6 +56,7 @@ import {
 } from '../library'
 import { Message } from '../message'
 import { librarySongsQuery, myLibraryQuery } from '../query'
+import { accountButton } from './account'
 import { largeTitleHeader } from './chrome'
 import { type PageModel } from './page'
 import {
@@ -1179,7 +1180,7 @@ export const libraryView = (
   model: PageModel,
   h: HtmlBuilder<Message>,
 ): ReadonlyArray<Html> => [
-  ...largeTitleHeader('Library', h.empty, h),
+  ...largeTitleHeader('Library', accountButton(h), h),
   h.div(
     [h.Class('flex flex-col gap-6 pt-1 pb-6')],
     [

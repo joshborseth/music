@@ -1,27 +1,40 @@
-import { Duration, Effect, Option } from 'effect'
-import { HttpServerRequest, HttpServerResponse, UrlParams } from 'effect/http'
+import { Effect, Option } from 'effect'
+import {
+  Cookies,
+  Headers as HttpHeaders,
+  HttpServerRequest,
+  HttpServerResponse,
+  UrlParams,
+} from 'effect/http'
 
-import { type Notice, signInPage } from './page.ts'
-import type { AccessStore } from './store.ts'
+import { JOIN_PATH, SIGN_IN_PATH, SIGN_OUT_PATH } from '@music/shared'
+
+import type { Accounts, SetCookies } from './accounts.ts'
+import { HOME_OWNER, OWNER_HEADER, USER_HEADER } from './owner.ts'
+import {
+  type JoinNotice,
+  type SignInNotice,
+  joinPage,
+  signInPage,
+} from './page.ts'
 
 /*
- * The lock on the app's public address. Tailscale Funnel forwards the
- * internet to a listener of its own (`PUBLIC_PORT`, on loopback only), and
- * every request there passes through `gated`: a device signed in with an
- * invite code (`store.ts`) gets the whole app, as on the home network;
- * anything else gets the sign-in page or a 401. The home network's listeners
- * don't pass through it.
+ * Who each request is from. Every listener passes through `gated`: it reads
+ * the account a request's session cookie names (`accounts.ts`), and tells
+ * the app behind it in two headers it sets itself, after dropping any copy
+ * the request brought:
  *
- * Opening an invite link only fills in the code: signing in takes the form's
- * POST, so a chat app fetching the link for a preview signs nobody in.
+ * - `x-joshify-owner`: whose library and session the request uses: the
+ *   account's id, or `home` for the owner (the TV's session).
+ * - `x-joshify-user`: the signed-in account's id; absent for a guest.
+ *
+ * On the public address (`requireSignIn`) a request without an account gets
+ * the sign-in page or a 401. On the home network it is a guest of the
+ * owner's session, as the TV and anyone scanning its QR code have always
+ * been.
  */
 
-export const COOKIE = 'joshify_device'
-/** The longest a browser keeps a cookie (Chrome caps it at 400 days). */
-export const COOKIE_MAX_AGE = Duration.days(400)
-
-export const SIGN_IN_PATH = '/sign-in'
-/** Answers 204 when signed in, so the web app can tell (`signIn.ts`). */
+/** Answers 204 when the app may load, so the web app can tell (`signIn.ts`). */
 export const SIGNED_IN_PATH = '/signed-in'
 
 /**
@@ -37,25 +50,23 @@ const PUBLIC_PATHS: ReadonlySet<string> = new Set([
   '/pwa-192x192.png',
   '/pwa-512x512.png',
   '/maskable-icon-512x512.png',
-  '/robots.txt',
 ])
 
 const ROBOTS = 'User-agent: *\nDisallow: /\n'
 
-/** Failed codes allowed from one address, and from everyone, per window. */
+/** Failed sign-ins allowed from one address, and from everyone, per window. */
 const FAILURES_PER_ADDRESS = 10
 const FAILURES_IN_ALL = 100
 const FAILURE_WINDOW_MS = 15 * 60 * 1000
 
 export interface GateConfig {
-  /** The public address, such as `https://joshify.example.ts.net`. */
+  /** The address pages are served at, such as `https://joshify.example.ts.net`. */
   readonly origin: string
+  /** Whether a request must come from an account (the public address). */
+  readonly requireSignIn: boolean
 }
 
-/**
- * Counts failed codes, per address and in all, over a window. Fifty bits of
- * code against a hundred guesses every quarter hour takes ages to find one.
- */
+/** Counts failed sign-ins, per address and in all, over a window. */
 export const makeFailureCounter = (now: () => number) => {
   const byAddress = new Map<string, Array<number>>()
   let all: Array<number> = []
@@ -82,15 +93,24 @@ export const makeFailureCounter = (now: () => number) => {
 
 type FailureCounter = ReturnType<typeof makeFailureCounter>
 
-const pathnameOf = (url: string): string => new URL(url, 'http://gate').pathname
-
-const queryParam = (url: string, name: string): string =>
-  new URL(url, 'http://gate').searchParams.get(name) ?? ''
+const urlOf = (url: string): URL => new URL(url, 'http://gate')
 
 /** The client's address, which Funnel's proxy puts first. */
 const clientAddress = (request: HttpServerRequest.HttpServerRequest): string =>
   (request.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() ||
   Option.getOrElse(request.remoteAddress, () => 'unknown')
+
+/** The request's headers as Better Auth reads them. */
+const webHeaders = (request: HttpServerRequest.HttpServerRequest): Headers => {
+  const headers = new Headers()
+  for (const [name, value] of Object.entries(request.headers)) {
+    headers.set(name, value)
+  }
+  if (!headers.has('x-forwarded-for')) {
+    headers.set('x-forwarded-for', clientAddress(request))
+  }
+  return headers
+}
 
 /**
  * Whether another site's page could have sent this: a request that changes
@@ -105,7 +125,12 @@ const isCrossSite = (
     !['GET', 'HEAD'].includes(request.method) ||
     request.headers['upgrade']?.toLowerCase() === 'websocket'
   const maybeOrigin = request.headers['origin']
-  return changes && maybeOrigin !== undefined && maybeOrigin !== config.origin
+  if (!changes || maybeOrigin === undefined) return false
+  if (config.requireSignIn) return maybeOrigin !== config.origin
+  // NOTE: the home network has several addresses (plain HTTP, HTTPS, the
+  // machine's name), all on this host. A page from anywhere else is not ours.
+  const host = request.headers['host']
+  return host === undefined || urlOf(maybeOrigin).host !== host
 }
 
 /** A page load (not a fetch, an image, or the audio element). */
@@ -117,61 +142,111 @@ const isPageLoad = (request: HttpServerRequest.HttpServerRequest): boolean =>
 
 const NO_STORE = { 'cache-control': 'no-store' }
 
-const page = (code: string, notice: Notice, status: number) =>
-  HttpServerResponse.text(signInPage(code, notice), {
+const html = (text: string, status: number) =>
+  HttpServerResponse.text(text, {
     status,
     contentType: 'text/html; charset=utf-8',
     headers: NO_STORE,
   })
 
-const withDeviceCookie = (token: string) =>
-  HttpServerResponse.setCookie(COOKIE, token, {
-    path: '/',
-    httpOnly: true,
-    secure: true,
-    sameSite: 'lax',
-    maxAge: COOKIE_MAX_AGE,
-  })
+/** A redirect after a form, carrying the cookies it set. */
+const redirectWith = (location: string, cookies: SetCookies) =>
+  HttpServerResponse.redirect(location, {
+    status: 303,
+    headers: NO_STORE,
+  }).pipe(HttpServerResponse.mergeCookies(Cookies.fromSetCookie(cookies)))
 
-const signIn = (
+const formOf = (request: HttpServerRequest.HttpServerRequest) =>
+  request.urlParamsBody.pipe(
+    Effect.map(
+      params => (name: string) =>
+        Option.getOrElse(UrlParams.getFirst(params, name), () => ''),
+    ),
+    Effect.orElseSucceed(() => (_name: string) => ''),
+  )
+
+const signInPost = (
   request: HttpServerRequest.HttpServerRequest,
-  store: AccessStore,
+  accounts: Accounts,
   failures: FailureCounter,
-  config: GateConfig,
 ) =>
   Effect.gen(function* () {
     const address = clientAddress(request)
-    if (isCrossSite(request, config)) {
-      return HttpServerResponse.text('Forbidden', { status: 403 })
-    }
-    if (failures.isLockedOut(address)) {
-      return page('', 'TooManyTries', 429)
-    }
-    const code = yield* request.urlParamsBody.pipe(
-      Effect.map(params =>
-        Option.getOrElse(UrlParams.getFirst(params, 'code'), () => ''),
-      ),
-      Effect.orElseSucceed(() => ''),
-    )
-    const maybeToken = store.signIn(code, request.headers['user-agent'] ?? '')
-    if (Option.isNone(maybeToken)) {
-      failures.fail(address)
-      yield* Effect.logWarning('A wrong invite code', address)
-      return page(code, 'WrongCode', 401)
-    }
-    return yield* HttpServerResponse.redirect('/', {
-      status: 303,
-      headers: NO_STORE,
-    }).pipe(withDeviceCookie(maybeToken.value), Effect.orDie)
+    const page = (username: string, notice: SignInNotice, status: number) =>
+      html(signInPage(username, notice), status)
+    if (failures.isLockedOut(address)) return page('', 'TooManyTries', 429)
+    const field = yield* formOf(request)
+    const username = field('username').trim()
+    return yield* accounts
+      .signIn(username, field('password'), webHeaders(request))
+      .pipe(
+        Effect.map(cookies => redirectWith('/', cookies)),
+        Effect.catchTag('WrongPassword', () => {
+          failures.fail(address)
+          return Effect.as(
+            Effect.logWarning('A wrong password', { address, username }),
+            page(username, 'WrongPassword', 401),
+          )
+        }),
+      )
+  })
+
+const joinGet = (
+  request: HttpServerRequest.HttpServerRequest,
+  accounts: Accounts,
+) => {
+  const code = urlOf(request.url).searchParams.get('code') ?? ''
+  const isUsable = Option.isSome(accounts.findInvite(code))
+  return html(
+    joinPage(code, '', isUsable ? 'None' : 'InviteGone', isUsable),
+    isUsable ? 200 : 404,
+  )
+}
+
+const joinPost = (
+  request: HttpServerRequest.HttpServerRequest,
+  accounts: Accounts,
+  failures: FailureCounter,
+) =>
+  Effect.gen(function* () {
+    const address = clientAddress(request)
+    const field = yield* formOf(request)
+    const code = field('code')
+    const username = field('username').trim()
+    const page = (notice: JoinNotice, status: number) =>
+      html(
+        joinPage(
+          code,
+          username,
+          notice,
+          notice !== 'InviteGone' && notice !== 'TooManyTries',
+        ),
+        status,
+      )
+    if (failures.isLockedOut(address)) return page('TooManyTries', 429)
+    return yield* accounts
+      .join({
+        code,
+        username,
+        password: field('password'),
+        confirm: field('confirm'),
+        headers: webHeaders(request),
+      })
+      .pipe(
+        Effect.map(cookies => redirectWith('/', cookies)),
+        Effect.catchTag('JoinError', error => {
+          if (error.problem === 'InviteGone') failures.fail(address)
+          return Effect.succeed(page(error.problem, 400))
+        }),
+      )
   })
 
 /**
- * Puts `app` behind the lock. Devices are looked up in `store` on every
- * request (one indexed SQLite read), so revoking an invite takes effect at
- * once, and a device's cookie gets a fresh 400 days once a day.
+ * Puts `app` behind accounts. Sessions are looked up on every request (one
+ * indexed SQLite read), so signing someone out takes effect at once.
  */
 export const gated =
-  (store: AccessStore, config: GateConfig, now: () => number = Date.now) =>
+  (accounts: Accounts, config: GateConfig, now: () => number = Date.now) =>
   <E, R>(
     app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   ): Effect.Effect<
@@ -182,28 +257,42 @@ export const gated =
     const failures = makeFailureCounter(now)
     return Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest
-      const pathname = pathnameOf(request.url)
-      const maybeDevice = Option.flatMap(
-        Option.fromNullishOr(request.cookies[COOKIE]),
-        store.device,
-      )
+      const pathname = urlOf(request.url).pathname
 
-      if (pathname === SIGN_IN_PATH) {
-        if (request.method === 'POST') {
-          return yield* signIn(request, store, failures, config)
-        }
-        if (Option.isSome(maybeDevice)) {
-          return HttpServerResponse.redirect('/', { headers: NO_STORE })
-        }
-        return page(queryParam(request.url, 'code'), 'None', 200)
-      }
       if (pathname === '/robots.txt') {
         return HttpServerResponse.text(ROBOTS)
+      }
+      const isForm =
+        request.method === 'POST' &&
+        (pathname === SIGN_IN_PATH ||
+          pathname === JOIN_PATH ||
+          pathname === SIGN_OUT_PATH)
+      if (isForm && isCrossSite(request, config)) {
+        return HttpServerResponse.text('Forbidden', { status: 403 })
+      }
+      if (pathname === SIGN_IN_PATH && request.method === 'POST') {
+        return yield* signInPost(request, accounts, failures)
+      }
+      if (pathname === JOIN_PATH) {
+        return request.method === 'POST'
+          ? yield* joinPost(request, accounts, failures)
+          : joinGet(request, accounts)
+      }
+      if (pathname === SIGN_OUT_PATH && request.method === 'POST') {
+        const cookies = yield* accounts.signOut(webHeaders(request))
+        return redirectWith(SIGN_IN_PATH, cookies)
+      }
+
+      const maybeAccount = yield* accounts.signedIn(webHeaders(request))
+      if (pathname === SIGN_IN_PATH) {
+        return Option.isSome(maybeAccount)
+          ? HttpServerResponse.redirect('/', { headers: NO_STORE })
+          : html(signInPage('', 'None'), 200)
       }
       if (PUBLIC_PATHS.has(pathname)) {
         return yield* app
       }
-      if (Option.isNone(maybeDevice)) {
+      if (Option.isNone(maybeAccount) && config.requireSignIn) {
         return isPageLoad(request)
           ? HttpServerResponse.redirect(SIGN_IN_PATH, { headers: NO_STORE })
           : HttpServerResponse.text('Sign in first', {
@@ -217,12 +306,24 @@ export const gated =
       if (pathname === SIGNED_IN_PATH) {
         return HttpServerResponse.empty({ status: 204, headers: NO_STORE })
       }
-      const response = yield* app
-      const token = request.cookies[COOKIE]
-      return maybeDevice.value.isDue && token !== undefined
-        ? yield* withDeviceCookie(token)(response).pipe(
-            Effect.orElseSucceed(() => response),
-          )
-        : response
+      const withoutOurs = HttpHeaders.removeMany(request.headers, [
+        OWNER_HEADER,
+        USER_HEADER,
+      ])
+      const headers = Option.match(maybeAccount, {
+        onNone: () => HttpHeaders.set(withoutOurs, OWNER_HEADER, HOME_OWNER),
+        onSome: account =>
+          HttpHeaders.setAll(withoutOurs, {
+            [OWNER_HEADER]: Option.contains(accounts.ownerId(), account.id)
+              ? HOME_OWNER
+              : account.id,
+            [USER_HEADER]: account.id,
+          }),
+      })
+      return yield* Effect.provideService(
+        app,
+        HttpServerRequest.HttpServerRequest,
+        request.modify({ headers }),
+      )
     })
   }

@@ -45,6 +45,9 @@ export type PageModel = Readonly<
     | 'songRadios'
     | 'swipe'
     | 'downloads'
+    | 'viewer'
+    | 'people'
+    | 'account'
   > & { playing: NowPlaying; playOn: PlayOn }
 >
 
@@ -101,6 +104,9 @@ const renderPage = (
   songRadios: Model['songRadios'],
   swipe: Model['swipe'],
   downloads: Model['downloads'],
+  viewer: Model['viewer'],
+  people: Model['people'],
+  account: Model['account'],
   currentVideoId: string,
   isPlaying: boolean,
   playOnName: string,
@@ -140,6 +146,9 @@ const renderPage = (
       songRadios,
       swipe,
       downloads,
+      viewer,
+      people,
+      account,
       playing: {
         maybeVideoId: Option.liftPredicate(currentVideoId, id => id !== ''),
         isPlaying,
@@ -197,6 +206,9 @@ export const memoizedPage = (
     model.songRadios,
     rowSwipe(model.swipe),
     model.downloads,
+    model.viewer,
+    model.people,
+    model.account,
     Option.getOrElse(playing.maybeVideoId, () => ''),
     playing.isPlaying,
     Option.match(maybeOutput, {

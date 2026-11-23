@@ -14,15 +14,18 @@ import {
   type MusicNotFoundError,
   MyLibrary,
   MyPlaylistDetails,
+  People,
   PlaylistDetails,
   type PlaylistStoreError,
   PlaylistSummary,
   Song,
   SongDetails,
   TopResult,
+  Viewer,
   type YouTubeMusicError,
 } from '@music/shared'
 
+import { AccountFailure, toAccountFailure } from './account/domain'
 import { MusicClient } from './rpc'
 
 /** What the person sees when a request fails. */
@@ -258,4 +261,26 @@ export const artworkBackdropQuery = Query.define({
     MusicClient.use(client => client.getArtworkBackdrop({ artworkUrl })).pipe(
       withRequestError,
     ),
+})
+
+// ACCOUNTS
+
+/** Who is using the app: a signed-in account, or a guest on the home Wi-Fi. */
+export const viewerQuery = Query.define({
+  name: 'Viewer',
+  data: Viewer,
+  error: AccountFailure,
+  execute: MusicClient.use(client => client.getViewer()).pipe(
+    Effect.mapError(toAccountFailure),
+  ),
+})
+
+/** Everyone with an account, and the invites not used yet. Admins only. */
+export const peopleQuery = Query.define({
+  name: 'People',
+  data: People,
+  error: AccountFailure,
+  execute: MusicClient.use(client => client.getPeople()).pipe(
+    Effect.mapError(toAccountFailure),
+  ),
 })
