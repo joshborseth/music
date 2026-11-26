@@ -176,6 +176,40 @@ export const ReadClock = Command.define('ReadClock', {
   ),
 })
 
+/** Notes when the fresh socket opened, while catching up after the page showed. */
+export const MarkSocketOpened = Command.define('MarkSocketOpened', {
+  messages: [Message.CompletedMarkSocketOpened],
+  execute: Clock.currentTimeMillis.pipe(
+    Effect.map(at => Message.CompletedMarkSocketOpened({ at })),
+  ),
+})
+
+const encodeResyncReport = Schema.encodeSync(
+  Schema.fromJsonString(Session.ResyncReport),
+)
+
+/**
+ * Tell the server how long catching up took after the page showed, for its
+ * log. Only a measurement: a report that does not arrive changes nothing.
+ */
+export const ReportResync = Command.define('ReportResync', {
+  args: {
+    hiddenForMs: Schema.Number,
+    socketMs: Schema.NullOr(Schema.Number),
+    stateMs: Schema.Number,
+  },
+  messages: [Message.CompletedReportResync],
+  execute: report =>
+    Effect.tryPromise(() =>
+      fetch(Session.RESYNC_REPORT_PATH, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: encodeResyncReport({ ...report, host: globalThis.location.host }),
+        keepalive: true,
+      }),
+    ).pipe(Effect.ignore, Effect.as(Message.CompletedReportResync())),
+})
+
 // PHONE AUDIO
 
 class AudioPlayError extends Data.TaggedError('AudioPlayError')<{

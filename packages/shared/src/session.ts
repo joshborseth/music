@@ -430,6 +430,25 @@ export const ServerMessageJson = Schema.fromJsonString(ServerMessage)
 /** Where the session WebSocket lives, relative to the server origin. */
 export const SESSION_PATH = '/session'
 
+/**
+ * How long a phone took to show the session as it is after coming back on
+ * screen, which it posts to `RESYNC_REPORT_PATH` for the server's log. Not
+ * part of the socket protocol: the TV never sends it.
+ */
+export const ResyncReport = Schema.Struct({
+  /** How long the page was out of sight. */
+  hiddenForMs: Schema.Number,
+  /** From showing to the fresh socket opening; null when no socket opened. */
+  socketMs: Schema.NullOr(Schema.Number),
+  /** From showing to the server's state arriving. */
+  stateMs: Schema.Number,
+  /** The address the app was opened from (LAN, HTTPS, or the public one). */
+  host: Schema.String,
+})
+export type ResyncReport = typeof ResyncReport.Type
+
+export const RESYNC_REPORT_PATH = '/session/resync'
+
 /** Where a song's audio is served, relative to the server origin. */
 export const audioPath = (videoId: string): string =>
   `/audio/${encodeURIComponent(videoId)}`

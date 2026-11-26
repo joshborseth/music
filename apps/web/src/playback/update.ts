@@ -9,7 +9,9 @@ import type { Message } from '../message'
 import type { Model } from '../model'
 import {
   LoadPhoneAudio,
+  MarkSocketOpened,
   PrefetchSongs,
+  ReportResync,
   SeekPhoneAudio,
   SendHandOver,
   SendLocalChange,
@@ -35,6 +37,7 @@ import {
   PlayerSheet,
   QueueEdit,
   RESTART_THRESHOLD_SECONDS,
+  Resync,
   SEEK_TOLERANCE_SECONDS,
   SHUFFLE_FOR_ORDER,
   type SessionSnapshot,
@@ -350,7 +353,38 @@ const playerReport = (model: Model): Session.PlayerReport | null =>
       })
     : null
 
-export const acquireSessionSocket = (model: Model): PlaybackReturn =>
+/**
+ * A socket opened. While catching up after the page showed, the phone also
+ * notes when, for the report (`receiveSessionState`).
+ */
+export const acquireSessionSocket = (model: Model): PlaybackReturn => {
+  const greeted = greetOnSocket(model)
+  return model.resync._tag === 'Waiting'
+    ? {
+        ...greeted,
+        commands: [...(greeted.commands ?? []), MarkSocketOpened()],
+      }
+    : greeted
+}
+
+export const markSocketOpened = (model: Model, at: number): PlaybackReturn => ({
+  model: modifyFields(model, {
+    resync: resync =>
+      Resync.match(resync, {
+        Current: () => resync,
+        Waiting: waiting =>
+          Resync.Waiting({
+            ...waiting,
+            maybeSocketOpenedAt: Option.orElse(
+              waiting.maybeSocketOpenedAt,
+              () => Option.some(at),
+            ),
+          }),
+      }),
+  }),
+})
+
+const greetOnSocket = (model: Model): PlaybackReturn =>
   Option.match(model.maybeIdentity, {
     onNone: () => ({ model }),
     onSome: ({ deviceId, deviceName }) => {
@@ -482,30 +516,49 @@ export const hidePage = (model: Model, at: number): PlaybackReturn => ({
  * was never suspended, and its socket is kept.
  */
 export const returnToPage = (model: Model, at: number): PlaybackReturn => {
+  // NOTE: the clock stood still while the page slept, so the position on
+  // screen moves to where playback is now before the next tick.
   const shown = modifyFields(model, {
     maybePageHiddenAt: () => Option.none(),
+    now: () => at,
   })
-  const wasAsleep = Option.exists(
-    model.maybePageHiddenAt,
-    hiddenAt => at - hiddenAt >= TRUST_SOCKET_HIDDEN_MS,
-  )
+  const hiddenForMs = Option.match(model.maybePageHiddenAt, {
+    onNone: () => 0,
+    onSome: hiddenAt => Math.max(0, at - hiddenAt),
+  })
+  const wasAsleep = hiddenForMs >= TRUST_SOCKET_HIDDEN_MS
   const isPlayingHere = isThisDevicePlaying(model) && isPlaying(model)
+  const waiting = (catchingUp: Model): Model =>
+    Option.isSome(catchingUp.maybeSession) && !isPlayingHere
+      ? modifyFields(catchingUp, {
+          resync: () =>
+            Resync.Waiting({
+              shownAt: at,
+              hiddenForMs,
+              maybeSocketOpenedAt: Option.none(),
+            }),
+        })
+      : catchingUp
 
   return Connection.match(model.connection, {
     WaitingForIdentity: () => ({ model: shown }),
-    Connecting: () => ({ model: shown }),
+    Connecting: () => ({ model: waiting(shown) }),
     Disconnected: () => ({
-      model: modifyFields(shown, {
-        connection: () => Connection.Connecting(),
-      }),
+      model: waiting(
+        modifyFields(shown, {
+          connection: () => Connection.Connecting(),
+        }),
+      ),
     }),
     Connected: () =>
       wasAsleep && !isPlayingHere
         ? {
-            model: modifyFields(shown, {
-              connection: () => Connection.Connecting(),
-              sessionSocketGeneration: generation => generation + 1,
-            }),
+            model: waiting(
+              modifyFields(shown, {
+                connection: () => Connection.Connecting(),
+                sessionSocketGeneration: generation => generation + 1,
+              }),
+            ),
           }
         : { model: shown },
   })
@@ -623,7 +676,37 @@ const withLoadedEntry = (
     Blocked: ({ entry }) => PhoneAudio.Blocked({ entry: change(entry) }),
   })
 
+/**
+ * A state from the server. The first one after coming back on screen makes
+ * the session current again, and the phone reports how long that took.
+ */
 export const receiveSessionState = (
+  model: Model,
+  state: Session.SessionState,
+  serverNow: number,
+  ack: number,
+  receivedAt: number,
+): PlaybackReturn => {
+  const followed = followSessionState(model, state, serverNow, ack, receivedAt)
+  return Resync.match(model.resync, {
+    Current: () => followed,
+    Waiting: ({ shownAt, hiddenForMs, maybeSocketOpenedAt }) => ({
+      model: modifyFields(followed.model, { resync: () => Resync.Current() }),
+      commands: [
+        ...(followed.commands ?? []),
+        ReportResync({
+          hiddenForMs,
+          socketMs: Option.getOrNull(
+            Option.map(maybeSocketOpenedAt, openedAt => openedAt - shownAt),
+          ),
+          stateMs: receivedAt - shownAt,
+        }),
+      ],
+    }),
+  })
+}
+
+const followSessionState = (
   model: Model,
   state: Session.SessionState,
   serverNow: number,

@@ -2052,6 +2052,8 @@ const updateMessage = (model: Model, message: Message) =>
       Playback.completeWaitBeforeReconnect(model),
     HidPage: ({ at }) => Playback.hidePage(model, at),
     ShowedPage: ({ at }) => Playback.returnToPage(model, at),
+    CompletedMarkSocketOpened: ({ at }) => Playback.markSocketOpened(model, at),
+    CompletedReportResync: () => ({ model }),
     ReceivedSessionState: ({ state, serverNow, ack, receivedAt }) =>
       followingCurrentSong(stepModel =>
         Playback.receiveSessionState(

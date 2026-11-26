@@ -16,6 +16,23 @@ export const Connection = defineTaggedUnion({
 })
 export type Connection = typeof Connection.Type
 
+/**
+ * Whether the session on screen is known to be current. Coming back after
+ * the page slept, the phone shows the session it last heard of until the
+ * server's state arrives on a fresh socket (`Waiting`), and the player looks
+ * unconfirmed meanwhile. It keeps when the page showed and when the socket
+ * opened, to report how long catching up took.
+ */
+export const Resync = defineTaggedUnion({
+  Current: {},
+  Waiting: {
+    shownAt: Schema.Number,
+    hiddenForMs: Schema.Number,
+    maybeSocketOpenedAt: Schema.Option(Schema.Number),
+  },
+})
+export type Resync = typeof Resync.Type
+
 /** This device's name and id, as the session knows it. */
 export const DeviceIdentity = Schema.Struct({
   deviceId: Schema.String,
@@ -508,6 +525,7 @@ export const initialPlaybackModel = {
   connection: Connection.WaitingForIdentity(),
   sessionSocketGeneration: 0,
   maybePageHiddenAt: Option.none<number>(),
+  resync: Resync.Current(),
   maybeSession: Option.none<SessionSnapshot>(),
   phoneAudio: PhoneAudio.Unavailable(),
   phoneAudioSeconds: 0,

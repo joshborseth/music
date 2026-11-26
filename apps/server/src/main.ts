@@ -32,7 +32,11 @@ import { LibrariesLive } from './playlists/libraries.ts'
 import { PlaylistStoreLive } from './playlists/store.ts'
 import { PrefetcherLive } from './prefetch.ts'
 import { MusicRpcsLive } from './rpcHandlers.ts'
-import { SessionHubLive, SessionRoutes } from './session/hub.ts'
+import {
+  ResyncReportRoute,
+  SessionHubLive,
+  SessionRoutes,
+} from './session/hub.ts'
 import { TvWakerLive } from './session/wake.ts'
 import { TvAppRoutes, TvUpdatingRoute } from './tvApp.ts'
 import { TvCatalogRoutes } from './tvCatalog/routes.ts'
@@ -122,6 +126,7 @@ const AppRoutes = Layer.mergeAll(
   CatalogRoutes,
   PlaybackRoutes,
   ArtworkRoutes,
+  ResyncReportRoute,
   TvAppRoutes.pipe(Layer.provide(BunServices.layer)),
   WebAppRoutes.pipe(Layer.provide(BunServices.layer)),
   CertificateRoute,
