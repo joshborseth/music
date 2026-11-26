@@ -187,6 +187,12 @@ const isLoading = (model: Model, snapshot: SessionSnapshot): boolean =>
     ({ status }) => status === 'TurningOn',
   )
 
+/**
+ * The session on screen may be old: the page just came back and the
+ * server's state has not arrived yet. The player shows it dimmed.
+ */
+const isSyncing = (model: Model): boolean => model.resync._tag === 'Waiting'
+
 const progressFraction = (
   model: Model,
   snapshot: SessionSnapshot,
@@ -245,35 +251,61 @@ const playPauseIcon = (isPlaying: boolean, isLoading: boolean) => {
   }
 }
 
+/**
+ * Play or pause. While the phone catches up after coming back on screen, a
+ * spinner takes the icon's place, once the wait lasts (`styles.css`, SYNCING).
+ */
 const playPauseButton = (
   isPlaying: boolean,
   isLoading: boolean,
-  config: Readonly<{ buttonClass: string; iconClass: string }>,
+  config: Readonly<{
+    buttonClass: string
+    iconClass: string
+    isSyncing: boolean
+  }>,
   h: HtmlBuilder<Message>,
-): Html =>
-  h.button(
+): Html => {
+  const isSyncingOnly = config.isSyncing && !isLoading
+  return h.button(
     [
       h.Type('button'),
       h.OnClick(Message.ClickedTogglePlayback()),
       h.AriaLabel(isPlaying ? 'Pause' : 'Play'),
       h.Class(
         cn(
-          'flex shrink-0 items-center justify-center rounded-full transition-transform active:scale-90',
+          'relative flex shrink-0 items-center justify-center rounded-full transition-transform active:scale-90',
           config.buttonClass,
         ),
       ),
     ],
     [
-      icon(
-        h,
-        playPauseIcon(isPlaying, isLoading),
-        cn(
-          config.iconClass,
-          isLoading ? 'animate-spin' : 'fill-current stroke-[1.5]',
-        ),
+      h.span(
+        [h.Class(cn('flex', isSyncingOnly && 'syncing-hide'))],
+        [
+          icon(
+            h,
+            playPauseIcon(isPlaying, isLoading),
+            cn(
+              config.iconClass,
+              isLoading ? 'animate-spin' : 'fill-current stroke-[1.5]',
+            ),
+          ),
+        ],
       ),
+      isSyncingOnly
+        ? h.span(
+            [
+              h.AriaHidden(true),
+              h.Class(
+                'syncing-show absolute inset-0 flex items-center justify-center',
+              ),
+            ],
+            [icon(h, LoaderCircle, cn(config.iconClass, 'animate-spin'))],
+          )
+        : h.empty,
     ],
   )
+}
 
 // MINI PLAYER
 
@@ -340,7 +372,7 @@ const miniPlayer = (
               h.OnClick(Message.ClickedOpenPlayer()),
               h.AriaLabel('Open player'),
               h.Class(
-                'flex h-full min-w-0 flex-1 items-center gap-3 pl-2 text-left',
+                'syncing-dim flex h-full min-w-0 flex-1 items-center gap-3 pl-2 text-left',
               ),
             ],
             [
@@ -376,7 +408,11 @@ const miniPlayer = (
           playPauseButton(
             snapshot.state.playing,
             isLoading(model, snapshot),
-            { buttonClass: 'size-11', iconClass: 'size-6' },
+            {
+              buttonClass: 'size-11',
+              iconClass: 'size-6',
+              isSyncing: isSyncing(model),
+            },
             h,
           ),
           h.button(
@@ -392,7 +428,11 @@ const miniPlayer = (
             [icon(h, SkipForward, 'size-6 fill-current stroke-[1.5]')],
           ),
           h.div(
-            [h.Class('absolute inset-x-6 bottom-0 h-[2px] rounded-full')],
+            [
+              h.Class(
+                'syncing-dim absolute inset-x-6 bottom-0 h-[2px] rounded-full',
+              ),
+            ],
             [
               h.div([
                 h.Class('bg-foreground/70 h-full rounded-full'),
@@ -418,7 +458,7 @@ const seekBar = (
   const position = Math.min(displayedPosition(model, snapshot), duration)
   const percent = duration > 0 ? (position / duration) * 100 : 0
   return h.div(
-    [h.Class('flex flex-col'), h.DataAttribute('no-drag', '')],
+    [h.Class('syncing-dim flex flex-col'), h.DataAttribute('no-drag', '')],
     [
       h.div(
         [
@@ -511,7 +551,11 @@ const transportControls = (
       playPauseButton(
         snapshot.state.playing,
         isLoading(model, snapshot),
-        { buttonClass: 'size-20', iconClass: 'size-12' },
+        {
+          buttonClass: 'size-20',
+          iconClass: 'size-12',
+          isSyncing: isSyncing(model),
+        },
         h,
       ),
       transportButton(
@@ -552,7 +596,7 @@ const trackTitle = (
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
-    [h.Class('flex min-w-0 flex-1 flex-col')],
+    [h.Class('syncing-dim flex min-w-0 flex-1 flex-col')],
     [
       marqueeText(
         track.title,
@@ -666,7 +710,7 @@ const artworkPanel = (
       onSwipeStart(SwipeTarget.PlayerArtwork(), h),
       h.Class(
         cn(
-          'flex min-h-0 flex-1 touch-none items-center justify-center py-4 select-none',
+          'syncing-dim flex min-h-0 flex-1 touch-none items-center justify-center py-4 select-none',
           swipeTransitionClass(maybeSwipe),
         ),
       ),
@@ -696,7 +740,7 @@ const compactNowPlaying = (
   h: HtmlBuilder<Message>,
 ): Html =>
   h.div(
-    [h.Class('flex items-center gap-3 py-3')],
+    [h.Class('syncing-dim flex items-center gap-3 py-3')],
     [
       artwork(entry.track, 'size-14 rounded-lg shadow-md', 56, h),
       trackTitle(entry.track, false, h),
@@ -1415,13 +1459,10 @@ export const playerView = (model: Model, h: HtmlBuilder<Message>): Html => {
       Option.match(maybeNowPlaying, {
         onNone: () => h.empty,
         onSome: ({ snapshot, entry }) =>
-          h.div(
-            [],
-            [
-              miniPlayer(model, snapshot, entry, h),
-              playerSheet(model, snapshot, entry, h),
-            ],
-          ),
+          h.div(isSyncing(model) ? [h.DataAttribute('syncing', '')] : [], [
+            miniPlayer(model, snapshot, entry, h),
+            playerSheet(model, snapshot, entry, h),
+          ]),
       }),
       noticeToast(model, h),
     ],

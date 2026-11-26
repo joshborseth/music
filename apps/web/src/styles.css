@@ -509,6 +509,49 @@
   }
 }
 
+/* SYNCING */
+
+/*
+ * Coming back on screen, the player shows the session it last heard of until
+ * the server's state arrives (`isSyncing` in `src/view/player.ts`). After a
+ * moment it dims, and a spinner takes the play button's icon, so a quick
+ * answer never flashes. Animations rather than transitions, so they never
+ * replace an element's own transitions, and the state that arrives shows at
+ * once.
+ */
+@keyframes syncing-dim {
+  to {
+    opacity: 0.45;
+  }
+}
+
+@keyframes syncing-hide {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes syncing-show {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+[data-syncing] .syncing-dim {
+  animation: syncing-dim 200ms ease 300ms both;
+}
+
+.syncing-hide {
+  animation: syncing-hide 150ms ease 300ms both;
+}
+
+.syncing-show {
+  animation: syncing-show 150ms ease 300ms both;
+}
+
 /* SEEK BAR */
 
 .seek-bar {

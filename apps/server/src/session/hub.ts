@@ -1064,3 +1064,26 @@ export const SessionRoutes = HttpRouter.use(router =>
     )
   }),
 )
+
+/**
+ * `POST /session/resync`: how long a phone took to show the session as it
+ * is after coming back on screen (`Session.ResyncReport`), for this server's
+ * log.
+ */
+export const ResyncReportRoute = HttpRouter.add(
+  'POST',
+  Session.RESYNC_REPORT_PATH,
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest
+    const report = yield* HttpServerRequest.schemaBodyJson(Session.ResyncReport)
+    yield* Effect.logInfo('A phone caught up after coming back', {
+      ...report,
+      owner: ownerOf(request.headers),
+    })
+    return HttpServerResponse.empty({ status: 204 })
+  }).pipe(
+    Effect.catch(() =>
+      Effect.succeed(HttpServerResponse.empty({ status: 400 })),
+    ),
+  ),
+)

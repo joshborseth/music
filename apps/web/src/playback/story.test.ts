@@ -15,7 +15,9 @@ import { AppRoute } from '../route'
 import { initialModel, update } from '../update'
 import {
   LoadPhoneAudio,
+  MarkSocketOpened,
   PrefetchSongs,
+  ReportResync,
   SeekPhoneAudio,
   SendHandOver,
   SendLocalChange,
@@ -29,7 +31,13 @@ import {
   WaitBeforeHideNotice,
   WaitBeforeReconnect,
 } from './command'
-import { Connection, PhoneAudio, PlayerSheet, loadedEntry } from './domain'
+import {
+  Connection,
+  PhoneAudio,
+  PlayerSheet,
+  Resync,
+  loadedEntry,
+} from './domain'
 import { toQueueTrack } from './queueTrack'
 import { SwipeTarget } from './swipe'
 
@@ -2314,10 +2322,55 @@ describe('coming back to the app', () => {
             player: null,
           },
         }),
+        MarkSocketOpened(),
       ),
       Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      Command.resolve(
+        MarkSocketOpened,
+        Message.CompletedMarkSocketOpened({ at: 70_400 }),
+      ),
       model(model => {
         expect(model.connection._tag).toBe('Connected')
+      }),
+    )
+  })
+
+  test('shows the session as unconfirmed until the server answers, then reports how long it took', () => {
+    story(
+      update,
+      given(tvPlaying),
+      message(Message.HidPage({ at: 10_000 })),
+      message(Message.ShowedPage({ at: 70_000 })),
+      model(model => {
+        expect(model.now).toBe(70_000)
+        expect(model.resync).toEqual(
+          Resync.Waiting({
+            shownAt: 70_000,
+            hiddenForMs: 60_000,
+            maybeSocketOpenedAt: Option.none(),
+          }),
+        )
+      }),
+      message(Message.AcquiredSessionSocket()),
+      Command.resolve(SendToSession, Message.CompletedSendToSession()),
+      Command.resolve(
+        MarkSocketOpened,
+        Message.CompletedMarkSocketOpened({ at: 70_400 }),
+      ),
+      message(
+        Message.ReceivedSessionState({
+          state: sessionState('tv', 2),
+          serverNow: SERVER_NOW,
+          ack: 1,
+          receivedAt: 70_550,
+        }),
+      ),
+      Command.expectHas(
+        ReportResync({ hiddenForMs: 60_000, socketMs: 400, stateMs: 550 }),
+      ),
+      Command.resolve(ReportResync, Message.CompletedReportResync()),
+      model(model => {
+        expect(model.resync).toEqual(Resync.Current())
       }),
     )
   })
@@ -2331,6 +2384,8 @@ describe('coming back to the app', () => {
       model(model => {
         expect(model.connection._tag).toBe('Connected')
         expect(model.sessionSocketGeneration).toBe(0)
+        expect(model.resync).toEqual(Resync.Current())
+        expect(model.now).toBe(11_000)
       }),
     )
   })
@@ -2344,6 +2399,7 @@ describe('coming back to the app', () => {
       model(model => {
         expect(model.connection._tag).toBe('Connected')
         expect(model.sessionSocketGeneration).toBe(0)
+        expect(model.resync).toEqual(Resync.Current())
       }),
     )
   })

@@ -11,6 +11,7 @@ import {
   PhoneAudio,
   PlayerSheet,
   QueueEdit,
+  Resync,
   SessionSnapshot,
 } from './playback/domain'
 import { Swipe } from './playback/swipe'
@@ -110,6 +111,7 @@ export const Model = Schema.Struct({
   sessionSocketGeneration: Schema.Number,
   /** When the page went out of sight, while it is out of sight. */
   maybePageHiddenAt: Schema.Option(Schema.Number),
+  resync: Resync,
   maybeSession: Schema.Option(SessionSnapshot),
   phoneAudio: PhoneAudio,
   phoneAudioSeconds: Schema.Number,

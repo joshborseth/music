@@ -263,6 +263,9 @@ export const Message = defineMessageUnion({
   CompletedWaitBeforeReconnect: {},
   HidPage: { at: Schema.Number },
   ShowedPage: { at: Schema.Number },
+  /** The fresh socket opened while catching up after the page showed. */
+  CompletedMarkSocketOpened: { at: Schema.Number },
+  CompletedReportResync: {},
   ReceivedSessionState: {
     state: Session.SessionState,
     serverNow: Schema.Number,
